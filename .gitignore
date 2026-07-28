@@ -1,0 +1,11 @@
+build/
+build*/
+out/
+.vs/
+.vscode/ipch/
+*.user
+*.suo
+*.log
+CMakeLists.txt
+# reload copies made by the injector sit next to the built DLL
+fear2vr.*.dll

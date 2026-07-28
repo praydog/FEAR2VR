@@ -1,0 +1,20 @@
+{
+    "extension": {
+        "header": ".hpp",
+        "source": ".cpp"
+    },
+    "process": {
+        "filter": "",
+        "id": 0,
+        "name": ""
+    },
+    "props": null,
+    "tabs": {
+        "active_index": -1,
+        "list": []
+    },
+    "type": {
+        "addresses": {},
+        "chosen": ""
+    }
+}

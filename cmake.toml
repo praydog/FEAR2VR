@@ -1,0 +1,172 @@
+# Reference: https://build-cpp.github.io/cmkr/cmake-toml
+# to build (32-bit ONLY -- FEAR2.exe is a Win32 process):
+#   > cmake -B build -A Win32
+#   > cmake --build build --config Release
+#
+# fear2vr: an injected-DLL mod framework for F.E.A.R. 2: Project Origin
+# (LithTech Jupiter EX, 32-bit, D3D9). Structure mirrors REFramework/UEVR:
+#   shared/sdk/   -- game SDK (mapped from IDA, static lib fear2-sdk)
+#   src/          -- framework DLL core (lifecycle, hooks, IPC, mods)
+#   injector/     -- LoadLibrary injector (inject/unload/reload/status)
+#   test/         -- ctest drivers (fixture = the game itself)
+
+[project]
+name = "fear2vr"
+languages = ["CXX", "C"]
+cmake-before = """
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
+
+# PDBs in Release without the RelWithDebInfo baggage.
+add_compile_options("$<$<CONFIG:Release>:/Zi>")
+add_link_options("$<$<CONFIG:Release>:/DEBUG>")
+add_link_options("$<$<CONFIG:Release>:/OPT:REF>")
+add_link_options("$<$<CONFIG:Release>:/OPT:ICF>")
+
+"""
+
+cmake-after = """
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "fear2vr must be built 32-bit: re-run cmake with -A Win32. Detected pointer size: ${CMAKE_SIZEOF_VOID_P}")
+endif()
+
+# Static CRT so the injected DLL has no VC runtime dependency in the target.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ctest support (targets register add_test in their own cmake-after blocks).
+enable_testing()
+"""
+
+# --- dependencies ----------------------------------------------------------
+
+# kananlib (pattern scanning, module helpers, Address/PointerHook).
+# As a subproject it needs its bddisasm dependency; have it fetch it itself.
+[fetch-content.kananlib]
+git = "https://github.com/cursey/kananlib"
+tag = "43b97a97bd3ad038f2e80ba83318371eed7b4ca6"
+cmake-before = """
+set(KANANLIB_FETCH_BDDISASM ON CACHE BOOL "" FORCE)
+set(KANANLIB_FETCH_SPDLOG ON CACHE BOOL "" FORCE)
+"""
+
+# SafetyHook (inline function detouring, x86 supported). Pin matches REFramework.
+[fetch-content.safetyhook]
+git = "https://github.com/cursey/safetyhook.git"
+tag = "b046e123dc69821f2c375161e0adef3c6d9c9db4"
+cmake-before = """
+set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
+"""
+
+# --- shared/sdk: LithTech (FEAR2 build) SDK mapped from IDA -----------------
+# Game-agnostic-ish engine bindings: module resolution, engine globals,
+# interfaces (ILTClient, IDatabaseMgr...). Consumed by fear2-core and tests.
+[target.fear2-sdk]
+type = "static"
+sources = ["shared/sdk/**.cpp"]
+headers = ["shared/sdk/**.hpp"]
+include-directories = ["shared"]
+compile-features = ["cxx_std_23"]
+compile-options = ["/EHa", "/bigobj", "/GS-"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["kananlib"]
+
+[target.fear2-sdk.properties]
+POSITION_INDEPENDENT_CODE = "ON"
+
+# --- fear2-core: lifecycle, hooks, IPC, mods (everything but DllMain) -------
+# Static lib so the injected DLL AND any future tool/test link the same
+# teardown-critical code (graceful uninject lives in exactly ONE place).
+[target.fear2-core]
+type = "static"
+sources = ["src/AgentRuntime.cpp", "src/Framework.cpp", "src/Hooks.cpp", "src/GameTests.cpp", "src/ipc/**.cpp", "shared/Log.cpp"]
+headers = ["src/**.hpp", "shared/**.hpp"]
+include-directories = ["src", "shared"]
+compile-features = ["cxx_std_23"]
+compile-options = ["/EHa", "/bigobj", "/GS-"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi"]
+
+[target.fear2-core.properties]
+POSITION_INDEPENDENT_CODE = "ON"
+
+# --- the injected mod DLL: thin DllMain entrypoint over fear2-core ----------
+[target.fear2vr]
+type = "shared"
+sources = ["src/Main.cpp"]
+include-directories = ["src", "shared"]
+compile-features = ["cxx_std_23"]
+compile-options = ["/EHa", "/bigobj", "/GS-"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["fear2-core", "fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi"]
+
+[target.fear2vr.properties]
+OUTPUT_NAME = "fear2vr"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
+PREFIX = ""
+
+# --- the LoadLibrary injector ----------------------------------------------
+[target.injector]
+type = "executable"
+sources = ["injector/Injector.cpp"]
+include-directories = ["shared"]
+compile-features = ["cxx_std_23"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["ws2_32"]
+
+[target.injector.properties]
+OUTPUT_NAME = "injector"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
+
+# --- ctest E2E runner -------------------------------------------------------
+# Drives the DLL against the live game (FEAR2.exe is the fixture) and asserts
+# the in-DLL test suite returns fail==0. SKIPS (exit 77) when the game cannot
+# be spawned/attached, so CI without the game is green-skipped.
+[target.fixture-test]
+type = "executable"
+sources = ["test/fixture_test_runner.cpp"]
+include-directories = ["shared"]
+compile-features = ["cxx_std_23"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["ws2_32"]
+cmake-after = """
+add_test(
+    NAME fixture-test
+    COMMAND fixture-test
+        --injector $<TARGET_FILE:injector>
+        --dll      $<TARGET_FILE:fear2vr>
+        --fixture  "W:/SteamLibrary/steamapps/common/FEAR2/FEAR2.exe"
+        --port     8798
+)
+set_tests_properties(fixture-test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+"""
+
+[target.fixture-test.properties]
+OUTPUT_NAME = "fixture-test"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
+
+# --- ctest headless unit runner (Tier-1) -------------------------------------
+# Black-box tests the CommandServer over localhost HTTP in-process -- NO game,
+# NO GPU -- so it ALWAYS runs and must pass on any CI. No SKIP_RETURN_CODE.
+[target.command-server-test]
+type = "executable"
+sources = ["test/command_server_tests.cpp", "src/ipc/CommandServer.cpp"]
+include-directories = ["src/ipc", "src", "shared"]
+compile-features = ["cxx_std_23"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+link-libraries = ["ws2_32"]
+cmake-after = """
+add_test(NAME command-server-test COMMAND command-server-test)
+set_tests_properties(command-server-test PROPERTIES TIMEOUT 60)
+"""
+
+[target.command-server-test.properties]
+OUTPUT_NAME = "command-server-test"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
