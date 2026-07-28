@@ -23,7 +23,7 @@ DbGetFn resolve_getter_fn() {
 
 // Own function scope: __try cannot share a function with static-local
 // initialization (MSVC C2712), and the caller's scope holds the static.
-IDatabaseMgr* call_getter(DbGetFn fn) {
+DatabaseMgr* call_getter(DbGetFn fn) {
     void* mgr = nullptr;
     KANANLIB_SEH_TRY {
         mgr = fn();
@@ -31,12 +31,12 @@ IDatabaseMgr* call_getter(DbGetFn fn) {
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }
-    return reinterpret_cast<IDatabaseMgr*>(mgr);
+    return reinterpret_cast<DatabaseMgr*>(mgr);
 }
 
 } // namespace
 
-IDatabaseMgr* DatabaseMgr::get() {
+DatabaseMgr* DatabaseMgr::get() {
     static DbGetFn s_get = resolve_getter_fn();
     if (s_get == nullptr) {
         return nullptr;

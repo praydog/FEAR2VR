@@ -134,7 +134,7 @@ green before the change it "tests" exists is non-evidence — investigate why.
 
 ### 5. Make it pass, then run the WHOLE suite
 "My new test passes" is necessary, not sufficient — the full run is the
-contract: `ctest --test-dir build -C Release --output-on-failure`.
+contract: `ctest --test-dir build -C RelWithDebInfo --output-on-failure`.
 
 ## Graceful uninject is itself a tested feature
 
@@ -164,8 +164,8 @@ runner.
 ## Build & run
 
 ```
-build.bat                                        :: configure (-A Win32) + build Release
-ctest --test-dir build -C Release --output-on-failure
+build.bat                                        :: configure (-G "Visual Studio 18 2026" -A Win32) + build RelWithDebInfo
+ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```
 
 Individual:

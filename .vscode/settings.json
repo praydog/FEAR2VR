@@ -1,0 +1,7 @@
+{
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "cmake.generator": "Visual Studio 18 2026",
+    "cmake.platform": "Win32",
+    "cmake.configureArgs": [],
+    "cmake.buildDirectory": "${workspaceFolder}/build"
+}

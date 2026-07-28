@@ -1,7 +1,7 @@
 # Reference: https://build-cpp.github.io/cmkr/cmake-toml
 # to build (32-bit ONLY -- FEAR2.exe is a Win32 process):
-#   > cmake -B build -A Win32
-#   > cmake --build build --config Release
+#   > cmake -B build -G "Visual Studio 18 2026" -A Win32
+#   > cmake --build build --config RelWithDebInfo
 #
 # fear2vr: an injected-DLL mod framework for F.E.A.R. 2: Project Origin
 # (LithTech Jupiter EX, 32-bit, D3D9). Structure mirrors REFramework/UEVR:
@@ -17,11 +17,12 @@ cmake-before = """
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
 
-# PDBs in Release without the RelWithDebInfo baggage.
-add_compile_options("$<$<CONFIG:Release>:/Zi>")
-add_link_options("$<$<CONFIG:Release>:/DEBUG>")
-add_link_options("$<$<CONFIG:Release>:/OPT:REF>")
-add_link_options("$<$<CONFIG:Release>:/OPT:ICF>")
+# RelWithDebInfo is the standard config (optimized + debuggable, PDBs always
+# present natively). Fold/trim unused code the same way a Release build
+# would -- RelWithDebInfo's own defaults don't include these link-time
+# optimizations.
+add_link_options("$<$<CONFIG:RelWithDebInfo>:/OPT:REF>")
+add_link_options("$<$<CONFIG:RelWithDebInfo>:/OPT:ICF>")
 
 """
 

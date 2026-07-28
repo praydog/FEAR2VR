@@ -20,7 +20,7 @@ inject → test → uninject with the game never restarting.
    (`/health`, `/sdk/targets`, `/engine-hook`) — data, never pass/fail
    judgement. Rules of evidence are in TESTING.MD and are load-bearing.
 3. **Commit frequently.** Small, build-clean commits. Never commit a tree that
-   doesn't build; run `ctest --test-dir build -C Release --output-on-failure`
+   doesn't build; run `ctest --test-dir build -C RelWithDebInfo --output-on-failure`
    before committing. Commit after each coherent unit (scaffold, one SDK class,
    one test tier), not in one end-of-day blob. Never `git push`.
 4. **REFramework/UEVR structure.** Singletons and the `g_framework` global, mir-
@@ -87,7 +87,18 @@ inject → test → uninject with the game never restarting.
     (regenerated). cmkr skips regeneration when `CI` is set in the environment;
     `build.bat` clears it — beware when invoking cmake by hand. cmkr expands
     `**.cpp` globs at configure time: after adding/removing source files you
-    must re-run configure (`env -u CI cmake -B build -A Win32`).
+    must re-run configure (`env -u CI cmake -B build -G "Visual Studio 18 2026" -A Win32`).
+10a. **Generator is pinned to Visual Studio, NOT Ninja.** `.vscode/settings.json`
+    sets `cmake.generator: "Visual Studio 18 2026"` + `cmake.platform: "Win32"`
+    so VSCode's CMake Tools and manual `cmake -B build -G "Visual Studio 18
+    2026" -A Win32` produce the SAME `build/` cache. Do not let CMake Tools
+    auto-pick a Ninja kit: Ninja invokes `link.exe` directly with no VS dev
+    environment, so linking fails on system libs (`ws2_32.lib` etc.) from any
+    shell that hasn't run `vcvarsall.bat`. The VS generator's MSBuild handles
+    that environment itself — no vcvarsall needed anywhere. If `build/` was
+    ever configured with a different generator, CMake refuses to reconfigure
+    in place; delete it (`cmd /c rmdir /s /q build` — plain `rm -rf` can choke
+    on fetched-dependency junctions) and reconfigure fresh.
 11. **Don't cross-test the tiers.** Tier-1 (`command-server-test`) is headless
     and ALWAYS must pass (no skip allowed). Tier-2 (`fixture-test`) may skip
     honestly with exit 77 only when the game/IPC genuinely can't come up.
@@ -114,5 +125,5 @@ TESTING.MD                    -- the testing contract (rigor, evidence rules)
 build.bat                                   # configure + build (Win32)
 bin\injector.exe --reload                   # hot-swap into the running game
 bin\injector.exe --status                   # module/IPC snapshot
-ctest --test-dir build -C Release --output-on-failure
+ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```

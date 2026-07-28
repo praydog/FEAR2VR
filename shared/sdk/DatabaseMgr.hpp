@@ -1,8 +1,9 @@
 #pragma once
 
-namespace sdk {
+#include <cstdint>
+#include "regenny/regenny/DatabaseMgr.hpp"
 
-class IDatabaseMgr; // opaque until the interface is mapped
+namespace sdk {
 
 // The engine's attribute/database manager, owned by gamedatabase.dll.
 // Evidence: gamedatabase.dll.i64 -- exported accessor
@@ -13,7 +14,12 @@ class DatabaseMgr {
 public:
     // The IDatabaseMgr singleton, nullptr if gamedatabase.dll or the export
     // is unavailable.
-    static IDatabaseMgr* get();
+    static DatabaseMgr* get();
+
+public:
+    regenny::DatabaseMgr* regenny() const {
+        return (regenny::DatabaseMgr*)this;
+    }
 };
 
 } // namespace sdk
