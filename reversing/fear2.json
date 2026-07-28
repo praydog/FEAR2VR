@@ -4,9 +4,9 @@
         "source": ".cpp"
     },
     "process": {
-        "filter": "",
-        "id": 0,
-        "name": ""
+        "filter": "fear2",
+        "id": 680920,
+        "name": "FEAR2.exe"
     },
     "props": null,
     "tabs": {
@@ -14,7 +14,9 @@
         "list": []
     },
     "type": {
-        "addresses": {},
-        "chosen": ""
+        "addresses": {
+            "regenny.DatabaseMgr": "0xA022BC"
+        },
+        "chosen": "regenny.DatabaseMgr"
     }
 }

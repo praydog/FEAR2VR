@@ -1,0 +1,304 @@
+DatabaseMgr dump -- gamedatabase.dll @ 0x009F0000, singleton @ 0x00A022BC (RVA 0x122BC)
+Generated: Tue Jul 28 00:22:02 2026
+
+vtable        = 0x009FF648
+unk_04        = 0
+array_begin   = 0x175CAD00
+array_end     = 0x175CAD08
+array_cap_end = 0x175CAD08
+unk_14        = 1
+
+=== DatabaseMgrEntry[0] @ 0x175CAD00 ===
+  record_a = 0x09B6666C
+  record_b = 0x2613C420
+  [record_a] DatabaseMgrSubRecord @ 0x09B6666C
+    path_data    = 0x09D26B4C  "Database\Loki.gamedb"
+    count_a=359  count_b=24270  count_c=199 (semantics UNVERIFIED, see fear2.genny)
+    self_ref     = 0x09B66688  (expect this+sizeof(DatabaseMgrSubRecord)=0x09B66688)  OK
+    string_data  = 0x09AE6028  (209 strings found, budget 24270 bytes)
+      [0] "AI"
+      [1] "FX"
+      [2] "FX/ModelDecal/Settings"
+      [3] "0 - Low"
+      [4] "2 - High"
+      [5] "1 - Medium"
+      [6] "AI/WeaponContext"
+      [7] "Default"
+      [8] "\x80?"
+      [9] "\x80?AI/GoalSets"
+      [10] "Rat"
+      [11] "Multi_CombatBase"
+      [12] "ATCPatrol"
+      [13] "Multi_AssassinBase"
+      [14] "ATCBase_Reanimate"
+      [15] "AbominationGuard"
+      [16] "CivilianPatrol"
+      [17] "CombatBase"
+      [18] "ReplicaSniperPatrol"
+      [19] "EvilGriffin_Base"
+      [20] "HeavyWeaponGuard_Missile"
+      [21] "Multi_ReplicaGuard"
+      [22] "ReplicaSniper"
+      [23] "ReplicaSniperGuard"
+      [24] "EvilKeegan_Base"
+      [25] "AbominationPatrol"
+      [26] "Multi_AssassinGuard"
+      [27] "AssassinGuard"
+      [28] "AlmaPatrol"
+      [29] "AllyBase"
+      [30] "EvilKeegan_Guard"
+      [31] "Multi_AssassinPatrol"
+      [32] "PoweredArmorBase"
+      [33] "RemnantGuard"
+      [34] "CivilianGuard"
+      [35] "Base"
+      [36] "Bird"
+      [37] "ATCGuard"
+      [38] "RatPatrol"
+      [39] "HeavyArmorGuard"
+      [40] "Multi_ATCPatrol"
+      [41] "AlmaFollower"
+      [42] "Specter_Mean"
+      [43] "AbominationBase"
+      [44] "Multi_HeavyArmorPatrol"
+      [45] "HeavyArmorBase"
+      [46] "Multi_ATCBase"
+      [47] "BirdPatrol"
+      [48] "AlmaGuard"
+      [49] "None"
+      [50] "ATCPatrol_Reanimate"
+      [51] "Multi_ReplicaPatrol"
+      [52] "ReplicaPatrol"
+      [53] "Specter_Nice"
+      [54] "HeavyFlamerPatrol"
+      [55] "Test"
+      [56] "Multi_HeavyArmorGuard"
+      [57] "RemnantPatrol"
+      [58] "CombatBaseEnemy"
+      [59] "AlmaBase"
+      [60] "Multi_ATCGuard"
+      [61] "HeavyWeaponPatrol_Missile"
+      [62] "Multi_Replicabase"
+      [63] "Turret"
+      [64] "BirdGuard"
+      [65] "AssassinBase"
+      [66] "BaseLite"
+      [67] "ReplicaBase"
+      [68] "HeavyArmorGuard_Missile"
+      [69] "EvilGriffin_Guard"
+      [70] "HeavyFlamerGuard"
+      [71] "HeavyArmorBase_Missile"
+      [72] "ATCGuard_Reanimate"
+      [73] "ReplicaGuard"
+      [74] "EvilGriffin_Patrol"
+      [75] "Multi_HeavyArmorBase"
+      [76] "ATCBase"
+      [77] "PoweredArmorPatrol"
+      [78] "HeavyArmorPatrol"
+      [79] "IncendiarySimple"
+      [80] "RemnantBase"
+      [81] "AllyGuard"
+      [82] "HeavyWeaponBase_Missile"
+      [83] "HeavyFlamerBase"
+      [84] "PoweredArmorGuard"
+      [85] "EvilKeegan_Patrol"
+      [86] "AllyPatrol"
+      [87] "RatGuard"
+      [88] "Civilian"
+      [89] "Ghost"
+      [90] "HeavyArmorPatrol_Missile"
+      [91] "AssassinPatrol"
+      [92] "IncendiaryBase"
+      [93] "Arsenal/ConditionalAnimation/QueueData"
+      [94] "Profile/Inputs/Xenon/Bindings"
+      [95] "LeftHanded"
+      [96] "GameModes/CP/Transmissions"
+      [97] "CP1_Team0_EPA"
+      [98] "CP_PlayerDefendedCP"
+      [99] "CP_PlayerCapturedCP"
+      [100] "IDS_ENDROUND_CONDITION_CONQUEST_WINS"
+      [101] "CP_WeNeutralizedCP1"
+      [102] "15765"
+      [103] "<none>"
+      [104] "CP_PlayerNeutralizedCP"
+      [105] "15777"
+      [106] "CP_PlayerFixupCP"
+      [107] "CP3_Team0"
+      [108] "CP_WeNeutralizedCP3"
+      [109] "15773"
+      [110] "15775"
+      [111] "15781"
+      [112] "CP3_Team1"
+      [113] "15774"
+      [114] "15776"
+      [115] "15782"
+      [116] "CP1_Team1_EPA"
+      [117] "15768"
+      [118] "15778"
+      [119] "CP1_Team0"
+      [120] "15767"
+      [121] "CP1_Team1"
+      [122] "15766"
+      [123] "CP4_Team0"
+      [124] "CP_WeNeutralizedCP4"
+      [125] "15829"
+      [126] "15831"
+      [127] "15833"
+      [128] "CP4_Team1"
+      [129] "15830"
+      [130] "15832"
+      [131] "15834"
+      [132] "CP2_Team0"
+      [133] "CP_WeNeutralizedCP2"
+      [134] "15769"
+      [135] "15771"
+      [136] "15779"
+      [137] "CP2_Team1"
+      [138] "15770"
+      [139] "15772"
+      [140] "15780"
+      [141] "CP5_Team0"
+      [142] "CP_WeNeutralizedCP5"
+      [143] "15837"
+      [144] "15839"
+      [145] "CP5_Team1"
+      [146] "15836"
+      [147] "15840"
+      [148] "CP_WeNeutralizedCP"
+      [149] "CP_WeCapturedCP"
+      [150] "CP_TheyCapturedCP"
+      [151] "CP_TheyNeutralizedCP"
+      [152] "Interface/InputPatterns/InputTypes/InputGroupAll"
+      [153] "_Base"
+      [154] "IT_GroupAll"
+      [155] "ScreamEscapeOff"
+      [156] "Interface/InputPatterns/InputTypes/InputGroupAny"
+      [157] "IT_GroupAny"
+      [158] "ScreamEscapeOn"
+      [159] "GameModes"
+      [160] "CTF"
+      [161] "15718"
+      [162] "IDS_Blitz"
+      [163] "15719"
+      [164] "15702"
+      [165] "15703"
+      [166] "15700"
+      [167] "15717"
+      [168] "15716"
+      [169] "15701"
+      [170] "EPA"
+      [171] "IDS_ARMOREDFRONT"
+      [172] "15824"
+      [173] "15823"
+      [174] "DeathMatch"
+      [175] "IDS_DEATHMATCH"
+      [176] "_base"
+      [177] "Demolition"
+      [178] "IDS_DEMOLITION"
+      [179] "15705"
+      [180] "15704"
+      [181] "CaptureHold"
+      [182] "IDS_CaptureHold"
+      [183] "15764"
+      [184] "15763"
+      [185] "SinglePlayer"
+      [186] "PeterTest"
+      [187] "IDS_petertest"
+      [188] "TeamDeathMatch"
+      [189] "IDS_TEAMDEATHMATCH"
+      [190] "15784"
+      [191] "15783"
+      [192] "MP_base"
+      [193] "SlowMoDeathMatch"
+      [194] "IDS_SLOWMODM"
+      [195] "TeamElimination"
+      [196] "Arsenal/RefillStations"
+      [197] "MedStation_MP"
+      [198] "MedStation_SP"
+      [199] "AmmoStation_MPa"
+      [200] "SlowMoStation_MP"
+      [201] "SlowMoStation_SP"
+      [202] "RefillStation_Test"
+      [203] "AmmoStation_Small_SP"
+      [204] "AmmoStation_MP"
+      [205] "AmmoStation_SP"
+      [206] "Collisions/CapsuleDims"
+      [207] "Character/Models/ProgDamageFX"
+      [208] "Burn"
+    hash_entries = 0x09B36FFC (first up to 32 entries, unverified true length)
+      [ 0] hash=0x26408B1C  unk_04=2 unk_05=1 unk_06=0 unk_07=0
+      [ 1] hash=0x32DFCDF4  unk_04=2 unk_05=1 unk_06=1 unk_07=0
+      [ 2] hash=0x91BA6AD9  unk_04=2 unk_05=1 unk_06=2 unk_07=0
+      [ 3] hash=0x0B1B0854  unk_04=9 unk_05=1 unk_06=2 unk_07=0
+      [ 4] hash=0xEFD0E813  unk_04=6 unk_05=1 unk_06=0 unk_07=0
+      [ 5] hash=0xFA0840E5  unk_04=6 unk_05=1 unk_06=1 unk_07=0
+      [ 6] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [ 7] hash=0x44973FD3  unk_04=9 unk_05=6 unk_06=1 unk_07=0
+      [ 8] hash=0xA448CD17  unk_04=9 unk_05=1 unk_06=7 unk_07=0
+      [ 9] hash=0xBFF797D1  unk_04=9 unk_05=1 unk_06=8 unk_07=0
+      [10] hash=0xF3E44242  unk_04=1 unk_05=1 unk_06=1 unk_07=0
+      [11] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [12] hash=0x44973FD3  unk_04=9 unk_05=18 unk_06=1 unk_07=0
+      [13] hash=0xA448CD17  unk_04=9 unk_05=1 unk_06=19 unk_07=0
+      [14] hash=0xBFF797D1  unk_04=9 unk_05=1 unk_06=20 unk_07=0
+      [15] hash=0xF3E44242  unk_04=1 unk_05=1 unk_06=1 unk_07=0
+      [16] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [17] hash=0x44973FD3  unk_04=9 unk_05=1 unk_06=1 unk_07=0
+      [18] hash=0xA448CD17  unk_04=9 unk_05=1 unk_06=2 unk_07=0
+      [19] hash=0xBFF797D1  unk_04=9 unk_05=1 unk_06=3 unk_07=0
+      [20] hash=0xF3E44242  unk_04=1 unk_05=1 unk_06=1 unk_07=0
+      [21] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [22] hash=0x44973FD3  unk_04=9 unk_05=20 unk_06=1 unk_07=0
+      [23] hash=0xA448CD17  unk_04=9 unk_05=1 unk_06=21 unk_07=0
+      [24] hash=0xBFF797D1  unk_04=9 unk_05=3 unk_06=22 unk_07=0
+      [25] hash=0xF3E44242  unk_04=1 unk_05=1 unk_06=1 unk_07=0
+      [26] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [27] hash=0x44973FD3  unk_04=9 unk_05=1 unk_06=1 unk_07=0
+      [28] hash=0xA448CD17  unk_04=9 unk_05=2 unk_06=2 unk_07=0
+      [29] hash=0xBFF797D1  unk_04=9 unk_05=1 unk_06=4 unk_07=0
+      [30] hash=0xF3E44242  unk_04=1 unk_05=1 unk_06=1 unk_07=0
+      [31] hash=0x165E993E  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+  [record_b] DatabaseMgrSubRecord @ 0x2613C420
+    path_data    = 0x2616DFAC  "worlds\sp\m05_outershell\m05_outershell.gamedb"
+    count_a=1  count_b=5460  count_c=1 (semantics UNVERIFIED, see fear2.genny)
+    self_ref     = 0x2613C43C  (expect this+sizeof(DatabaseMgrSubRecord)=0x2613C43C)  OK
+    string_data  = 0x260DC028  (6 strings found, budget 5460 bytes)
+      [0] "ObjectDB"
+      [1] "ObjectRec"
+      [2] "msg system exitlevel;"
+      [3] "@\x83D"
+      [4] "HB\x01"
+      [5] "\xAFC"
+    hash_entries = 0x26131980 (first up to 32 entries, unverified true length)
+      [ 0] hash=0x2ECC51E1  unk_04=1 unk_05=1 unk_06=0 unk_07=0
+      [ 1] hash=0x959FEBB9  unk_04=4 unk_05=1 unk_06=1 unk_07=0
+      [ 2] hash=0xB980B273  unk_04=7 unk_05=1 unk_06=2 unk_07=0
+      [ 3] hash=0x456DD0D2  unk_04=7 unk_05=1 unk_06=6 unk_07=0
+      [ 4] hash=0x45E1AFA8  unk_04=2 unk_05=1 unk_06=0 unk_07=0
+      [ 5] hash=0x6A74982A  unk_04=4 unk_05=1 unk_06=4 unk_07=0
+      [ 6] hash=0xA0270519  unk_04=4 unk_05=1 unk_06=5 unk_07=0
+      [ 7] hash=0xA260DD70  unk_04=2 unk_05=1 unk_06=1 unk_07=0
+      [ 8] hash=0xD14ADF1C  unk_04=2 unk_05=1 unk_06=2 unk_07=0
+      [ 9] hash=0xD3EEB3E8  unk_04=2 unk_05=1 unk_06=3 unk_07=0
+      [10] hash=0x456DD0D2  unk_04=7 unk_05=1 unk_06=7 unk_07=0
+      [11] hash=0x45E1AFA8  unk_04=2 unk_05=1 unk_06=0 unk_07=0
+      [12] hash=0x6A74982A  unk_04=4 unk_05=1 unk_06=4 unk_07=0
+      [13] hash=0xA0270519  unk_04=4 unk_05=1 unk_06=5 unk_07=0
+      [14] hash=0xA260DD70  unk_04=2 unk_05=1 unk_06=1 unk_07=0
+      [15] hash=0xB2BDEA77  unk_04=4 unk_05=1 unk_06=6 unk_07=0
+      [16] hash=0xD14ADF1C  unk_04=2 unk_05=1 unk_06=2 unk_07=0
+      [17] hash=0xD3EEB3E8  unk_04=2 unk_05=1 unk_06=3 unk_07=0
+      [18] hash=0x2BD7D2EB  unk_04=4 unk_05=1 unk_06=1 unk_07=0
+      [19] hash=0x465C60EB  unk_04=4 unk_05=1 unk_06=2 unk_07=0
+      [20] hash=0x5DDF4DB6  unk_04=3 unk_05=1 unk_06=0 unk_07=0
+      [21] hash=0x6A74982A  unk_04=4 unk_05=1 unk_06=3 unk_07=0
+      [22] hash=0x465C60EB  unk_04=4 unk_05=1 unk_06=0 unk_07=0
+      [23] hash=0x959FEBB9  unk_04=4 unk_05=1 unk_06=1 unk_07=0
+      [24] hash=0xAB396675  unk_04=3 unk_05=1 unk_06=0 unk_07=0
+      [25] hash=0xB980B273  unk_04=7 unk_05=1 unk_06=2 unk_07=0
+      [26] hash=0xAB396675  unk_04=3 unk_05=1 unk_06=0 unk_07=0
+      [27] hash=0xB980B273  unk_04=7 unk_05=1 unk_06=1 unk_07=0
+      [28] hash=0xAB396675  unk_04=3 unk_05=1 unk_06=0 unk_07=0
+      [29] hash=0xB980B273  unk_04=7 unk_05=1 unk_06=1 unk_07=0
+      [30] hash=0x959FEBB9  unk_04=4 unk_05=1 unk_06=0 unk_07=0
+      [31] hash=0xB980B273  unk_04=7 unk_05=1 unk_06=1 unk_07=0

@@ -1,5 +1,117 @@
-type int 4 [[i32]]
+type uint64_t 8 [[u64]]
+type int32_t 4 [[i32]]
+type uint32_t 4 [[u32]]
+type int16_t 2 [[i16]]
+type uint16_t 2 [[u16]]
+type uint8_t 1 [[u8]]
+type int8_t 1 [[i8]]
+type double 8 [[f64]]
+type float 4 [[f32]]
+type char 1
+type void 0
+type code 4 [[code]]
+type wstrptr 4 [[utf16*]]
+type strptr 4 [[utf8*]]
+type wchar_t 2 [[u16]]
+type bool 1 [[bool]]
+type char 1 [[u8]]
 
-struct Foo {
-    int bar @ 8
+struct BS 0x1000 {
+
+}
+
+namespace regenny {
+
+// The vtable ITSELF (pointed to by DatabaseMgr::vtable, not inlined into the
+// object). 64 entries CONFIRMED live: every slot dereferences to a readable
+// code pointer inside GameDatabase.dll's real image bounds
+// [0x9F0000,0xA05000); vt[64] lands on string data in .rdata ("tera..."),
+// which is what pins the count at exactly 64. Virtuals intentionally left
+// unmapped/opaque per instruction -- data layout only for now.
+class DatabaseMgrVTable 0x100 {
+    void* fn[64]   @0x00 [[code]]
+}
+
+// One 8-byte hash-table bucket entry. CONFIRMED: `hash` values are STABLE
+// across apparently-repeated entries (identical 32-bit values recur at
+// different indices for what look like the same underlying name), consistent
+// with a hash-of-string. The trailing byte fields' MEANING is NOT verified --
+// only their raw values are recorded (neutral names on purpose).
+class HashEntry 0x8 {
+    uint32_t hash   @0x00   // stable/repeating values observed -- consistent with hash(name), not otherwise confirmed
+    uint8_t unk_04  @0x04   // observed: 01,02,04,06,07,09 -- meaning unverified
+    uint8_t unk_05  @0x05   // observed constant 0x01 in nearly all samples (rare 0x06/0x12 seen) -- meaning unverified
+    uint8_t unk_06  @0x06   // observed small incrementing-looking values -- meaning unverified
+    uint8_t unk_07  @0x07   // observed constant 0x00 in every sample so far
+}
+
+// 0x1C-byte record. CONFIRMED IDENTICAL SHAPE observed independently at TWO
+// live addresses (DatabaseMgrEntry.record_a and .record_b of the single
+// array element currently live) -- same field layout, same self-pointer
+// relationship, in both instances.
+//
+// string_data and path_data are typed strptr because their CONTENT WAS
+// DIRECTLY READ as null-terminated ASCII, not inferred:
+//   record_a: string_data -> "AI\0FX\0FX/ModelDecal/Settings\0..." (packed,
+//             multiple concatenated strings; strptr renders only the first)
+//             path_data   -> "Database\Loki.gamedb"
+//   record_b: string_data -> "ObjectDB\0ObjectRec\0msg system exitlevel..."
+//             path_data   -> "worlds\sp\m05_outershell\m05_out..."
+// hash_entries points at HashEntry-shaped data (verified 8-byte stride, see
+// HashEntry) but its LENGTH is not tied to count_a/count_b/count_c with any
+// confirmed formula -- do not assume a specific entry count from those.
+//
+// self_ref: CONFIRMED (2/2 samples) == (address of this record) + 0x1C
+// exactly, i.e. one-past-the-end-of-this-struct. Purpose not verified (could
+// be a trailing-inline-data cursor, could be something else); kept as a
+// self-typed pointer because the relationship itself IS a verified fact.
+class DatabaseMgrSubRecord 0x1C {
+    strptr string_data                @0x00
+    HashEntry* hash_entries            @0x04
+    strptr path_data                  @0x08
+    uint32_t count_a                  @0x0C
+    uint32_t count_b                  @0x10
+    DatabaseMgrSubRecord* self_ref     @0x14
+    uint32_t count_c                  @0x18
+}
+
+// One 8-byte array element of DatabaseMgr's internal array (confirmed size:
+// (array_end - array_begin) == 8 bytes for the current 1-element span).
+// Both fields point to a DatabaseMgrSubRecord (see above; verified identical
+// shape at both addresses).
+class DatabaseMgrEntry 0x8 {
+    DatabaseMgrSubRecord* record_a   @0x00
+    DatabaseMgrSubRecord* record_b   @0x04
+}
+
+// Live-memory mapped from the running FEAR2.exe (32-bit). Singleton resolved
+// via gamedatabase.dll export LTGetIDatabaseMgr -> GameDatabase.dll + RVA
+// 0x122BC (module-relative; use GameDatabase.dll+0x122BC in ReGenny, do not
+// hardcode the absolute VA -- it moves with module placement).
+//
+// Mapped by READING LIVE MEMORY ONLY (regenny_lua_eval) -- no decompilation
+// used for this pass. Offsets 0x00-0x14 are STRUCTURALLY confirmed: the
+// begin/end/cap_end pointer math is self-consistent
+// ((end-begin) == unk_14 * sizeof(DatabaseMgrEntry)) in every observed
+// snapshot; vtable dereferences to 64 readable code pointers, all inside
+// GameDatabase.dll's real image bounds.
+//
+// NOTE (2026-07): this is the LOW-LEVEL engine IDatabaseMgr singleton in
+// gamedatabase.dll, NOT the game-layer CGameDatabaseMgr wrapper (which lives
+// in gameclient.dll/gameserver.dll with its own std::string + HDATABASE
+// fields per lithtech/FEAR/Shared/GameDatabaseMgr.h -- a DIFFERENT object,
+// do not conflate the two).
+//
+// Snapshot (2026-07, main menu, one array element registered):
+//   +0x18..+0x5C all zero -- struct size beyond +0x18 unconfirmed, sized
+//   0x20 here for headroom only.
+class DatabaseMgr 0x20 {
+    DatabaseMgrVTable* vtable        @0x00
+    uint32_t unk_04                  @0x04   // observed 0; role unverified
+    DatabaseMgrEntry* array_begin    @0x08
+    DatabaseMgrEntry* array_end      @0x0C
+    DatabaseMgrEntry* array_cap_end  @0x10
+    uint32_t unk_14                  @0x14   // observed 1; equals (array_end-array_begin)/8 in every snapshot so far
+}
+
 }

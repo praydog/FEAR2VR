@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "regenny": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["run", "--project", "I:\\Programming\\projects\\regenny\\mcp-server"],
+      "env": {
+        "REGENNY_API_URL": "http://localhost:12025"
+      }
+    }
+  }
+}
