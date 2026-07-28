@@ -254,6 +254,38 @@ same cause rather than evidence against. Two unexplained fields moving together
 is a hint to find their common cause, never a proof about either one. Write the
 observation down; do not promote it to an argument until you have the reader.
 
+**A NEGATIVE claim in the schema needs exactly as much evidence as a positive
+one, and it is far easier to write by accident.** "Always empty", "never
+written", "nothing consumes it", "the ctor's value is never replaced" -- these
+feel like observations and read like facts, but each is a universal quantifier
+over live data. Two went into `LTObject` in one sitting and both were wrong
+within minutes of being checked:
+
+- "live every `owned_list` is EMPTY" -- actually **1931 of 3583** objects hold
+  entries, 3260 in total.
+- `+0xA8` "ctor writes NaN ... nothing observed recomputes it" -- actually
+  written on **3248 of 3583**.
+
+Neither had been measured; both were extrapolated from a small look. The rule:
+if a comment contains "always", "never", "every" or "nothing", either run the
+count and cite it, or write "unmapped" instead. "Unmapped" is honest and cheap;
+a wrong universal is a trap for whoever reads it next.
+
+**A float whose live values are all DENORMAL is not a float.** Anything with
+magnitude below ~1e-38 is a denormal, and a field full of them is almost always
+an integer being read through the wrong type. `LTObject.slot_index` (+0xA8)
+looked like a float cache: the decompiler rendered the constructor's constant as
+`NAN` and every live sample printed as `0.000` under `%.3f`. Two things were
+going on, and both are reusable:
+
+- `%g`, not `%f`, when sanity-checking floats. `%.3f` prints 4.8e-42 as `0.000`,
+  which reads as "the field is zero" when it is really "the field is tiny".
+  Re-read as `uint32` the values were 0..3885, all distinct -- an index.
+- **IDA rendering a constant as `NAN` can just mean `0xFFFFFFFF`.** As an
+  integer that is `-1`, i.e. the standard "no slot" sentinel, which is a
+  completely different claim from "an invalidated float cache". When the
+  decompiler shows `NAN`, check the raw bytes before believing the type.
+
 When you find such a field, map it as a **partition** and give each branch a
 name and a count. Then assert both that the partition is total and that both
 branches are populated: a partition alone goes green if every object collapses

@@ -428,6 +428,31 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Attachment graph, owned game-side objects, and the per-object slot index.
+    // The strong guards here are the totals: `self` on every object and the
+    // parent/link biconditional. The parented population is scene-dependent, so
+    // children_reached == parented is a cross-count identity rather than a
+    // population assertion.
+    out += ",\"attachments\":";
+    // Cap chosen to COVER a normal scene rather than to sample it: the
+    // children_reached == parented identity is only valid over a complete walk,
+    // and `listed` lets the test detect truncation instead of silently comparing
+    // mismatched populations.
+    if (const auto ac = mgr->check_attachments(8192); ac.has_value()) {
+        char ab[416];
+        snprintf(ab, sizeof(ab),
+                 "{\"objects\":%zu,\"listed\":%zu,\"self_ptr_ok\":%zu,\"parentless\":%zu,"
+                 "\"parented\":%zu,\"link_consistent\":%zu,\"children_reached\":%zu,"
+                 "\"child_parent_ok\":%zu,\"owned_nonempty\":%zu,\"owned_entries\":%zu,"
+                 "\"index_none\":%zu,\"index_set\":%zu}",
+                 ac->objects, ac->listed, ac->self_ptr_ok, ac->parentless, ac->parented,
+                 ac->link_consistent, ac->children_reached, ac->child_parent_ok,
+                 ac->owned_nonempty, ac->owned_entries, ac->index_none, ac->index_set);
+        out += ab;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

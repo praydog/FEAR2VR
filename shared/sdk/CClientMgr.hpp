@@ -399,6 +399,50 @@ public:
     // nullopt on fault or a walk that failed to terminate.
     std::optional<CullVolumeCheck> check_cull_volumes(size_t max_per_type) const;
 
+    // ---- attachments, owned objects, slot index ---------------------------
+    //
+    // LTObject carries a parent/child attachment graph (child_list at +0x74,
+    // parent_link at +0x7C, parent at +0x88), a `self` back-pointer that exists
+    // so a bare link can recover its object, a list of GAME-side objects it owns
+    // (owned_list), and a unique per-object slot_index with a -1 sentinel.
+    //
+    // A note on what is and is not a strong guard here. The attachment
+    // population is SCENE-DEPENDENT: at the main menu exactly one object has a
+    // parent, so "parented objects exist" cannot be asserted -- it would fail
+    // spuriously in a scene with none. The checks that stay meaningful are the
+    // TOTAL ones:
+    //   * self == own address, on every object;
+    //   * the biconditional (parent == null) == (parent_link self-pointing), on
+    //     every object -- this is what actually pins both offsets together;
+    //   * children_reached == parented, a cross-count identity between two
+    //     independently-walked quantities -- but ONLY over a COMPLETE walk. A
+    //     truncated sample breaks it for a mundane reason: a sampled child's
+    //     parent can fall outside the sample, so the child is counted as
+    //     parented while nothing walks the list it sits in. `listed` reports
+    //     every element traversed, so a caller can tell coverage from sampling
+    //     (complete iff listed == objects) and only assert the identity when it
+    //     actually applies.
+    // The identity is weak when the attachment population is small, and that
+    // weakness is the honest state of the evidence rather than something to
+    // paper over.
+    struct AttachmentCheck {
+        size_t objects;          // objects SAMPLED
+        size_t listed;           // objects TRAVERSED (> objects means truncated)
+        size_t self_ptr_ok;      // self == own address
+        size_t parentless;       // parent == nullptr
+        size_t parented;         // parent != nullptr
+        size_t link_consistent;  // (parent == nullptr) == (parent_link self-pointing)
+        size_t children_reached; // entries found by walking every child_list
+        size_t child_parent_ok;  // each such child names the walker as its parent
+        size_t owned_nonempty;   // objects with a non-empty owned_list
+        size_t owned_entries;    // total owned_list entries
+        size_t index_none;       // slot_index == 0xFFFFFFFF
+        size_t index_set;        // slot_index is a real index
+    };
+
+    // nullopt on fault or a walk that failed to terminate.
+    std::optional<AttachmentCheck> check_attachments(size_t max_per_type) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

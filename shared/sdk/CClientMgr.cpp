@@ -847,4 +847,109 @@ std::optional<CClientMgr::CullVolumeCheck> CClientMgr::check_cull_volumes(
     return out;
 }
 
+namespace {
+
+// Walks one bucket, checking the attachment graph and the per-object slot index.
+// POD-only for the SEH guard. Returns objects examined, or -1 on fault /
+// non-termination.
+int64_t seh_check_attachments(const regenny::CClientMgrListLink* head, size_t max,
+                              CClientMgr::AttachmentCheck* out, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* o = reinterpret_cast<const regenny::LTObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto addr = reinterpret_cast<uintptr_t>(o);
+
+                if (reinterpret_cast<uintptr_t>(o->self) == addr) {
+                    ++out->self_ptr_ok;
+                }
+
+                const auto* plink = &o->parent_link;
+                const bool self_linked = plink->prev == plink && plink->next == plink;
+                const bool has_parent = o->parent != nullptr;
+                if (has_parent) {
+                    ++out->parented;
+                } else {
+                    ++out->parentless;
+                }
+                // The biconditional: an object is detached exactly when its
+                // parent_link is self-pointing. Written as `== !` rather than
+                // `!=` because the intent is an equivalence, not a difference.
+                if (has_parent == !self_linked) {
+                    ++out->link_consistent;
+                }
+
+                // Walk MY children. Each entry is a parent_link; the owning
+                // object is recovered through `self`, which sits one field past
+                // the link -- that is exactly why the engine keeps it.
+                {
+                    const auto* h = &o->child_list;
+                    const regenny::CClientMgrListLink* c = h->next;
+                    for (size_t k = 0; c != h && k < cap; ++k) {
+                        ++out->children_reached;
+                        const auto* child = *reinterpret_cast<const regenny::LTObject* const*>(
+                            reinterpret_cast<uintptr_t>(c) + sizeof(regenny::CClientMgrListLink));
+                        if (child != nullptr &&
+                            reinterpret_cast<uintptr_t>(child->parent) == addr) {
+                            ++out->child_parent_ok;
+                        }
+                        c = c->next;
+                    }
+                }
+
+                // Owned (game-side) objects.
+                {
+                    const auto* h = &o->owned_list;
+                    const regenny::CClientMgrListLink* e = h->next;
+                    size_t k = 0;
+                    for (; e != h && k < cap; ++k) {
+                        ++out->owned_entries;
+                        e = e->next;
+                    }
+                    if (k != 0) {
+                        ++out->owned_nonempty;
+                    }
+                }
+
+                if (o->slot_index == 0xFFFFFFFFu) {
+                    ++out->index_none;
+                } else {
+                    ++out->index_set;
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        // `n` counted every element; `seen` only the sampled ones. Publishing
+        // both is what lets a caller distinguish a complete walk from a sample.
+        out->listed += n;
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::AttachmentCheck> CClientMgr::check_attachments(
+    size_t max_per_type) const {
+    AttachmentCheck out{};
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const int64_t n =
+            seh_check_attachments(&regenny()->object_lists[t], max_per_type, &out, max_object_walk);
+        if (n < 0) {
+            return std::nullopt;
+        }
+        out.objects += static_cast<size_t>(n);
+    }
+    return out;
+}
+
 } // namespace sdk

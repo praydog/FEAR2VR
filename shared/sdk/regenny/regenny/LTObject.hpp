@@ -30,14 +30,16 @@ public:
     float radius; // 0x60
     regenny::LTVector dims; // 0x64
     float unk_70; // 0x70
-    regenny::CClientMgrListLink unk_list_74; // 0x74
-    regenny::CClientMgrListLink unk_list_7C; // 0x7c
-    void* self_84; // 0x84
-    private: char pad_88[0x20]; public:
-    float unk_A8; // 0xa8
+    regenny::CClientMgrListLink child_list; // 0x74
+    regenny::CClientMgrListLink parent_link; // 0x7c
+    void* self; // 0x84
+    regenny::LTObject* parent; // 0x88
+    uint32_t attach_extra; // 0x8c
+    private: char pad_90[0x18]; public:
+    uint32_t slot_index; // 0xa8
     regenny::CClientMgrListLink list_link; // 0xac
     private: char pad_b4[0x4]; public:
-    regenny::CClientMgrListLink unk_list_B8; // 0xb8
+    regenny::CClientMgrListLink owned_list; // 0xb8
     private: char pad_c0[0x4]; public:
     regenny::LTWorldTreeLink world_tree_link; // 0xc4
 }; // Size: 0xcc

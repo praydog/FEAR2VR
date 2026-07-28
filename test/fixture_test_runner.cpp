@@ -771,6 +771,75 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Attachment graph + owned objects + slot index.
+        //
+        // Read the assertion selection here as carefully as the values: the
+        // parented population is SCENE-DEPENDENT (one object at the main menu),
+        // so "parented > 0" is deliberately NOT asserted -- it would fail
+        // spuriously in a scene with no attachments. What is asserted are the
+        // totals, which hold at any population including zero.
+        {
+            const size_t ap = body.find("\"attachments\":");
+            check(ap != std::string::npos, "objects report includes the attachment check");
+            if (ap != std::string::npos) {
+                if (json_has(body, "\"attachments\":null")) {
+                    check(false, "attachment walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', ap);
+                    const std::string ab = body.substr(ap, end - ap + 1);
+                    int64_t objs = -1, listed = -1, selfok = -1, parentless = -1, parented = -1,
+                            linkok = -1, reached = -1, cpok = -1, ownne = -1, ownent = -1,
+                            inone = -1, iset = -1;
+                    json_int(ab, "objects", objs);
+                    json_int(ab, "self_ptr_ok", selfok);
+                    json_int(ab, "parentless", parentless);
+                    json_int(ab, "parented", parented);
+                    json_int(ab, "link_consistent", linkok);
+                    json_int(ab, "children_reached", reached);
+                    json_int(ab, "child_parent_ok", cpok);
+                    json_int(ab, "owned_nonempty", ownne);
+                    json_int(ab, "owned_entries", ownent);
+                    json_int(ab, "index_none", inone);
+                    json_int(ab, "index_set", iset);
+
+                    check(objs > 0, "objects present for the attachment walk");
+                    check(selfok == objs, "every object's `self` equals its own address");
+                    check(parentless + parented == objs,
+                          "parent presence partitions every object");
+                    check(linkok == objs,
+                          "every object: parent == null exactly when parent_link self-points");
+                    json_int(ab, "listed", listed);
+
+                    // COVERAGE GATE. The cross-count below compares two
+                    // independently-walked populations, so it is only valid when
+                    // the walk saw everything: a sampled child whose parent fell
+                    // outside the sample is counted as parented while nothing
+                    // walks the list holding it. This exact case failed on first
+                    // run at a 512-per-type cap (2215 of 3583 objects, parented 1,
+                    // children_reached 0) -- a sampling artifact, not a broken
+                    // map. Asserting coverage rather than skipping means a future
+                    // scene that outgrows the cap fails loudly here instead of
+                    // quietly comparing mismatched populations.
+                    check(listed == objs,
+                          "attachment walk covered every object (raise the endpoint cap if this "
+                          "fails)");
+                    check(reached == parented,
+                          "children reached by walking child_lists == objects reporting a parent");
+                    check(cpok == reached, "every child reached names its walker as parent");
+
+                    // owned_list IS populated live (1931 objects / 3260 entries), so
+                    // unlike attachments this one can be required. An earlier
+                    // schema comment claimed these lists were always empty; that
+                    // was never checked and was wrong, so assert against it.
+                    check(ownne > 0, "objects with a non-empty owned_list exist");
+                    check(ownent >= ownne, "owned_entries is at least the number of non-empty lists");
+
+                    check(inone + iset == objs, "slot_index partitions into none-sentinel and set");
+                    check(iset > 0, "objects with a real slot_index exist");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

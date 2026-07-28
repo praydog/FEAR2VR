@@ -210,6 +210,34 @@ The partition alone passes vacuously if everything collapses into one bucket —
 which is exactly how a broken `dims` offset would present, since a wrong offset
 reading zeroes would make every object look pristine.
 
+**A cross-count identity is only valid over a COMPLETE walk — so assert the
+coverage, don't assume it.** Comparing two independently-walked populations is
+one of the strongest checks available (it needs no recorded baseline and no
+tolerance), but it silently stops meaning anything the moment either walk is
+sampled rather than exhaustive.
+
+Worked failure, 2026-07: `children_reached == parented` over `LTObject`'s
+attachment graph. It held perfectly over a full ReGenny walk, then failed on the
+fixture's first run — `parented 1`, `children_reached 0`. Nothing was wrong with
+the mapping. The endpoint sampled 512 objects per type, covering 2215 of 3583,
+and the one parented object's PARENT fell outside the sample, so the child was
+counted while nothing walked the list holding it.
+
+The fix is not to drop the check or to loosen it into `>=`:
+
+- Have the producer report **both** the sampled count and the total traversed
+  (`objects` and `listed` here), so truncation is visible rather than inferred.
+- **Assert the coverage** (`listed == objects`) as its own check, ahead of the
+  identity. A future scene that outgrows the cap then fails loudly with a
+  message naming the fix, instead of quietly comparing mismatched populations.
+- Size the cap to COVER the workload, not to sample it, when an identity depends
+  on it. Sampling caps and coverage caps are different things with the same
+  spelling.
+
+Generalisation: before asserting any relation between two aggregates, ask what
+population each was computed over. If the answers can differ, the relation is
+conditional and the condition belongs in the test.
+
 **A frozen fixture answers IPC perfectly — so "it responded" proves nothing
 about liveness.** Threads created after a process is suspended keep running, so
 an injected IPC server happily serves stale reads from a game whose own threads
