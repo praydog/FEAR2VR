@@ -730,6 +730,47 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Per-type cull volumes. These guard the offsets the engine actually
+        // culls with, and specifically the expression that identified `scale`:
+        // OT_MODEL's radius is vis_radius * scale, so if either offset moves the
+        // product stops being a positive finite number.
+        {
+            const size_t cp = body.find("\"cull_volumes\":");
+            check(cp != std::string::npos, "objects report includes the cull-volume check");
+            if (cp != std::string::npos) {
+                if (json_has(body, "\"cull_volumes\":null")) {
+                    check(false, "cull-volume walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', cp);
+                    const std::string cb = body.substr(cp, end - cp + 1);
+                    int64_t models = -1, vispos = -1, radok = -1, parts = -1, tok = -1, sph = -1,
+                            aabb = -1;
+                    json_int(cb, "models", models);
+                    json_int(cb, "model_vis_radius_pos", vispos);
+                    json_int(cb, "model_radius_ok", radok);
+                    json_int(cb, "particles", parts);
+                    json_int(cb, "particle_type_ok", tok);
+                    json_int(cb, "particle_sphere", sph);
+                    json_int(cb, "particle_aabb", aabb);
+
+                    check(models > 0, "OT_MODEL objects present to check cull radii");
+                    check(vispos == models, "every OT_MODEL has vis_radius > 0");
+                    check(radok == models,
+                          "every OT_MODEL cull radius (vis_radius * scale) is positive and finite");
+
+                    check(parts > 0, "OT_PARTICLESYSTEM objects present to check volume kinds");
+                    // The provider RETURNS this byte, so 1/2 are the only values
+                    // the interface defines -- this is an interface constraint,
+                    // not a range observed and then frozen.
+                    check(tok == parts, "every OT_PARTICLESYSTEM cull_volume_type is 1 or 2");
+                    check(sph + aabb == parts,
+                          "particle volume kinds partition into sphere and AABB");
+                    check(sph > 0, "sphere-volume particle systems exist (kind 1 exercised)");
+                    check(aabb > 0, "AABB-volume particle systems exist (kind 2 exercised)");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

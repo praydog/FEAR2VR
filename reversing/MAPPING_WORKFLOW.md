@@ -228,6 +228,32 @@ explained the second radius state. When a "confirmed" identity holds on most
 but not all objects, the ctor's initial value is the first hypothesis to test,
 ahead of any tolerance change.
 
+**To learn what a field MEANS, find the code that READS it. More samples of its
+value will not tell you.** A setter gives you the offset, the width and the
+notification, and none of that is meaning. `LTObject.scale` (+0x30) sat as
+`unk_30` for a whole pass with a fully mapped setter, a known change code and a
+known constructor default of 1.0 -- all of which is compatible with a scale, a
+radius, an alpha, a rate, or a dozen other things. It was settled in one step by
+`OT_MODEL_GetCullVolume`, which computes its cull-sphere radius as
+`vis_radius * scale`. Once a consumer multiplies a field into a length, the
+field is a ratio, and the argument is over.
+
+Practical way to find the reader when the setter is already known: look at the
+**type-specific overrides of the same vtable slot** and at the interface the
+setter notifies. Here the notify chain led to owner slot 1, which asks the object
+for a bounding volume through slot 2, and the per-type slot-2 bodies are where
+every geometry field is finally consumed.
+
+**Corollary, and this is the part that actually cost time: do not argue against a
+hypothesis using a correlation between two fields you have not finished
+mapping.** The earlier pass rejected "scale" because the models whose value was
+not 1.0 all had `dims == 0`, reading that as "nothing varies with it". Both facts
+were true and the inference was backwards -- those models are SPHERE-culled, so
+`LTObject_SetDims` never runs on them, and `dims == 0` is a CONSEQUENCE of the
+same cause rather than evidence against. Two unexplained fields moving together
+is a hint to find their common cause, never a proof about either one. Write the
+observation down; do not promote it to an argument until you have the reader.
+
 When you find such a field, map it as a **partition** and give each branch a
 name and a count. Then assert both that the partition is total and that both
 branches are populated: a partition alone goes green if every object collapses

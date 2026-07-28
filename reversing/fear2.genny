@@ -487,7 +487,7 @@ class LTObject 0xCC {
     uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287, and the ctor initialises it to 0xFFFF)
     LTVector position     @0x14   // CONFIRMED: written component-wise by SetPos (0x4201B8) and SetPosRot (0x4202B6)
     LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples; the ctor writes (0,0,0,1), pinning w at +0x2C
-    float unk_30          @0x30   // MEANING UNKNOWN. ctor sets 1.0; virtual slot 6 (0x4200BF) is its setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583, with 1.658/2.493/3.19/3.2 on a few models and 7.25 on one OT_NORMAL. NOT the radius (that is +0x60) and NOT proven to be a scale: the models whose value differs from 1.0 all have dims of exactly 0, so nothing observed varies with it.
+    float scale           @0x30   // CONFIRMED as a uniform scale, by its READER: OT_MODEL's cull-volume provider (OT_MODEL_GetCullVolume, 0x428FB6) computes its sphere radius as `vis_radius(+0x16C) * this(+0x30)`. That matches the reference SDK's GetRadius() == m_VisRadius * MAX(m_Scale...), except FEAR2 keeps ONE float here rather than the reference's LTVector m_Scale. ctor sets 1.0; virtual slot 6 (LTObject_SetScale, 0x4200BF) is the setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583; the models that differ (1.658/2.493/2.656/3.0/3.19/3.2) multiply a vis_radius of 100.0 into radii of 165.76..320.0, all finite and positive on 193/193 sphere-culled models. An earlier pass called this MEANING UNKNOWN because the models whose value differs all had dims == 0 -- that turned out to be the explanation, not a counter-argument: they are SPHERE-culled, so LTObject_SetDims never runs on them and radius/dims stay at their constructor zeroes.
     void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
     LTWorldTreeLink* spatial_record @0x38   // CONFIRMED per-object and never null (3583/3583); record[+0x38] points BACK to this object on 3583/3583. Its own list is REBUILT by spatial queries: LTObjectOwner_UpdateSpatialRecord asks the object's own vtable slot 2 for a bounding volume (return 1 = sphere as 4 floats, 2 = AABB as 6 floats), then calls LTSpatialRecord_CollectSphere / _CollectAABB, which traverse a world structure and link each hit onto this record via LTSpatialRecord_AddEntry; when the object is not renderable it calls LTSpatialRecord_Release instead. So this is the object's spatial/visibility association set, NOT a refcount as an earlier pass guessed. Typed as LTWorldTreeLink only because the first two fields are a link pair; the rest of the record is unmapped and type-dependent. record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree), so that is NOT a type field, and record[+0x34] is NOT a string pointer.
     uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; the render predicate 0x4200A0 reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0). The render gate is !(f & 0x200) && (f & 0x10C30); those bit meanings are unverified. ctor zeroes it.
@@ -853,6 +853,55 @@ class CClientMgr 0x1468 {
     void* pending_shell_release              @0x1438   // CONFIRMED deferred-destruction slot; see the class comment. Set only when `updating`, consumed at the end of CClientMgr::Update.
     bool updating                            @0x143C
     CClientMgrListLink start_shell_list      @0x1460
+}
+
+// ---- The per-type cull-volume interface (object vtable slot 2) -------------
+//
+// LTObjectOwner_UpdateSpatialRecord asks each object for its culling volume
+// through vtable slot 2, and dispatches on the RETURN VALUE:
+//   0 = no volume -> LTSpatialRecord_Release (the object leaves the index)
+//   1 = sphere    -> out[0..2] = centre, out[3] = radius
+//   2 = AABB      -> out[0..2] = min,    out[3..5] = max
+// The AABB form is written by LTMath_WriteAABB (0x40DD51), a plain 6-float
+// copy, which is what pins the out-buffer layout.
+//
+// Per type, live:
+//   OT_NORMAL          returns 0 unconditionally -- these objects are NEVER in
+//                      the spatial index (OT_NORMAL_GetCullVolume is `return 0`)
+//   OT_MODEL           1, from vis_radius * LTObject.scale (see LTModelObject)
+//   OT_WORLDMODEL      2, straight from LTObject.aabb_min / aabb_max
+//   OT_CAMERA          2, same shared body as OT_WORLDMODEL
+//   OT_SPRITE          2 when its kind byte @0x106 is 3/4/7/9, else 1
+//   OT_PARTICLESYSTEM  returns its own mode byte (see LTParticleSystemObject)
+//
+// The shared OT_WORLDMODEL/OT_CAMERA body also returns 0 when LTObject.flags3's
+// high bit (0x8000) is set. NOT EXERCISED: zero live objects have that bit, so
+// the "no volume" path is inferred from the code only.
+
+// The concrete class behind object type 1. 408 bytes (0x198) from its bank's
+// element_size. Only the cull-volume fields are mapped; the rest of the derived
+// span is unexplored.
+class LTModelObject 0x198 {
+    LTObject base            @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
+    void* unk_EC             @0xEC    // CONFIRMED as a pointer: the branch-A radius is `**(float**)(this+0xEC)`, i.e. the first float of whatever this points at. Pointee unmapped.
+    uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume: non-zero takes centre from +0x160 and radius from *unk_EC; zero takes centre from LTObject.position and radius from vis_radius*scale. Live: 22 non-zero / 193 zero of 215.
+    LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position)
+    float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give the cull radius. Live > 0 on 215/215 models; the sampled models all read exactly 100.0.
+}
+
+// The concrete class behind object type 6. 264 bytes (0x108) from its bank's
+// element_size -- and the cull fields below end at exactly 0x108, so this part
+// of the class is complete even though nothing else in it is mapped.
+//
+// Note both volumes are stored as OFFSETS: the provider adds LTObject.position
+// to every component before handing them out, so these are object-local.
+class LTParticleSystemObject 0x108 {
+    LTObject base              @0x00   // CONFIRMED: the first 0xCC bytes are an LTObject
+    uint8_t cull_volume_type   @0xDD   // CONFIRMED: OT_PARTICLESYSTEM_GetCullVolume RETURNS this byte, so it is literally the volume-kind selector -- 1 takes the sphere path, anything else the AABB path. Live it is only ever 1 (239) or 2 (39) across 278/278 objects, which is exactly the pair of values the interface defines.
+    LTVector sphere_offset     @0xE0   // CONFIRMED: added to LTObject.position to give the sphere centre (type 1)
+    float sphere_radius        @0xEC   // CONFIRMED: the sphere radius (type 1)
+    LTVector aabb_min_offset   @0xF0   // CONFIRMED: added to LTObject.position to give the AABB min (type != 1)
+    LTVector aabb_max_offset   @0xFC   // CONFIRMED: added to LTObject.position to give the AABB max. Ends at 0x108 == the class size.
 }
 
 }

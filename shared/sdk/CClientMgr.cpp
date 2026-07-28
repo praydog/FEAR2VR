@@ -9,6 +9,8 @@
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
+#include "regenny/regenny/LTModelObject.hpp"
+#include "regenny/regenny/LTParticleSystemObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
@@ -743,6 +745,105 @@ std::optional<CClientMgr::WorldTreeCheck> CClientMgr::check_world_tree(size_t ma
         }
         out.objects_seen += static_cast<size_t>(n);
     }
+    return out;
+}
+
+namespace {
+
+// Recomputes OT_MODEL's cull radius from its two inputs. POD-only for the SEH
+// guard. Returns objects examined, or -1 on fault / non-termination.
+int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t max,
+                                size_t* vis_pos, size_t* radius_ok, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* m = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                if (m->vis_radius > 0.0f) {
+                    ++*vis_pos;
+                }
+                // The engine's own expression: OT_MODEL_GetCullVolume computes
+                // vis_radius * scale for the sphere radius.
+                const float r = m->vis_radius * m->base.scale;
+                if (r > 0.0f && r == r && r < 1.0e30f) {
+                    ++*radius_ok;
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+// Classifies OT_PARTICLESYSTEM volume kinds. The provider returns this byte, so
+// 1 and 2 are the only values the interface can mean.
+int64_t seh_check_particle_volumes(const regenny::CClientMgrListLink* head, size_t max,
+                                   size_t* type_ok, size_t* sphere, size_t* aabb, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const uint8_t k = p->cull_volume_type;
+                if (k == 1 || k == 2) {
+                    ++*type_ok;
+                }
+                if (k == 1) {
+                    ++*sphere;
+                } else if (k == 2) {
+                    ++*aabb;
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::CullVolumeCheck> CClientMgr::check_cull_volumes(
+    size_t max_per_type) const {
+    constexpr size_t kModel = 1;
+    constexpr size_t kParticle = 6;
+    if (kParticle >= object_list_count()) {
+        return std::nullopt;
+    }
+    CullVolumeCheck out{};
+    const int64_t nm = seh_check_model_volumes(&regenny()->object_lists[kModel], max_per_type,
+                                              &out.model_vis_radius_pos, &out.model_radius_ok,
+                                              max_object_walk);
+    if (nm < 0) {
+        return std::nullopt;
+    }
+    out.models = static_cast<size_t>(nm);
+
+    const int64_t np = seh_check_particle_volumes(&regenny()->object_lists[kParticle],
+                                                 max_per_type, &out.particle_type_ok,
+                                                 &out.particle_sphere, &out.particle_aabb,
+                                                 max_object_walk);
+    if (np < 0) {
+        return std::nullopt;
+    }
+    out.particles = static_cast<size_t>(np);
     return out;
 }
 

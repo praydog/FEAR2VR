@@ -18,7 +18,7 @@ public:
     uint16_t handle; // 0x12
     regenny::LTVector position; // 0x14
     regenny::LTRotation rotation; // 0x20
-    float unk_30; // 0x30
+    float scale; // 0x30
     void* owner; // 0x34
     regenny::LTWorldTreeLink* spatial_record; // 0x38
     uint32_t flags; // 0x3c

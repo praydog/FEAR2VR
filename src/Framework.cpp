@@ -411,6 +411,23 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Per-type cull volumes. Guards the offsets behind the sphere/AABB the
+    // engine culls with -- notably OT_MODEL's vis_radius * scale, which is the
+    // expression that identified `scale` in the first place.
+    out += ",\"cull_volumes\":";
+    if (const auto cv = mgr->check_cull_volumes(512); cv.has_value()) {
+        char cb[288];
+        snprintf(cb, sizeof(cb),
+                 "{\"models\":%zu,\"model_vis_radius_pos\":%zu,\"model_radius_ok\":%zu,"
+                 "\"particles\":%zu,\"particle_type_ok\":%zu,\"particle_sphere\":%zu,"
+                 "\"particle_aabb\":%zu}",
+                 cv->models, cv->model_vis_radius_pos, cv->model_radius_ok, cv->particles,
+                 cv->particle_type_ok, cv->particle_sphere, cv->particle_aabb);
+        out += cb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

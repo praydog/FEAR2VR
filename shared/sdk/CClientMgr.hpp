@@ -373,6 +373,32 @@ public:
     // and root_mismatches == 0.
     std::optional<WorldTreeCheck> check_world_tree(size_t max_objects) const;
 
+    // ---- per-type cull volumes -------------------------------------------
+    //
+    // Object vtable slot 2 hands the engine a culling volume and dispatches on
+    // its return: 0 = none, 1 = sphere, 2 = AABB. This checks the two typed
+    // sources that feed it, which is where the newly mapped offsets live:
+    //   * OT_MODEL derives its cull radius as vis_radius * LTObject.scale -- the
+    //     reader that proved `scale` is a scale at all.
+    //   * OT_PARTICLESYSTEM stores its volume KIND in the object, and the
+    //     provider returns that byte directly, so the field's legal values are
+    //     fixed by the interface rather than by observation.
+    //
+    // Nothing here calls the game's virtuals -- it recomputes from fields on the
+    // IPC thread. Calling slot 2 would run engine code off the engine thread.
+    struct CullVolumeCheck {
+        size_t models;               // OT_MODEL objects examined
+        size_t model_vis_radius_pos; // vis_radius > 0
+        size_t model_radius_ok;      // vis_radius * scale is finite and > 0
+        size_t particles;            // OT_PARTICLESYSTEM objects examined
+        size_t particle_type_ok;     // cull_volume_type is 1 or 2
+        size_t particle_sphere;      // cull_volume_type == 1
+        size_t particle_aabb;        // cull_volume_type == 2
+    };
+
+    // nullopt on fault or a walk that failed to terminate.
+    std::optional<CullVolumeCheck> check_cull_volumes(size_t max_per_type) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are
