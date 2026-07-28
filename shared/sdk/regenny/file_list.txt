@@ -1,0 +1,6 @@
+"I:\Programming\projects\fear2\shared\sdk\regenny\BS.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\DatabaseMgrVTable.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\HashEntry.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\DatabaseMgrSubRecord.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\DatabaseMgrEntry.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\DatabaseMgr.hpp" \
