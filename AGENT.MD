@@ -58,7 +58,8 @@ inject → test → uninject with the game never restarting.
    - Never hardcode absolute VAs. Runtime addresses come from pattern scans.
 5a. **ReGenny is ground truth for LAYOUT; the SDK class owns BEHAVIOR.** Once
    a type is live-mapped in `reversing/fear2.genny` (ReGenny, verified field-
-   by-field against raw memory -- see "IDA/dump workflow" below), generate
+   by-field against raw memory -- see `reversing/MAPPING_WORKFLOW.md` for the
+   concrete step-by-step, phase 0-4), generate
    its C++ header (`sdk:generate("shared/sdk/regenny")` in a ReGenny Lua eval)
    and wire an `sdk::X` wrapper around it:
    ```cpp
@@ -117,7 +118,11 @@ inject → test → uninject with the game never restarting.
    retire hooks → quiescence proof (all threads suspended, no `Eip` inside our
    image) → `FreeLibraryAndExitThread`, else stay dormant and let the injector
    bring the next build under a fresh filename.
-9. **IDA workflow.** Five IDBs: FEAR2_dump.exe (unpacked; the on-disk FEAR2.exe
+9. **IDA workflow.** For the full "map a new concept end-to-end" recipe
+   (IDA → ReGenny live-verify → `.genny` → codegen → SDK class →
+   diagnostics → tests), see `reversing/MAPPING_WORKFLOW.md` -- this rule
+   covers only the IDA-MCP-specific gotchas. Five IDBs: FEAR2_dump.exe
+   (unpacked; the on-disk FEAR2.exe
    is CEG/SteamStub-wrapped and *useless* for static analysis — its `.text` is
    ciphertext), gameclient.dll, gameserver.dll, gamedatabase.dll, ltmemory.dll.
    - After `select_instance`, ALWAYS verify with `server_health` by IDB
@@ -159,7 +164,8 @@ cmake.toml / build.bat        -- cmkr build (Win32 enforced)
 shared/                       -- Log, HttpClient, sdk/ (fear2-sdk static lib)
 shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr
 shared/sdk/regenny/           -- generated (sdk:generate) layout structs + Primitives.hpp shim
-reversing/                    -- fear2.genny (ground truth), DatabaseMgrDump.lua, dump artifacts
+reversing/                    -- fear2.genny (ground truth), MAPPING_WORKFLOW.md
+                                 (the mapping recipe), DatabaseMgrDump.lua, dump artifacts
 src/                          -- Main.cpp (DllMain), AgentRuntime, Framework,
                                  Hooks, Mod/Mods, ipc/CommandServer
 injector/                     -- LoadLibrary injector (inject/unload/reload/status)

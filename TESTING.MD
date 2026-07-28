@@ -107,7 +107,9 @@ Violating any of these makes the test non-evidence. Fix the test, not the bar.
 Locate the target in FEAR2_dump.exe (or the gameclient/gamedatabase/gameserver
 IDBs) via strings/xrefs; confirm shape against the lithtech / FEAR sources in
 `I:\Programming\projects\fear-source-code` (structural analogue, not gospel).
-Rename the function/globals in IDA via MCP.
+Rename the function/globals in IDA via MCP. For the full mechanics (IDA →
+ReGenny live-verify → `.genny` authoring → codegen), see
+`reversing/MAPPING_WORKFLOW.md`.
 
 ### 2. Write the SDK surface
 Class-based, REFramework convention: resolution lives in the accessor itself

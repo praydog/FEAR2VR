@@ -62,7 +62,7 @@ class HashEntry 0x8 {
 // unk_04/unk_08/unk_0C/unk_14 are UNVERIFIED -- kept as opaque scalars/
 // pointers rather than guessed at. This is a deliberate scope boundary: the
 // vtable functions that would confirm attribute count/storage were not
-// reversed this pass (see AGENT.MD "IDA/dump workflow" for the next slice).
+// reversed this pass (see reversing/MAPPING_WORKFLOW.md for the recipe).
 // Observed live: unk_04 was 3 for "Default" (AI/WeaponContext) and 5 for
 // all 3 sampled AI/GoalSets records -- varies per record, plausible
 // attribute count. unk_08/unk_0C are heap pointers into two DIFFERENT
