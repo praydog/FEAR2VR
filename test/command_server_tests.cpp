@@ -44,10 +44,16 @@ std::string status_line_of(const std::string& resp) {
 int main() {
     cmdsrv::Handlers handlers;
     handlers.health = [] {
-        return std::string{"\"pid\":1234,\"state\":\"running\",\"hooks\":2"};
+        return std::string{"\"pid\":1234,\"state\":\"running\",\"hooks\":1,\"frame_ticks\":42"};
     };
-    handlers.test = [] {
-        return std::string{"{\"pass\":3,\"fail\":1,\"failures\":[{\"name\":\"mock\",\"error\":\"boom\"}]}"};
+    handlers.targets = [] {
+        return std::string{"{\"ok\":true,\"client_mgr_update\":\"0x0040B665\"}"};
+    };
+    handlers.engine_hook = [](const std::string& name) {
+        if (name == "hwnd") {
+            return std::string{"{\"ok\":true,\"rc\":0,\"value\":\"0x000700C4\"}"};
+        }
+        return std::string{"{\"ok\":true,\"rc\":1,\"value\":\"0x00000000\"}"};
     };
 
     check(cmdsrv::start(kPort, handlers), "server starts");
@@ -65,17 +71,33 @@ int main() {
             std::string resp;
             check(http::get(kPort, "/health", resp), "health: transport");
             check(body_has(resp, "\"ok\":true"), "health: ok");
-            check(body_has(resp, "\"pid\":1234"), "health: mock pid fragment verbatim");
+            check(body_has(resp, "\"frame_ticks\":42"), "health: mock fragment verbatim");
             check(body_has(resp, "\"unload_requested\":false"), "health: unload not yet latched");
         }
 
-        // /test wraps the mock result in the envelope.
+        // /sdk/targets passes the handler's object straight through.
         {
             std::string resp;
-            check(http::get(kPort, "/test", resp), "test: transport");
-            check(body_has(resp, "\"ok\":true"), "test: ok enveloped");
-            check(body_has(resp, "\"pass\":3"), "test: result fragment verbatim");
-            check(body_has(resp, "\"error\":\"boom\""), "test: failure list verbatim");
+            check(http::get(kPort, "/sdk/targets", resp), "targets: transport");
+            check(body_has(resp, "\"client_mgr_update\":\"0x0040B665\""), "targets: body verbatim");
+        }
+
+        // /engine-hook positive + negative + missing-name 400.
+        {
+            std::string resp;
+            check(http::get(kPort, "/engine-hook?name=hwnd", resp), "engine-hook: transport");
+            check(body_has(resp, "\"rc\":0"), "engine-hook: positive path");
+            check(body_has(resp, "\"value\":\"0x000700C4\""), "engine-hook: value verbatim");
+        }
+        {
+            std::string resp;
+            check(http::get(kPort, "/engine-hook?name=fear2vr_no_such", resp), "engine-hook neg: transport");
+            check(body_has(resp, "\"rc\":1"), "engine-hook: negative path (LT_ERROR)");
+        }
+        {
+            std::string resp;
+            check(http::get(kPort, "/engine-hook", resp), "engine-hook bare: transport");
+            check(status_line_of(resp).find("400") != std::string::npos, "engine-hook bare: 400");
         }
 
         // Unknown endpoint -> 404 with usage error.

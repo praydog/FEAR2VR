@@ -46,11 +46,11 @@ void run_supervisor(void* self_raw, int32_t ipc_port) {
     logger::init(log_path.c_str());
     LOGX("[main] supervisor thread start (module %s)", self_path.string().c_str());
 
-    // The framework object is leaked on all paths: never destruct it in-process
-    // (its teardown already ran; destructing later would only risk touching
-    // unmapped dependencies).
-    auto* framework = new Framework(self, ipc_port);
-    bool ipc_up = framework->initialize();
+    // g_framework is assigned exactly once here and deliberately NEVER reset:
+    // after a clean unmap the whole image goes away; on the dormant path the
+    // object must stay for any straggler. Destruction never runs in-process.
+    g_framework = std::make_unique<Framework>(self, ipc_port);
+    bool ipc_up = g_framework->initialize();
 
     if (!ipc_up) {
         // Without IPC no /unload can ever arrive; leave the module resident but
@@ -66,7 +66,13 @@ void run_supervisor(void* self_raw, int32_t ipc_port) {
     }
 
     LOGX("[main] unload requested; retiring");
-    const bool safe_to_unmap = framework->shutdown();
+    const bool safe_to_unmap = g_framework->shutdown();
+
+    // Never destruct the framework in-process: on the clean path the CRT would
+    // otherwise run ~unique_ptr during DLL_PROCESS_DETACH (unmap-time destructors
+    // touching mapped state are a classic unload crash). Same contract on the
+    // dormant path: the object must stay fully valid for stragglers.
+    (void)g_framework.release();
 
     if (safe_to_unmap) {
         LOGX("[main] unmapping (clean unload)");

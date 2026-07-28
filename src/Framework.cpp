@@ -1,6 +1,6 @@
 #include "Framework.hpp"
 
-#include <chrono>
+#include <cstdio>
 #include <iterator>
 #include <thread>
 #include <vector>
@@ -8,17 +8,37 @@
 #include <windows.h>
 #include <tlhelp32.h>
 
-#include "GameTests.hpp"
+#include <utility/Module.hpp>
+
 #include "Hooks.hpp"
 #include "Log.hpp"
+#include "Mods.hpp"
+#include "sdk/CClientMgr.hpp"
+#include "sdk/CClientShell.hpp"
+#include "sdk/DatabaseMgr.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Engine.hpp"
 
-namespace engine = sdk::engine;
-
-Framework* Framework::s_instance = nullptr;
+std::unique_ptr<Framework> g_framework;
 
 namespace {
+
+// --- frame hook (the framework's first real hook) ---------------------------
+// Detour on CClientShell::Update (sdk-mapped anchor). Counts ticks and fans
+// out Mods::on_frame. x86 __thiscall (ecx=this) -> __fastcall shim (edx dummy).
+int __fastcall frame_tick_detour(void* _this, void* edx) {
+    Framework* fw = Framework::get();
+    if (fw != nullptr) {
+        fw->note_frame_tick();
+    }
+    Mods::get().on_frame();
+
+    auto* hook = Hooks::get().find("CClientShell::Update");
+    if (hook == nullptr || !*hook) {
+        return 0; // retired while in-flight: skip the original call
+    }
+    return hook->original<int(__fastcall*)(void*, void*)>()(_this, edx);
+}
 
 // --- quiescence verification (32-bit FEAR2.exe process) --------------------
 // Fail-closed by construction: ANY inspection failure means "not quiescent",
@@ -58,20 +78,15 @@ std::vector<HANDLE> open_other_thread_handles(bool& enumeration_ok) {
         handles.push_back(h);
     } while (Thread32Next(snap, &te));
 
-    // Thread32Next stops on ERROR_NO_MORE_FILES at the end of a clean walk;
-    // any other error means we may have missed threads -> not ok.
     enumeration_ok = (GetLastError() == ERROR_NO_MORE_FILES);
 
     CloseHandle(snap);
     return handles;
 }
 
-// Suspend all threads, then verify NO thread has EIP inside our module while we
-// are the only runnable thread. Allocation-free between suspend and resume (no
-// heap, no loader lock).
 bool suspend_and_verify_clear(std::vector<HANDLE>& threads, uintptr_t base, size_t size) {
     if (base == 0 || size == 0) {
-        return false; // can't verify -> fail closed
+        return false;
     }
 
     std::vector<HANDLE> suspended;
@@ -80,7 +95,7 @@ bool suspend_and_verify_clear(std::vector<HANDLE>& threads, uintptr_t base, size
 
     for (HANDLE h : threads) {
         if (h == nullptr) {
-            ok = false; // uninspectable thread -> not safe
+            ok = false;
             break;
         }
         if (SuspendThread(h) == (DWORD)-1) {
@@ -125,16 +140,61 @@ bool prove_quiescent(uintptr_t base, size_t size, int32_t attempts) {
         if (clear) {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        Sleep(5);
     }
     return false;
 }
 
+// --- diagnostics payload builders (free functions; SEH stays out of lambdas) -
+
+std::string build_health_fragment() {
+    Framework* fw = Framework::get();
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "\"pid\":%lu,\"state\":\"%s\",\"sdk_ready\":%s,\"hooks\":%zu,"
+             "\"hooks_retired\":%zu,\"frame_ticks\":%llu",
+             GetCurrentProcessId(),
+             fw->is_shutting_down() ? "shutting_down" : "running",
+             sdk::Modules::get().is_initialized() ? "true" : "false",
+             Hooks::get().count(), Hooks::get().retired_count(),
+             static_cast<unsigned long long>(fw->frame_ticks()));
+    return buf;
+}
+
+std::string build_targets_json() {
+    char buf[1024];
+    const auto* exe = sdk::Modules::get().exe();
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"exe_base\":\"0x%08X\",\"exe_size\":\"0x%08X\","
+             "\"client_mgr_update\":\"0x%08X\",\"client_shell_update\":\"0x%08X\","
+             "\"get_engine_hook\":\"0x%08X\",\"g_pClientMgr_slot\":\"0x%08X\","
+             "\"hWnd_slot\":\"0x%08X\",\"client_mgr\":\"0x%08X\","
+             "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\"}",
+             static_cast<uint32_t>(exe->base), static_cast<uint32_t>(exe->size),
+             static_cast<uint32_t>(sdk::CClientMgr::update_fn()),
+             static_cast<uint32_t>(sdk::CClientShell::update_fn()),
+             static_cast<uint32_t>(sdk::Engine::get_engine_hook_fn()),
+             static_cast<uint32_t>(sdk::CClientMgr::instance_slot()),
+             static_cast<uint32_t>(sdk::Engine::main_hwnd_slot()),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientMgr::get())),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientShell::get())),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd())),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())));
+    return buf;
+}
+
+std::string build_engine_hook_json(const std::string& name) {
+    void* out = nullptr;
+    const int rc = sdk::Engine::get_engine_hook(name.c_str(), &out);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"rc\":%d,\"value\":\"0x%08X\"}", rc,
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(out)));
+    return buf;
+}
+
 } // namespace
 
-Framework::Framework(void* self_module, int32_t ipc_port) : m_self(self_module), m_ipc_port(ipc_port) {
-    s_instance = this;
-}
+Framework::Framework(void* self_module, int32_t ipc_port) : m_self(self_module), m_ipc_port(ipc_port) {}
 
 bool Framework::initialize() {
     bool expected = false;
@@ -145,236 +205,64 @@ bool Framework::initialize() {
 
     LOGX("[framework] initializing (self=%p, ipc port %d)", m_self, m_ipc_port);
 
-    m_sdk_ready = sdk::initialize();
+    m_sdk_ready = sdk::Modules::get().initialize();
     if (!m_sdk_ready) {
-        LOGX("[framework] sdk::initialize FAILED (missing modules?); continuing with degraded SDK");
-        // Not fatal: IPC still comes up so tooling observes the failure state.
+        LOGX("[framework] sdk module init FAILED (missing modules?); continuing degraded");
     }
 
-    // In-DLL fixture tests. Registered ONCE here, before IPC starts, so no
-    // registration races a /test handler on the server thread.
-    gametests::add("sdk.modules.required_resolved", [](gametests::TestSink& ts) {
-        // Every REQUIRED FEAR2 module must be mapped in-process with sane
-        // geometry: base inside usermode and PE-derived size above the header
-        // floor. (Residency proof, not mere non-null; see TESTING.MD.)
-        for (sdk::Module* m : {sdk::exe(), sdk::game_client(), sdk::game_database(), sdk::lt_memory()}) {
-            const bool mapped = m->handle != nullptr && m->base != 0;
-            ts.check(mapped, std::string{m->name} + " not mapped in FEAR2.exe process");
-            if (!mapped) {
-                continue;
-            }
-            ts.check(m->base >= 0x10000 && m->base < 0x80000000ull,
-                     std::string{m->name} + " base outside usermode range");
-            ts.check(m->size >= 0x1000 && m->size < 0x8000000,
-                     std::string{m->name} + " implausible image size");
-        }
-        // gameserver.dll is lazy: assert only that its absence is HONEST
-        // (handle==0 iff base==0 iff size==0), never a partially-filled row.
-        const sdk::Module* gs = sdk::game_server();
-        const bool absent = gs->handle == nullptr;
-        ts.check(absent == (gs->base == 0) && absent == (gs->size == 0),
-                 "gameserver.dll partially resolved (dishonest absence)");
-    });
+    // Warm the SDK anchors now so a broken pattern is a loud log line at init,
+    // not a silent 0 on first use.
+    (void)sdk::CClientMgr::update_fn();
+    (void)sdk::CClientShell::update_fn();
+    (void)sdk::Engine::get_engine_hook_fn();
 
-    gametests::add("sdk.modules.distinct_images", [](gametests::TestSink& ts) {
-        // No required module's base may lie inside another module's image.
-        // Catches GetModuleHandle resolving a wrong same-named DLL.
-        sdk::Module* mods[] = {sdk::exe(), sdk::game_client(), sdk::game_database(), sdk::lt_memory()};
-        for (size_t i = 0; i < std::size(mods); ++i) {
-            for (size_t j = 0; j < std::size(mods); ++j) {
-                if (i == j || mods[i]->handle == nullptr || mods[j]->size == 0) {
-                    continue;
-                }
-                const uintptr_t a = mods[i]->base;
-                const uintptr_t b0 = mods[j]->base;
-                ts.check(a < b0 || a >= b0 + mods[j]->size,
-                         std::string{mods[i]->name} + " base inside " + mods[j]->name + " image");
-            }
-        }
-    });
+    // The frame hook: our first real engine hook, and what makes /health's
+    // frame_ticks rise -- the host-side proof the hook pipeline is live.
+    const uintptr_t update_target = sdk::CClientShell::update_fn();
+    if (update_target != 0) {
+        Hooks::get().install("CClientShell::Update", reinterpret_cast<void*>(update_target),
+                             reinterpret_cast<void*>(&frame_tick_detour));
+    } else {
+        LOGX("[framework] CClientShell::Update anchor missing -- frame hook NOT installed");
+    }
 
-    gametests::add("sdk.engine.targets_resolved", [](gametests::TestSink& ts) {
-        ts.check(engine::resolve(), "engine::resolve() failed (pattern miss)");
-        if (!engine::is_resolved()) {
-            return;
-        }
-        const sdk::Module* exe = sdk::exe();
-        const auto in_exe = [&](uintptr_t a) {
-            return a >= exe->base && a < exe->base + exe->size;
-        };
-        // Residency proof (TESTING.MD rule 1): every target must sit inside
-        // the FEAR2.exe image, not merely be non-null.
-        ts.check(in_exe(engine::targets().client_mgr_update), "CClientMgr::Update outside FEAR2.exe image");
-        ts.check(in_exe(engine::targets().client_shell_update), "CClientShell::Update outside FEAR2.exe image");
-        ts.check(in_exe(engine::targets().get_engine_hook), "cis_GetEngineHook outside FEAR2.exe image");
-        ts.check(in_exe(engine::targets().p_g_pClientMgr), "&g_pClientMgr outside FEAR2.exe image");
-        ts.check(in_exe(engine::targets().p_g_hMainWnd), "&hWnd outside FEAR2.exe image");
-    });
+    Mods::get().on_initialize();
 
-    gametests::add("sdk.engine.bridge_callable", [](gametests::TestSink& ts) {
-        if (!engine::resolve()) {
-            ts.check(false, "engine::resolve() failed");
-            return;
-        }
-        ts.check(engine::get_client_mgr() != nullptr,
-                 "g_pClientMgr null (engine not initialized?)");
-        void* hwnd_slot_value = engine::get_main_hwnd();
-        ts.check(hwnd_slot_value != nullptr && IsWindow(static_cast<HWND>(hwnd_slot_value)),
-                 "main window global is not a live HWND");
-
-        // Positive evidence: the real engine getter resolves \"hwnd\" to exactly
-        // the same value the raw global holds (two independent paths agree),
-        // and it is a live window.
-        auto hook_fn = engine::get_engine_hook();
-        ts.check(hook_fn != nullptr, "cis_GetEngineHook pointer null");
-        if (hook_fn == nullptr) {
-            return;
-        }
-        void* out = nullptr;
-        const int rc = hook_fn("hwnd", &out);
-        ts.check(rc == 0, "cis_GetEngineHook(\"hwnd\") did not return LT_OK");
-        ts.check(out == hwnd_slot_value,
-                 "cis_GetEngineHook(\"hwnd\") disagrees with raw hWnd global");
-        ts.check(out != nullptr && IsWindow(static_cast<HWND>(out)),
-                 "cis_GetEngineHook(\"hwnd\") returned a non-window");
-
-        // Negative evidence: a bogus name MUST be rejected (LT_ERROR != 0) and
-        // MUST NOT clobber the out-param (poison value remains).
-        void* poison = reinterpret_cast<void*>(static_cast<uintptr_t>(0xDEADBEEF));
-        const int rc_bad = hook_fn("fear2vr_no_such_engine_hook", &poison);
-        ts.check(rc_bad != 0, "unknown engine hook name was accepted");
-        ts.check(poison == reinterpret_cast<void*>(static_cast<uintptr_t>(0xDEADBEEF)),
-                 "unknown engine hook name clobbered the out-param");
-    });
-
-    gametests::add("sdk.engine.database_mgr", [](gametests::TestSink& ts) {
-        void* mgr = engine::get_database_mgr();
-        ts.check(mgr != nullptr, "LTGetIDatabaseMgr export missing or returned null");
-        if (mgr == nullptr) {
-            return;
-        }
-        const sdk::Module* db = sdk::game_database();
-        const auto in_db = [&](uintptr_t a) { return a >= db->base && a < db->base + db->size; };
-        // The object is the static CDatabaseMgr singleton INSIDE the dll image;
-        // its first field is the vtable, also inside the image.
-        uint32_t vtable = 0;
-        if (!engine::safe_read32(mgr, vtable)) {
-            ts.check(false, "IDatabaseMgr object unreadable");
-            return;
-        }
-        ts.check(in_db(reinterpret_cast<uintptr_t>(mgr)), "IDatabaseMgr object outside gamedatabase.dll image");
-        ts.check(in_db(vtable), "IDatabaseMgr vtable outside gamedatabase.dll image");
-    });
-
-    gametests::add("hooks.hot_path_round_trip", [](gametests::TestSink& ts) {
-        // Marquee contract: attach a SafetyHook inline detour to the REAL
-        // per-frame engine function (CClientShell::Update), watch it fire, then
-        // retire it and watch it STOP -- against the live game, no restart.
-        if (!engine::resolve()) {
-            ts.check(false, "engine::resolve() failed");
-            return;
-        }
-        const uintptr_t target = engine::targets().client_shell_update;
-
-        static std::atomic<uint32_t> s_tick_count{0};
-        struct Detour {
-            // x86 __thiscall (ecx=this) -> __fastcall shim (edx dummy).
-            static int __fastcall tick(void* _this, void* /*edx*/) {
-                s_tick_count.fetch_add(1, std::memory_order_relaxed);
-                auto* hook = hooks().find("clientshell_update_tick");
-                if (hook == nullptr || !*hook) {
-                    return 0; // retired while in-flight: skip original call
-                }
-                return hook->original<int(__fastcall*)(void*, void*)>()(_this, nullptr);
-            }
-        };
-
-        const uint8_t original_first_byte = *reinterpret_cast<const uint8_t*>(target);
-        ts.check(original_first_byte == 0x55, "hook target prologue unexpected (not push ebp)");
-
-        ts.check(hooks().install("clientshell_update_tick", reinterpret_cast<void*>(target),
-                                 reinterpret_cast<void*>(&Detour::tick)),
-                 "safetyhook install on CClientShell::Update failed");
-        if (hooks().find("clientshell_update_tick") == nullptr) {
-            return; // install failed; cannot proceed safely
-        }
-
-        // (a) Prove it fires: bounded wait for >0 ticks.
-        bool fired = false;
-        for (int i = 0; i < 200 && !fired; ++i) { // 2s budget
-            fired = s_tick_count.load(std::memory_order_relaxed) > 0;
-            if (!fired) {
-                Sleep(10);
-            }
-        }
-        const uint32_t c_fired = s_tick_count.load(std::memory_order_relaxed);
-        ts.check(fired, "hook never fired -- mapping wrong or shell not updating");
-
-        // (b) Retire it and prove silence: the count must FREEZE.
-        ts.check(hooks().retire_one("clientshell_update_tick"), "retire_one failed");
-        const uint32_t c1 = s_tick_count.load(std::memory_order_relaxed);
-        Sleep(250);
-        const uint32_t c2 = s_tick_count.load(std::memory_order_relaxed);
-        ts.check(c2 == c1, "hook kept firing after retire (graceful removal broken)");
-
-        // (c) Byte restore proof: the game's original prologue first byte is back.
-        ts.check(*reinterpret_cast<const uint8_t*>(target) == original_first_byte,
-                 "original prologue not restored after retire");
-        LOGX("[test] hot_path_round_trip: %u ticks while armed, frozen at %u after retire", c_fired, c2);
-    });
-
-    // Health callback: atomic loads only -- must be callable on the server
-    // thread at any time, including mid-shutdown.
     cmdsrv::Handlers handlers;
-    handlers.health = [this]() -> std::string {
-        std::string s = "\"pid\":" + std::to_string(GetCurrentProcessId());
-        s += ",\"state\":\"";
-        s += m_shutting_down.load() ? "shutting_down" : "running";
-        s += "\",";
-        s += "\"sdk_ready\":";
-        s += m_sdk_ready ? "true" : "false";
-        s += ",\"hooks\":" + std::to_string(hooks().count());
-        s += ",\"hooks_retired\":" + std::to_string(hooks().retired_count());
-        s += ",\"tests\":" + std::to_string(gametests::count());
-        return s;
-    };
-    handlers.test = [this]() -> std::string {
-        if (m_shutting_down.load()) {
-            return "{\"pass\":0,\"fail\":0,\"failures\":[{\"name\":\"*\",\"error\":\"framework shutting down\"}]}";
-        }
-        return gametests::run_all();
-    };
-
+    handlers.health = build_health_fragment;
+    handlers.targets = build_targets_json;
+    handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);
         return false;
     }
     LOGX("[framework] IPC command server on http://127.0.0.1:%d", m_ipc_port);
-    LOGX("[framework] initialized; %zu tests registered", gametests::count());
+    LOGX("[framework] initialized");
     return true;
 }
 
 bool Framework::shutdown() {
     if (m_shutting_down.exchange(true)) {
         LOGX("[framework] shutdown() re-entry -- refusing");
-        return false; // already retired; a second pass would double-retire
+        return false;
     }
 
-    // 2. Stop IPC: joins the socket thread, so afterwards no handler is
-    //    executing and no new /unload or /test can arrive.
+    // 2. Stop IPC: joins the socket thread; afterwards no handler is executing.
     cmdsrv::stop();
     LOGX("[framework] IPC stopped");
 
-    // 3. Retire hooks so no new detour fires during the quiescence scan.
-    //    Fail-closed: a failed disable means the DLL must stay mapped.
-    const bool hooks_retired = hooks().retire();
+    // 3. Mods yield the frame path.
+    Mods::get().on_shutdown();
 
-    // 4-5. Prove quiescence: with every other thread suspended, no EIP sits in
+    // 4. Retire ALL hooks so no new detour fires during the quiescence scan.
+    //    Fail-closed: a failed disable means the DLL must stay mapped.
+    const bool hooks_retired = Hooks::get().retire();
+
+    // 5. Prove quiescence: with every other thread suspended, no EIP sits in
     //    our module. Hook InlineHook objects leak on success (straggler-in-
-    //    trampoline safety; see Hooks.hpp) -- whether we unmap or stay dormant,
-    //    there is nothing here left to free safely.
+    //    trampoline safety; see Hooks.hpp) -- nothing else to free here.
     const uintptr_t base = reinterpret_cast<uintptr_t>(m_self);
-    const size_t size = sdk::module_size(static_cast<HMODULE>(m_self));
+    const size_t size = utility::get_module_size(static_cast<HMODULE>(m_self)).value_or(0);
 
     if (!hooks_retired) {
         LOGX("[framework] hook retire FAILED -> staying dormant (DLL remains mapped)");

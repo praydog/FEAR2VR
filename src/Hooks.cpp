@@ -2,7 +2,7 @@
 
 #include "Log.hpp"
 
-Hooks& hooks() {
+Hooks& Hooks::get() {
     // Deliberately leaked, NOT a function-local static: a static's destructor
     // would run during unload and destroy the InlineHook vector, and
     // ~InlineHook() frees the trampoline allocation that retired-but-straggling

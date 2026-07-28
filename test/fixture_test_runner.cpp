@@ -1,27 +1,35 @@
 // ctest E2E runner: drives fear2vr.dll against the REAL game (FEAR2.exe is the
-// fixture) and asserts the in-DLL test suite (/test) returns fail==0.
+// fixture). ALL test assertions live here, host-side -- the injected mod ships
+// diagnostics only (/health, /sdk/targets, /engine-hook), never tests
+// (TESTING.MD: "no test assertions inside the shipped mod").
 //
-// Exit codes: 0 pass / 1 fail / 77 skip (SKIP_RETURN_CODE 77 in cmake).
-// Skip is honest: no game, no injection rights, or IPC never came up -> 77.
-// A failure to make a CLAIM (red test, broken IPC after health, unload that
-// leaves the module hot) -> 1.
+// Exit codes: 0 pass / 1 fail / 77 skip (ctest SKIP_RETURN_CODE 77).
+// Skip is honest: no game, spawn rejected, injection rejected, or IPC never
+// came up -> 77. A failing CLAIM (red assertion) -> 1.
 //
 // Pipeline:
-//   1. resolve args; verify injector/dll exist (fixture exe may be missing ->
-//      only relevant if we must spawn it)
-//   2. reuse a running FEAR2.exe, else spawn it (cwd = exe dir) and let it boot
-//   3. if IPC already up on the port, request --unload first (stale instance)
-//   4. inject; poll /health until running
-//   5. run in-DLL suite via GET /test; assert fail==0
-//   6. teardown: if WE spawned -> terminate the process (cleanly proves the
-//      game survives); else /unload and require the module to vanish
+//   1. args; require injector/dll on disk
+//   2. reuse a running FEAR2.exe, else spawn it and let it boot to menu
+//   3. clear any stale instance on the port
+//   4. inject
+//   5. ASSERTIONS (checker): health shape, frame hook liveness (ticks advance),
+//      /sdk/targets in-bounds vs the PID's real module list, /engine-hook
+//      "hwnd" positive + "fear2vr_no_such_hook" negative, cross-check the raw
+//      hWnd global via ReadProcessMemory (host-observed, not DLL-asserted)
+//   6. graceful-unload proof: /unload -> module vanishes from module list AND
+//      the game process keeps running
+//   7. re-inject: health answers again, frame ticks reset to a small value
+//      (fresh instance -- proves the first instance's hooks/handles are gone)
+//   8. teardown: terminate the instance we spawned, else final unload
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <chrono>
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -36,16 +44,67 @@ constexpr int32_t kOk = 0;
 constexpr int32_t kFail = 1;
 constexpr int32_t kSkip = 77;
 
-uint32_t find_pid(const std::string& process_name) {
+int64_t g_checks = 0;
+int64_t g_failures = 0;
+
+void check(bool ok, const char* name, const char* detail = nullptr) {
+    ++g_checks;
+    if (!ok) {
+        ++g_failures;
+        printf("[FAIL] %s%s%s\n", name, detail ? ": " : "", detail ? detail : "");
+    }
+}
+
+// ---- small parsing helpers (no JSON library; payloads are ours) ------------
+
+bool json_has(const std::string& body, const char* needle) {
+    return body.find(needle) != std::string::npos;
+}
+
+bool json_hex(const std::string& body, const char* key, uint32_t& out) {
+    const std::string needle = std::string{"\""} + key + "\":\"";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) return false;
+    const size_t start = p + needle.size();
+    const size_t end = body.find('"', start);
+    if (end == std::string::npos) return false;
+    out = static_cast<uint32_t>(strtoul(body.c_str() + start, nullptr, 0));
+    return true;
+}
+
+bool json_int(const std::string& body, const char* key, int64_t& out) {
+    const std::string needle = std::string{"\""} + key + "\":";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) return false;
+    const size_t start = p + needle.size();
+    char* endp = nullptr;
+    const long long v = strtoll(body.c_str() + start, &endp, 10);
+    if (endp == body.c_str() + start) return false;
+    out = v;
+    return true;
+}
+
+// ---- remote module inspection ----------------------------------------------
+
+struct RemoteModule {
+    std::string basename;
+    uintptr_t base;
+    uint32_t size;
+};
+
+uint32_t find_pid(const char* process_name) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     PROCESSENTRY32W pe{};
     pe.dwSize = sizeof(pe);
     uint32_t pid = 0;
-    const std::wstring want(process_name.begin(), process_name.end());
+    const size_t want_len = strlen(process_name);
     if (Process32FirstW(snap, &pe)) {
         do {
-            if (_wcsicmp(pe.szExeFile, want.c_str()) == 0) {
+            char narrow[260];
+            size_t conv = 0;
+            wcstombs_s(&conv, narrow, pe.szExeFile, sizeof(narrow) - 1);
+            if (strlen(narrow) == want_len && _stricmp(narrow, process_name) == 0) {
                 pid = pe.th32ProcessID;
                 break;
             }
@@ -55,18 +114,78 @@ uint32_t find_pid(const std::string& process_name) {
     return pid;
 }
 
+bool remote_find_module(uint32_t pid, const char* basename, RemoteModule& out) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    bool found = false;
+    if (Module32FirstW(snap, &me)) {
+        do {
+            char narrow[260];
+            size_t conv = 0;
+            wcstombs_s(&conv, narrow, me.szModule, sizeof(narrow) - 1);
+            const char* name = strrchr(narrow, '\\');
+            name = name ? name + 1 : narrow;
+            if (_stricmp(name, basename) == 0) {
+                out = {name, reinterpret_cast<uintptr_t>(me.modBaseAddr), me.modBaseSize};
+                found = true;
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+bool remote_read32(uint32_t pid, uintptr_t address, uint32_t& out) {
+    HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (proc == nullptr) return false;
+    SIZE_T n = 0;
+    const BOOL ok = ReadProcessMemory(proc, reinterpret_cast<LPCVOID>(address), &out, sizeof(out), &n);
+    CloseHandle(proc);
+    return ok && n == sizeof(out);
+}
+
+std::string resident_fear2vr(uint32_t pid) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) return {};
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    std::string found;
+    if (Module32FirstW(snap, &me)) {
+        do {
+            char narrow[260];
+            size_t conv = 0;
+            wcstombs_s(&conv, narrow, me.szModule, sizeof(narrow) - 1);
+            const char* name = strrchr(narrow, '\\');
+            name = name ? name + 1 : narrow;
+            for (char* p = narrow; *p; ++p) *p = static_cast<char>(tolower(*p));
+            if (_strnicmp(name, "fear2vr", 7) == 0 && strlen(name) >= 11 &&
+                _stricmp(name + strlen(name) - 4, ".dll") == 0) {
+                found = name;
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+// ---- injector plumbing ------------------------------------------------------
+
 struct SpawnedProcess {
     PROCESS_INFORMATION pi{};
     bool launched = false;
+    SpawnedProcess() = default;
+    SpawnedProcess(const SpawnedProcess&) = delete;
+    SpawnedProcess& operator=(const SpawnedProcess&) = delete;
     ~SpawnedProcess() {
         if (pi.hProcess) CloseHandle(pi.hProcess);
         if (pi.hThread) CloseHandle(pi.hThread);
     }
 };
 
-// Fills `out`. Out-param (not return-by-value): the destructor owns the
-// PROCESS_INFORMATION handles -- a returned temporary would have its handles
-// closed on destruction, leaving the receiver with stale handles.
 void launch_fixture(const fs::path& exe, SpawnedProcess& out) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -79,9 +198,9 @@ void launch_fixture(const fs::path& exe, SpawnedProcess& out) {
     out.launched = true;
 }
 
-int run_injector(const fs::path& injector, const std::string& action, const fs::path& dll, int32_t port) {
+int run_injector(const fs::path& injector, const char* action, const fs::path& dll, int32_t port) {
     std::wstring cmd = L"\"" + injector.wstring() + L"\" --" +
-                       std::wstring(action.begin(), action.end()) + L" --process FEAR2.exe --dll \"" +
+                       std::wstring(action, action + strlen(action)) + L" --process FEAR2.exe --dll \"" +
                        fs::absolute(dll).wstring() + L"\" --port " + std::to_wstring(port);
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -98,38 +217,41 @@ int run_injector(const fs::path& injector, const std::string& action, const fs::
     return static_cast<int>(rc);
 }
 
-// Extract "key":N (first occurrence); false when absent/negative-looking.
-bool json_int(const std::string& body, const char* key, int64_t& out) {
-    std::string needle = "\"";
-    needle += key;
-    needle += "\":";
-    const size_t p = body.find(needle);
-    if (p == std::string::npos) return false;
-    const size_t start = p + needle.size();
-    char* end = nullptr;
-    const long long v = strtoll(body.c_str() + start, &end, 10);
-    if (end == body.c_str() + start) return false;
-    out = v;
-    return true;
-}
+// ---- health helpers ----------------------------------------------------------
 
-bool health_ready(int32_t port) {
+bool health_body(int32_t port, std::string& body) {
     std::string resp;
     if (!http::get(port, "/health", resp)) return false;
-    const std::string body = http::body_of(resp);
-    return body.find("\"ok\":true") != std::string::npos &&
-           body.find("\"state\":\"running\"") != std::string::npos;
+    body = http::body_of(resp);
+    return json_has(body, "\"ok\":true");
 }
 
-void cleanup(const SpawnedProcess& spawned, bool need_remote_unload, const fs::path& injector,
-             const fs::path& dll, int32_t port) {
-    if (spawned.launched) {
-        TerminateProcess(spawned.pi.hProcess, 0);
-        printf("[fixture] terminated the instance we spawned\n");
-    } else if (need_remote_unload) {
-        run_injector(injector, "unload", dll, port);
-        printf("[fixture] unloaded from the pre-existing instance (left running)\n");
+bool wait_healthy(int32_t port, int32_t attempts_100ms) {
+    for (int32_t i = 0; i < attempts_100ms; ++i) {
+        std::string body;
+        if (health_body(port, body) && json_has(body, "\"state\":\"running\"")) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    return false;
+}
+
+bool wait_unloaded(uint32_t pid, int32_t attempts_200ms) {
+    for (int32_t i = 0; i < attempts_200ms; ++i) {
+        if (resident_fear2vr(pid).empty()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return false;
+}
+
+bool process_alive(uint32_t pid) {
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (proc == nullptr) return false;
+    DWORD rc = 0;
+    const bool alive = GetExitCodeProcess(proc, &rc) && rc == STILL_ACTIVE;
+    CloseHandle(proc);
+    return alive;
 }
 
 } // namespace
@@ -158,7 +280,7 @@ int main(int argc, char** argv) {
         return kSkip;
     }
 
-    // 2. Reuse a running game, else spawn the fixture ourselves.
+    // 2. Reuse a running game, else spawn and boot.
     SpawnedProcess spawned;
     uint32_t pid = find_pid("FEAR2.exe");
     if (pid != 0) {
@@ -175,62 +297,168 @@ int main(int argc, char** argv) {
         }
         printf("[fixture] spawned FEAR2.exe; waiting for engine boot...\n");
         std::this_thread::sleep_for(std::chrono::seconds(20)); // LithTech boot to main menu
+        pid = find_pid("FEAR2.exe");
+        if (pid == 0) {
+            printf("[fixture] game died during boot -- skipping\n");
+            return kSkip;
+        }
     }
 
-    // 3. Clear any stale instance on the port.
+    auto cleanup = [&] {
+        if (spawned.launched) {
+            TerminateProcess(spawned.pi.hProcess, 0);
+            printf("[fixture] terminated the instance we spawned\n");
+        } else if (find_pid("FEAR2.exe") != 0 && !resident_fear2vr(pid).empty()) {
+            run_injector(injector, "unload", dll, port);
+            printf("[fixture] unloaded from the pre-existing instance (left running)\n");
+        }
+    };
+
+    // 3. Clear stale instance; 4. inject.
     if (http::port_open(port)) {
         run_injector(injector, "unload", dll, port);
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
-
-    // 4. Inject.
     if (run_injector(injector, "inject", dll, port) != 0) {
         printf("[fixture] injection failed -- skipping (no injection rights?)\n");
-        cleanup(spawned, false, injector, dll, port);
+        cleanup();
         return kSkip;
     }
-
-    // 5a. Wait-for-live: IPC up and framework running.
-    bool live = false;
-    for (int32_t i = 0; i < 200 && !live; ++i) { // ~20s
-        live = health_ready(port);
-        if (!live) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (!live) {
+    if (!wait_healthy(port, 200)) {
         printf("[fixture] IPC never became live -- skipping (init failure in-game)\n");
-        cleanup(spawned, false, injector, dll, port);
+        cleanup();
         return kSkip;
     }
-    printf("[fixture] IPC live; running in-DLL suite\n");
+    printf("[fixture] IPC live; running host-side assertions\n");
 
-    // 5b. Run the suite.
-    std::string resp;
-    bool pass = false;
-    int64_t n_pass = -1, n_fail = -1;
-    if (http::get(port, "/test", resp)) {
+    RemoteModule game_mod{};
+    check(remote_find_module(pid, "FEAR2.exe", game_mod), "remote_find_module(FEAR2.exe)");
+    RemoteModule gc_mod{}, db_mod{}, lt_mod{};
+    const bool have_gc = remote_find_module(pid, "gameclient.dll", gc_mod);
+    const bool have_db = remote_find_module(pid, "gamedatabase.dll", db_mod);
+    const bool have_lt = remote_find_module(pid, "ltmemory.dll", lt_mod);
+    check(have_gc, "gameclient.dll mapped in game");
+    check(have_db, "gamedatabase.dll mapped in game");
+    check(have_lt, "ltmemory.dll mapped in game");
+
+    // 5a. /health shape + frame-hook liveness (ticks advance between polls).
+    {
+        std::string h1, h2;
+        check(health_body(port, h1), "/health transport");
+        check(json_has(h1, "\"state\":\"running\""), "/health state==running");
+        check(json_has(h1, "\"sdk_ready\":true"), "/health sdk_ready==true");
+        int64_t hooks = -1;
+        check(json_int(h1, "hooks", hooks) && hooks >= 1, "/health reports the frame hook installed");
+        int64_t ticks1 = -1;
+        check(json_int(h1, "frame_ticks", ticks1), "/health exposes frame_ticks");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        check(health_body(port, h2) && true, "/health second poll transport");
+        int64_t ticks2 = -1;
+        json_int(h2, "frame_ticks", ticks2);
+        check(ticks2 > ticks1 && ticks1 >= 0, "frame_ticks advanced (hook firing on CClientShell::Update)");
+    }
+
+    // 5b. /sdk/targets: every engine address must sit inside the REAL
+    //     FEAR2.exe image measured host-side from the PID's module list.
+    {
+        std::string resp;
+        check(http::get(port, "/sdk/targets", resp), "/sdk/targets transport");
         const std::string body = http::body_of(resp);
-        if (json_int(body, "pass", n_pass) && json_int(body, "fail", n_fail)) {
-            pass = (n_fail == 0);
-            printf("[fixture] in-DLL suite: pass=%lld fail=%lld\n", n_pass, n_fail);
-            if (!pass) {
-                printf("[fixture] failures:\n%s\n", body.c_str());
+        const uintptr_t lo = game_mod.base;
+        const uintptr_t hi = game_mod.base + game_mod.size;
+        auto in_exe = [&](const char* key) {
+            uint32_t v = 0;
+            if (!json_hex(body, key, v)) {
+                check(false, key, "field missing/unparseable");
+                return;
             }
-        } else {
-            printf("[fixture] unparseable /test body: %s\n", body.c_str());
+            char detail[128];
+            snprintf(detail, sizeof(detail), "0x%08X outside [0x%08X,0x%08X)", v,
+                     static_cast<uint32_t>(lo), static_cast<uint32_t>(hi));
+            check(v >= lo && v < hi, key, detail);
+        };
+        in_exe("client_mgr_update");
+        in_exe("client_shell_update");
+        in_exe("get_engine_hook");
+        in_exe("g_pClientMgr_slot");
+        in_exe("hWnd_slot");
+
+        uint32_t client_mgr = 0, main_hwnd = 0, dbmgr = 0;
+        check(json_hex(body, "client_mgr", client_mgr) && client_mgr != 0, "client_mgr instance non-null");
+        check(json_hex(body, "main_hwnd", main_hwnd) && main_hwnd != 0, "main_hwnd instance non-null");
+        check(json_hex(body, "database_mgr", dbmgr) && dbmgr != 0, "database_mgr non-null");
+        if (have_db && dbmgr != 0) {
+            char detail[128];
+            snprintf(detail, sizeof(detail), "0x%08X not in gamedatabase.dll [0x%08X,0x%08X)", dbmgr,
+                     static_cast<uint32_t>(db_mod.base),
+                     static_cast<uint32_t>(db_mod.base + db_mod.size));
+            check(dbmgr >= db_mod.base && dbmgr < db_mod.base + db_mod.size, "database_mgr residency", detail);
         }
-    } else {
-        printf("[fixture] /test transport failed\n");
+
+        // Cross-check the raw globals host-side via ReadProcessMemory: the
+        // values the DLL reports must match the memory we read ourselves
+        // (guards against the DLL faking its own diagnostics).
+        uint32_t slot_client = 0, slot_hwnd = 0;
+        json_hex(body, "g_pClientMgr_slot", slot_client);
+        json_hex(body, "hWnd_slot", slot_hwnd);
+        uint32_t raw_client = 0, raw_hwnd = 0;
+        check(remote_read32(pid, slot_client, raw_client), "RPM g_pClientMgr");
+        check(remote_read32(pid, slot_hwnd, raw_hwnd), "RPM hWnd");
+        check(raw_client == client_mgr, "RPM g_pClientMgr value == DLL-reported client_mgr");
+        check(raw_hwnd == main_hwnd, "RPM hWnd value == DLL-reported main_hwnd");
+        check(main_hwnd != 0 && IsWindow(reinterpret_cast<HWND>(main_hwnd)),
+              "main_hwnd is a live window (IsWindow, host-side)");
     }
 
-    // 6. Teardown + uninject verification: on the reuse path we REQUIRE the
-    //    unload handshake to succeed -- graceful uninject is itself the
-    //    feature under test.
-    cleanup(spawned, true, injector, dll, port);
+    // 5c. /engine-hook positive + negative.
+    {
+        std::string resp;
+        check(http::get(port, "/engine-hook?name=hwnd", resp), "/engine-hook(hwnd) transport");
+        const std::string body = http::body_of(resp);
+        int64_t rc = -1;
+        check(json_int(body, "rc", rc) && rc == 0, "engine hook 'hwnd' returned LT_OK");
+        uint32_t via_hook = 0;
+        uint32_t main_hwnd_direct = 0;
+        {
+            std::string tresp;
+            http::get(port, "/sdk/targets", tresp);
+            json_hex(http::body_of(tresp), "main_hwnd", main_hwnd_direct);
+        }
+        check(json_hex(body, "value", via_hook) && via_hook == main_hwnd_direct && via_hook != 0,
+              "engine hook 'hwnd' agrees with raw global");
 
-    if (!pass) {
-        printf("[fixture] FAIL\n");
-        return kFail;
+        std::string bad;
+        check(http::get(port, "/engine-hook?name=fear2vr_no_such_hook", bad), "/engine-hook(bogus) transport");
+        const std::string bad_body = http::body_of(bad);
+        int64_t rc_bad = 0;
+        check(json_int(bad_body, "rc", rc_bad) && rc_bad != 0, "unknown hook name rejected (LT_ERROR)");
     }
-    printf("[fixture] PASS\n");
-    return kOk;
+
+    // 6. Graceful unload proof: module vanishes, game keeps running.
+    {
+        check(run_injector(injector, "unload", dll, port) == 0, "injector --unload accepted");
+        check(wait_unloaded(pid, 150), "fear2vr module unmapped (module list)");
+        check(!http::port_open(port), "IPC port closed after unload");
+        check(process_alive(pid), "game process survived uninjection");
+    }
+
+    // 7. Re-inject: a FRESH instance comes up clean in the never-restarted game.
+    //    frame_ticks starting small again proves the old instance (hooks,
+    //    counters, threads) is truly gone, not just asleep.
+    {
+        check(run_injector(injector, "inject", dll, port) == 0, "re-inject accepted");
+        check(wait_healthy(port, 200), "fresh instance IPC live");
+        std::string body;
+        check(health_body(port, body), "fresh /health transport");
+        int64_t ticks = -1;
+        json_int(body, "frame_ticks", ticks);
+        check(ticks >= 0 && ticks < 10000, "fresh instance frame_ticks reset (old hooks gone)");
+        check(json_has(body, "\"sdk_ready\":true"), "fresh instance sdk_ready==true");
+    }
+
+    // 8. Teardown.
+    cleanup();
+
+    printf("%s (%lld checks)\n", g_failures == 0 ? "[fixture] PASS" : "[fixture] FAIL", g_checks);
+    return g_failures == 0 ? kOk : kFail;
 }

@@ -4,7 +4,11 @@
 #include <ws2tcpip.h>
 
 #include <atomic>
+#include <cctype>
+#include <cstdlib>
+#include <string>
 #include <thread>
+#include <utility>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -17,8 +21,38 @@ SOCKET g_listen = INVALID_SOCKET;
 std::thread g_server;
 Handlers g_handlers;
 
+std::string url_decode(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '+') {
+            out += ' ';
+        } else if (c == '%' && i + 2 < s.size()) {
+            auto hex = [](char h) -> int {
+                if (h >= '0' && h <= '9') return h - '0';
+                if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                if (h >= 'A' && h <= 'F') return h - 'A' + 10;
+                return -1;
+            };
+            const int hi = hex(s[i + 1]);
+            const int lo = hex(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out += static_cast<char>((hi << 4) | lo);
+                i += 2;
+            } else {
+                out += c;
+            }
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 void send_response(SOCKET c, int32_t status, const std::string& body) {
     const char* reason = status == 200   ? "OK"
+                         : status == 400 ? "Bad Request"
                          : status == 404 ? "Not Found"
                          : status == 503 ? "Service Unavailable"
                                          : "Error";
@@ -85,16 +119,31 @@ void handle_client(SOCKET c) {
         return;
     }
 
-    if (path.compare(0, 5, "/test") == 0) {
-        if (!g_handlers.test) {
-            send_response(c, 404, "{\"ok\":false,\"error\":\"no test handler registered\"}");
+    if (path.compare(0, 12, "/sdk/targets") == 0) {
+        if (!g_handlers.targets) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no targets handler registered\"}");
             return;
         }
-        // The handler returns the inner result object; wrap in the envelope.
-        std::string b = "{\"ok\":true,\"result\":";
-        b += g_handlers.test();
-        b += "}";
-        send_response(c, 200, b);
+        send_response(c, 200, g_handlers.targets());
+        return;
+    }
+
+    if (path.compare(0, 12, "/engine-hook") == 0) {
+        if (!g_handlers.engine_hook) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no engine-hook handler registered\"}");
+            return;
+        }
+        // /engine-hook[?name=<n>] -- missing/empty name is a client error.
+        std::string name;
+        const size_t q = path.find("?name=");
+        if (q != std::string::npos) {
+            name = url_decode(path.substr(q + 6));
+        }
+        if (name.empty()) {
+            send_response(c, 400, "{\"ok\":false,\"error\":\"missing ?name= parameter\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.engine_hook(name));
         return;
     }
 
@@ -106,7 +155,9 @@ void handle_client(SOCKET c) {
         return;
     }
 
-    send_response(c, 404, "{\"ok\":false,\"error\":\"unknown endpoint; use GET /health, GET /test, GET|POST /unload\"}");
+    send_response(c, 404,
+                  "{\"ok\":false,\"error\":\"unknown endpoint; use GET /health, GET /sdk/targets, "
+                  "GET /engine-hook?name=, GET|POST /unload\"}");
 }
 
 void server_loop(int32_t port) {

@@ -78,7 +78,7 @@ POSITION_INDEPENDENT_CODE = "ON"
 # teardown-critical code (graceful uninject lives in exactly ONE place).
 [target.fear2-core]
 type = "static"
-sources = ["src/AgentRuntime.cpp", "src/Framework.cpp", "src/Hooks.cpp", "src/GameTests.cpp", "src/ipc/**.cpp", "shared/Log.cpp"]
+sources = ["src/AgentRuntime.cpp", "src/Framework.cpp", "src/Hooks.cpp", "src/Mods.cpp", "src/ipc/**.cpp", "shared/Log.cpp"]
 headers = ["src/**.hpp", "shared/**.hpp"]
 include-directories = ["src", "shared"]
 compile-features = ["cxx_std_23"]

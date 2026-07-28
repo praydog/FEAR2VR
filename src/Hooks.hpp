@@ -24,11 +24,16 @@
 // Thread safety: installs serialized on m_mux; retire() holds m_mux while
 // disabling so no install can race a shutdown.
 //
-// INVARIANT: hooks() returns a deliberately LEAKED registry (never destructed).
-// Any future change that lets the InlineHook vector run its destructor in the
-// game process breaks the unload contract -- do not "fix" the leak.
+// INVARIANT: Hooks::get() returns a deliberately LEAKED singleton (never
+// destructed in the game process). Any future change that lets the InlineHook
+// vector run its destructor in the game process breaks the unload contract --
+// do not "fix" the leak.
 class Hooks {
 public:
+    // Leaked singleton. NOT a function-local static (its destructor would free
+    // trampoline memory under straggler threads during unmap).
+    static Hooks& get();
+
     // Install and track a hook. Returns false if the safetyhook factory failed.
     // `name` is diagnostic-only (logs, /health).
     bool install(std::string name, void* target, void* destination);
@@ -63,5 +68,3 @@ private:
     size_t m_retired{0};
     bool m_retire_started{false};
 };
-
-Hooks& hooks();
