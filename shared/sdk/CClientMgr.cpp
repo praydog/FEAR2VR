@@ -4,6 +4,8 @@
 
 #include <utility/Seh.hpp>
 
+#include "regenny/regenny/CClientMgrCounterNode.hpp"
+
 #include "CClientShell.hpp"
 #include "Log.hpp"
 #include "Modules.hpp"
@@ -87,6 +89,51 @@ bool CClientMgr::is_updating() const {
         return false;
     }
     return updating;
+}
+
+uint32_t CClientMgr::counter_elapsed_ms() const {
+    uint32_t ms = 0;
+    KANANLIB_SEH_TRY {
+        const auto* node = regenny()->own_counter_node;
+        if (node != nullptr) {
+            ms = node->elapsed_ms;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return ms;
+}
+
+double CClientMgr::counter_elapsed_time() const {
+    double t = 0.0;
+    KANANLIB_SEH_TRY {
+        const auto* node = regenny()->own_counter_node;
+        if (node != nullptr) {
+            t = node->elapsed_time;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return 0.0;
+    }
+    return t;
+}
+
+size_t CClientMgr::start_shell_list_count() const {
+    constexpr size_t kMaxWalk = 10000; // fail closed on a corrupted/non-terminating list rather than hang
+    size_t count = 0;
+    KANANLIB_SEH_TRY {
+        const auto* head = &regenny()->start_shell_list;
+        const void* cur = head->next;
+        while (cur != static_cast<const void*>(head) && count < kMaxWalk) {
+            ++count;
+            cur = reinterpret_cast<const regenny::CClientMgrListLink*>(cur)->next;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return count;
 }
 
 } // namespace sdk

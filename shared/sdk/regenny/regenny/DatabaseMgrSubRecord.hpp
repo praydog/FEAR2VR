@@ -1,9 +1,9 @@
 #pragma once
 namespace regenny {
-class DatabaseMgrCategory;
+class HashEntry;
 }
 namespace regenny {
-class HashEntry;
+class DatabaseMgrCategory;
 }
 namespace regenny {
 #pragma pack(push, 1)

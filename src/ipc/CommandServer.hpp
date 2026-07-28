@@ -13,11 +13,19 @@
 //                                   fragment fields supplied by the health handler
 //                                   (pid/state/hooks/frame_ticks/sdk_ready).
 //   GET /sdk/targets             -> JSON object: pattern-resolved engine addresses,
-//                                   current live pointers, and client_mgr_updating
+//                                   current live pointers, client_mgr_updating
 //                                   (regenny::CClientMgr.updating via
 //                                   sdk::CClientMgr::is_updating() -- true only for
 //                                   the actual duration of a frame's Update call, so
-//                                   almost always false when sampled here) (diagnostics).
+//                                   almost always false when sampled here),
+//                                   counter_elapsed_ms/counter_elapsed_time
+//                                   (correlated pair, elapsed_ms==elapsed_time*
+//                                   1000 -- NOT confirmed as a free-running
+//                                   counter, see reversing/fear2.genny's
+//                                   CClientMgrCounterNode comment), and
+//                                   start_shell_list_count (bounded walk of a
+//                                   generic engine list CClientMgr::StartShell
+//                                   populates; 0 at the main menu) (diagnostics).
 //   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
 //                                   fields (vtable/array bounds/entry_count) plus, for
 //                                   entry0, real category/record enumeration (name,

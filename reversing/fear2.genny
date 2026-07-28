@@ -203,6 +203,62 @@ class DatabaseMgr 0x20 {
     uint32_t unk_14                  @0x14   // observed 1; equals (array_end-array_begin)/8 in every snapshot so far
 }
 
+// 8-byte intrusive circular-list link. CClientMgr embeds (at least) two
+// sentinel heads of this shape (counter_list_head @0x13EC, start_shell_list
+// @0x1460 below) -- this is a generic, engine-wide list utility (used far
+// outside CClientMgr; NOT reverse-engineered as a general facility here,
+// only enough to explain CClientMgr's own two embedded list heads).
+//
+// next: CONFIRMED live (2026-07) for counter_list_head specifically:
+// counter_list_head.next == CClientMgr.own_counter_node + 0x14 exactly, in
+// the same live snapshot that also matched CClientMgr::Init's insertion
+// code (dump 0x415B54: `*(result+20)=*this; *this=result+20;` -- i.e. the
+// newly-inserted node's link portion begins at node+0x14, and the head's
+// own `next` field points at it).
+// prev: position inferred from the same 8-byte link shape; not
+// independently read live.
+class CClientMgrListLink 0x8 {
+    void* prev  @0x00   // unverified -- position inferred, not independently read live
+    void* next  @0x04   // CONFIRMED live for counter_list_head (see above)
+}
+
+// Node CClientMgr registers for itself in its own counter_list_head list
+// (see CClientMgr::Init, dump 0x40AEC6, embedded debug string
+// "CClientMgr::Init": `v8 = sub_415B54(a1+5100); *(a1+5108) = v8;` -- the
+// list-insert call's return value, the raw allocated node, is what
+// CClientMgr.own_counter_node points at).
+//
+// Bytes 0x00-0x27 are the generic list machinery's own bookkeeping (link
+// portion at +0x14 per CClientMgrListLink's evidence above) plus whatever
+// else the allocator/list utility uses -- NOT investigated here.
+//
+// elapsed_ms/elapsed_time: CONFIRMED CORRELATED live -- sampled
+// elapsed_ms=2169885 and elapsed_time=2169.885 in the SAME live snapshot;
+// the digits match exactly (elapsed_ms == elapsed_time * 1000), far too
+// precise to be coincidence -- both represent the same measurement in
+// different units/precision. Read by several small accessor functions
+// spread across the engine, not just CClientMgr's own code (dump
+// 0x406DED/0x406DFC/0x406E0B/0x4692B1 all read this exact node).
+//
+// NOT "engine uptime" as first hypothesized: re-sampled minutes apart at
+// the main menu (no level loaded) and the value did NOT advance --
+// contradicts a free-running uptime/tick counter. More consistent with a
+// per-session or per-load timestamp/duration that only updates on some
+// event (level load? session start?), not continuously. Advancement
+// semantics are genuinely unknown; only the elapsed_ms/elapsed_time
+// correlation itself is confirmed.
+//
+// unk_28/unk_2C: read by CClientMgr::Update itself (dump 0x40B665) --
+// unk_28 gates its FPS-limiter code block (checked truthy); unk_2C is read
+// as a float alongside that block's target-frametime computation. Neither
+// confirmed beyond "CClientMgr::Update reads and uses it here".
+class CClientMgrCounterNode 0x40 {
+    uint32_t unk_28    @0x28   // gates CClientMgr::Update's FPS-limiter block (checked truthy); role beyond that unverified
+    float unk_2C       @0x2C   // read as float in CClientMgr::Update's FPS-limiter block; role unverified
+    uint32_t elapsed_ms @0x30   // CONFIRMED correlated with elapsed_time (see above)
+    double elapsed_time @0x38   // CONFIRMED correlated with elapsed_ms (see above)
+}
+
 // FEAR2.exe's engine-side client manager singleton (see
 // shared/sdk/CClientMgr.hpp/.cpp -- already deployed via a hand-derived
 // offset before this pass; this formalizes it into the regenny convention).
@@ -211,44 +267,54 @@ class DatabaseMgr 0x20 {
 // 0x400000 at runtime -- see AGENT.MD's "IDB truth vs runtime truth" note --
 // so the dump VA is directly usable as the RVA source, not just a hint).
 //
-// CONFIRMED live (2026-07) via TWO independent paths agreeing exactly:
-// (a) raw memory read through g_pClientMgr -> +0x1434/+0x143C, (b) the
-// ALREADY-DEPLOYED sdk::CClientMgr (pre-dating this .genny mapping,
-// hardcoded offset 0x1434) reporting the identical addresses live via
-// /sdk/targets (client_mgr=0x05F814B0, client_shell=0x05F77030 in the
-// snapshot that produced this mapping). Field evidence: CClientMgr::Update
-// (FEAR2_dump.exe 0x40B665) -- see that function's IDA comment.
+// client_shell/updating: CONFIRMED live (2026-07) via TWO independent paths
+// agreeing exactly: (a) raw memory read through g_pClientMgr -> +0x1434/
+// +0x143C, (b) the ALREADY-DEPLOYED sdk::CClientMgr (pre-dating this .genny
+// mapping, hardcoded offset 0x1434) reporting the identical addresses live
+// via /sdk/targets. Field evidence: CClientMgr::Update (dump 0x40B665).
 //
-// Only these two fields mapped this pass -- the rest of the ~5200+ byte
-// CClientMgr object (CClientMgr::Update reads/writes at least ITS OWN
-// offsets 104, 5100, 5108, 5120, 5172, 5176, and 5180 -- 5172/5180 are the
-// two mapped below; the others are genuinely uninvestigated, not merely
-// deferred). NOTE: offset 104 in that list is CClientMgr's own field
-// (`this+104`, passed by CClientMgr::Update as an argument) -- a
-// DIFFERENT, coincidentally-same-numbered field from the CClientShell
-// pointee's own `+104` mentioned below (`v9+104` where v9 is the shell
-// pointer, i.e. `*client_shell + 104`) -- do not conflate the two objects.
-// Struct size below is a HEADROOM MINIMUM matching the highest
-// mapped field + alignment, exactly like DatabaseMgr's own "unconfirmed
-// beyond +0x18" note above -- do NOT treat 0x1440 as the confirmed total
-// object size, only as "safe to reinterpret up to here".
+// counter_list_head/own_counter_node: CONFIRMED via CClientMgr::Init (dump
+// 0x40AEC6) wiring the two together, live-verified exactly (see
+// CClientMgrListLink/CClientMgrCounterNode above).
 //
-// client_shell is void* (not a typed CClientShell* -- CClientShell has no
-// regenny struct yet; see reversing/MAPPING_WORKFLOW.md on not forcing a
-// struct without confident fields). Its pointee is the engine's
-// CClientShell instance (cross-verified: the two CClientShell field reads
-// CClientMgr::Update itself performs, +104 and +32, both decoded as
-// expected -- a byte and a live non-null pointer respectively -- through
-// this exact pointer in the same live snapshot).
+// start_shell_list: CONFIRMED STRUCTURALLY -- CClientMgr::StartShell
+// (dump 0x40A90A, embedded debug string "CClientMgr::StartShell") inserts
+// 272-byte allocated nodes into a list at this exact offset (found via a
+// level/archive file scan -- "Arch01"/findfirst-findclose evidence in that
+// function) using the SAME insertion pattern as counter_list_head. Live-
+// verified EMPTY at the main menu (next == head, i.e. no entries). Named
+// for the confirmed insertion site, NOT "loaded_shell" -- what the 272-byte
+// nodes actually represent (levels? archives? something else StartShell
+// tracks) is NOT confirmed; node payload not investigated.
 //
-// updating: CONFIRMED live (read as 0 outside of Update). CClientMgr::Update
-// sets it 1 immediately before, 0 immediately after, the CClientShell::Update
-// call it makes -- true only for the actual duration of that call. A
-// diagnostic sampling this out-of-band (e.g. over HTTP) will observe 0
-// essentially always; that is expected, not a mapping failure.
-class CClientMgr 0x1440 {
-    void* client_shell   @0x1434
-    bool updating         @0x143C
+// unk_1430/unk_4E4: both explicitly zeroed inside CClientMgr::Init
+// (`*(_WORD*)(a1+5168)=0`, `*(_DWORD*)(a1+1252)=0`) and BOTH observed
+// live with non-zero values later (0x1430 read 0x0020; 0x4E4 read a live
+// heap pointer 0x05F30498) -- confirms they are actively written post-init,
+// role otherwise unverified.
+//
+// Also identified but NOT mapped as fields this pass (see
+// reversing/MAPPING_WORKFLOW.md -- don't force a field without confident
+// evidence): an embedded blob @0x90 passed BY ADDRESS to a global
+// subsystem's (dword_6ECC98) vtable slot 20 during Init -- size/type/
+// purpose unknown; a byte-sized field @0x68 used both as a "commit and
+// clear" flag (dump 0x40CB42) and, elsewhere, as a container base for what
+// looks like a generic list-iteration helper (dump 0x44ED89) -- plausibly
+// related to the network/ping debug HUD builder CClientMgr::Update also
+// touches at this offset, not confirmed.
+//
+// Struct size below is a HEADROOM MINIMUM matching the highest mapped
+// field + alignment, exactly like DatabaseMgr's own "unconfirmed beyond
+// +0x18" note -- do NOT treat 0x1468 as the confirmed total object size,
+// only as "safe to reinterpret up to here".
+class CClientMgr 0x1468 {
+    void* unk_4E4                            @0x4E4
+    CClientMgrListLink counter_list_head     @0x13EC
+    CClientMgrCounterNode* own_counter_node  @0x13F4
+    uint16_t unk_1430                        @0x1430   // CClientMgr::Init stores a WORD here (`*(_WORD*)(a1+5168)=0`); typed uint16_t to match -- bytes 0x1432-0x1433 are NOT claimed by this field, unmapped
+    void* client_shell                       @0x1434
+    bool updating                            @0x143C
+    CClientMgrListLink start_shell_list      @0x1460
 }
 
 }

@@ -84,6 +84,18 @@ bool json_int(const std::string& body, const char* key, int64_t& out) {
     return true;
 }
 
+bool json_double(const std::string& body, const char* key, double& out) {
+    const std::string needle = std::string{"\""} + key + "\":";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) return false;
+    const size_t start = p + needle.size();
+    char* endp = nullptr;
+    const double v = strtod(body.c_str() + start, &endp);
+    if (endp == body.c_str() + start) return false;
+    out = v;
+    return true;
+}
+
 // ---- remote module inspection ----------------------------------------------
 
 struct RemoteModule {
@@ -427,6 +439,54 @@ int main(int argc, char** argv) {
         check(raw_hwnd == main_hwnd, "RPM hWnd value == DLL-reported main_hwnd");
         check(main_hwnd != 0 && IsWindow(reinterpret_cast<HWND>(main_hwnd)),
               "main_hwnd is a live window (IsWindow, host-side)");
+
+        // counter_list_head/own_counter_node: proves the CClientMgr_Init
+        // wiring (reversing/fear2.genny's CClientMgrListLink comment) is a
+        // stable structural INVARIANT, not a one-time observation -- read
+        // BOTH sides independently via RPM off the DLL-reported client_mgr
+        // and assert the exact relationship holds live (TESTING.MD rule 2).
+        uint32_t counter_list_head_next = 0, own_counter_node = 0;
+        check(remote_read32(pid, client_mgr + 0x13F0, counter_list_head_next), "RPM client_mgr+0x13F0 (counter_list_head.next)");
+        check(remote_read32(pid, client_mgr + 0x13F4, own_counter_node), "RPM client_mgr+0x13F4 (own_counter_node)");
+        check(own_counter_node != 0 && counter_list_head_next == own_counter_node + 0x14,
+              "counter_list_head.next == own_counter_node+0x14 (CClientMgr_Init wiring proof)");
+
+        // start_shell_list_count: RPM-walk the SAME 8-byte-link list
+        // structure from client_mgr+0x1460 independently (same 10000 cap as
+        // sdk::CClientMgr::start_shell_list_count()) and assert the
+        // host-computed count matches the endpoint's -- a real mapping
+        // proof, not just a plausibility bound.
+        {
+            const uint32_t head = client_mgr + 0x1460;
+            uint32_t cur = 0;
+            check(remote_read32(pid, head + 4, cur), "RPM client_mgr+0x1464 (start_shell_list.next)");
+            size_t host_count = 0;
+            while (cur != head && host_count < 10000) {
+                uint32_t next = 0;
+                if (!remote_read32(pid, cur + 4, next)) break;
+                ++host_count;
+                cur = next;
+            }
+            int64_t reported_count = -1;
+            check(json_int(body, "start_shell_list_count", reported_count) && reported_count >= 0,
+                  "start_shell_list_count present and non-negative");
+            check(static_cast<int64_t>(host_count) == reported_count,
+                  "RPM-walked start_shell_list count == DLL-reported start_shell_list_count");
+        }
+
+        // counter_elapsed_ms/counter_elapsed_time: the ONLY confirmed
+        // invariant is the correlation (elapsed_ms == elapsed_time*1000),
+        // NOT that the value advances (re-sampled minutes apart at the main
+        // menu and it did not move -- see fear2.genny's comment). Assert
+        // the correlation with a small tolerance for float/double rounding.
+        {
+            int64_t elapsed_ms = -1;
+            double elapsed_time = -1.0;
+            check(json_int(body, "counter_elapsed_ms", elapsed_ms) && elapsed_ms >= 0, "counter_elapsed_ms present and non-negative");
+            check(json_double(body, "counter_elapsed_time", elapsed_time) && elapsed_time >= 0.0, "counter_elapsed_time present and non-negative");
+            const double diff = static_cast<double>(elapsed_ms) - elapsed_time * 1000.0;
+            check(diff > -2.0 && diff < 2.0, "counter_elapsed_ms == counter_elapsed_time*1000 within 2ms tolerance");
+        }
     }
 
     // 5c. /engine-hook positive + negative.

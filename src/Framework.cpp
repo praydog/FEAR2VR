@@ -196,7 +196,8 @@ std::string build_targets_json() {
              "\"get_engine_hook\":\"0x%08X\",\"g_pClientMgr_slot\":\"0x%08X\","
              "\"hWnd_slot\":\"0x%08X\",\"client_mgr\":\"0x%08X\","
              "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\","
-             "\"client_mgr_updating\":%s}",
+             "\"client_mgr_updating\":%s,\"counter_elapsed_ms\":%u,"
+             "\"counter_elapsed_time\":%f,\"start_shell_list_count\":%zu}",
              static_cast<uint32_t>(exe->base), static_cast<uint32_t>(exe->size),
              static_cast<uint32_t>(sdk::CClientMgr::update_fn()),
              static_cast<uint32_t>(sdk::CClientShell::update_fn()),
@@ -207,7 +208,10 @@ std::string build_targets_json() {
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientShell::get())),
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd())),
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())),
-             (client_mgr != nullptr && client_mgr->is_updating()) ? "true" : "false");
+             (client_mgr != nullptr && client_mgr->is_updating()) ? "true" : "false",
+             client_mgr != nullptr ? client_mgr->counter_elapsed_ms() : 0u,
+             client_mgr != nullptr ? client_mgr->counter_elapsed_time() : 0.0,
+             client_mgr != nullptr ? client_mgr->start_shell_list_count() : static_cast<size_t>(0));
     return buf;
 }
 
