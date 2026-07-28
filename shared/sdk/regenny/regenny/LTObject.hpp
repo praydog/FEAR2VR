@@ -3,6 +3,7 @@
 #include "LTObjectType.hpp"
 #include "LTRotation.hpp"
 #include "LTVector.hpp"
+#include "LTWorldTreeLink.hpp"
 namespace regenny {
 #pragma pack(push, 1)
 class LTObject {
@@ -19,7 +20,7 @@ public:
     regenny::LTRotation rotation; // 0x20
     float unk_30; // 0x30
     void* owner; // 0x34
-    void* record; // 0x38
+    regenny::LTWorldTreeLink* spatial_record; // 0x38
     uint32_t flags; // 0x3c
     uint32_t unk_40; // 0x40
     uint16_t flags2; // 0x44
@@ -38,7 +39,7 @@ public:
     private: char pad_b4[0x4]; public:
     regenny::CClientMgrListLink unk_list_B8; // 0xb8
     private: char pad_c0[0x4]; public:
-    regenny::CClientMgrListLink unk_list_C4; // 0xc4
+    regenny::LTWorldTreeLink world_tree_link; // 0xc4
 }; // Size: 0xcc
 #pragma pack(pop)
 }

@@ -233,6 +233,51 @@ name and a count. Then assert both that the partition is total and that both
 branches are populated: a partition alone goes green if every object collapses
 into one branch, which is how a wrong offset that reads zeroes presents.
 
+**A rule read off the WRITER describes the moment of writing, not the live
+state.** Code tells you the condition under which a field is set; it does not
+tell you that the condition still holds for data written earlier. The world
+tree's inserter (`LTWorldTree_FindNodeForObject`) descends until the object's
+AABB straddles a split plane, so "every object on an internal node straddles
+one of that node's planes" looks like a theorem. Live it is 332 of 467 — the
+counter-examples sit at the root while lying wholly inside one quadrant, i.e.
+objects that MOVED after being linked, because `SetPos` updates the AABB while
+the tree link is only revisited when renderability changes.
+
+So separate the two kinds of claim, and label them differently in the schema:
+
+- **Layout** claims (this offset is that field, this size, this relation
+  between fields) must hold on 100% of live samples, and a shortfall means the
+  map is wrong.
+- **Policy** claims (the engine puts objects here under condition X) are about
+  a code path, and live data legitimately contains residue from earlier states.
+  A partial rate is the expected answer, not a failure.
+
+Never assert a policy claim in the fixture, and never quietly loosen it into a
+layout claim. Write down the rate and the reason for the gap: 332/467 with
+"objects retain their node after moving" is a useful, durable observation; "all
+internal-node objects straddle" would have been a lie with a 29% failure rate.
+
+**Two link types with the same SHAPE can have opposite field ORDER -- and a
+circular list walks fine either way, so nothing complains.** `CClientMgrListLink`
+is `prev@0x00 / next@0x04`; the world tree's link is the reverse, and the only
+reason it surfaced is that traversing a node's object list required following
+`+0x00` where the object buckets require `+0x04`. Both walks terminate, both
+produce the right object count, and reusing one type for the other would
+compile, browse correctly in ReGenny, and silently invert every `prev`/`next`
+in code written against it.
+
+Rules that follow:
+
+- Do not reuse an existing link/list type just because the size and shape
+  match. Give each structure its own type unless you have checked the field
+  order in that structure's own code.
+- A traversal succeeding proves the list is well-formed, NOT that you named the
+  direction correctly. Both directions close.
+- Where the code cannot distinguish them, say so. The world tree's unlink is
+  symmetric in the two fields (`link[0]->[1] = link[1]` and
+  `link[1]->[0] = link[0]`), so `next` there is a traversal convention, not a
+  proven asymmetry, and `LTWorldTreeLink`'s comment records exactly that.
+
 ## Phase 3 — Author/extend `fear2.genny`
 
 - **Self-reference works, and is the fix you usually want.** A class may

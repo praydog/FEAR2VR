@@ -9,6 +9,7 @@
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
+#include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
 #include "Log.hpp"
@@ -638,6 +639,109 @@ std::optional<CClientMgr::GeometryCheck> CClientMgr::check_object_geometry(
             return std::nullopt; // a faulted bucket invalidates the whole report
         }
         out.sampled += static_cast<size_t>(n);
+    }
+    return out;
+}
+
+namespace {
+
+// Walks one bucket's objects out into the world tree. POD-only for the SEH
+// guard. `img_base`/`img_size` bound FEAR2.exe so a list element can be
+// classified as object-link vs node-head.
+//
+// Returns the number of objects examined, or -1 on fault / non-termination.
+int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uintptr_t img_base,
+                       size_t img_size, CClientMgr::WorldTreeCheck* out, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* o = reinterpret_cast<const regenny::LTObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* link = &o->world_tree_link;
+
+                if (link->next == link) {
+                    ++out->unlinked;
+                } else {
+                    ++out->linked;
+                    // Find the node head: the one element that is not <object>+0xC4.
+                    const regenny::LTWorldTreeLink* e = link->next;
+                    const regenny::LTWorldTreeNode* node = nullptr;
+                    for (size_t steps = 0; e != link && steps < cap; ++steps) {
+                        const auto cand = reinterpret_cast<uintptr_t>(e) -
+                                          offsetof(regenny::LTObject, world_tree_link);
+                        const uintptr_t vt =
+                            *reinterpret_cast<const uintptr_t*>(cand); // vtable slot of a candidate
+                        if (vt < img_base || vt >= img_base + img_size) {
+                            node = reinterpret_cast<const regenny::LTWorldTreeNode*>(e);
+                            break;
+                        }
+                        e = e->next;
+                    }
+                    if (node != nullptr) {
+                        ++out->node_found;
+                        // Climb to the root, requiring occupied_count to never drop.
+                        const regenny::LTWorldTreeNode* p = node;
+                        uint32_t last = p->occupied_count;
+                        bool mono = true;
+                        size_t hops = 0;
+                        while (p->parent_offset != 0 && hops < 64) {
+                            p = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                                reinterpret_cast<uintptr_t>(p) -
+                                sizeof(regenny::LTWorldTreeNode) * p->parent_offset);
+                            if (p->occupied_count < last) {
+                                mono = false;
+                            }
+                            last = p->occupied_count;
+                            ++hops;
+                        }
+                        if (hops > out->max_depth) {
+                            out->max_depth = hops;
+                        }
+                        if (p->parent_offset == 0) {
+                            ++out->root_reached;
+                            const auto r = reinterpret_cast<uintptr_t>(p);
+                            if (out->root == 0) {
+                                out->root = r;
+                            } else if (out->root != r) {
+                                ++out->root_mismatches;
+                            }
+                        }
+                        if (mono) {
+                            ++out->counts_monotonic;
+                        }
+                    }
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::WorldTreeCheck> CClientMgr::check_world_tree(size_t max_objects) const {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || exe->size == 0) {
+        return std::nullopt; // cannot classify list elements without the image range
+    }
+    WorldTreeCheck out{};
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const int64_t n = seh_check_tree(&regenny()->object_lists[t], max_objects, exe->base,
+                                        exe->size, &out, max_object_walk);
+        if (n < 0) {
+            return std::nullopt;
+        }
+        out.objects_seen += static_cast<size_t>(n);
     }
     return out;
 }

@@ -683,6 +683,53 @@ int main(int argc, char** argv) {
             }
         }
 
+        // World tree. Same self-check shape, but this one is a chain: the walk
+        // starts from an object, follows world_tree_link out to the owning node,
+        // then climbs parent_offset to the root. A wrong offset anywhere along
+        // that path shows up as a count shortfall rather than a crash.
+        {
+            const size_t wp = body.find("\"world_tree\":");
+            check(wp != std::string::npos, "objects report includes the world-tree check");
+            if (wp != std::string::npos) {
+                if (json_has(body, "\"world_tree\":null")) {
+                    check(false, "world-tree walk completed (null == faulted or no exe range)");
+                } else {
+                    const size_t end = body.find('}', wp);
+                    const std::string wb = body.substr(wp, end - wp + 1);
+                    int64_t seen = -1, linked = -1, unlinked = -1, found = -1, root = -1,
+                            mono = -1, mism = -1, depth = -1;
+                    json_int(wb, "objects_seen", seen);
+                    json_int(wb, "linked", linked);
+                    json_int(wb, "unlinked", unlinked);
+                    json_int(wb, "node_found", found);
+                    json_int(wb, "root_reached", root);
+                    json_int(wb, "counts_monotonic", mono);
+                    json_int(wb, "root_mismatches", mism);
+                    json_int(wb, "max_depth", depth);
+
+                    check(seen > 0, "objects present to walk the world tree from");
+                    // Linked/unlinked is a partition, and BOTH sides must be
+                    // populated for the same reason the radius states must be:
+                    // a broken link offset would read self-pointing garbage and
+                    // classify everything as unlinked.
+                    check(linked + unlinked == seen,
+                          "every object is either threaded into the world tree or self-pointing");
+                    check(linked > 0, "tree-linked objects exist (linked branch exercised)");
+                    check(unlinked > 0, "unlinked objects exist (self-pointing branch exercised)");
+
+                    check(found == linked, "every linked object's owning node was located");
+                    check(root == linked, "every linked object's parent chain reached a root");
+                    check(mono == linked,
+                          "occupied_count never decreases from a node toward the root");
+                    check(mism == 0, "all linked objects reach the SAME root (one tree)");
+                    // Depth > 0 proves the parent chain was actually climbed; at
+                    // depth 0 the monotonic and root checks would be trivially
+                    // true without ever dereferencing parent_offset.
+                    check(depth > 0, "parent chain was actually climbed (max_depth > 0)");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

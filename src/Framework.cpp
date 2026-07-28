@@ -393,6 +393,24 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // World tree (the X/Z quadtree objects are culled through). Reaches the
+    // structure the way the engine does -- object -> link -> owning node -> up
+    // the parent chain -- so one report exercises world_tree_link,
+    // parent_offset and occupied_count together.
+    out += ",\"world_tree\":";
+    if (const auto wt = mgr->check_world_tree(512); wt.has_value()) {
+        char wb[320];
+        snprintf(wb, sizeof(wb),
+                 "{\"objects_seen\":%zu,\"linked\":%zu,\"unlinked\":%zu,\"node_found\":%zu,"
+                 "\"root_reached\":%zu,\"counts_monotonic\":%zu,\"root_mismatches\":%zu,"
+                 "\"root\":\"0x%08" PRIXPTR "\",\"max_depth\":%zu}",
+                 wt->objects_seen, wt->linked, wt->unlinked, wt->node_found, wt->root_reached,
+                 wt->counts_monotonic, wt->root_mismatches, wt->root, wt->max_depth);
+        out += wb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

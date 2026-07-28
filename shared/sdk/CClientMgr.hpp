@@ -340,6 +340,39 @@ public:
     // sampled; any shortfall is an object in neither state, i.e. a broken map.
     std::optional<GeometryCheck> check_object_geometry(size_t max_per_type) const;
 
+    // ---- world tree (spatial index) --------------------------------------
+    //
+    // Objects are bucketed into a quadtree over X/Z for culling; each links in
+    // at LTObject.world_tree_link and each node is a regenny::LTWorldTreeNode.
+    // See fear2.genny for how the node layout was recovered and verified.
+    //
+    // A third MAPPING SELF-CHECK. It reaches the tree the way the engine does --
+    // from an object, out through its link to the owning node, then up the
+    // parent chain -- so it exercises world_tree_link, parent_offset and
+    // occupied_count together rather than trusting any one offset.
+    //
+    // Identifying the node among the list elements needs the exe image range:
+    // every element except the node's own head is `some LTObject + 0xC4`, so a
+    // candidate is an object exactly when the vtable slot 0xC4 back lies inside
+    // FEAR2.exe. That is why this walk depends on Modules being initialized.
+    struct WorldTreeCheck {
+        size_t objects_seen;     // objects examined
+        size_t linked;           // world_tree_link is threaded into a node
+        size_t unlinked;         // self-pointing, i.e. not in the tree
+        size_t node_found;       // owning node located from the object's list
+        size_t root_reached;     // parent chain terminated (parent_offset == 0)
+        size_t counts_monotonic; // occupied_count never decreases toward the root
+        size_t root_mismatches;  // linked objects reaching a DIFFERENT root than the first
+        uintptr_t root;          // the root the first linked object reached
+        size_t max_depth;        // deepest parent chain observed
+    };
+
+    // Walks up to `max_objects` objects per type. nullopt on fault or a walk
+    // that failed to terminate. A healthy tree gives linked + unlinked ==
+    // objects_seen, node_found == root_reached == counts_monotonic == linked,
+    // and root_mismatches == 0.
+    std::optional<WorldTreeCheck> check_world_tree(size_t max_objects) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

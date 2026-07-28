@@ -266,6 +266,57 @@ class CClientMgrListLink 0x8 {
     CClientMgrListLink* next  @0x04   // CONFIRMED live: every bucket walk closes back on its own head (see above)
 }
 
+// The world tree's link. DELIBERATELY NOT CClientMgrListLink: that type is
+// prev@0x00 / next@0x04, and this one is the other way round. A node's object
+// list is traversed by following +0x00 from the head, which is what reaches
+// every object (verified: 2142 objects across 285 occupied nodes, every list
+// closing back on its own head). Reusing CClientMgrListLink here would compile
+// and walk -- a circular list walks fine in either direction -- while silently
+// meaning the opposite thing.
+//
+// Honest limit on the naming: LTWorldTree_RemoveObject's unlink is SYMMETRIC in
+// the two fields (it does link[0]->[1] = link[1] and link[1]->[0] = link[0]),
+// so the code does not prove which one is "forward". `next` is the field that
+// traverses, by convention.
+class LTWorldTreeLink 0x8 {
+    LTWorldTreeLink* next @0x00   // CONFIRMED as the traversal direction from a node head
+    LTWorldTreeLink* prev @0x04
+}
+
+// A node of the client world tree -- the spatial index LTObjects are bucketed
+// into for culling. Structure recovered from LTWorldTree_FindNodeForObject
+// (0x46462F, the descent) and LTWorldTree_RemoveObject (0x4645E7, which walks
+// UP), then verified against the live tree by walking all 649 nodes from the
+// root at once:
+//   * 649 nodes reachable, 285 of them holding objects, 2142 objects, depth 5.
+//   * occupied_count == the number of OCCUPIED nodes in that node's subtree,
+//     itself included: 649/649, zero mismatches. It is NOT an object count --
+//     the root reads 285, not 2142 -- which matches RemoveObject decrementing
+//     only when a node's list becomes EMPTY.
+//   * parent_offset resolves to the actual parent on 649/649 (0 at the root).
+//   * child_offset reproduces the whole tree: the four children live at
+//     node + 24*(child_offset + k) for k in 0..3, and 0 means leaf.
+//
+// It splits on X and Z only -- Y is never divided -- so this is a QUADTREE over
+// the ground plane, not an octree.
+class LTWorldTreeNode 0x18 {
+    LTWorldTreeLink objects   @0x00   // CONFIRMED: head of this node's object list; objects link in at LTObject.world_tree_link (+0xC4)
+    float split_x             @0x08   // CONFIRMED as a descent comparand: compared against the object's aabb_min.x / aabb_max.x
+    float split_z             @0x0C   // CONFIRMED as a descent comparand, against aabb_min.z / aabb_max.z
+    uint32_t occupied_count   @0x10   // CONFIRMED 649/649 == occupied nodes in subtree (see above)
+    uint16_t parent_offset    @0x14   // CONFIRMED 649/649; parent is `this - 24*parent_offset`, and 0 marks the root
+    uint16_t child_offset     @0x16   // CONFIRMED; children at `this + 24*(child_offset + k)`, k in 0..3. 0 == leaf.
+}
+
+// NOT claimed: that every object on an INTERNAL node straddles one of that
+// node's split planes. The descent inserts at a node when the object's AABB
+// crosses a plane, so that would be the tidy story, but live only 332 of 467
+// internal-node objects straddle. The counter-examples sit at the root while
+// lying wholly inside one quadrant, which is what an object that MOVED after
+// being linked looks like -- SetPos updates the AABB and the tree link is only
+// revisited when renderability changes. Do not "fix" this by loosening the
+// test; it is a property of when the engine re-inserts, not of the layout.
+
 // A vector-like container of 4-byte elements, embedded in CClientMgr @0x68.
 // CONFIRMED by its two accessors, which the engine uses on this object:
 //   size():       dump 0x61C92C -- `v1 = this[1]; return v1 ? (this[2]-v1)>>2 : 0`
@@ -438,7 +489,7 @@ class LTObject 0xCC {
     LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples; the ctor writes (0,0,0,1), pinning w at +0x2C
     float unk_30          @0x30   // MEANING UNKNOWN. ctor sets 1.0; virtual slot 6 (0x4200BF) is its setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583, with 1.658/2.493/3.19/3.2 on a few models and 7.25 on one OT_NORMAL. NOT the radius (that is +0x60) and NOT proven to be a scale: the models whose value differs from 1.0 all have dims of exactly 0, so nothing observed varies with it.
     void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
-    void* record          @0x38   // CONFIRMED per-object and never null (3583/3583). record[+0x38] points BACK to this object on 3583/3583. Layout is type-dependent and unmapped; record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree), so that is NOT a type field. record[+0x34] is NOT a string pointer -- see the comment on flags3.
+    LTWorldTreeLink* spatial_record @0x38   // CONFIRMED per-object and never null (3583/3583); record[+0x38] points BACK to this object on 3583/3583. Its own list is REBUILT by spatial queries: LTObjectOwner_UpdateSpatialRecord asks the object's own vtable slot 2 for a bounding volume (return 1 = sphere as 4 floats, 2 = AABB as 6 floats), then calls LTSpatialRecord_CollectSphere / _CollectAABB, which traverse a world structure and link each hit onto this record via LTSpatialRecord_AddEntry; when the object is not renderable it calls LTSpatialRecord_Release instead. So this is the object's spatial/visibility association set, NOT a refcount as an earlier pass guessed. Typed as LTWorldTreeLink only because the first two fields are a link pair; the rest of the record is unmapped and type-dependent. record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree), so that is NOT a type field, and record[+0x34] is NOT a string pointer.
     uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; the render predicate 0x4200A0 reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0). The render gate is !(f & 0x200) && (f & 0x10C30); those bit meanings are unverified. ctor zeroes it.
     uint32_t unk_40       @0x40   // ctor zeroes it
     uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.
@@ -454,7 +505,7 @@ class LTObject 0xCC {
     float unk_A8          @0xA8   // ctor writes NaN -- the shape of an invalidated cache, but nothing observed recomputes it
     CClientMgrListLink list_link  @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`); the ctor self-points it, matching an unlinked object
     CClientMgrListLink unk_list_B8 @0xB8   // CONFIRMED list head, self-pointed by the ctor
-    CClientMgrListLink unk_list_C4 @0xC4   // CONFIRMED list head, self-pointed by the ctor. Ends at 0xCC == the class size.
+    LTWorldTreeLink world_tree_link @0xC4   // CONFIRMED: the world-tree bucket link. Live, 2142 objects are linked and 1441 sit self-pointing (unlinked), and every linked object's list reaches a node whose parent chain terminates at the single root. LTWorldTree_AddObject descends from a node and links here; LTWorldTree_RemoveObject unlinks and decrements occupied_count up the parent chain. Ends at 0xCC == the class size.
 }
 
 // LTMemory.dll's fixed-size pool allocator. NOT a FEAR2.exe type -- both
