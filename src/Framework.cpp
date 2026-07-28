@@ -147,6 +147,31 @@ bool prove_quiescent(uintptr_t base, size_t size, int32_t attempts) {
 
 // --- diagnostics payload builders (free functions; SEH stays out of lambdas) -
 
+// Minimal JSON string escaper (backslashes/quotes/control chars) -- the
+// DatabaseMgr path strings genuinely contain backslashes ("Database\Loki.
+// gamedb"), so this is a correctness requirement, not decoration.
+void json_escape_append(std::string& out, const std::string& s) {
+    out += '"';
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char esc[8];
+                    snprintf(esc, sizeof(esc), "\\u%04x", c);
+                    out += esc;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    out += '"';
+}
+
 std::string build_health_fragment() {
     Framework* fw = Framework::get();
     char buf[256];
@@ -181,6 +206,59 @@ std::string build_targets_json() {
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd())),
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())));
     return buf;
+}
+
+// Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
+// (regenny() fields, entry_count(), entry(i), read_path()); NEVER raw
+// pointer/offset arithmetic here. This deliberately EXERCISES the real
+// mapped-struct traversal in-process (the actual code path any future mod
+// feature would use), not just reports addresses -- that's the point: prove
+// the mapping works and doesn't crash the game, not just that it parses.
+std::string build_database_json() {
+    auto* db = sdk::DatabaseMgr::get();
+    if (db == nullptr) {
+        return "{\"ok\":false,\"error\":\"DatabaseMgr::get() returned null\"}";
+    }
+    auto* r = db->regenny();
+    const size_t count = db->entry_count();
+
+    std::string entry0_json = "null";
+    if (count >= 1) {
+        if (auto* e = db->entry(0); e != nullptr) {
+            const std::string path_a = sdk::DatabaseMgr::read_path(e->record_a);
+            const std::string path_b = sdk::DatabaseMgr::read_path(e->record_b);
+            entry0_json = "{\"record_a\":\"0x";
+            char hexbuf[16];
+            snprintf(hexbuf, sizeof(hexbuf), "%08X", static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e->record_a)));
+            entry0_json += hexbuf;
+            entry0_json += "\",\"record_b\":\"0x";
+            snprintf(hexbuf, sizeof(hexbuf), "%08X", static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e->record_b)));
+            entry0_json += hexbuf;
+            entry0_json += "\",\"record_a_path\":";
+            json_escape_append(entry0_json, path_a);
+            entry0_json += ",\"record_b_path\":";
+            json_escape_append(entry0_json, path_b);
+            entry0_json += "}";
+        }
+    }
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"instance\":\"0x%08X\",\"vtable\":\"0x%08X\",\"unk_04\":%u,"
+             "\"array_begin\":\"0x%08X\",\"array_end\":\"0x%08X\",\"array_cap_end\":\"0x%08X\","
+             "\"unk_14\":%u,\"entry_count\":%zu,",
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(db)),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->vtable)),
+             r->unk_04,
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_begin)),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_end)),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_cap_end)),
+             r->unk_14, count);
+    std::string out = buf;
+    out += "\"entry0\":";
+    out += entry0_json;
+    out += "}";
+    return out;
 }
 
 std::string build_engine_hook_json(const std::string& name) {
@@ -231,6 +309,7 @@ bool Framework::initialize() {
     cmdsrv::Handlers handlers;
     handlers.health = build_health_fragment;
     handlers.targets = build_targets_json;
+    handlers.database = build_database_json;
     handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);

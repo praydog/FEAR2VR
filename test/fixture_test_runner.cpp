@@ -147,6 +147,7 @@ bool remote_read32(uint32_t pid, uintptr_t address, uint32_t& out) {
     return ok && n == sizeof(out);
 }
 
+
 std::string resident_fear2vr(uint32_t pid) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
     if (snap == INVALID_HANDLE_VALUE) return {};
@@ -432,6 +433,60 @@ int main(int argc, char** argv) {
         const std::string bad_body = http::body_of(bad);
         int64_t rc_bad = 0;
         check(json_int(bad_body, "rc", rc_bad) && rc_bad != 0, "unknown hook name rejected (LT_ERROR)");
+    }
+
+    // 5d. /sdk/database: proves the SDK mapping WORKS IN-PROCESS -- the DLL
+    // itself calls sdk::DatabaseMgr::entry_count()/entry(i) and the new
+    // DatabaseMgr::read_path() helper (real regenny()-typed struct field
+    // access, SEH-guarded) and reports the results. This is deliberately
+    // NOT reimplemented via ReadProcessMemory here: RPM would only prove our
+    // HAND-DERIVED offsets agree with themselves, not that the actual
+    // compiled SDK traversal code is correct and safe to use. What the host
+    // CAN and does independently verify: module residency (Toolhelp32 is
+    // OS-level ground truth the DLL doesn't control) and that the traversal
+    // did not crash anything (transport succeeds + the process/IPC survive
+    // the call).
+    if (have_db) {
+        std::string resp;
+        check(http::get(port, "/sdk/database", resp), "/sdk/database transport (proves in-process traversal didn't crash the DLL)");
+        const std::string body = http::body_of(resp);
+
+        uint32_t instance = 0, vtable = 0;
+        int64_t entry_count = -1;
+        check(json_hex(body, "instance", instance) && instance != 0, "database instance non-null");
+        check(json_hex(body, "vtable", vtable) && vtable != 0, "database vtable non-null");
+        check(json_int(body, "entry_count", entry_count) && entry_count >= 1 && entry_count < 1000,
+              "entry_count() result in a plausible range [1,1000)");
+
+        // Residency: independently-verifiable OS-level ground truth (host's
+        // own Toolhelp32 module enumeration), not a re-derivation of SDK
+        // traversal logic.
+        auto in_db = [&](uint32_t v, const char* label) {
+            char detail[128];
+            snprintf(detail, sizeof(detail), "0x%08X outside gamedatabase.dll [0x%08X,0x%08X)", v,
+                     static_cast<uint32_t>(db_mod.base), static_cast<uint32_t>(db_mod.base + db_mod.size));
+            check(v >= db_mod.base && v < db_mod.base + db_mod.size, label, detail);
+        };
+        in_db(instance, "database instance residency (gamedatabase.dll)");
+        in_db(vtable, "database vtable residency (gamedatabase.dll)");
+
+        // entry(0)->record_a/record_b and their path_data strings: all
+        // computed BY THE SDK in-process (DatabaseMgr::entry() +
+        // DatabaseMgr::read_path()); the host only sanity-checks the
+        // reported content.
+        if (entry_count >= 1) {
+            check(json_has(body, "\"entry0\":{"), "entry0 present when entry_count>=1");
+            uint32_t record_a = 0, record_b = 0;
+            check(json_hex(body, "record_a", record_a) && record_a != 0, "entry0.record_a non-null");
+            check(json_hex(body, "record_b", record_b) && record_b != 0, "entry0.record_b non-null");
+            check(json_has(body, ".gamedb") || json_has(body, "gamedb"),
+                  "entry0's path strings resolved to real *.gamedb content (SDK traversal reached real data, not garbage)");
+        }
+
+        // The traversal above ran fully in-process on the game's own memory;
+        // prove it left the game and the IPC channel intact.
+        check(process_alive(pid), "game process survived the in-process DatabaseMgr traversal");
+        check(http::port_open(port), "IPC still responsive after the in-process DatabaseMgr traversal");
     }
 
     // 6. Graceful unload proof: module vanishes, game keeps running.

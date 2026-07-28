@@ -14,6 +14,11 @@
 //                                   (pid/state/hooks/frame_ticks/sdk_ready).
 //   GET /sdk/targets             -> JSON object: pattern-resolved engine addresses
 //                                   and current live pointers (diagnostics).
+//   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
+//                                   fields (vtable/array bounds/entry_count) --
+//                                   diagnostics only, no assertions (see
+//                                   sdk::DatabaseMgr for the "complex logic lives
+//                                   in the SDK class" convention).
 //   GET /engine-hook?name=<n>    -> calls cis_GetEngineHook(<n>) in-process;
 //                                   {"ok":true,"rc":0,"value":"0x%08X"} on LT_OK,
 //                                   rc<0 when our side couldn't call.
@@ -26,11 +31,13 @@ namespace cmdsrv {
 
 using HealthFn = std::function<std::string()>;                    // JSON object FRAGMENT (no braces)
 using TargetsFn = std::function<std::string()>;                   // full JSON object
+using DatabaseFn = std::function<std::string()>;                  // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 
 struct Handlers {
     HealthFn health{};           // optional; default reports state only
     TargetsFn targets{};         // optional; /sdk/targets 404s without it
+    DatabaseFn database{};       // optional; /sdk/database 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
 };
 

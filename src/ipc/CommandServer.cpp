@@ -128,6 +128,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 13, "/sdk/database") == 0) {
+        if (!g_handlers.database) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no database handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.database());
+        return;
+    }
+
     if (path.compare(0, 12, "/engine-hook") == 0) {
         if (!g_handlers.engine_hook) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no engine-hook handler registered\"}");
@@ -157,7 +166,7 @@ void handle_client(SOCKET c) {
 
     send_response(c, 404,
                   "{\"ok\":false,\"error\":\"unknown endpoint; use GET /health, GET /sdk/targets, "
-                  "GET /engine-hook?name=, GET|POST /unload\"}");
+                  "GET /sdk/database, GET /engine-hook?name=, GET|POST /unload\"}");
 }
 
 void server_loop(int32_t port) {

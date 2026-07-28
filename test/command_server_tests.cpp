@@ -49,6 +49,9 @@ int main() {
     handlers.targets = [] {
         return std::string{"{\"ok\":true,\"client_mgr_update\":\"0x0040B665\"}"};
     };
+    handlers.database = [] {
+        return std::string{"{\"ok\":true,\"instance\":\"0x00A022BC\",\"array_begin\":\"0x175CAD00\",\"entry_count\":1}"};
+    };
     handlers.engine_hook = [](const std::string& name) {
         if (name == "hwnd") {
             return std::string{"{\"ok\":true,\"rc\":0,\"value\":\"0x000700C4\"}"};
@@ -80,6 +83,15 @@ int main() {
             std::string resp;
             check(http::get(kPort, "/sdk/targets", resp), "targets: transport");
             check(body_has(resp, "\"client_mgr_update\":\"0x0040B665\""), "targets: body verbatim");
+        }
+
+        // /sdk/database passes the handler's object straight through, same
+        // shape as /sdk/targets (dedicated route, dedicated handler slot).
+        {
+            std::string resp;
+            check(http::get(kPort, "/sdk/database", resp), "database: transport");
+            check(body_has(resp, "\"instance\":\"0x00A022BC\""), "database: body verbatim");
+            check(body_has(resp, "\"entry_count\":1"), "database: entry_count verbatim");
         }
 
         // /engine-hook positive + negative + missing-name 400.

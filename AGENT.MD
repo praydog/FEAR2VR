@@ -56,12 +56,58 @@ inject → test → uninject with the game never restarting.
    - Always document the IDA evidence inline (IDB name, address, instruction
      context) in a comment next to each pattern/offset.
    - Never hardcode absolute VAs. Runtime addresses come from pattern scans.
+5a. **ReGenny is ground truth for LAYOUT; the SDK class owns BEHAVIOR.** Once
+   a type is live-mapped in `reversing/fear2.genny` (ReGenny, verified field-
+   by-field against raw memory -- see "IDA/dump workflow" below), generate
+   its C++ header (`sdk:generate("shared/sdk/regenny")` in a ReGenny Lua eval)
+   and wire an `sdk::X` wrapper around it:
+   ```cpp
+   class DatabaseMgr {
+   public:
+       static DatabaseMgr* get();
+       regenny::DatabaseMgr* regenny() const { return (regenny::DatabaseMgr*)this; }
+       size_t entry_count() const;                 // "complex logic" lives HERE
+       regenny::DatabaseMgrEntry* entry(size_t i) const;
+       static std::string read_path(const regenny::DatabaseMgrSubRecord*);
+   private:
+       char m_data[sizeof(regenny::DatabaseMgr)];   // same size as the real object
+   };
+   ```
+   - `sdk::X` is sized identically to `regenny::X` (`m_data[sizeof(regenny::X)]`)
+     so a raw engine pointer can be `reinterpret_cast`'d directly onto it.
+   - `sdk::X` exposes NO raw fields itself -- only `.regenny()` to reach the
+     mapped struct, plus named methods for anything worth wrapping. Complex
+     behavior (traversal, safe reads, future lookups) is a MEMBER FUNCTION
+     here, never re-derived ad hoc at each call site (Framework.cpp's
+     diagnostics, tests, future mods all call the SAME method).
+   - The generated headers need a primitives shim BEFORE inclusion:
+     `shared/sdk/regenny/Primitives.hpp` defines `strptr`/`wstrptr` (the
+     .genny prelude's tagged pointer aliases have no C++ definition of their
+     own in generated output) -- hand-written, permanent, never regenerated.
+   - Diagnostics (`/sdk/database` etc.) call the SDK's own methods and
+     serialize the result -- they do not reimplement traversal logic inline.
+   - **Testing corollary**: because the mod is truly injected and running
+     in-process, host-side tests must NOT reimplement the SDK's struct
+     traversal via ReadProcessMemory (that only proves hand-derived offsets
+     agree with themselves, not that the compiled SDK code is correct or
+     safe to actually call). Let the DLL exercise `entry_count()`/`entry(i)`/
+     etc. for real and report results; the host verifies OS-level ground
+     truth it alone can determine (Toolhelp32 module residency), sanity-
+     checks the reported content, and confirms the process/IPC survived the
+     call (crash-proof). RPM stays legitimate for simple global-pointer
+     cross-checks the DLL could otherwise "lie" about (e.g. `/sdk/targets`'s
+     `hWnd_slot`/`g_pClientMgr_slot`), never for re-walking a mapped struct.
 6. **kananlib first.** Before writing any binary-analysis helper, check
    `I:\Programming\projects\kananlib\include\utility/*.hpp` (Scan, Module, Seh,
    Address, Patch, PointerHook, VtableHook). Do not reimplement what it has;
    use `KANANLIB_SEH_TRY/KANANLIB_SEH_EXCEPT` instead of raw `__try`.
-   MSVC C2712: `__try` cannot share a function scope with lambdas or
-   static-in-initializer — isolate SEH guards in their own free functions.
+   MSVC C2712: `__try` cannot share a function scope with lambdas,
+   static-in-initializer, or ANY non-trivial (non-POD) local variable or
+   return type -- including `std::string` constructed anywhere in that
+   function, even after the `__try/__except` block ends. Isolate SEH guards
+   in their own free function with POD-only locals and a POD return (e.g.
+   raw pointer, `int32_t` status + out-buffer); build the real return value
+   in a separate, non-`__try` wrapper that calls it.
 7. **safetyhook via the registry only.** All hooks go through `Hooks::get()`
    (`install` / `retire_one` / `retire`). The pinned safetyhook returns
    `InlineHook` truthy/falsey from `create_inline`; `enable/disable()` return
@@ -112,6 +158,8 @@ inject → test → uninject with the game never restarting.
 cmake.toml / build.bat        -- cmkr build (Win32 enforced)
 shared/                       -- Log, HttpClient, sdk/ (fear2-sdk static lib)
 shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr
+shared/sdk/regenny/           -- generated (sdk:generate) layout structs + Primitives.hpp shim
+reversing/                    -- fear2.genny (ground truth), DatabaseMgrDump.lua, dump artifacts
 src/                          -- Main.cpp (DllMain), AgentRuntime, Framework,
                                  Hooks, Mod/Mods, ipc/CommandServer
 injector/                     -- LoadLibrary injector (inject/unload/reload/status)
