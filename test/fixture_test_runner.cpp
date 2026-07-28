@@ -564,6 +564,95 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 5b3. /sdk/interfaces: the LithTech interface layer, per interface.
+    //
+    // The DLL discovers holders at runtime by scanning CAPIHolder_ctor's call
+    // sites (kananlib) and resolves each name through the GENERATED per-
+    // interface class's own typed getter. The host validates the report only.
+    //
+    // The strong claim here is a CROSS-CHECK against static reversing: the
+    // reversing pass recorded 147 call sites / 36 names in FEAR2.exe by reading
+    // the binary in IDA. The runtime scan must independently arrive at the same
+    // numbers. Those two paths share no code, so agreement is real evidence
+    // rather than self-agreement. (See reversing/INTERFACE_HOLDERS.md.)
+    {
+        std::string resp;
+        check(http::get(port, "/sdk/interfaces", resp), "/sdk/interfaces transport");
+        const std::string body = http::body_of(resp);
+
+        check(json_has(body, "\"ok\":true"), "interface registry initialized");
+
+        int64_t call_sites = -1, holders = -1, names = -1, expected = -1;
+        check(json_int(body, "call_sites", call_sites) && call_sites == 147,
+              "147 CAPIHolder_ctor call sites found at runtime (matches static IDA extraction)");
+        check(json_int(body, "holders", holders) && holders == call_sites,
+              "every call site decoded into a holder (none rejected)");
+        check(json_int(body, "names", names) && json_int(body, "expected_names", expected) &&
+                  names == expected,
+              "discovered interface names == the generated set (no name unaccounted for)");
+
+        // Per-interface assertions. Every entry is driven through its own typed
+        // getter in the DLL, so this covers all 36 public getters.
+        //
+        // Deliberately NOT asserted: that a given interface is non-null. The
+        // database clears slots via APIRemoved(), and server-side interfaces are
+        // legitimately null in a client-only session, so a null is a state, not
+        // a defect. What IS asserted holds regardless of resolution state.
+        size_t entries = 0, resolved = 0;
+        size_t pos = body.find("\"interfaces\":[");
+        check(pos != std::string::npos, "interfaces array present");
+        while (pos != std::string::npos) {
+            pos = body.find("{\"name\":\"", pos);
+            if (pos == std::string::npos) {
+                break;
+            }
+            const size_t name_start = pos + 9;
+            const size_t name_end = body.find('"', name_start);
+            const size_t obj_end = body.find('}', pos);
+            if (name_end == std::string::npos || obj_end == std::string::npos) {
+                break;
+            }
+            const std::string name = body.substr(name_start, name_end - name_start);
+            const std::string obj = body.substr(pos, obj_end - pos + 1);
+            ++entries;
+
+            int64_t h = -1, nn = -1;
+            const bool got_h = json_int(obj, "holders", h);
+            const bool got_nn = json_int(obj, "non_null", nn);
+
+            // Every generated name must correspond to at least one real holder
+            // in the image. Zero would mean the generated set has drifted from
+            // what the binary actually contains.
+            check(got_h && h >= 1, (name + ": has at least one holder in FEAR2.exe").c_str());
+
+            // non_null can be 0..holders, never more.
+            check(got_nn && nn >= 0 && nn <= h, (name + ": non_null within [0, holders]").c_str());
+
+            // The real invariant: independent holders for one interface must
+            // never disagree. Disagreement would mean a mis-decoded call site.
+            if (nn > 0) {
+                ++resolved;
+                check(json_has(obj, "\"all_agree\":true"),
+                      (name + ": all resolved holders agree on the pointer").c_str());
+            }
+
+            // And the typed getter must return exactly what the registry says --
+            // this is what catches a class wired to the wrong kName/instance.
+            check(json_has(obj, "\"getter_matches\":true"),
+                  (name + ": typed getter agrees with the registry").c_str());
+
+            pos = obj_end;
+        }
+        check(entries == static_cast<size_t>(expected),
+              "every generated interface appeared in the report");
+
+        // Sanity floor rather than an exact expectation: in a live client at
+        // least the core client interfaces must be resolved, otherwise the
+        // engine could not be rendering at all.
+        check(resolved > 0, "at least one interface is resolved in a live client");
+        printf("[fixture] interfaces: %zu/%zu resolved\n", resolved, entries);
+    }
+
     // 5c. /engine-hook positive + negative.
     {
         std::string resp;

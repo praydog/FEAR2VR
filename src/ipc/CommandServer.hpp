@@ -64,6 +64,25 @@
 //                                   advances engine_walk_generation. Compare the
 //                                   generation across two polls to know a fresh
 //                                   walk landed (diagnostics).
+//   GET /sdk/interfaces          -> JSON object: the LithTech interface layer.
+//                                   Header: ctor (runtime CAPIHolder_ctor addr),
+//                                   call_sites / holders (runtime rediscovery
+//                                   counts -- must match the 147 recorded by
+//                                   static reversing), names / expected_names
+//                                   (discovered vs. generated set).
+//                                   Then one entry per interface INSTANCE:
+//                                   holders (how many translation units asked
+//                                   for it), non_null (how many slots currently
+//                                   hold a pointer), all_agree, value, plus
+//                                   getter/getter_matches -- the value obtained
+//                                   by calling that interface's own generated
+//                                   typed getter, so the report exercises the
+//                                   public API and not just the registry.
+//                                   value 0 is NORMAL: slots are filled by
+//                                   APIFound() and cleared by APIRemoved(), so
+//                                   an interface reads null before module
+//                                   resolution or after an unload. all_agree
+//                                   false is the real anomaly (diagnostics).
 //   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
 //                                   fields (vtable/array bounds/entry_count) plus, for
 //                                   entry0, real category/record enumeration (name,
@@ -88,6 +107,7 @@ using HealthFn = std::function<std::string()>;                    // JSON object
 using TargetsFn = std::function<std::string()>;                   // full JSON object
 using DatabaseFn = std::function<std::string()>;                  // full JSON object
 using ObjectsFn = std::function<std::string()>;                   // full JSON object
+using InterfacesFn = std::function<std::string()>;                // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 
 struct Handlers {
@@ -95,6 +115,7 @@ struct Handlers {
     TargetsFn targets{};         // optional; /sdk/targets 404s without it
     DatabaseFn database{};       // optional; /sdk/database 404s without it
     ObjectsFn objects{};         // optional; /sdk/objects 404s without it
+    InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
 };
 

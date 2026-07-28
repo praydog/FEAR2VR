@@ -135,6 +135,24 @@ Class-based, REFramework convention: resolution lives in the accessor itself
 inside the owning class's .cpp — never a shared "all the scans" file, never a
 hardcoded absolute VA. Document the IDA evidence inline.
 
+**Engine interfaces are a special case with its own convention.** LithTech
+publishes subsystems as named interfaces (`ILTClient.Default`,
+`ILTModel.Server`, ...). Do NOT add a pattern per interface: they are all
+reachable by name through `sdk::interfaces::Registry`, which rediscovers every
+holder at runtime from one anchor. To add or refresh one, edit
+`reversing/interfaces.txt` and run `python reversing/gen_interfaces.py` --
+`shared/sdk/interfaces/*` is GENERATED; never hand-edit it. Rules that fall out
+of the mechanism, all of them load-bearing:
+  - **One class per interface, one getter per instance.** `.Default`/`.Client`/
+    `.Server` are instance names of a single interface with a single ABI.
+  - **Never cache a resolved interface pointer.** `APIRemoved()` clears slots;
+    `get()` re-reads every call.
+  - **`nullptr` is a state, not a failure.** Assert shape and invariants
+    (holder count >= 1, `all_agree`, getter == registry), never "X is non-null"
+    for an interface whose module may not be loaded.
+  - **Interface types stay opaque** until that interface's vtable is actually
+    reversed and mapped in `fear2.genny`. A speculative method is invention.
+
 ### 3. Extend the diagnostics (if the new surface needs visibility)
 Minimal JSON field or endpoint on `/health`, `/sdk/targets` — diagnostics
 format, no assertions.
@@ -247,5 +265,11 @@ Rank the options and pick the highest feasible one:
 - **gameserver.dll is lazy.** Absent at main menu is not a bug.
 - **The game keeps running between iterations.** Dormant leftovers show in
   `injector --status` and are not evidence of failure.
-- **kananlib first.** Don't reimplement module/scan/SEH gadgets — check
-  `I:\Programming\projects\kananlib\include\utility` before writing a helper.
+- **kananlib first (hard rule -- see AGENT.MD 6 for the API table).** Never
+  reimplement module/scan/SEH/instruction-decode gadgets. If you are writing a
+  memory loop, a `VirtualQuery` walk, a byte search, or an operand decoder,
+  stop and look in `I:\Programming\projects\kananlib\include\utility` first.
+  This has already been violated once (a hand-rolled image scan that
+  `utility::scan_relative_references` replaced in one call); a review that lets
+  it through again is a review defect. Corollary for tests: a "helper" in the
+  fixture runner that duplicates a library primitive is the same violation.

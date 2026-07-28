@@ -32,6 +32,29 @@ class DatabaseMgrVTable 0x100 {
     void* fn[64]   @0x00 [[code]]
 }
 
+// LithTech interface holder -- what the SDK's define_holder(IFoo, ptr) macro
+// emits. CONFIRMED by reversing CAPIHolder_ctor (dump 0x4050DB) and the four
+// vtable slots that operate on it; see reversing/INTERFACE_HOLDERS.md for the
+// full trail and for the 147-holder / 36-interface table recovered from it.
+//
+// DIVERGES FROM THE SOURCE DROP: ltmodule.h's CAPIHolderBase puts `int32
+// version` at +0x08. FEAR2 does not -- output_slot occupies it, and all three
+// non-destructor virtuals (APIRemoved `*p=0`, APIFound `*p=api`, Interface
+// `return *p`) read it as the pointer slot. The base constructor takes only
+// the name (`retn 4`). Do not reintroduce `version`.
+//
+// NOTE ON USE: sdk::interfaces::Registry does NOT read these fields. It
+// recovers each holder's name and slot from the static-init CALL SITE operands
+// instead (which is where they are pushed from), so it never needs a struct
+// offset. This type is here because the schema is where layouts belong, and so
+// that code which does want to walk a holder object has an offsetof-able type
+// rather than literals.
+class CAPIHolder 0xC {
+    void* vftable       @0x00 [[code]]   // CONFIRMED &CAPIHolder_vftable (dump 0x66EE08); base ctor writes the base vtable first, derived ctor overwrites
+    strptr api_name     @0x04            // CONFIRMED "IFoo.Instance"; stored by CAPIHolderBase_ctor (dump 0x41FEDD)
+    void** output_slot  @0x08            // CONFIRMED the consumer's own pointer variable; zeroed at construction, filled by APIFound, cleared by APIRemoved
+}
+
 // One 8-byte hash-table bucket entry. CONFIRMED: `hash` values are STABLE
 // across apparently-repeated entries (identical 32-bit values recur at
 // different indices for what look like the same underlying name), consistent

@@ -115,10 +115,40 @@ inject → test → uninject with the game never restarting.
      own Toolhelp32 snapshot. Toolhelp32 is OS *metadata* about what is
      mapped where -- it is NOT reading the target's memory, and is the one
      external oracle the DLL cannot fake.
-6. **kananlib first.** Before writing any binary-analysis helper, check
+6. **kananlib first -- this is a HARD rule, not a suggestion.** Before writing
+   ANY binary-analysis helper, read
    `I:\Programming\projects\kananlib\include\utility/*.hpp` (Scan, Module, Seh,
-   Address, Patch, PointerHook, VtableHook). Do not reimplement what it has;
-   use `KANANLIB_SEH_TRY/KANANLIB_SEH_EXCEPT` instead of raw `__try`.
+   Address, Patch, PointerHook, VtableHook). Use `KANANLIB_SEH_TRY` /
+   `KANANLIB_SEH_EXCEPT`, never raw `__try`.
+
+   **Stop-and-check trigger:** if you are about to write a loop over memory, a
+   `VirtualQuery` walk, a byte-comparison search, or anything that decodes an
+   instruction, STOP -- kananlib almost certainly has it:
+
+   | you want | use |
+   |----------|-----|
+   | find a byte pattern | `utility::scan(module, pattern)` (via `Modules::scan_exe`) |
+   | find code referencing an address/function | `utility::scan_relative_reference{,s}`, `scan_displacement_reference{,s}` |
+   | that, restricted to a specific opcode | `utility::scan_relative_reference_strict(mod, ptr, "E8")` |
+   | search backwards from a point | `utility::scan_reverse(start, len, pattern)` |
+   | find a pointer-sized value in memory | `utility::scan_ptr`, `scan_data_t` |
+   | find a string | `utility::scan_string{,s}` |
+   | module base/size/handle | `utility::get_module_size` etc., `sdk::Modules` |
+   | resolve an instruction operand | `utility::resolve_displacement`, `scan_opcode`, `scan_disasm` |
+
+   **Worked example of getting this wrong (2026-07, real).** To enumerate the
+   engine's interface holders I first hand-wrote a `VirtualQuery` region walk
+   that scanned the whole image for a vtable pointer and then validated
+   candidates. That was ~60 lines reimplementing, badly, what
+   `utility::scan_relative_references(module, CAPIHolder_ctor)` does in one
+   call -- and the library version is *more* precise, because call sites carry
+   the operands we actually wanted instead of requiring heuristic validation.
+   It was replaced. If your helper is longer than the kananlib call it
+   replaces, that is the smell.
+
+   One caveat learned the same day: `scan_relative_references` (plural) splits
+   the module across threads with 4-byte segment overlap and does NOT dedupe,
+   so sort+unique the result or your counts vary with core count.
    MSVC C2712: `__try` cannot share a function scope with lambdas,
    static-in-initializer, or ANY non-trivial (non-POD) local variable or
    return type -- including `std::string` constructed anywhere in that

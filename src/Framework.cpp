@@ -20,6 +20,7 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Engine.hpp"
+#include "sdk/interfaces/All.hpp"
 
 std::unique_ptr<Framework> g_framework;
 
@@ -403,6 +404,57 @@ std::string build_objects_json() {
     return out;
 }
 
+// Diagnostics only -- goes entirely through sdk::interfaces' own registry and
+// the generated per-interface classes. Reports, for every interface name
+// recovered from FEAR2.exe, how many holders requested it, how many of their
+// slots currently hold a pointer, whether those agree, and the value.
+//
+// A null value is NOT a failure: the engine's interface database fills slots
+// via APIFound() and clears them via APIRemoved(), so server-side interfaces
+// read null in a client-only session and everything reads null before module
+// resolution. `all_agree` false WOULD be an anomaly -- two holders for the
+// same interface disagreeing means our decode picked up something wrong.
+std::string build_interfaces_json() {
+    auto& reg = sdk::interfaces::Registry::get();
+    const bool ok = reg.initialize();
+
+    char head[256];
+    snprintf(head, sizeof(head),
+             "{\"ok\":%s,\"ctor\":\"0x%08" PRIXPTR "\",\"call_sites\":%zu,"
+             "\"holders\":%zu,\"names\":%zu,\"expected_names\":%zu,\"interfaces\":[",
+             ok ? "true" : "false", reg.ctor_addr(), reg.call_sites_seen(),
+             reg.holders().size(), reg.names().size(),
+             sdk::interfaces::all_interface_count());
+    std::string out = head;
+
+    // Drive the GENERATED descriptor table, whose entries call each interface
+    // class's own typed getter. That exercises all 36 public API paths, so a
+    // miswired kName or a getter bound to the wrong instance shows up here
+    // instead of being masked by a registry lookup with the right string.
+    const auto* entries = sdk::interfaces::all_interfaces();
+    const size_t count = sdk::interfaces::all_interface_count();
+    for (size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            out += ",";
+        }
+        const auto& e = entries[i];
+        const auto a = e.agreement();
+        void* via_getter = e.get();
+        char b[384];
+        snprintf(b, sizeof(b),
+                 "{\"name\":\"%s\",\"holders\":%zu,\"non_null\":%zu,\"all_agree\":%s,"
+                 "\"value\":\"0x%08" PRIXPTR "\",\"getter\":\"0x%08" PRIXPTR "\","
+                 "\"getter_matches\":%s}",
+                 e.name, a.total, a.non_null, a.all_agree ? "true" : "false",
+                 reinterpret_cast<uintptr_t>(a.value),
+                 reinterpret_cast<uintptr_t>(via_getter),
+                 (via_getter == a.value) ? "true" : "false");
+        out += b;
+    }
+    out += "]}";
+    return out;
+}
+
 // Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
 // (category_count/category/record_count/record/*_name), never raw
 // pointer/offset arithmetic here. Builds a small JSON array of up to
@@ -584,6 +636,7 @@ bool Framework::initialize() {
     handlers.targets = build_targets_json;
     handlers.database = build_database_json;
     handlers.objects = build_objects_json;
+    handlers.interfaces = build_interfaces_json;
     handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);

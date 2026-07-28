@@ -1,0 +1,40 @@
+# Engine-side interface names recovered from FEAR2.exe's CAPIHolder call
+# sites (see INTERFACE_HOLDERS.md). One per line: <name> <holder count>.
+# Regenerate the per-interface files with reversing/gen_interfaces.py.
+
+IClientShell.Default 12
+ICommandLineArgs.Default 4
+ICompress.Default 7
+ILTClient.Default 14
+ILTClientContentTransfer.Default 1
+ILTCommon.Client 1
+ILTCommon.Server 2
+ILTCursor.Default 2
+ILTCustomRender.Default 3
+ILTDrawPrim.Default 12
+ILTFileMgr.Default 2
+ILTInput.Default 1
+ILTLoadingProgress.Default 2
+ILTModel.Client 3
+ILTModel.Server 4
+ILTPhysics.Client 2
+ILTPhysics.Server 1
+ILTPhysicsSim.Client 2
+ILTPhysicsSim.Server 1
+ILTRenderer.Default 5
+ILTResourceMgr.Default 3
+ILTServer.Default 6
+ILTServerContentTransfer.Default 1
+ILTSoundMgr.Client 1
+ILTSoundMgr.Server 1
+ILTTextureMgr.Default 3
+ILTTextureString.Default 2
+ILTTimer.Client 1
+ILTTimer.Server 1
+ILTUI.Default 4
+ILTVideoTexture.Default 1
+IServerConsoleState.Default 6
+IServerShell.Default 5
+IWorldClientBSP.Default 14
+IWorldParticleBlockerData.Default 2
+IWorldServerBSP.Default 15
