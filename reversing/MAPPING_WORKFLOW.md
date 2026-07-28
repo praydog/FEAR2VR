@@ -16,7 +16,7 @@ for the full evidence trail this recipe produced).
 - [ ] **0. Scope**: pick the IDB, find an anchor (export/singleton-getter/known method name). Source drop = naming hint only.
 - [ ] **1. IDA static**: `select_instance`→`server_health` (verify by FILENAME). Decompile, classify by BEHAVIOR (getter / `GetByIndex` / `GetIndexOf` / hash-lookup). Rename via `rename` tool (NOT `set_type`), verify with fresh `func_query`. Evidence comments on load-bearing funcs. `idb_save`.
 - [ ] **2. ReGenny live-verify**: `find_namespace("regenny"):find_struct("X")` (NEVER dotted `find_struct("regenny.X")` — silently nil). Null-check every lookup. Walk the FULL array (every element, not just [0]): name decodes printable AND backpointer matches owner, 100% or it's not confirmed.
-- [ ] **3. `.genny`**: forward-declare with `struct Foo {}` for POINTER references (cycles are fine); by-VALUE members need the full definition declared first (a forward-declared type resolves with size 0). Every field: CONFIRMED-with-evidence or unverified-with-observed-values, never silently upgraded. `regenny_reload`, check `status:"ok"`. Re-verify full hierarchy through the type system before codegen.
+- [ ] **3. `.genny`**: SELF-reference by pointer works inside a class's own body (`Foo* next` in `class Foo` — use it, that's what makes a list browsable). Forward decls (`struct Foo {}`) parse but SHADOW the later real definition (size 0, no fields) — useless for a true A<->B cycle, so keep `void*` on the BACKPOINTER and type the owned/array direction. Every field: CONFIRMED-with-evidence or unverified-with-observed-values, never silently upgraded. `regenny_reload`, check `status:"ok"`. Re-verify sizes through the type system before codegen.
 - [ ] **4. Regenerate**: `sdk:generate(...)`. NEVER hand-patch generated output — fix `Primitives.hpp` or the schema instead.
 - [ ] **5. SDK class**: SEH-guard every non-singleton dereference, own function scope (C2712: no lambda/static-init/non-POD locals sharing `__try`). String reads: pointer-to-member so the struct deref itself is guarded. Refcounted vtable lookups need a matching Release — prefer direct struct traversal instead.
 - [ ] **6. Diagnostics**: extend an endpoint, keep `CommandServer.hpp`'s route doc in sync. Data only, no pass/fail.
@@ -134,24 +134,38 @@ to fixture-test.
 
 ## Phase 3 — Author/extend `fear2.genny`
 
-- `.genny` **does** have forward declarations: an empty `struct Foo {}`
-  makes the name resolvable before its real definition appears. But it is
-  NOT a merge — `find_struct("Foo")` resolves to the forward declaration,
-  which has **size 0** and no fields. So:
-  - **Pointer members** (`Foo* p`): forward declaration is correct and
-    sufficient. A pointer is 4 bytes regardless of the pointee's size, so
-    size-0 costs nothing. This is how you break genuinely **cyclic**
-    owner/child relationships (owner holds `Child* children`, child holds
-    `Owner* parent`) with BOTH sides properly typed. Do not reach for
-    `void*` — that throws away type information you actually have.
-  - **By-value members** (`Foo embedded`): the forward declaration's size 0
-    would silently give you a 0-byte member and corrupt every subsequent
-    offset. Declare the real definition FIRST, above its first by-value
-    user. (See `CClientMgrListLink`, which is declared early precisely
-    because `LTObject` and `CClientMgr` embed it by value.)
-  - Verify either way: after `regenny_reload`, read the embedding type's
-    `find_variable(...):type():size()` through the type system and confirm
-    it is the size you expect, not 0.
+- **Self-reference works, and is the fix you usually want.** A class may
+  point to itself inside its own body -- no forward declaration needed:
+  ```
+  class CClientMgrListLink 0x8 {
+      CClientMgrListLink* prev @0x00
+      CClientMgrListLink* next @0x04
+  }
+  ```
+  Verified: size stays 0x8, both fields type as `CClientMgrListLink*`, and
+  every by-value embedder (`LTObject.list_link`, `CClientMgr.object_lists`)
+  keeps its size. Type intrusive list links this way -- `void*` links are
+  what make lists un-browsable in the ReGenny UI.
+- **Forward declarations SHADOW, they do not merge -- do not use them.**
+  `struct Foo {}` parses fine, but with one present `find_struct("Foo")`
+  returns the EMPTY declaration (size 0, no fields) and the later real
+  definition becomes unreachable. Measured on this build: forward-declaring
+  `DatabaseMgrCategory` took it from size 0x14 to 0x0 with `name` MISSING.
+  A forward decl is therefore only safe for a type you never define fully,
+  which defeats the purpose.
+- **So a genuine A<->B cycle cannot be fully typed.** One side must stay
+  `void*`. Choose deliberately: type the **owned/array direction** (the way
+  you browse) and leave the **backpointer** untyped, documenting the real
+  pointee and the evidence. `DatabaseMgrCategory.records` is
+  `DatabaseMgrRecord*` while `DatabaseMgrRecord.owner_category` is `void*`
+  for exactly this reason.
+- Ordering still matters for everything else: a type must be declared
+  before it is *used*, and **by-value** members need the real definition
+  above them. (`CClientMgrListLink` sits early because `LTObject` and
+  `CClientMgr` embed it by value.)
+- Verify either way: after `regenny_reload`, read the embedding type's
+  `find_variable(...):type():size()` through the type system and confirm
+  it is the size you expect, not 0.
 - Every field gets a comment stating either **CONFIRMED** (cite the specific
   evidence — vtable offset + behavior match from Phase 1, live sample count
   from Phase 2) or **unverified** (state the actual observed value(s) and
@@ -263,13 +277,15 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   commit `1e262a6`; null-check every `find_*` result regardless, since the
   clean-error behavior is still "your script is wrong", just no longer
   "your ReGenny process is gone".
-- `.genny` forward declarations (`struct Foo {}`) DO exist and are the right
-  way to break cyclic owner/child references — but they resolve with SIZE 0,
-  so they only work for POINTER members. Anything embedding the type BY
-  VALUE needs the real definition declared above it, or it silently gets a
-  0-byte member. (An earlier version of this doc wrongly claimed `.genny`
-  had no forward declarations at all and recommended `void*` backpointers;
-  that was wrong — don't discard type info you have.)
+- `.genny` forward declarations (`struct Foo {}`) parse but **shadow** the
+  real definition -- `find_struct` returns the empty one (size 0, no
+  fields). They cannot break a cycle. Measured: forward-declaring
+  `DatabaseMgrCategory` dropped it 0x14 -> 0x0. Use SELF-reference (a class
+  pointing at itself in its own body) where that suffices; otherwise keep
+  `void*` on the backpointer side.
+  (This doc has been wrong here twice: first claiming forward declarations
+  don't exist, then claiming they work for pointer members. Both were
+  written without testing the resulting SIZE. Test it.)
 - MSVC C2712 (`__try` + non-trivial locals/lambdas/statics-in-initializer in
   the same function) bites almost every time an SEH guard's result needs to
   become a `std::string` — isolate the guard in its own POD-only helper.

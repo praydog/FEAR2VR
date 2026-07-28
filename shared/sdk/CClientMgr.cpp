@@ -128,16 +128,16 @@ static int64_t seh_walk_start_shell_list(const regenny::CClientMgr* r) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
         const auto* head = &r->start_shell_list;
-        const void* cur = head->next;
+        const regenny::CClientMgrListLink* cur = head->next;
         size_t count = 0;
-        while (cur != static_cast<const void*>(head) && count < kMaxWalk) {
+        while (cur != head && count < kMaxWalk) {
             ++count;
-            cur = reinterpret_cast<const regenny::CClientMgrListLink*>(cur)->next;
+            cur = cur->next;
         }
         // Terminated only if we came back around to the head; hitting the cap
         // means the list is corrupt or the mapping is wrong -- report neither
         // a count nor a guess.
-        result = (cur == static_cast<const void*>(head)) ? static_cast<int64_t>(count) : -1;
+        result = (cur == head) ? static_cast<int64_t>(count) : -1;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         result = -1;
@@ -161,7 +161,7 @@ bool CClientMgr::counter_node_registered() const {
         if (node != nullptr) {
             // &node->self_link -- the compiler computes the offset from the
             // generated schema; no literal appears here or in any caller.
-            ok = (static_cast<const void*>(&node->self_link) == r->counter_list_head.next);
+            ok = (&node->self_link == r->counter_list_head.next);
         }
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
@@ -179,13 +179,13 @@ constexpr size_t kMaxObjectWalk = 100000; // fail closed on a corrupt/non-termin
 int64_t seh_count_objects(const regenny::CClientMgrListLink* head) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
-        const void* cur = head->next;
+        const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0;
-        while (cur != static_cast<const void*>(head) && n < kMaxObjectWalk) {
+        while (cur != head && n < kMaxObjectWalk) {
             ++n;
-            cur = reinterpret_cast<const regenny::CClientMgrListLink*>(cur)->next;
+            cur = cur->next;
         }
-        result = (cur == static_cast<const void*>(head)) ? static_cast<int64_t>(n) : -1;
+        result = (cur == head) ? static_cast<int64_t>(n) : -1;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         result = -1;
@@ -214,10 +214,10 @@ int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
                              CClientMgr::ObjectSnapshot* out, size_t max) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
-        const void* cur = head->next;
+        const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, written = 0;
         bool invariant_ok = true;
-        while (cur != static_cast<const void*>(head) && n < kMaxObjectWalk) {
+        while (cur != head && n < kMaxObjectWalk) {
             const auto link_addr = reinterpret_cast<uintptr_t>(cur);
             const auto* obj = reinterpret_cast<const regenny::LTObject*>(
                 link_addr - offsetof(regenny::LTObject, list_link));
@@ -241,11 +241,9 @@ int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
                 ++written;
             }
             ++n;
-            cur = reinterpret_cast<const regenny::CClientMgrListLink*>(cur)->next;
+            cur = cur->next;
         }
-        result = (invariant_ok && cur == static_cast<const void*>(head))
-                     ? static_cast<int64_t>(written)
-                     : -1;
+        result = (invariant_ok && cur == head) ? static_cast<int64_t>(written) : -1;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         result = -1;

@@ -51,13 +51,27 @@ class HashEntry 0x8 {
 // "Multi_CombatBase", "ATCPatrol") and `owner_category` reads back exactly
 // the owning DatabaseMgrCategory's address in every sample.
 //
-// owner_category is void* (not DatabaseMgrCategory*) to break a genuine
-// cyclic type dependency (DatabaseMgrCategory.records needs
-// DatabaseMgrRecord defined first; DatabaseMgrRecord.owner_category needs
-// DatabaseMgrCategory defined first -- .genny has no forward declarations).
+// owner_category stays void* (not DatabaseMgrCategory*) because this is a
+// genuine cyclic type dependency and ReGenny cannot express it:
+// DatabaseMgrCategory.records needs DatabaseMgrRecord defined first, and
+// DatabaseMgrRecord.owner_category needs DatabaseMgrCategory defined first.
+//
+// Forward declarations do NOT solve this. `struct Foo {}` parses, but it
+// SHADOWS rather than merges: with a forward decl present, find_struct
+// returns the EMPTY declaration (size 0, no fields) and the later real
+// definition is unreachable. Measured directly -- forward-declaring
+// DatabaseMgrCategory here dropped it from size 0x14 to 0x0 with `name`
+// MISSING. So a forward decl is only safe for a type you never define
+// fully, which is useless for a real cycle.
+// (Self-reference is different and DOES work -- a class may point to
+// itself inside its own body; see CClientMgrListLink.)
+//
 // The pointee IS DatabaseMgrCategory (verified: == the owning category's
-// address); it's just not spelled in the type system to keep declaration
-// order acyclic. Cast at the call site if this needs to be walked.
+// address in every sample); it's just not spellable here. Note which side
+// carries the void*: the OWNED-array direction (Category.records ->
+// DatabaseMgrRecord*) is typed, because that is the direction you actually
+// browse; only the backpointer is untyped. Cast at the call site to walk
+// upward.
 //
 // unk_04/unk_08/unk_0C/unk_14 are UNVERIFIED -- kept as opaque scalars/
 // pointers rather than guessed at. This is a deliberate scope boundary: the
@@ -225,8 +239,8 @@ class DatabaseMgr 0x20 {
 // prev: position inferred from the same 8-byte link shape; not
 // independently read live.
 class CClientMgrListLink 0x8 {
-    void* prev  @0x00   // unverified -- position inferred, not independently read live
-    void* next  @0x04   // CONFIRMED live (see above)
+    CClientMgrListLink* prev  @0x00   // CONFIRMED live: circular doubly-linked. Walked all 7 object_lists buckets (3489 nodes): every node's prev == its predecessor, and each head's prev == that list's LAST node. 0 failures.
+    CClientMgrListLink* next  @0x04   // CONFIRMED live: every bucket walk closes back on its own head (see above)
 }
 
 // A vector-like container of 4-byte elements, embedded in CClientMgr @0x68.
