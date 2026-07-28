@@ -377,6 +377,22 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Bounding geometry across every type. Same self-check shape: these are
+    // identities SetDims establishes, so a divergence means a moved offset in
+    // the culling inputs (dims / radius / AABB).
+    out += ",\"geometry\":";
+    if (const auto gc = mgr->check_object_geometry(512); gc.has_value()) {
+        char gb[256];
+        snprintf(gb, sizeof(gb),
+                 "{\"sampled\":%zu,\"aabb_min_ok\":%zu,\"aabb_max_ok\":%zu,\"radius_sized\":%zu,"
+                 "\"radius_pristine\":%zu,\"dims_nonneg\":%zu}",
+                 gc->sampled, gc->aabb_min_ok, gc->aabb_max_ok, gc->radius_sized,
+                 gc->radius_pristine, gc->dims_nonneg);
+        out += gb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

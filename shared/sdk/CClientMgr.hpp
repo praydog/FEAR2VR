@@ -303,6 +303,43 @@ public:
     // when the walk faulted or did not terminate.
     std::optional<TransformCheck> check_type5_transforms(size_t max) const;
 
+    // ---- bounding geometry (every object type) --------------------------
+    //
+    // LTObject caches a world AABB, a radius and a half-extents vector, and
+    // SetDims (dump 0x420358) derives the first two from the third:
+    //     aabb_min = position - dims
+    //     aabb_max = position + dims
+    //     radius   = |dims| + 0.1
+    // Another MAPPING SELF-CHECK, in the same spirit as check_type5_transforms:
+    // these are identities the engine's own writer establishes, so they must
+    // hold for every live object. If one stops holding, an offset moved.
+    //
+    // Why this matters beyond bookkeeping: `dims`, `radius` and the AABB are
+    // the culling inputs, so a wrong offset here would silently mis-cull
+    // geometry rather than crash.
+    //
+    // The radius is TWO-STATE, and this distinction is load-bearing: the base
+    // constructor zeroes both dims and radius, so an object SetDims never ran
+    // on sits at (dims == 0, radius == 0) -- NOT at radius 0.1. Live, 2126
+    // objects are sized and 1457 are pristine, with none outside either state.
+    // The counts are reported separately rather than merged so a caller can
+    // assert both branches are actually exercised; collapsing them into one
+    // "ok" tally, or widening the tolerance until the pristine objects slipped
+    // under it, would turn a real two-state invariant into a vacuous one.
+    struct GeometryCheck {
+        size_t sampled;         // objects examined across all buckets
+        size_t aabb_min_ok;     // aabb_min == position - dims
+        size_t aabb_max_ok;     // aabb_max == position + dims
+        size_t radius_sized;    // SetDims ran: radius == |dims| + 0.1
+        size_t radius_pristine; // never sized: dims == 0 AND radius == 0
+        size_t dims_nonneg;     // all three components >= 0
+    };
+
+    // Walks up to `max_per_type` objects of EVERY type. nullopt when any walk
+    // faulted or failed to terminate. radius_sized + radius_pristine must equal
+    // sampled; any shortfall is an object in neither state, i.e. a broken map.
+    std::optional<GeometryCheck> check_object_geometry(size_t max_per_type) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

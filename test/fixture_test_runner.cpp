@@ -643,6 +643,46 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Bounding geometry across every object type. These are identities the
+        // engine's own SetDims establishes (aabb = position +/- dims, radius =
+        // |dims| + 0.1), so every live object must satisfy them. They guard the
+        // culling inputs, where a moved offset would mis-cull silently rather
+        // than crash.
+        {
+            const size_t gp = body.find("\"geometry\":");
+            check(gp != std::string::npos, "objects report includes the geometry check");
+            if (gp != std::string::npos) {
+                if (json_has(body, "\"geometry\":null")) {
+                    check(false, "geometry walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', gp);
+                    const std::string gb = body.substr(gp, end - gp + 1);
+                    int64_t sampled = -1, mn = -1, mx = -1, rs = -1, rp = -1, nn = -1;
+                    json_int(gb, "sampled", sampled);
+                    json_int(gb, "aabb_min_ok", mn);
+                    json_int(gb, "aabb_max_ok", mx);
+                    json_int(gb, "radius_sized", rs);
+                    json_int(gb, "radius_pristine", rp);
+                    json_int(gb, "dims_nonneg", nn);
+                    check(sampled > 0, "objects present to check geometry against");
+                    check(mn == sampled, "every object: aabb_min == position - dims");
+                    check(mx == sampled, "every object: aabb_max == position + dims");
+                    check(nn == sampled, "every object: all dims components >= 0");
+
+                    // The radius is two-state. Assert the PARTITION (every
+                    // object lands in exactly one state) and, separately, that
+                    // BOTH states are actually populated. The partition alone
+                    // would pass vacuously if every object went pristine, which
+                    // is exactly how a broken dims offset would present.
+                    check(rs + rp == sampled,
+                          "every object is either sized (radius == |dims| + 0.1) or pristine "
+                          "(dims == 0 and radius == 0)");
+                    check(rs > 0, "sized-radius objects exist (SetDims branch exercised)");
+                    check(rp > 0, "pristine-radius objects exist (constructor branch exercised)");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

@@ -9,19 +9,36 @@ class LTObject {
 public:
     // Metadata: code
     void* vtable; // 0x0
-    private: char pad_4[0xc]; public:
+    uint32_t unk_04; // 0x4
+    void* unk_08; // 0x8
+    private: char pad_c[0x4]; public:
     regenny::LTObjectType type; // 0x10
     private: char pad_11[0x1]; public:
     uint16_t handle; // 0x12
     regenny::LTVector position; // 0x14
     regenny::LTRotation rotation; // 0x20
-    private: char pad_30[0x8]; public:
-    void* unk_38; // 0x38
-    private: char pad_3c[0x8]; public:
-    uint16_t flags; // 0x44
-    private: char pad_46[0x66]; public:
+    float unk_30; // 0x30
+    void* owner; // 0x34
+    void* record; // 0x38
+    uint32_t flags; // 0x3c
+    uint32_t unk_40; // 0x40
+    uint16_t flags2; // 0x44
+    uint16_t flags3; // 0x46
+    regenny::LTVector aabb_min; // 0x48
+    regenny::LTVector aabb_max; // 0x54
+    float radius; // 0x60
+    regenny::LTVector dims; // 0x64
+    float unk_70; // 0x70
+    regenny::CClientMgrListLink unk_list_74; // 0x74
+    regenny::CClientMgrListLink unk_list_7C; // 0x7c
+    void* self_84; // 0x84
+    private: char pad_88[0x20]; public:
+    float unk_A8; // 0xa8
     regenny::CClientMgrListLink list_link; // 0xac
-    private: char pad_b4[0x18]; public:
+    private: char pad_b4[0x4]; public:
+    regenny::CClientMgrListLink unk_list_B8; // 0xb8
+    private: char pad_c0[0x4]; public:
+    regenny::CClientMgrListLink unk_list_C4; // 0xc4
 }; // Size: 0xcc
 #pragma pack(pop)
 }

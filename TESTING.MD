@@ -170,6 +170,46 @@ invariant (the walk terminated, the count is non-negative, independent holders
 agree) and record the observed exact agreement as evidence in the commit
 message instead of as a test.
 
+The rule has a second, sneakier form that bit in 2026-07 **despite the
+paragraph above already existing**: a loose window used during *exploration*
+gets reported as though it were an exact identity. While mapping `LTObject`'s
+radius, the probe accepted `r <= |dims| + 1.0` — a one-unit-wide window — and
+the finding was written up, in the schema and a commit, as "`radius == |dims| +
+0.1`, CONFIRMED on 3583/3583". The fixture assertion, which tested what the
+prose actually claimed, failed immediately: only 2126 objects satisfied the
+formula. The other 1457 sat at `radius == 0` with `dims == 0`, because the base
+constructor zeroes both and `SetDims` had never run on them.
+
+Two lessons, both cheap to apply:
+
+- **The window you explore with is not the claim you may publish.** A probe may
+  be loose to find the shape; the write-up must state the relation you actually
+  tested, at the tolerance you actually used. If the probe said `+/- 1.0`, you
+  may not write `+ 0.1`.
+- **Write the assertion at the precision of the prose.** Had the check been
+  written first, at the stated precision, the mistake could not have survived
+  the first run. This is the strongest argument for the in-process self-check
+  pattern: the endpoint recomputes the claim, so the fixture fails when the
+  prose drifts from the data.
+
+A tolerance that scales with magnitude is still legitimate where it reflects
+float representability rather than fudge: world coordinates here reach five
+figures, so `d <= 0.01 + 0.0001*|b|` is defensible and `d <= 1.0` is not. State
+which of the two you are doing.
+
+**A field can have more than one correct state, and the extra state is usually
+"its writer never ran".** The fix for the radius was NOT a looser epsilon but a
+partition: every object is either sized (`radius == |dims| + 0.1`) or pristine
+(`dims == 0 && radius == 0`), and live it is 2126/1457 with none outside. Two
+things must then be asserted, not one:
+
+- the **partition** is total (`sized + pristine == sampled`), and
+- **both** states are populated (`sized > 0`, `pristine > 0`).
+
+The partition alone passes vacuously if everything collapses into one bucket —
+which is exactly how a broken `dims` offset would present, since a wrong offset
+reading zeroes would make every object look pristine.
+
 **A frozen fixture answers IPC perfectly — so "it responded" proves nothing
 about liveness.** Threads created after a process is suspended keep running, so
 an injected IPC server happily serves stale reads from a game whose own threads

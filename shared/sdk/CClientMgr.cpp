@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cmath>
+
 #include <utility/Seh.hpp>
 
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
@@ -536,6 +538,75 @@ int64_t seh_check_type5(const regenny::CClientMgrListLink* head, size_t max,
     return result;
 }
 
+// Tolerance scaled with magnitude. NOT a tuned fudge factor: world coordinates
+// here reach five figures, where a fixed absolute epsilon sits below the float
+// spacing and would fail on correct data. Named `approx_eq`, not `near` --
+// windows.h still defines `near` as an empty macro, which silently eats the
+// declaration and yields a baffling C2513.
+bool approx_eq(float a, float b) {
+    const float d = a > b ? a - b : b - a;
+    const float m = b < 0 ? -b : b;
+    return d <= 0.01f + 0.0001f * m;
+}
+
+// Walks one bucket, checking the identities SetDims establishes plus the sign
+// constraint on dims. Offsets all come from the generated schema.
+//
+// The radius is classified into one of two states rather than tested against a
+// single formula -- see GeometryCheck for why that distinction must not be
+// collapsed or absorbed into a wider tolerance.
+//
+// Returns the number sampled, or -1 on fault / non-termination.
+int64_t seh_check_geometry(const regenny::CClientMgrListLink* head, size_t max, size_t* mn_ok,
+                           size_t* mx_ok, size_t* r_sized, size_t* r_pristine, size_t* nonneg,
+                           size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* o = reinterpret_cast<const regenny::LTObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+
+                const float px = o->position.x, py = o->position.y, pz = o->position.z;
+                const float dx = o->dims.x, dy = o->dims.y, dz = o->dims.z;
+
+                if (approx_eq(o->aabb_min.x, px - dx) && approx_eq(o->aabb_min.y, py - dy) &&
+                    approx_eq(o->aabb_min.z, pz - dz)) {
+                    ++*mn_ok;
+                }
+                if (approx_eq(o->aabb_max.x, px + dx) && approx_eq(o->aabb_max.y, py + dy) &&
+                    approx_eq(o->aabb_max.z, pz + dz)) {
+                    ++*mx_ok;
+                }
+                // SetDims adds the double at 0x66FBB8, which is exactly 0.1.
+                // An object it never ran on keeps the constructor's zeroes, so
+                // radius 0 with dims 0 is correct-but-unsized, NOT a violation.
+                const float len = static_cast<float>(sqrt(static_cast<double>(dx) * dx +
+                                                          static_cast<double>(dy) * dy +
+                                                          static_cast<double>(dz) * dz));
+                if (dx == 0.0f && dy == 0.0f && dz == 0.0f && o->radius == 0.0f) {
+                    ++*r_pristine;
+                } else if (approx_eq(o->radius, len + 0.1f)) {
+                    ++*r_sized;
+                }
+                if (dx >= 0.0f && dy >= 0.0f && dz >= 0.0f) {
+                    ++*nonneg;
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
 } // namespace
 
 std::optional<CClientMgr::TransformCheck> CClientMgr::check_type5_transforms(size_t max) const {
@@ -552,6 +623,22 @@ std::optional<CClientMgr::TransformCheck> CClientMgr::check_type5_transforms(siz
         return std::nullopt;
     }
     out.sampled = static_cast<size_t>(n);
+    return out;
+}
+
+std::optional<CClientMgr::GeometryCheck> CClientMgr::check_object_geometry(
+    size_t max_per_type) const {
+    GeometryCheck out{};
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const int64_t n = seh_check_geometry(&regenny()->object_lists[t], max_per_type,
+                                            &out.aabb_min_ok, &out.aabb_max_ok, &out.radius_sized,
+                                            &out.radius_pristine, &out.dims_nonneg,
+                                            max_object_walk);
+        if (n < 0) {
+            return std::nullopt; // a faulted bucket invalidates the whole report
+        }
+        out.sampled += static_cast<size_t>(n);
+    }
     return out;
 }
 

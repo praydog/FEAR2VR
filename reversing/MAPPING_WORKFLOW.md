@@ -212,6 +212,27 @@ It matched to 0.00000 across 40 objects with determinant 1.0. So:
   precisely why the schema does NOT call it the position. Record the 5, do
   not round them away.
 
+**Before assuming one formula governs a field, ask whether its writer ever
+ran.** A derived field has at least two legitimate states: the value its setter
+computes, and whatever the *constructor* left there. `LTObject.radius` is
+`|dims| + 0.1` — on 2126 of 3583 live objects. The remaining 1457 read exactly
+`0`, with `dims` also `0`, because `LTObject_ctor` zeroes both and `SetDims`
+never ran on them. Neither state is wrong; assuming a single formula is.
+
+This is why Phase 1 should note what the **constructor** writes, not only what
+the setters write. Reading `LTObject_ctor` (0x420408) end to end was the single
+highest-yield step of that pass: it pinned `handle`'s 0xFFFF sentinel, proved
+the quaternion's `w` sits at +0x2C by writing `(0,0,0,1)`, showed four
+self-pointed list heads, and — precisely because it zeroes `dims`/`radius` —
+explained the second radius state. When a "confirmed" identity holds on most
+but not all objects, the ctor's initial value is the first hypothesis to test,
+ahead of any tolerance change.
+
+When you find such a field, map it as a **partition** and give each branch a
+name and a count. Then assert both that the partition is total and that both
+branches are populated: a partition alone goes green if every object collapses
+into one branch, which is how a wrong offset that reads zeroes presents.
+
 ## Phase 3 — Author/extend `fear2.genny`
 
 - **Self-reference works, and is the fix you usually want.** A class may
@@ -347,6 +368,28 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A vtable slot can point at bytes IDA never turned into a function.**
+  `OT_MODEL`'s slot 0 (0x42A844) was live, referenced from a vtable, and
+  decompiled fine afterwards — but `rename` failed with "Function not found"
+  and `set_type(kind="function")` failed the same way. `define_code` only
+  makes an instruction; the tool that works is **`define_func`** (with an
+  explicit `end` for the byte range). Read the raw bytes first and confirm the
+  prologue/epilogue before defining: here `push esi; mov esi,ecx; call ...;
+  test byte [esp+8],1; ...; retn 4` is the unmistakable MSVC scalar-deleting
+  destructor shape, so the definition was safe rather than a guess. If a
+  rename fails with "Function not found", do not skip the slot — undefined
+  bytes at a referenced address mean IDA's analysis stopped short, and every
+  such gap is a real function you are missing.
+- **Hex-Rays pointer casts are inference, not evidence.** In `LTObject_SetPos`
+  the pseudocode reads `v3 = *(char **)(*(_DWORD *)(this + 56) + 52)` and
+  passes it to a `%s` format, which reads unambiguously as "the object's name
+  lives at record+0x34". Live, that field holds values like `0x0001D87A` on
+  3583/3583 objects — never a valid pointer. The `char*` came from the
+  decompiler matching a printf argument, not from the data. Any field the
+  pseudocode types as a string, pointer, or float is a hypothesis until read
+  out of the live process. (The branch in question also never executes: it is
+  gated on `flags3 & 0x400` being clear, and that bit is set on every live
+  object — so dead code taught a wrong lesson twice over.)
 - IDA `set_type(kind="function", name=..., signature=...)` sets the
   prototype but does **not** rename the symbol — use the `rename` tool,
   verify with a fresh `func_query`.

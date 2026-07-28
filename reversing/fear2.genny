@@ -404,15 +404,57 @@ class LTRotation 0x10 {
 // per bank): OT_MODEL 408, OT_WORLDMODEL 316, OT_SPRITE 340, OT_CAMERA 320,
 // OT_PARTICLESYSTEM 264. Those are the derived classes; only the shared
 // prefix is mapped here, and no derived field is claimed.
+//
+// ---- The base virtual interface (from the six object vtables) --------------
+//
+// Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's
+// objects share exactly ONE vtable (3583 live objects, single traversal):
+//   OT_NORMAL 0x672360   OT_MODEL 0x6736B0   OT_WORLDMODEL 0x6776E8
+//   OT_SPRITE 0x671018   OT_CAMERA 0x677728  OT_PARTICLESYSTEM 0x670FD8
+// OT_LIGHT has no live objects and therefore no observed vtable.
+//
+// 0x672360 (OT_NORMAL's) IS the base LTObject vtable: the base destructor body
+// at 0x42050E and the base constructor at 0x420408 both install it. So type 0
+// is a plain LTObject and the other five are derived classes. WORLDMODEL and
+// CAMERA differ from each other in only slots 0 and 1.
+//
+// The base methods live in 0x4200A0..0x4206E8. Known slots:
+//   1 = Init(owner, createStruct)     8 = SetFlags(uint32 -> +0x3C)
+//   3 = SetPos(vec3)                  9 = SetFlags2(uint16 -> +0x44)
+//   4 = SetRotation(quat)             6 = sets the float at +0x30
+//   7 = SetPosRot(vec3, quat)
+// Each notifies owner->slot4(this, code) with a CHANGE CODE, decoded from the
+// call sites: 2 = position, 4 = rotation, 6 = both, 8 = flags, 0x10 = +0x30,
+// 0x4000 = dims. Slots 10-15 of the simple types are ICF-folded shared stubs
+// (0x651914 is `nullsub`, reached from 55 different vtable slots) -- see
+// AGENT.MD on not over-claiming from folded bodies.
 class LTObject 0xCC {
     void* vtable          @0x00 [[code]]
-    LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal)
-    uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287)
-    LTVector position     @0x14
-    LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples
-    void* unk_38          @0x38   // CONFIRMED refcounted/owned pointer (passed to sub_445B16 on teardown); pointee unmapped
-    uint16_t flags        @0x44   // CONFIRMED bitfield (dump 0x40B287 tests & 0x600); bit meanings unverified
-    CClientMgrListLink list_link @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`)
+    uint32_t unk_04       @0x04   // ctor 0x420408 writes all four bytes as 0xFF
+    void* unk_08          @0x08   // ctor zeroes it; the base dtor branches on it; non-zero on only 36/3583 live
+    LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal). The ctor writes it as a BYTE from its argument.
+    uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287, and the ctor initialises it to 0xFFFF)
+    LTVector position     @0x14   // CONFIRMED: written component-wise by SetPos (0x4201B8) and SetPosRot (0x4202B6)
+    LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples; the ctor writes (0,0,0,1), pinning w at +0x2C
+    float unk_30          @0x30   // MEANING UNKNOWN. ctor sets 1.0; virtual slot 6 (0x4200BF) is its setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583, with 1.658/2.493/3.19/3.2 on a few models and 7.25 on one OT_NORMAL. NOT the radius (that is +0x60) and NOT proven to be a scale: the models whose value differs from 1.0 all have dims of exactly 0, so nothing observed varies with it.
+    void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
+    void* record          @0x38   // CONFIRMED per-object and never null (3583/3583). record[+0x38] points BACK to this object on 3583/3583. Layout is type-dependent and unmapped; record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree), so that is NOT a type field. record[+0x34] is NOT a string pointer -- see the comment on flags3.
+    uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; the render predicate 0x4200A0 reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0). The render gate is !(f & 0x200) && (f & 0x10C30); those bit meanings are unverified. ctor zeroes it.
+    uint32_t unk_40       @0x40   // ctor zeroes it
+    uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.
+    uint16_t flags3        @0x46  // CONFIRMED 16-bit and distinct from flags2 (SetPos reads it as a separate WORD). Bit 0x400 is set on 3583/3583 live objects (values 0x400 x3529, 0x420 x53, 0x490 x1), which is exactly why SetPos's "Object going outside world" branch never runs -- it is gated on that bit being CLEAR. Do not read the record fields that branch touches as validated: they are not. Bit 0x20 is set by 0x420585 when it unlinks the node at +0x7C.
+    LTVector aabb_min     @0x48   // CONFIRMED == position - dims on 3583/3583 live objects. Written by 0x42015D from SetPos, SetPosRot and SetDims.
+    LTVector aabb_max     @0x54   // CONFIRMED == position + dims on 3583/3583 live objects
+    float radius          @0x60   // CONFIRMED, and TWO-STATE. SetDims computes sqrt(dot(dims,dims)) and adds the double at 0x66FBB8, which is exactly 0.1 -- but the ctor zeroes both this and dims, so an object SetDims never ran on sits at radius 0 WITH dims 0, not at 0.1. Live partition: 2126 sized (radius == |dims| + 0.1), 1457 pristine (both zero), 0 in neither. My first pass claimed the single formula held on 3583/3583 -- that was wrong, produced by a check with a 1.0-wide acceptance window; the fixture's tighter assertion caught it. Do NOT re-widen the tolerance to make one formula fit.
+    LTVector dims         @0x64   // CONFIRMED half-extents: SetDims (0x420358) stores its argument here and derives the AABB as position +/- it. All three components are >= 0 and bounded on 3583/3583.
+    float unk_70          @0x70   // ctor zeroes it
+    CClientMgrListLink unk_list_74 @0x74   // CONFIRMED list head: the ctor self-points both fields (empty). Contents unmapped.
+    CClientMgrListLink unk_list_7C @0x7C   // CONFIRMED list head, self-pointed by the ctor. 0x420585 unlinks a node from it and then sets flags3 bit 0x20.
+    void* self_84         @0x84   // CONFIRMED: the ctor stores `this` here
+    float unk_A8          @0xA8   // ctor writes NaN -- the shape of an invalidated cache, but nothing observed recomputes it
+    CClientMgrListLink list_link  @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`); the ctor self-points it, matching an unlinked object
+    CClientMgrListLink unk_list_B8 @0xB8   // CONFIRMED list head, self-pointed by the ctor
+    CClientMgrListLink unk_list_C4 @0xC4   // CONFIRMED list head, self-pointed by the ctor. Ends at 0xCC == the class size.
 }
 
 // LTMemory.dll's fixed-size pool allocator. NOT a FEAR2.exe type -- both
