@@ -1,5 +1,6 @@
 #pragma once
 #include "CClientMgrListLink.hpp"
+#include "CClientMgrObjectBank.hpp"
 #include "CClientMgrPtrVector.hpp"
 namespace regenny {
 class CClientMgrCounterNode;
@@ -9,7 +10,7 @@ namespace regenny {
 class CClientMgr {
 public:
     regenny::CClientMgrListLink object_lists[7]; // 0x0
-    private: char pad_38[0x30]; public:
+    regenny::CClientMgrObjectBank object_banks[6]; // 0x38
     regenny::CClientMgrPtrVector unk_68; // 0x68
     private: char pad_74[0x470]; public:
     void* unk_4E4; // 0x4e4

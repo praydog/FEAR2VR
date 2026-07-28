@@ -337,6 +337,30 @@ std::string build_objects_json() {
     }
     out += "]";
 
+    // Per-object-type allocator banks. The index is NOT the type (OT_LIGHT has
+    // no bank), so this goes through bank_at() and reports the type each bank
+    // actually serves rather than assuming array order.
+    out += ",\"banks\":[";
+    for (size_t i = 0; i < sdk::CClientMgr::object_bank_count(); ++i) {
+        if (i != 0) {
+            out += ",";
+        }
+        const auto b = mgr->bank_at(i);
+        if (!b.has_value()) {
+            out += "null";
+            continue;
+        }
+        char bb[256];
+        snprintf(bb, sizeof(bb),
+                 "{\"index\":%zu,\"type\":%u,\"type_name\":\"%s\",\"pool\":\"0x%08" PRIXPTR "\","
+                 "\"element_size\":%u,\"block_size\":%u,\"block_matches\":%s}",
+                 i, static_cast<unsigned>(b->type), sdk::object_type_name(b->type), b->pool,
+                 b->element_size, b->block_size,
+                 (b->block_size == ((b->element_size + 8u) & ~7u)) ? "true" : "false");
+        out += bb;
+    }
+    out += "]";
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

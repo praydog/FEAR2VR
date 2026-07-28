@@ -375,13 +375,36 @@ class LTRotation 0x10 {
 // flags @0x44: CONFIRMED as a bitfield -- dump 0x40B287 tests
 // `(*(WORD*)(a1+68) & 0x600) != 0`. Individual bit meanings unverified.
 //
-// unk_D8: only touched when type == 6 (dump 0x40B287 passes it to
-// off_6ECC90's vtable slot 50, then zeroes it) -- a type-6-specific
-// resource handle. Not investigated further.
+// unk_D8: RELOCATED OUT OF THIS CLASS. It is only touched when type == 6
+// (dump 0x40B287 passes it to off_6ECC90's vtable slot 50, then zeroes it),
+// and the allocator evidence below proves why: at +0xD8 it lies OUTSIDE a
+// base LTObject entirely. It is a field of the particle-system subclass
+// (264 bytes), not of LTObject (204). Left unmapped rather than guessed at
+// on a subclass that has no other mapped field yet.
 //
-// Size is a HEADROOM MINIMUM past the highest confirmed field, NOT the
-// confirmed object size.
-class LTObject 0xE0 {
+// SIZE 0xCC (204) is the ALLOCATION SIZE the engine requests for a type-0
+// object -- not a proven nominal C++ `sizeof` of a base subobject. Stride and
+// allocator size cannot distinguish "sizeof(LTObject)" from "sizeof(whatever
+// concrete class OT_NORMAL uses)"; OT_NORMAL objects are plain base objects in
+// the reference SDK, which makes them the same thing there, but that is
+// analogue reasoning and stays labelled as such. Treat 0xCC as a hard upper
+// bound for anything overlaid on a type-0 object.
+//
+// Derived from the engine's own per-type pool allocators (see
+// CClientMgr.object_banks):
+//   * CClientMgr's bank for OT_NORMAL records element_size 204, and its pool
+//     has block_size 208 == (204 + 8) & ~7.
+//   * Live, the MINIMUM address spacing between two OT_NORMAL objects is
+//     exactly 208 across 919 objects -- consecutive slots in that pool.
+//   * That bank's chunk contains ONLY type-0 objects (56 in-chunk, 0 of any
+//     other type), so the size belongs to type 0 specifically.
+//   * Every field mapped below ends at or before 0xB4, well inside 204.
+//
+// The other types' allocation sizes come from the same source (element_size
+// per bank): OT_MODEL 408, OT_WORLDMODEL 316, OT_SPRITE 340, OT_CAMERA 320,
+// OT_PARTICLESYSTEM 264. Those are the derived classes; only the shared
+// prefix is mapped here, and no derived field is claimed.
+class LTObject 0xCC {
     void* vtable          @0x00 [[code]]
     LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal)
     uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287)
@@ -390,7 +413,56 @@ class LTObject 0xE0 {
     void* unk_38          @0x38   // CONFIRMED refcounted/owned pointer (passed to sub_445B16 on teardown); pointee unmapped
     uint16_t flags        @0x44   // CONFIRMED bitfield (dump 0x40B287 tests & 0x600); bit meanings unverified
     CClientMgrListLink list_link @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`)
-    void* unk_D8          @0xD8   // only used when type == 6 (dump 0x40B287); role unverified
+}
+
+// LTMemory.dll's fixed-size pool allocator. NOT a FEAR2.exe type -- both
+// vtable pointers land inside LTMemory.dll's image (live 0x10004274 and
+// 0x10004254, each dereferencing to code in that module), so LTMemory
+// constructs these and FEAR2.exe only holds references.
+//
+// TWO vtable pointers at +0x00/+0x04 = multiple inheritance, which is why this
+// is not modelled with a single vptr.
+//
+// CONFIRMED LIVE:
+//   * 277 of these are threaded into one circular doubly-linked list. Walking
+//     forward from CClientMgr's first bank returns to its own start after 257;
+//     walking backward reaches 20 more and then a non-pool head sentinel in
+//     LTMemory.dll's own data (0x100050AC). LTMemory owns the list; FEAR2's
+//     six object banks are a subset of it.
+//   * The links are at +0x34/+0x38 and point at the NEIGHBOUR'S +0x34, not at
+//     its base (obj[i].next == obj[i+1] + 0x34 for every pair walked).
+//   * +0x3C holds the object's OWN address (6/6 across CClientMgr's banks).
+//   * block_size == (requested element_size + 8) & ~7, exactly, 6/6 -- an
+//     8-byte allocation header plus 8-byte alignment.
+//   * chunk: the first element slot begins at chunk + 0x10 (a 16-byte chunk
+//     header), and slots are block_size apart. Verified by landing exactly on
+//     live objects from that slot base.
+//
+// elems_per_chunk is the best-supported READING of +0x2C, not a proven
+// contract: block_size * it clusters just under a page (4032/4048/3960...) for
+// 248 of 257 pools and just under 16K for the other 9, so the chunk size is
+// not fixed and the name describes the observed relationship only.
+class LTMemoryPool 0x40 {
+    void* vftable_a          @0x00 [[code]]  // CONFIRMED inside LTMemory.dll (live 0x10004274)
+    void* vftable_b          @0x04 [[code]]  // CONFIRMED inside LTMemory.dll (live 0x10004254); multiple inheritance
+    uint32_t unk_08          @0x08           // unverified; live 0xFFFFFFFF on all six banks
+    uint32_t unk_0C          @0x0C           // unverified; live 0xFFFFFFFF on all six banks
+    uint32_t unk_1C          @0x1C           // unverified; live 0x020007D0 identically on all six banks
+    uint32_t unk_20          @0x20           // unverified; 1..12 across pools, tracks the chunk-size cluster
+    uint32_t unk_24          @0x24           // unverified; live 0x00020001 or 0x00000001
+    uint32_t block_size      @0x28           // CONFIRMED == (element_size + 8) & ~7, 6/6
+    uint32_t elems_per_chunk @0x2C           // relationship confirmed, contract not -- see above
+    void* chunk              @0x30           // CONFIRMED: element slots start at chunk + 0x10, block_size apart
+    void* list_prev          @0x34           // CONFIRMED: points at the previous pool's +0x34
+    void* list_next          @0x38           // CONFIRMED: points at the next pool's +0x34
+    LTMemoryPool* self       @0x3C           // CONFIRMED: equals this object's own address (6/6)
+}
+
+// One CClientMgr object-type bank: the LTMemory pool plus the element size
+// requested from it. See CClientMgr.object_banks for the type mapping proof.
+class CClientMgrObjectBank 0x8 {
+    LTMemoryPool* pool     @0x00   // CONFIRMED LTMemory pool (vtables in LTMemory.dll)
+    uint32_t element_size  @0x04   // CONFIRMED: pool->block_size == (this + 8) & ~7, 6/6
 }
 
 // Node CClientMgr registers for itself in its own counter_list_head list
@@ -597,8 +669,41 @@ class CClientMgrCounterNode 0x40 {
 // field + alignment, exactly like DatabaseMgr's own "unconfirmed beyond
 // +0x18" note -- do NOT treat 0x1468 as the confirmed total object size,
 // only as "safe to reinterpret up to here".
+//
+// object_banks: CONFIRMED. Six {LTMemoryPool*, element_size} pairs filling the
+// 0x38..0x67 span that used to be the largest unmapped hole in this class.
+// Each is the fixed-size allocator for ONE object type.
+//
+// THE INDEX IS NOT THE TYPE. OT_LIGHT (4) has no bank, so the array is
+// compacted around it:
+//   bank[0] -> type 0 OT_NORMAL         element_size 204  block 208
+//   bank[1] -> type 1 OT_MODEL          element_size 408  block 416
+//   bank[2] -> type 2 OT_WORLDMODEL     element_size 316  block 320
+//   bank[3] -> type 3 OT_SPRITE         element_size 340  block 344
+//   bank[4] -> type 5 OT_CAMERA         element_size 320  block 328
+//   bank[5] -> type 6 OT_PARTICLESYSTEM element_size 264  block 272
+// That OT_LIGHT is skipped is consistent with its object_lists bucket being
+// empty in every live sample taken so far (0 entries, always).
+//
+// HOW THE MAPPING WAS PROVEN -- three checks, because the obvious one is not
+// sufficient on its own:
+//   1. Minimum live address spacing per type equals exactly one bank's
+//      block_size, and the six values form a bijection with the six types
+//      (208/416/320/344/328/272, all distinct).
+//   2. NOT sufficient alone: those block sizes are NOT unique across the
+//      wider LTMemory pool list -- 4 of the 6 are shared with 1-2 other pools.
+//      So spacing alone cannot prove the objects come from THESE pools.
+//   3. Membership, which does prove it: each bank's pool->chunk, taken at
+//      chunk + 0x10 with block_size stride, contains ONLY objects of its
+//      mapped type and none of any other -- 6/6 banks, 0 foreign objects
+//      (56/20/15/35/9/55 in-chunk hits respectively). The first slot's own
+//      type byte also equals the mapped type, 6/6.
+//
+// This is also where every object type's allocation size comes from; see the
+// LTObject comment for why that pins its size at 0xCC rather than headroom.
 class CClientMgr 0x1468 {
     CClientMgrListLink object_lists[7]       @0x00     // CONFIRMED: 7 heads, bucketed by LTObject.type (index == type)
+    CClientMgrObjectBank object_banks[6]     @0x38     // CONFIRMED per-object-type pool banks; index != type (OT_LIGHT has none) -- see the class comment
     CClientMgrPtrVector unk_68               @0x68     // CONFIRMED container shape; what it holds is unverified
     void* unk_4E4                            @0x4E4
     CClientMgrListLink counter_list_head     @0x13EC   // CONFIRMED: iterated per-frame by EngineList_ForEach(this+0x13EC) in CClientMgr::Update (dump 0x40B6A3)

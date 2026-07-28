@@ -245,6 +245,38 @@ public:
         }
     }
 
+    // ---- object allocators (per-type pool banks) -----------------------
+    //
+    // regenny()->object_banks is six {LTMemoryPool*, element_size} pairs, one
+    // per object type, filling what used to be the largest unmapped span in
+    // this class. See fear2.genny's CClientMgr.object_banks comment for the
+    // three-step proof of the mapping.
+    //
+    // THE INDEX IS NOT THE TYPE. OT_LIGHT has no bank, so the array is
+    // compacted around it and callers must go through bank_for(). Indexing by
+    // raw ObjectType would silently read OT_CAMERA's bank for OT_LIGHT.
+
+    // Number of banks, straight from the schema -- never a literal.
+    static constexpr size_t object_bank_count() {
+        return sizeof(regenny::CClientMgr::object_banks) /
+               sizeof(regenny::CClientMgrObjectBank);
+    }
+
+    struct ObjectBankInfo {
+        ObjectType type;        // the object type this bank allocates
+        uintptr_t pool;         // the LTMemory pool (diagnostics; not dereferenced here)
+        uint32_t element_size;  // allocation size the engine requests for this type
+        uint32_t block_size;    // pool's slot stride == (element_size + 8) & ~7
+    };
+
+    // Bank serving `type`, or nullopt when that type has no bank (OT_LIGHT) or
+    // the read faulted. SEH-guarded: reaches through the pool pointer.
+    std::optional<ObjectBankInfo> bank_for(ObjectType type) const;
+
+    // Bank at raw array index, or nullopt when out of range / faulted. For
+    // diagnostics that want to enumerate the array as it actually is.
+    std::optional<ObjectBankInfo> bank_at(size_t index) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

@@ -195,9 +195,19 @@ inject → test → uninject with the game never restarting.
    (unpacked; the on-disk FEAR2.exe
    is CEG/SteamStub-wrapped and *useless* for static analysis — its `.text` is
    ciphertext), gameclient.dll, gameserver.dll, gamedatabase.dll, ltmemory.dll.
+   - IDBs live in `I:\Programming\projects\fear2recon\*.i64` (moved off the
+     network/W: volume on 2026-07 after an instance crashed there --
+     `skill://ida-friction` flags network-share IDBs as a wedge risk, and it
+     happened). The `input_path` in `server_health` still points at the
+     original binary under `W:\SteamLibrary\...`; that is expected.
    - After `select_instance`, ALWAYS verify with `server_health` by IDB
      filename before trusting any result (MCP instance switching can silently
      misroute).
+   - **MCP ports are NOT stable across IDA restarts.** After the relocation the
+     assignments shuffled: FEAR2_dump.exe moved 13339 -> 13338 and
+     gameclient.dll took 13339, which is exactly the setup for renaming a
+     hundred symbols into the wrong database. Always `list_instances` first and
+     pick the port by BINARY NAME, never from memory of a previous session.
    - Rename functions/globals in IDA as you map them (MCP `rename` batch; see
      `skill://ida-friction` for the persistent-rename gotchas). Verify by
      re-decompiling, and run `idb_save` when a mapping batch lands.

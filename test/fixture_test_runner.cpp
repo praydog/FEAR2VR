@@ -566,6 +566,72 @@ int main(int argc, char** argv) {
                              "\"OT_SPRITE\",\"OT_LIGHT\",\"OT_CAMERA\",\"OT_PARTICLESYSTEM\"]"),
               "bucket index -> ObjectType name mapping is in schema order");
 
+        // Per-object-type allocator banks. These assertions encode the mapping
+        // proof from reversing/fear2.genny's CClientMgr.object_banks comment:
+        // six banks, the array index is NOT the type, and OT_LIGHT has none.
+        check(json_has(body, "\"banks\":["), "objects report includes the allocator banks");
+
+        // The bank -> type sequence is the whole point: 0,1,2,3,5,6 with 4
+        // (OT_LIGHT) absent. Asserting the exact sequence catches both a
+        // reordering and a silent off-by-one that would make bank_for() hand
+        // back OT_CAMERA's allocator for OT_LIGHT.
+        {
+            const int expect_types[] = {0, 1, 2, 3, 5, 6};
+            size_t pos = body.find("\"banks\":[");
+            size_t seen = 0;
+            bool order_ok = true, all_match = true;
+            while (seen < 6) {
+                pos = body.find("{\"index\":", pos);
+                if (pos == std::string::npos) break;
+                const size_t obj_end = body.find('}', pos);
+                if (obj_end == std::string::npos) break;
+                const std::string ob = body.substr(pos, obj_end - pos + 1);
+                int64_t idx = -1, ty = -1, elem = -1, block = -1;
+                json_int(ob, "index", idx);
+                json_int(ob, "type", ty);
+                json_int(ob, "element_size", elem);
+                json_int(ob, "block_size", block);
+                if (idx != static_cast<int64_t>(seen) || ty != expect_types[seen]) order_ok = false;
+                // The allocator relationship the mapping rests on. If this
+                // fails, `element_size` is not what the pool was built for and
+                // the bank identification is unsound.
+                if (block != ((elem + 8) & ~7)) all_match = false;
+                if (!json_has(ob, "\"block_matches\":true")) all_match = false;
+                ++seen;
+                pos = obj_end;
+            }
+            check(seen == 6, "exactly 6 object allocator banks reported");
+            check(order_ok, "bank index -> type sequence is 0,1,2,3,5,6 (OT_LIGHT has no bank)");
+            check(all_match, "every bank: pool block_size == (element_size + 8) & ~7");
+        }
+
+        // Cross-invariant tying the two halves of the class together: a type
+        // with live objects MUST have a bank, because those objects had to be
+        // allocated from one. OT_LIGHT is the interesting case -- it has no
+        // bank, so its bucket must be empty, and it is.
+        {
+            const size_t bp = body.find("\"buckets\":[");
+            check(bp != std::string::npos, "buckets array present for the bank cross-check");
+            if (bp != std::string::npos) {
+                int64_t counts[7] = {-1, -1, -1, -1, -1, -1, -1};
+                size_t p = bp + 11;
+                for (int i = 0; i < 7; ++i) {
+                    counts[i] = strtoll(body.c_str() + p, nullptr, 10);
+                    const size_t comma = body.find(',', p);
+                    if (comma == std::string::npos) break;
+                    p = comma + 1;
+                }
+                check(counts[4] == 0,
+                      "OT_LIGHT bucket is empty, consistent with it having no allocator bank");
+                bool banked_types_populated = true;
+                for (int t : {0, 1, 2, 3, 5, 6}) {
+                    if (counts[t] < 0) banked_types_populated = false;
+                }
+                check(banked_types_populated,
+                      "every type that has a bank reported a valid bucket count");
+            }
+        }
+
         // Engine-thread in-place iteration (for_each_object). The endpoint
         // only RAISES a request; the walk itself happens in the frame hook on
         // the engine thread, which is the only context that API's lifetime

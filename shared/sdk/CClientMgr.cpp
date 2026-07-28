@@ -5,6 +5,7 @@
 #include <utility/Seh.hpp>
 
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
+#include "regenny/regenny/LTMemoryPool.hpp"
 
 #include "CClientShell.hpp"
 #include "Log.hpp"
@@ -406,6 +407,62 @@ std::optional<size_t> CClientMgr::snapshot_objects(ObjectType type, ObjectSnapsh
         return std::nullopt;
     }
     return static_cast<size_t>(n);
+}
+
+
+namespace {
+
+// Bank index -> object type. NOT the identity: OT_LIGHT (4) has no bank, so
+// the array is compacted around it. Proven by chunk membership -- each bank's
+// pool chunk contains only objects of its mapped type, 0 foreign, 6/6. See
+// fear2.genny's CClientMgr.object_banks comment.
+//
+// Sized from the schema so a bank appearing or disappearing is a compile
+// error here rather than a silent mis-mapping.
+constexpr uint8_t kBankToType[] = {0, 1, 2, 3, 5, 6};
+static_assert(sizeof(kBankToType) / sizeof(kBankToType[0]) ==
+                  sizeof(regenny::CClientMgr::object_banks) /
+                      sizeof(regenny::CClientMgrObjectBank),
+              "bank->type table must cover exactly the schema's bank array");
+
+// POD-only SEH helper: reads the bank pair plus the pool's block size.
+bool seh_read_bank(const regenny::CClientMgrObjectBank* bank,
+                   uint32_t* element_size, uint32_t* block_size, uintptr_t* pool) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        const auto* p = bank->pool;
+        *pool = reinterpret_cast<uintptr_t>(p);
+        *element_size = bank->element_size;
+        *block_size = (p != nullptr) ? p->block_size : 0u;
+        ok = (p != nullptr);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+} // namespace
+
+std::optional<CClientMgr::ObjectBankInfo> CClientMgr::bank_at(size_t index) const {
+    if (index >= object_bank_count()) {
+        return std::nullopt;
+    }
+    uint32_t element_size = 0, block_size = 0;
+    uintptr_t pool = 0;
+    if (!seh_read_bank(&regenny()->object_banks[index], &element_size, &block_size, &pool)) {
+        return std::nullopt;
+    }
+    return ObjectBankInfo{static_cast<ObjectType>(kBankToType[index]), pool, element_size, block_size};
+}
+
+std::optional<CClientMgr::ObjectBankInfo> CClientMgr::bank_for(ObjectType type) const {
+    for (size_t i = 0; i < object_bank_count(); ++i) {
+        if (kBankToType[i] == static_cast<uint8_t>(type)) {
+            return bank_at(i);
+        }
+    }
+    return std::nullopt; // OT_LIGHT, or an out-of-range value
 }
 
 } // namespace sdk

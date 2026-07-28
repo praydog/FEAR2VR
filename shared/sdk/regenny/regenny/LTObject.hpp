@@ -21,9 +21,7 @@ public:
     uint16_t flags; // 0x44
     private: char pad_46[0x66]; public:
     regenny::CClientMgrListLink list_link; // 0xac
-    private: char pad_b4[0x24]; public:
-    void* unk_D8; // 0xd8
-    private: char pad_dc[0x4]; public:
-}; // Size: 0xe0
+    private: char pad_b4[0x18]; public:
+}; // Size: 0xcc
 #pragma pack(pop)
 }

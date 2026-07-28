@@ -25,11 +25,15 @@ for the full evidence trail this recipe produced).
 
 ## Phase 0 — Scope the target
 
-- Identify which of the five IDBs plausibly owns the concept: FEAR2_dump.exe
-  (client-side engine/game logic), gameclient.dll, gameserver.dll,
-  gamedatabase.dll, ltmemory.dll. See AGENT.MD rule 9 for why FEAR2.exe
-  itself (not `_dump`) is useless for static analysis, and rule "Five
-  binaries" in TESTING.MD's pitfalls.
+- Identify which IDB plausibly owns the concept: FEAR2_dump.exe (client-side
+  engine/game logic), gameclient.dll, gameserver.dll, gamedatabase.dll,
+  ltmemory.dll. See AGENT.MD rule 9 for why FEAR2.exe itself (not `_dump`) is
+  useless for static analysis, for the IDB locations, and for the
+  port-shuffling hazard; plus rule "Five binaries" in TESTING.MD's pitfalls.
+  NOTE (2026-07): only four are open in IDA -- ltmemory.dll is NOT currently
+  loaded, so LTMemory internals (e.g. the pool allocator's vtables at
+  0x10004274/0x10004254) can be reasoned about from FEAR2.exe's side and from
+  live memory, but cannot be renamed or decompiled until it is reopened.
 - Find an anchor: an exported symbol (`?LTGetXxx@@...`), a singleton getter
   pattern, or a known interface method name from the lithtech/FEAR source
   drop (`I:\Programming\projects\fear-source-code`) — structural analogue
