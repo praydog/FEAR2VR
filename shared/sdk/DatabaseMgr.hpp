@@ -8,7 +8,9 @@
 // (fear2.genny prelude aliases with no C++ definition of their own).
 #include "regenny/Primitives.hpp"
 #include "regenny/regenny/DatabaseMgr.hpp"
+#include "regenny/regenny/DatabaseMgrCategory.hpp"
 #include "regenny/regenny/DatabaseMgrEntry.hpp"
+#include "regenny/regenny/DatabaseMgrRecord.hpp"
 #include "regenny/regenny/DatabaseMgrSubRecord.hpp"
 
 namespace sdk {
@@ -65,6 +67,30 @@ public:
     // than crash the caller -- this IS the "does our mapping crash the
     // game" proof, not a side concern.
     static std::string read_path(const regenny::DatabaseMgrSubRecord* record);
+
+    // Number of categories in a loaded database (HDATABASE), and a
+    // bounds-checked accessor into its inline trailing category array.
+    // CONFIRMED against IDatabaseMgr's own vtable (GameDatabase.dll+0x62DA
+    // GetNumCategories, +0x62E8 GetCategoryByIndex; see fear2.genny's
+    // DatabaseMgrSubRecord comment) -- these mirror that vtable's exact
+    // field/bounds semantics via direct struct reads (no vtable call: no
+    // refcount/mutation risk, see AGENT.MD 5a testing corollary).
+    static size_t category_count(const regenny::DatabaseMgrSubRecord* database);
+    static regenny::DatabaseMgrCategory* category(const regenny::DatabaseMgrSubRecord* database, size_t index);
+
+    // Number of records in a category, and a bounds-checked accessor.
+    // CONFIRMED against IDatabaseMgr's own vtable (GameDatabase.dll+0x634F
+    // GetNumRecords, +0x635D GetRecordByIndex; see fear2.genny's
+    // DatabaseMgrCategory comment).
+    static size_t record_count(const regenny::DatabaseMgrCategory* category);
+    static regenny::DatabaseMgrRecord* record(const regenny::DatabaseMgrCategory* category, size_t index);
+
+    // Safe (SEH-guarded, length-bounded, sanitized) name reads -- same
+    // guarantee as read_path(), generalized via a pointer-to-member so the
+    // struct-pointer dereference (obj->*field) itself stays inside the SEH
+    // guard, not just the resulting char* walk.
+    static std::string category_name(const regenny::DatabaseMgrCategory* category);
+    static std::string record_name(const regenny::DatabaseMgrRecord* record);
 
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];

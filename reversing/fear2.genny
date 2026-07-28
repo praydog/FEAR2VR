@@ -45,10 +45,78 @@ class HashEntry 0x8 {
     uint8_t unk_07  @0x07   // observed constant 0x00 in every sample so far
 }
 
+// 0x18-byte record: one entry of DatabaseMgrCategory.records[]. This is the
+// engine's HRECORD. CONFIRMED live (4 samples across two categories):
+// `name` reads as a printable ASCII string ("Default", "Rat",
+// "Multi_CombatBase", "ATCPatrol") and `owner_category` reads back exactly
+// the owning DatabaseMgrCategory's address in every sample.
+//
+// owner_category is void* (not DatabaseMgrCategory*) to break a genuine
+// cyclic type dependency (DatabaseMgrCategory.records needs
+// DatabaseMgrRecord defined first; DatabaseMgrRecord.owner_category needs
+// DatabaseMgrCategory defined first -- .genny has no forward declarations).
+// The pointee IS DatabaseMgrCategory (verified: == the owning category's
+// address); it's just not spelled in the type system to keep declaration
+// order acyclic. Cast at the call site if this needs to be walked.
+//
+// unk_04/unk_08/unk_0C/unk_14 are UNVERIFIED -- kept as opaque scalars/
+// pointers rather than guessed at. This is a deliberate scope boundary: the
+// vtable functions that would confirm attribute count/storage were not
+// reversed this pass (see AGENT.MD "IDA/dump workflow" for the next slice).
+// Observed live: unk_04 was 3 for "Default" (AI/WeaponContext) and 5 for
+// all 3 sampled AI/GoalSets records -- varies per record, plausible
+// attribute count. unk_08/unk_0C are heap pointers into two DIFFERENT
+// nearby regions per record (0x09B37xxx and 0x09B68xxx in the sampled
+// snapshot) -- unk_08 in particular showed a consistent ~0x28-byte stride
+// across consecutive records in the same category, plausible attribute-
+// descriptor array. unk_14 is a small unique-per-record 32-bit value,
+// plausible name hash (same pattern as DatabaseMgrCategory.unk_10).
+class DatabaseMgrRecord 0x18 {
+    strptr name             @0x00   // CONFIRMED live: readable ASCII in 4/4 samples
+    uint32_t unk_04         @0x04   // unverified; observed 3-5, plausible attribute count
+    void* unk_08            @0x08   // unverified; plausible attribute-descriptor array (~0x28-byte stride observed)
+    void* unk_0C            @0x0C   // unverified
+    void* owner_category    @0x10   // CONFIRMED live: == owning DatabaseMgrCategory address in 4/4 samples; see comment above for why this isn't typed DatabaseMgrCategory*
+    uint32_t unk_14         @0x14   // unverified; small unique-per-record value, plausible name hash
+}
+
+// 0x14-byte record: one entry of DatabaseMgrSubRecord.categories[]. This is
+// the engine's HCATEGORY. CONFIRMED 359/359 live (main menu,
+// Database\Loki.gamedb): every element's `name` reads as a printable ASCII
+// string (real category names: "AI", "FX", "FX/ModelDecal/Settings",
+// "AI/WeaponContext", "AI/GoalSets", ...) AND `owner_database` reads back
+// exactly the owning DatabaseMgrSubRecord's address -- zero exceptions.
+//
+// owner_database is void* for the same cyclic-dependency reason as
+// DatabaseMgrRecord.owner_category above (pointee IS DatabaseMgrSubRecord,
+// verified by address equality; not spelled in the type system).
+//
+// num_records/records: CONFIRMED via IDatabaseMgr's own vtable. IDA:
+// GameDatabase.dll+0x634F (IDatabaseMgr_GetNumRecords, vt[5]/+0x14 -- ALSO
+// reused at vt[18]/+0x48, i.e. one function body serves two vtable slots,
+// plausibly ICF/linker-folded) does `return *(hCategory+0x8)`; GameDatabase.
+// dll+0x635D (IDatabaseMgr_GetRecordByIndex, vt[19]/+0x4C) does `return
+// *(hCategory+0xC) + 24*index` bounds-checked against `*(hCategory+0x8)`.
+// Live-verified on "AI/WeaponContext" (num_records=1) and "AI/GoalSets"
+// (num_records=83, sampled 3 records) -- every element decodes with a
+// readable name and owner backpointer (see DatabaseMgrRecord above).
+//
+// unk_10: unverified. Small (non-pointer-range) 32-bit values, unique per
+// category in every sample -- consistent with a precomputed name hash, not
+// otherwise confirmed.
+class DatabaseMgrCategory 0x14 {
+    strptr name                @0x00   // CONFIRMED live: readable ASCII in 359/359 samples
+    void* owner_database        @0x04   // CONFIRMED live: == owning DatabaseMgrSubRecord address in 359/359 samples; see comment above for why this isn't typed DatabaseMgrSubRecord*
+    uint32_t num_records       @0x08   // CONFIRMED: matches IDatabaseMgr_GetRecordByIndex's bounds check exactly
+    DatabaseMgrRecord* records @0x0C   // CONFIRMED: matches IDatabaseMgr_GetRecordByIndex's array base exactly
+    uint32_t unk_10             @0x10   // unverified; small unique-per-category values, plausible name hash
+}
+
 // 0x1C-byte record. CONFIRMED IDENTICAL SHAPE observed independently at TWO
 // live addresses (DatabaseMgrEntry.record_a and .record_b of the single
 // array element currently live) -- same field layout, same self-pointer
-// relationship, in both instances.
+// relationship, in both instances. This is the engine's HDATABASE: one
+// loaded .gamedb file.
 //
 // string_data and path_data are typed strptr because their CONTENT WAS
 // DIRECTLY READ as null-terminated ASCII, not inferred:
@@ -58,21 +126,42 @@ class HashEntry 0x8 {
 //   record_b: string_data -> "ObjectDB\0ObjectRec\0msg system exitlevel..."
 //             path_data   -> "worlds\sp\m05_outershell\m05_out..."
 // hash_entries points at HashEntry-shaped data (verified 8-byte stride, see
-// HashEntry) but its LENGTH is not tied to count_a/count_b/count_c with any
-// confirmed formula -- do not assume a specific entry count from those.
+// HashEntry) but its LENGTH is not tied to num_categories/count_b/count_c
+// with any confirmed formula -- do not assume a specific entry count from
+// those.
 //
-// self_ref: CONFIRMED (2/2 samples) == (address of this record) + 0x1C
-// exactly, i.e. one-past-the-end-of-this-struct. Purpose not verified (could
-// be a trailing-inline-data cursor, could be something else); kept as a
-// self-typed pointer because the relationship itself IS a verified fact.
+// num_categories/categories: CONFIRMED via IDatabaseMgr's own vtable +
+// live memory cross-check. IDA: GameDatabase.dll+0x62DA
+// (IDatabaseMgr_GetNumCategories, vt[9]/+0x24) does `return
+// *(hDatabase+0xC)`; GameDatabase.dll+0x62E8 (IDatabaseMgr_GetCategoryByIndex,
+// vt[10]/+0x28) does `return *(hDatabase+0x14) + 20*index` bounds-checked
+// against `*(hDatabase+0xC)`. Live read (main menu, Database\Loki.gamedb):
+// num_categories=359, categories points at EXACTLY record+0x1C (one-past-
+// the-end -- the array is allocated inline, trailing the header), and all
+// 359 elements at that address with 20-byte stride decode as valid
+// DatabaseMgrCategory (name readable ASCII + owner_database backpointer ==
+// this record, 359/359 -- see DatabaseMgrCategory above). This supersedes
+// the old "self_ref, purpose not verified" note.
+//
+// count_b: unverified. Live value 24270 on the same snapshot; plausible as
+// the string_data pool's byte length (large, plausible-string-blob-sized),
+// not otherwise confirmed.
+//
+// count_c: unverified as a field, but vtable evidence is suggestive: two
+// vtable functions explored during category/record mapping (IDA
+// GameDatabase.dll+0x62A9 and +0x6FC9, NOT renamed -- behavior partially
+// understood, not enough to commit a name) increment/decrement a DWORD at
+// `handle+0x18` when producing/releasing a lookup result, i.e. exactly this
+// field's offset on this struct. Consistent with a refcount, not proven by
+// a direct before/after live test.
 class DatabaseMgrSubRecord 0x1C {
-    strptr string_data                @0x00
-    HashEntry* hash_entries            @0x04
-    strptr path_data                  @0x08
-    uint32_t count_a                  @0x0C
-    uint32_t count_b                  @0x10
-    DatabaseMgrSubRecord* self_ref     @0x14
-    uint32_t count_c                  @0x18
+    strptr string_data              @0x00
+    HashEntry* hash_entries          @0x04
+    strptr path_data                @0x08
+    uint32_t num_categories          @0x0C   // CONFIRMED: matches IDatabaseMgr_GetCategoryByIndex's bounds check exactly (359/359 live-verified)
+    uint32_t count_b                 @0x10   // unverified; live value 24270, plausibly string_data pool byte length
+    DatabaseMgrCategory* categories  @0x14   // CONFIRMED: == this+0x1C (inline trailing array); matches IDatabaseMgr_GetCategoryByIndex's array base exactly
+    uint32_t count_c                 @0x18   // unverified; vtable evidence suggests a refcount (see comment above)
 }
 
 // One 8-byte array element of DatabaseMgr's internal array (confirmed size:

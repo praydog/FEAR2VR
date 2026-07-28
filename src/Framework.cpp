@@ -209,11 +209,63 @@ std::string build_targets_json() {
 }
 
 // Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
+// (category_count/category/record_count/record/*_name), never raw
+// pointer/offset arithmetic here. Builds a small JSON array of up to
+// `limit` {"name","record_count"} category summaries starting at
+// `start_index`, walking the REAL mapped-struct traversal in-process.
+std::string build_category_list_json(const regenny::DatabaseMgrSubRecord* database, size_t start_index, size_t limit) {
+    std::string out = "[";
+    const size_t total = sdk::DatabaseMgr::category_count(database);
+    bool first = true;
+    for (size_t i = start_index; i < total && i < start_index + limit; ++i) {
+        auto* cat = sdk::DatabaseMgr::category(database, i);
+        if (cat == nullptr) {
+            continue;
+        }
+        if (!first) {
+            out += ",";
+        }
+        first = false;
+        out += "{\"name\":";
+        json_escape_append(out, sdk::DatabaseMgr::category_name(cat));
+        out += ",\"record_count\":" + std::to_string(sdk::DatabaseMgr::record_count(cat)) + "}";
+    }
+    out += "]";
+    return out;
+}
+
+// Same shape for a single category's records.
+std::string build_record_list_json(const regenny::DatabaseMgrCategory* category, size_t limit) {
+    std::string out = "[";
+    const size_t total = sdk::DatabaseMgr::record_count(category);
+    bool first = true;
+    for (size_t i = 0; i < total && i < limit; ++i) {
+        auto* rec = sdk::DatabaseMgr::record(category, i);
+        if (rec == nullptr) {
+            continue;
+        }
+        if (!first) {
+            out += ",";
+        }
+        first = false;
+        json_escape_append(out, sdk::DatabaseMgr::record_name(rec));
+    }
+    out += "]";
+    return out;
+}
+
+// Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
 // (regenny() fields, entry_count(), entry(i), read_path()); NEVER raw
 // pointer/offset arithmetic here. This deliberately EXERCISES the real
 // mapped-struct traversal in-process (the actual code path any future mod
 // feature would use), not just reports addresses -- that's the point: prove
 // the mapping works and doesn't crash the game, not just that it parses.
+//
+// Also exercises the category/record enumeration layer added alongside
+// DatabaseMgrCategory/DatabaseMgrRecord: up to 5 category summaries
+// (name + record_count) for record_a, and up to 5 record names from the
+// FIRST category that actually has records -- proves both traversal levels
+// against live data, not just that entry0's top-level fields parse.
 std::string build_database_json() {
     auto* db = sdk::DatabaseMgr::get();
     if (db == nullptr) {
@@ -238,6 +290,30 @@ std::string build_database_json() {
             json_escape_append(entry0_json, path_a);
             entry0_json += ",\"record_b_path\":";
             json_escape_append(entry0_json, path_b);
+
+            entry0_json += ",\"record_a_category_count\":" + std::to_string(sdk::DatabaseMgr::category_count(e->record_a));
+            entry0_json += ",\"categories\":";
+            entry0_json += build_category_list_json(e->record_a, 0, 5);
+
+            // First category with any records at all, walked linearly (no
+            // hardcoded index assumption -- which category has records can
+            // differ per loaded .gamedb).
+            const size_t cat_total = sdk::DatabaseMgr::category_count(e->record_a);
+            std::string sample_records_json = "null";
+            std::string sample_category_name;
+            for (size_t i = 0; i < cat_total; ++i) {
+                auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                if (cat != nullptr && sdk::DatabaseMgr::record_count(cat) > 0) {
+                    sample_category_name = sdk::DatabaseMgr::category_name(cat);
+                    sample_records_json = build_record_list_json(cat, 5);
+                    break;
+                }
+            }
+            entry0_json += ",\"sample_records_category\":";
+            json_escape_append(entry0_json, sample_category_name);
+            entry0_json += ",\"sample_records\":";
+            entry0_json += sample_records_json;
+
             entry0_json += "}";
         }
     }

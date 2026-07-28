@@ -481,6 +481,23 @@ int main(int argc, char** argv) {
             check(json_hex(body, "record_b", record_b) && record_b != 0, "entry0.record_b non-null");
             check(json_has(body, ".gamedb") || json_has(body, "gamedb"),
                   "entry0's path strings resolved to real *.gamedb content (SDK traversal reached real data, not garbage)");
+
+            // Category/record enumeration: DatabaseMgr::category_count()/
+            // category()/record_count()/record()/category_name()/
+            // record_name() -- all real in-process struct traversal, SEH-
+            // guarded, host only sanity-checks reported content and general
+            // shape (never overfits to exact first-nonempty-category order
+            // or exact record text, which can shift with game data).
+            int64_t category_count = -1;
+            check(json_int(body, "record_a_category_count", category_count) &&
+                  category_count > 0 && category_count < 100000,
+                  "record_a_category_count() result in a plausible range (0,100000)");
+            check(json_has(body, "\"categories\":["), "categories array present");
+            check(json_has(body, "\"AI/WeaponContext\""),
+                  "a known stable category name appears in the live-enumerated category list");
+            check(json_has(body, "\"record_count\":"), "category summaries include record_count");
+            check(json_has(body, "\"sample_records_category\":"), "sample_records_category field present");
+            check(json_has(body, "\"sample_records\":["), "sample_records array present (a category with records was found and walked)");
         }
 
         // The traversal above ran fully in-process on the game's own memory;

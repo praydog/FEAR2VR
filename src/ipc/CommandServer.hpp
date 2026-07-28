@@ -15,7 +15,10 @@
 //   GET /sdk/targets             -> JSON object: pattern-resolved engine addresses
 //                                   and current live pointers (diagnostics).
 //   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
-//                                   fields (vtable/array bounds/entry_count) --
+//                                   fields (vtable/array bounds/entry_count) plus, for
+//                                   entry0, real category/record enumeration (name,
+//                                   record_count, a sample_records list) via
+//                                   sdk::DatabaseMgr::category()/record()/*_name() --
 //                                   diagnostics only, no assertions (see
 //                                   sdk::DatabaseMgr for the "complex logic lives
 //                                   in the SDK class" convention).
