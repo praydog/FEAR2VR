@@ -73,6 +73,21 @@ for the full evidence trail this recipe produced).
     helper) are name-based `Get`/`Find` calls — useful to know exist, but do
     **not** wire live SDK calls through them without a matching Release path
     (see "Refcounted lookups" below).
+- **Before attributing a field to a class, prove which object the function's
+  `this` actually is.** A `__thiscall` body writing `*(ecx + 0x1424)` tells you
+  an offset, NOT whose offset. If the decompiler did not resolve `ecx` at the
+  call site, you have a field on *something*, and assuming it belongs to the
+  caller's class is a guess wearing evidence's clothes.
+  This produced a wrong mapping in 2026-07: `FrameDelta_TickAndReport` (dump
+  0x409FD0) does `*(float*)(ecx + 0x1424) += 1.0`, and `CClientMgr::Update`
+  calls it, so `CClientMgr+0x1424` got named `frame_counter`. Live sampling
+  then showed that field advancing by non-integral amounts -- it is not the
+  `+= 1.0` accumulator, and the attribution was never established. The name
+  was retracted the same session and the function lost its `CClientMgr_`
+  prefix, because even the prefix asserts the thing that is unproven.
+  Provable attribution looks like: the offset is read inside a method whose
+  `this` IS the class (e.g. `CClientMgr::Update` reading `this + 5120`
+  directly), or the call site visibly loads `ecx` from that object.
 - Two functions at *different vtable slots* sharing the *identical* body
   address is real (ICF/linker folding when two methods compile identically —
   e.g. `GetNumRecords`/some other `GetNumX` both reducing to `return *(a1+8)`).
@@ -129,6 +144,26 @@ overlay.some_ptr:d()      -- or :deref()/:dereference() to follow it
 
 For anything not yet in the schema, read raw process memory directly:
 `proc:read_uint32(addr)`, `proc:read_string(addr, true)`.
+
+**Any claim about a field CHANGING requires proof the engine was executing.**
+Static values prove nothing about dynamics if the process was not running.
+Before concluding "this advances" / "this never moves" / "this is a counter":
+confirm frames are actually being produced -- `/health`'s `frame_ticks`
+advancing between two polls is the cheap check, and the process consuming CPU
+is the OS-level one.
+
+This burned a whole conclusion in 2026-07: `CClientMgrCounterNode.elapsed_ms`
+was recorded as "re-sampled minutes apart and it did NOT advance", and that
+went into the schema, the SDK header, the route doc and a test comment. The
+samples had been taken against a game the user had deliberately SUSPENDED --
+its own threads frozen while our injected IPC thread kept answering, so every
+read returned a stale-but-valid value and looked like a static field. Reading a
+frozen engine is indistinguishable from reading a constant. The claim was
+retracted from all four places.
+
+Corollary: a suspended or paused fixture still answers IPC perfectly, because
+threads created after the suspend keep running. "The endpoint responded" is NOT
+evidence the game is live.
 
 **Validate before you commit to the schema.** The bar is the same one
 TESTING.MD sets for the shipped SDK: *every* sample must check out, not "the
@@ -300,3 +335,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 - MSVC C2712 (`__try` + non-trivial locals/lambdas/statics-in-initializer in
   the same function) bites almost every time an SEH guard's result needs to
   become a `std::string` — isolate the guard in its own POD-only helper.
+- **A surprising address, port, module name or count is a STOP, not a thing to
+  rationalise.** The IDA MCP silently re-routes between IDBs (skill://ida-friction
+  §16), and it happened twice in one session: once mid-analysis (active IDB had
+  drifted to `gameserver.dll` on its own) and once as an unexpected port in an
+  output-spill URL, which I explained away as "probably the proxy" and carried
+  on renaming ~300 globals. It turned out to be benign, but that was luck, not
+  reasoning — had it not been, every rename would have landed in the wrong
+  binary. Cost of checking: one `server_health` call, verified BY FILENAME.
+  Do it before the next write, every time, and re-verify after any batch that
+  surprised you.
+- **`scan_relative_references` (plural) does not dedupe.** It splits the module
+  across threads with 4-byte segment overlap, so a displacement in an overlap is
+  reported twice and any count derived from it varies with core count. Sort +
+  unique. (Found by reading kananlib's implementation, which is the general
+  lesson: read the primitive before depending on its result shape.)

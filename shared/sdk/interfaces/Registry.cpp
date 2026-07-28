@@ -117,9 +117,14 @@ Registry& Registry::get() {
 }
 
 bool Registry::initialize() {
-    // Fast path: latched, table is published and read-only.
+    // Fast paths: latched either way. A definitive failure must NOT rescan --
+    // FEAR2.exe is loaded, so the answer cannot change, and re-scanning per
+    // getter call would hammer the game thread with full-image scans.
     if (m_initialized.load(std::memory_order_acquire)) {
         return true;
+    }
+    if (m_failed.load(std::memory_order_acquire)) {
+        return false;
     }
 
     // Slow path: exactly one thread scans. Re-check under the lock so a racing
@@ -128,17 +133,23 @@ bool Registry::initialize() {
     if (m_initialized.load(std::memory_order_relaxed)) {
         return true;
     }
+    if (m_failed.load(std::memory_order_relaxed)) {
+        return false;
+    }
 
     const auto* exe = Modules::get().exe();
     if (exe == nullptr || exe->handle == nullptr || exe->base == 0 || exe->size == 0) {
-        // Modules::initialize() has not run yet. Do NOT latch -- a caller this
-        // early must be able to succeed on a later attempt.
+        // RETRYABLE: Modules::initialize() has not run yet. Do NOT latch -- a
+        // caller this early must be able to succeed on a later attempt.
         return false;
     }
 
     const uintptr_t ctor = Modules::get().scan_exe(kHolderCtor, "CAPIHolder_ctor");
     if (ctor == 0) {
-        return false; // scan_exe already logged the miss
+        // DEFINITIVE: the exe is loaded (checked above) and the signature did
+        // not match, so rescanning cannot help. scan_exe already logged it.
+        m_failed.store(true, std::memory_order_release);
+        return false;
     }
 
     // kananlib finds every call to it. The filter keeps only real `E8 rel32`
@@ -196,9 +207,13 @@ bool Registry::initialize() {
     }
 
     if (found.empty()) {
+        // DEFINITIVE: the ctor was found but not one call site matched the
+        // expected operand shape, i.e. the codegen assumption broke. Latch so
+        // this logs once instead of re-scanning on every interface getter.
         LOGX("[sdk] interfaces: CAPIHolder_ctor at 0x%08" PRIXPTR " but %zu call sites yielded no "
-             "holders (%zu rejected) -- not latching, will retry",
+             "holders (%zu rejected) -- call-site shape assumption broke",
              ctor, refs.size(), rejected);
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 

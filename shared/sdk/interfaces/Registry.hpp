@@ -70,17 +70,30 @@ public:
 
     // Locate CAPIHolder_ctor and build the holder table from its call sites.
     //
-    // RETRIES ON FAILURE. Returns false and stays uninitialized when the
-    // pattern missed, module geometry is not ready yet, or the scan produced
-    // nothing -- so an early call (before Modules::initialize(), or before the
-    // image is in a scannable state) does not permanently poison the registry.
-    // Only a scan that actually found holders latches.
+    // FAILURE HANDLING is deliberately two-tiered, because "retry forever" and
+    // "latch forever" are both wrong:
+    //
+    //   RETRYABLE -- a prerequisite that can still become available: module
+    //     geometry not resolved yet (Modules::initialize() has not run). No
+    //     latch, so an early caller cannot poison the registry.
+    //
+    //   DEFINITIVE -- the owning module IS present and the evidence is absent:
+    //     the CAPIHolder_ctor pattern missed, or it matched but no call site
+    //     decoded. FEAR2.exe is necessarily loaded in-process by then, so
+    //     rescanning cannot change the answer. Latched as failed and logged
+    //     once -- otherwise every interface getter would re-scan the whole
+    //     image, from the game thread, forever.
+    //
     // THREAD SAFE: the getters are reachable from both the IPC thread
     // (diagnostics) and the game thread (mods), so initialization is
     // double-checked under a mutex. The holder table is written exactly once,
     // published with release semantics, and read-only thereafter.
     bool initialize();
     bool is_initialized() const { return m_initialized.load(std::memory_order_acquire); }
+
+    // True once a DEFINITIVE failure latched (see above). Diagnostics use this
+    // to report "the signature broke" rather than "not resolved yet".
+    bool failed() const { return m_failed.load(std::memory_order_acquire); }
 
     // Runtime address of CAPIHolder_ctor, 0 until a successful initialize().
     uintptr_t ctor_addr() const { return m_ctor; }
@@ -127,6 +140,7 @@ private:
     // which is what orders the publication against their reads.
     mutable std::mutex m_mutex;
     std::atomic<bool> m_initialized{false};
+    std::atomic<bool> m_failed{false};
     uintptr_t m_ctor{0};
     size_t m_call_sites_seen{0};
     std::vector<Holder> m_holders;

@@ -56,6 +56,29 @@ inject → test → uninject with the game never restarting.
    - Always document the IDA evidence inline (IDB name, address, instruction
      context) in a comment next to each pattern/offset.
    - Never hardcode absolute VAs. Runtime addresses come from pattern scans.
+   - **A function-local static latches its result FOREVER, including a
+     failure.** That is correct for a FEAR2.exe pattern (the exe is always
+     loaded in-process, so a miss is definitive and rescanning would only
+     spam), and WRONG whenever the prerequisite can still arrive later. Two
+     cases to watch:
+       - `gameserver.dll` is documented lazy ("session start"). The first
+         SDK surface that scans it and gets warmed at framework init will
+         cache 0 permanently and be dead for the process lifetime.
+       - Anything needing `Modules::initialize()` to have run. Today
+         `Framework::initialize()` calls it before warming anchors, so the
+         five existing resolvers are safe by ORDERING, not by construction.
+     If a resolver can fail for a reason that may resolve itself, do not use a
+     plain function-local static: separate RETRYABLE (prerequisite absent --
+     no latch) from DEFINITIVE (owning module present, evidence absent -- latch
+     and log once). `sdk::interfaces::Registry::initialize()` is the worked
+     example; it also shows why the definitive case MUST latch, since without
+     it every getter would re-scan the whole image from the game thread.
+   - **State an API's thread affinity in its own comment.** A surface handing
+     out live engine pointers is only sound on the thread that owns them, and
+     diagnostics run on the IPC thread. `CClientMgr::for_each_object` was
+     briefly called from `build_objects_json` -- i.e. from the one thread its
+     own documented precondition excludes. Diagnostics take snapshots or ask
+     the engine thread to do the work; they do not borrow live pointers.
 5a. **ReGenny is ground truth for LAYOUT; the SDK class owns BEHAVIOR.** Once
    a type is live-mapped in `reversing/fear2.genny` (ReGenny, verified field-
    by-field against raw memory -- see `reversing/MAPPING_WORKFLOW.md` for the
@@ -181,6 +204,22 @@ inject → test → uninject with the game never restarting.
    - The lithtech/FEAR sources in `I:\Programming\projects\fear-source-code`
      are *structural analogues* for naming (Build 69 ≈ FEAR1; FEAR2 is "Loki"),
      not ground truth for FEAR2's exact build.
+
+     **Treat the drop as a FALSE FRIEND, not a reference.** It is close enough
+     to feel authoritative and wrong on the specifics that matter. Measured
+     divergences so far, every one of which would have produced a silently
+     wrong mapping if trusted:
+       - `LTList` is 16 bytes there (count + 12-byte `LTLink`); FEAR2's list
+         heads are 8 bytes at stride 8, no count.
+       - `LTLink` carries `m_pData` and the drop's walkers use it; FEAR2's
+         lists are INTRUSIVE and walkers recover the object by `link - 172`.
+       - `CAPIHolderBase` has `int32 version` at `+0x08`; FEAR2 has the output
+         pointer slot there, read as such by all three virtuals.
+       - `CClientMgr` nests its object lists inside an `ObjectMgr` member;
+         FEAR2 puts the 7 heads at offset 0 with nothing ahead of them.
+     Use it for *what a thing is probably called*. Never for a layout, a size,
+     a field order, or a member's existence. When it disagrees with the binary,
+     the binary is right and the divergence goes in the `.genny` comment.
 10. **Build system is cmkr.** Edit `cmake.toml`, never `CMakeLists.txt`
     (regenerated). cmkr skips regeneration when `CI` is set in the environment;
     `build.bat` clears it — beware when invoking cmake by hand. cmkr expands

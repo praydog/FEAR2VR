@@ -354,8 +354,31 @@ int main(int argc, char** argv) {
     check(have_db, "gamedatabase.dll mapped in game");
     check(have_lt, "ltmemory.dll mapped in game");
 
-    // 5a. /health shape + frame-hook liveness (ticks advance between polls).
+    // 5a. /health shape + frame-hook liveness.
+    //
+    // The hook check is gated on an INDEPENDENT liveness oracle, because a
+    // suspended fixture still answers IPC perfectly (threads created after the
+    // suspend keep running, so the server serves stale reads from a frozen
+    // game). The gate is the engine's own last_sample_time_ms, which only
+    // advances when the engine executes -- deliberately NOT frame_ticks, which
+    // is our hook's counter and is the thing under test here. Using the subject
+    // as its own gate would reclassify a broken hook as "not exercised".
+    //
+    // engine frozen              -> not exercised, reported loudly
+    // engine live, ticks static  -> HARD FAIL, the hook is broken
+    // engine live, ticks moving  -> pass
     {
+        // Engine-side timestamp reader. Transport and field presence are HARD
+        // checks: if either fails we must not silently label it "suspended",
+        // which would mask a broken endpoint as an environment state.
+        auto read_engine_ms = [&](int64_t& out) -> bool {
+            std::string t;
+            if (!http::get(port, "/sdk/targets", t)) {
+                return false;
+            }
+            return json_int(http::body_of(t), "last_sample_time_ms", out);
+        };
+
         std::string h1, h2;
         check(health_body(port, h1), "/health transport");
         check(json_has(h1, "\"state\":\"running\""), "/health state==running");
@@ -364,11 +387,37 @@ int main(int argc, char** argv) {
         check(json_int(h1, "hooks", hooks) && hooks >= 1, "/health reports the frame hook installed");
         int64_t ticks1 = -1;
         check(json_int(h1, "frame_ticks", ticks1), "/health exposes frame_ticks");
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        check(health_body(port, h2) && true, "/health second poll transport");
+
+        int64_t engine_ms1 = -1;
+        check(read_engine_ms(engine_ms1) && engine_ms1 >= 0,
+              "engine timestamp (last_sample_time_ms) readable for the liveness gate");
+
+        // Poll well past one update interval before concluding "frozen". The
+        // field was only characterised at ~1s granularity, so a single 500ms
+        // sample is not enough to call a live engine static.
+        bool engine_live = false;
+        int64_t engine_ms2 = engine_ms1;
+        for (int attempt = 0; attempt < 8 && !engine_live; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            int64_t now = -1;
+            check(read_engine_ms(now) && now >= 0, "engine timestamp still readable");
+            engine_ms2 = now;
+            engine_live = now > engine_ms1;
+        }
+
+        check(health_body(port, h2), "/health second poll transport");
         int64_t ticks2 = -1;
-        json_int(h2, "frame_ticks", ticks2);
-        check(ticks2 > ticks1 && ticks1 >= 0, "frame_ticks advanced (hook firing on CClientShell::Update)");
+        check(json_int(h2, "frame_ticks", ticks2), "/health exposes frame_ticks (second poll)");
+
+        if (engine_live) {
+            check(ticks2 > ticks1 && ticks1 >= 0,
+                  "frame_ticks advanced (hook firing on CClientShell::Update)");
+        } else {
+            printf("[fixture] NOTE: engine not advancing (last_sample_time_ms %lld -> %lld over 2s) "
+                   "-- fixture is paused/suspended, so the frame-hook check was NOT exercised. "
+                   "Resume the game, or investigate if it should be running.\n",
+                   static_cast<long long>(engine_ms1), static_cast<long long>(engine_ms2));
+        }
     }
 
     // 5b. /sdk/targets: every engine address must sit inside the REAL

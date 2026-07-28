@@ -157,6 +157,44 @@ of the mechanism, all of them load-bearing:
 Minimal JSON field or endpoint on `/health`, `/sdk/targets` — diagnostics
 format, no assertions.
 
+### 3b. Two assertion anti-patterns that already bit us
+
+**Never invent a numeric tolerance to make a comparison pass.** If two values
+are compared and they don't match, the choice is to find the invariant that
+actually holds or to drop the assertion — not to widen a window until it goes
+green. A `diff <= 64` on live object counts was written and cut before landing
+in 2026-07: 64 had no evidence behind it, it compared two walks taken at
+different instants against a list known to churn, and it would have "passed"
+while asserting nothing. What replaced it: assert the parts that are actually
+invariant (the walk terminated, the count is non-negative, independent holders
+agree) and record the observed exact agreement as evidence in the commit
+message instead of as a test.
+
+**A frozen fixture answers IPC perfectly — so "it responded" proves nothing
+about liveness.** Threads created after a process is suspended keep running, so
+an injected IPC server happily serves stale reads from a game whose own threads
+are frozen.
+
+The gate MUST be independent of the thing under test. Use
+`/sdk/targets`'s `last_sample_time_ms` — an ENGINE-side millisecond field the
+SDK reads, which only advances when the engine executes (measured: delta 0
+while suspended, tracking wall clock 1:1 while running). Never gate on
+`frame_ticks`: that is OUR hook's counter and is itself under test, so using it
+as the gate would silently reclassify a broken frame hook as "not exercised"
+and destroy rule 3's assertion.
+
+That gives three distinguishable outcomes, which is the whole point:
+
+| engine advancing | `frame_ticks` advancing | verdict |
+|---|---|---|
+| no  | —   | fixture frozen → report "not exercised", skip change-based asserts |
+| yes | no  | **FAIL — the hook is broken** (this must stay a hard failure) |
+| yes | yes | assert normally |
+
+A frozen fixture is the only case that downgrades to not-exercised, and it must
+say so loudly ("fixture not advancing — resume the game or investigate"), never
+pass quietly. See MAPPING_WORKFLOW Phase 2 for the mapping claim this cost us.
+
 ### 4. Write the host-side test and run it against the game
 Add checks in `test/fixture_test_runner.cpp`. Build (`build.bat`), run:
 
