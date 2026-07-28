@@ -67,16 +67,26 @@ CClientMgr* CClientMgr::get() {
     return instance;
 }
 
-CClientShell* CClientMgr::client_shell() {
-    const auto self = reinterpret_cast<uintptr_t>(this);
+CClientShell* CClientMgr::client_shell() const {
     CClientShell* shell = nullptr;
     KANANLIB_SEH_TRY {
-        shell = *reinterpret_cast<CClientShell**>(self + k_client_shell_offset);
+        shell = reinterpret_cast<CClientShell*>(regenny()->client_shell);
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }
     return shell;
+}
+
+bool CClientMgr::is_updating() const {
+    bool updating = false;
+    KANANLIB_SEH_TRY {
+        updating = regenny()->updating;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return updating;
 }
 
 } // namespace sdk

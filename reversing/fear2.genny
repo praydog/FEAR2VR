@@ -203,4 +203,52 @@ class DatabaseMgr 0x20 {
     uint32_t unk_14                  @0x14   // observed 1; equals (array_end-array_begin)/8 in every snapshot so far
 }
 
+// FEAR2.exe's engine-side client manager singleton (see
+// shared/sdk/CClientMgr.hpp/.cpp -- already deployed via a hand-derived
+// offset before this pass; this formalizes it into the regenny convention).
+// Live instance via g_pClientMgr: FEAR2.exe base + RVA 0x2ECCA0
+// (FEAR2_dump.exe VA 0x6ECCA0; FEAR2.exe loads at its preferred base
+// 0x400000 at runtime -- see AGENT.MD's "IDB truth vs runtime truth" note --
+// so the dump VA is directly usable as the RVA source, not just a hint).
+//
+// CONFIRMED live (2026-07) via TWO independent paths agreeing exactly:
+// (a) raw memory read through g_pClientMgr -> +0x1434/+0x143C, (b) the
+// ALREADY-DEPLOYED sdk::CClientMgr (pre-dating this .genny mapping,
+// hardcoded offset 0x1434) reporting the identical addresses live via
+// /sdk/targets (client_mgr=0x05F814B0, client_shell=0x05F77030 in the
+// snapshot that produced this mapping). Field evidence: CClientMgr::Update
+// (FEAR2_dump.exe 0x40B665) -- see that function's IDA comment.
+//
+// Only these two fields mapped this pass -- the rest of the ~5200+ byte
+// CClientMgr object (CClientMgr::Update reads/writes at least ITS OWN
+// offsets 104, 5100, 5108, 5120, 5172, 5176, and 5180 -- 5172/5180 are the
+// two mapped below; the others are genuinely uninvestigated, not merely
+// deferred). NOTE: offset 104 in that list is CClientMgr's own field
+// (`this+104`, passed by CClientMgr::Update as an argument) -- a
+// DIFFERENT, coincidentally-same-numbered field from the CClientShell
+// pointee's own `+104` mentioned below (`v9+104` where v9 is the shell
+// pointer, i.e. `*client_shell + 104`) -- do not conflate the two objects.
+// Struct size below is a HEADROOM MINIMUM matching the highest
+// mapped field + alignment, exactly like DatabaseMgr's own "unconfirmed
+// beyond +0x18" note above -- do NOT treat 0x1440 as the confirmed total
+// object size, only as "safe to reinterpret up to here".
+//
+// client_shell is void* (not a typed CClientShell* -- CClientShell has no
+// regenny struct yet; see reversing/MAPPING_WORKFLOW.md on not forcing a
+// struct without confident fields). Its pointee is the engine's
+// CClientShell instance (cross-verified: the two CClientShell field reads
+// CClientMgr::Update itself performs, +104 and +32, both decoded as
+// expected -- a byte and a live non-null pointer respectively -- through
+// this exact pointer in the same live snapshot).
+//
+// updating: CONFIRMED live (read as 0 outside of Update). CClientMgr::Update
+// sets it 1 immediately before, 0 immediately after, the CClientShell::Update
+// call it makes -- true only for the actual duration of that call. A
+// diagnostic sampling this out-of-band (e.g. over HTTP) will observe 0
+// essentially always; that is expected, not a mapping failure.
+class CClientMgr 0x1440 {
+    void* client_shell   @0x1434
+    bool updating         @0x143C
+}
+
 }

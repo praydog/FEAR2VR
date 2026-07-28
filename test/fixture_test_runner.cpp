@@ -406,6 +406,24 @@ int main(int argc, char** argv) {
         check(remote_read32(pid, slot_client, raw_client), "RPM g_pClientMgr");
         check(remote_read32(pid, slot_hwnd, raw_hwnd), "RPM hWnd");
         check(raw_client == client_mgr, "RPM g_pClientMgr value == DLL-reported client_mgr");
+
+        // client_shell: proves the regenny-backed sdk::CClientMgr::client_shell()
+        // path (reversing/fear2.genny's CClientMgr.client_shell @0x1434), not
+        // just that the endpoint serialized something -- read the SAME field
+        // independently via RPM off the DLL-reported client_mgr instance and
+        // assert equality (TESTING.MD rule 2: cross-check the DLL's self-report).
+        uint32_t client_shell = 0, raw_shell = 0;
+        check(json_hex(body, "client_shell", client_shell) && client_shell != 0, "client_shell non-null");
+        check(remote_read32(pid, client_mgr + 0x1434, raw_shell), "RPM client_mgr+0x1434");
+        check(raw_shell == client_shell, "RPM client_mgr+0x1434 == DLL-reported client_shell (sdk::CClientMgr::client_shell() proof)");
+
+        // client_mgr_updating: regenny::CClientMgr.updating is true only for
+        // the brief duration of CClientMgr::Update's own CClientShell::Update
+        // call (see fear2.genny's comment) -- sampled out-of-band over HTTP it
+        // will almost always be false. Assert the STRICT JSON boolean shape
+        // only (never a specific value -- true is rare but real, not a bug).
+        check(json_has(body, "\"client_mgr_updating\":true") || json_has(body, "\"client_mgr_updating\":false"),
+              "client_mgr_updating is a well-formed JSON boolean");
         check(raw_hwnd == main_hwnd, "RPM hWnd value == DLL-reported main_hwnd");
         check(main_hwnd != 0 && IsWindow(reinterpret_cast<HWND>(main_hwnd)),
               "main_hwnd is a live window (IsWindow, host-side)");

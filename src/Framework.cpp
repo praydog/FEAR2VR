@@ -189,22 +189,25 @@ std::string build_health_fragment() {
 std::string build_targets_json() {
     char buf[1024];
     const auto* exe = sdk::Modules::get().exe();
+    auto* client_mgr = sdk::CClientMgr::get();
     snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"exe_base\":\"0x%08X\",\"exe_size\":\"0x%08X\","
              "\"client_mgr_update\":\"0x%08X\",\"client_shell_update\":\"0x%08X\","
              "\"get_engine_hook\":\"0x%08X\",\"g_pClientMgr_slot\":\"0x%08X\","
              "\"hWnd_slot\":\"0x%08X\",\"client_mgr\":\"0x%08X\","
-             "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\"}",
+             "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\","
+             "\"client_mgr_updating\":%s}",
              static_cast<uint32_t>(exe->base), static_cast<uint32_t>(exe->size),
              static_cast<uint32_t>(sdk::CClientMgr::update_fn()),
              static_cast<uint32_t>(sdk::CClientShell::update_fn()),
              static_cast<uint32_t>(sdk::Engine::get_engine_hook_fn()),
              static_cast<uint32_t>(sdk::CClientMgr::instance_slot()),
              static_cast<uint32_t>(sdk::Engine::main_hwnd_slot()),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientMgr::get())),
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(client_mgr)),
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientShell::get())),
              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd())),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())));
+             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())),
+             (client_mgr != nullptr && client_mgr->is_updating()) ? "true" : "false");
     return buf;
 }
 
