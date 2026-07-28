@@ -605,6 +605,44 @@ int main(int argc, char** argv) {
             check(all_match, "every bank: pool block_size == (element_size + 8) & ~7");
         }
 
+        // Type-5 cached transforms. This is the assertion that would catch a
+        // wrong LTCameraObject offset before it turned into wrong VR camera
+        // math: the SDK recomputes the rotation matrix from each object's own
+        // quaternion and the rigid inverse of the cached 3x4, and every sampled
+        // object must satisfy both. A shifted world_transform or
+        // inverse_transform offset makes these counts diverge from `sampled`.
+        //
+        // Note the shape of the check: it does NOT compare against values
+        // recorded from a previous run, and it invents no tolerance beyond the
+        // float-noise epsilon the SDK uses -- it asserts an identity the data
+        // must satisfy on its own terms.
+        {
+            const size_t tp = body.find("\"type5_transforms\":");
+            check(tp != std::string::npos, "objects report includes the type-5 transform check");
+            if (tp != std::string::npos) {
+                if (json_has(body, "\"type5_transforms\":null")) {
+                    // A fault or non-terminating walk. Not "pass by absence":
+                    // the type-5 list is populated whenever the client manager
+                    // is live, so null here means the walk broke.
+                    check(false, "type-5 transform walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', tp);
+                    const std::string tb = body.substr(tp, end - tp + 1);
+                    int64_t sampled = -1, rot = -1, inv = -1, det = -1;
+                    json_int(tb, "sampled", sampled);
+                    json_int(tb, "rotation_match", rot);
+                    json_int(tb, "inverse_ok", inv);
+                    json_int(tb, "det_ok", det);
+                    check(sampled > 0, "type-5 objects present to check transforms against");
+                    check(rot == sampled,
+                          "every type-5 world_transform 3x3 == R(its own rotation quaternion)");
+                    check(inv == sampled,
+                          "every type-5 inverse_transform is the exact rigid inverse");
+                    check(det == sampled, "every type-5 world_transform 3x3 has determinant 1");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

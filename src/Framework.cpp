@@ -361,6 +361,22 @@ std::string build_objects_json() {
     }
     out += "]";
 
+    // Type-5 cached transforms: a self-check of the LTCameraObject mapping.
+    // Recomputes, in-process, the two relationships the schema claims -- that
+    // the 3x4's rotation part is the object's own quaternion, and that the
+    // second 3x4 is its exact rigid inverse -- so schema drift shows up as a
+    // count mismatch instead of silently producing wrong VR camera math later.
+    out += ",\"type5_transforms\":";
+    if (const auto tc = mgr->check_type5_transforms(64); tc.has_value()) {
+        char tb[192];
+        snprintf(tb, sizeof(tb),
+                 "{\"sampled\":%zu,\"rotation_match\":%zu,\"inverse_ok\":%zu,\"det_ok\":%zu}",
+                 tc->sampled, tc->rotation_match, tc->inverse_ok, tc->det_ok);
+        out += tb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

@@ -277,6 +277,32 @@ public:
     // diagnostics that want to enumerate the array as it actually is.
     std::optional<ObjectBankInfo> bank_at(size_t index) const;
 
+    // ---- type-5 (OT_CAMERA analogue) cached transforms -----------------
+    //
+    // Type-5 objects are 320 bytes: an LTObject base plus a cached 3x4 world
+    // transform and its exact rigid inverse (a view-matrix pair). See
+    // fear2.genny's LTCameraObject for the evidence, and note the NAME is a
+    // reference-SDK analogue, not proven.
+    //
+    // This is a MAPPING SELF-CHECK, not a feature. It recomputes the two
+    // relationships the mapping asserts and reports whether they hold, so the
+    // fixture can catch schema drift without re-deriving offsets host-side:
+    //   * the transform's 3x3 equals the rotation matrix of the object's own
+    //     quaternion, and
+    //   * the second block is the rigid inverse of the first.
+    // Snapshot-based for the same reason as snapshot_objects(): the lists
+    // mutate, so nothing here hands out a pointer.
+    struct TransformCheck {
+        size_t sampled;        // objects examined
+        size_t rotation_match; // 3x3 == R(quaternion)
+        size_t inverse_ok;     // block2 == rigid inverse of block1
+        size_t det_ok;         // det(3x3) == 1
+    };
+
+    // Walks up to `max` type-5 objects, checking both relationships. nullopt
+    // when the walk faulted or did not terminate.
+    std::optional<TransformCheck> check_type5_transforms(size_t max) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

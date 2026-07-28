@@ -182,6 +182,36 @@ static evidence justifies writing the mapping" and "the fixture justifies
 keeping it", just run one phase earlier, interactively, before any C++ exists
 to fixture-test.
 
+**A float blob's GROUPING is a hypothesis too — test it against a field you
+already know, never against how the numbers look.** Reading a span of floats
+and recognising a shape is the single easiest way to invent structure, because
+plausible shapes are everywhere in numeric data. A worked failure from this
+project: 96 bytes of floats at `LTCameraObject+0xDC` grouped into six
+`(x,y,z,d)` rows whose normals were orthonormal with matched ± distance
+pairs, which reads unmistakably as *six bounding planes*. It is not. It is two
+3x4 rigid transforms — the same bytes, a completely different meaning, and the
+plane reading would have produced silently wrong camera math forever.
+
+What killed the wrong reading was not more staring, it was an **independent
+field**: the 3x3 part was compared against the rotation matrix rebuilt from
+the object's *own quaternion* at `+0x20`, a value mapped in an earlier pass.
+It matched to 0.00000 across 40 objects with determinant 1.0. So:
+
+- Derive the expected bytes from an ALREADY-CONFIRMED field, then compare.
+  Quaternion -> matrix, count -> array length, position -> translation.
+- Prefer a test that **discriminates**, not one that merely passes. Here
+  `R` and `R^T` are identical for the identity rotation, so most objects
+  cannot tell them apart; one object with a real rotation matched `R` at 0.0
+  and `R^T` at 2.0. Find the sample that can fail before believing the ones
+  that pass. Report the discriminating sample, not just the aggregate.
+- Check the relationships BETWEEN blocks, not just each block's shape. That
+  the second 3x4 satisfies `R2 == R1^T` and `t2 == -R1^T*t1` on 60/60 pins
+  it as the inverse; no amount of looking at its floats would have.
+- A near-miss is information, not noise. That block 1's translation equals
+  `position` on 55/60 samples and diverges by up to 50 units on the rest is
+  precisely why the schema does NOT call it the position. Record the 5, do
+  not round them away.
+
 ## Phase 3 — Author/extend `fear2.genny`
 
 - **Self-reference works, and is the fix you usually want.** A class may

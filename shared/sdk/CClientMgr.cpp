@@ -5,6 +5,7 @@
 #include <utility/Seh.hpp>
 
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
+#include "regenny/regenny/LTCameraObject.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
 
 #include "CClientShell.hpp"
@@ -463,6 +464,95 @@ std::optional<CClientMgr::ObjectBankInfo> CClientMgr::bank_for(ObjectType type) 
         }
     }
     return std::nullopt; // OT_LIGHT, or an out-of-range value
+}
+
+namespace {
+
+// POD-only SEH helper. Walks type-5 objects and checks the two relationships
+// the LTCameraObject mapping asserts. Every offset comes from the generated
+// schema -- no literal appears here.
+//
+// Returns the number sampled, or -1 on fault / non-termination.
+int64_t seh_check_type5(const regenny::CClientMgrListLink* head, size_t max,
+                        size_t* rot_ok, size_t* inv_ok, size_t* det_ok, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTCameraObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const float qx = obj->base.rotation.x, qy = obj->base.rotation.y;
+                const float qz = obj->base.rotation.z, qw = obj->base.rotation.w;
+                const float R[3][3] = {
+                    {1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)},
+                    {2 * (qx * qy + qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qw * qx)},
+                    {2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx * qx + qy * qy)},
+                };
+                const float* M = obj->world_transform.m;
+                const float* I = obj->inverse_transform.m;
+
+                float dr = 0.0f, di = 0.0f;
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        const float a = M[r * 4 + c] - R[r][c];
+                        dr = (a < 0 ? -a : a) > dr ? (a < 0 ? -a : a) : dr;
+                        const float b = I[r * 4 + c] - M[c * 4 + r];
+                        di = (b < 0 ? -b : b) > di ? (b < 0 ? -b : b) : di;
+                    }
+                }
+                // t2 == -R1^T * t1
+                float dt = 0.0f;
+                for (int r = 0; r < 3; ++r) {
+                    const float e = -(M[0 * 4 + r] * M[0 * 4 + 3] + M[1 * 4 + r] * M[1 * 4 + 3] +
+                                      M[2 * 4 + r] * M[2 * 4 + 3]);
+                    const float b = I[r * 4 + 3] - e;
+                    dt = (b < 0 ? -b : b) > dt ? (b < 0 ? -b : b) : dt;
+                }
+                const float det = M[0] * (M[5] * M[10] - M[6] * M[9]) -
+                                  M[1] * (M[4] * M[10] - M[6] * M[8]) +
+                                  M[2] * (M[4] * M[9] - M[5] * M[8]);
+                if (dr < 0.002f) {
+                    ++*rot_ok;
+                }
+                if (di < 0.002f && dt < 0.05f) {
+                    ++*inv_ok;
+                }
+                const float dd = det - 1.0f;
+                if ((dd < 0 ? -dd : dd) < 0.01f) {
+                    ++*det_ok;
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::TransformCheck> CClientMgr::check_type5_transforms(size_t max) const {
+    // Bank index 4 serves type 5; go through the type, not the index.
+    constexpr auto kType = static_cast<ObjectType>(5);
+    if (static_cast<size_t>(kType) >= object_list_count()) {
+        return std::nullopt;
+    }
+    TransformCheck out{};
+    const int64_t n = seh_check_type5(&regenny()->object_lists[static_cast<size_t>(kType)], max,
+                                     &out.rotation_match, &out.inverse_ok, &out.det_ok,
+                                     max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    out.sampled = static_cast<size_t>(n);
+    return out;
 }
 
 } // namespace sdk
