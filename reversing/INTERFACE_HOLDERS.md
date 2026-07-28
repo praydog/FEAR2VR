@@ -1,0 +1,113 @@
+# LithTech interface holders in FEAR2.exe
+
+Recovered by reversing `CAPIHolder_ctor` (FEAR2_dump.exe `0x4050DB`) and
+enumerating all 147 of its call sites. Names are LithTech-SDK **analogues**
+(AGENT.MD rule 9 -- the shipping build has no RTTI); the layout facts are
+FEAR2 ground truth.
+
+## What the mechanism is
+
+`CAPIHolder_ctor` is what the SDK's `define_holder(IFoo, ptr)` macro emits --
+an interface **request**, not an implementation. It is NOT a generic
+"InitializeInterface": implementations are registered by a different type
+(`CAPIInstanceDefines`, from `instantiate_interface`/`define_interface`).
+
+A single 46-byte body serves all 147 instantiations: `CAPIHolder<I>`'s
+constructor codegen does not depend on `I`, so the linker ICF-folded every
+instantiation into one function. That is why one tiny function has 147 callers.
+
+```
+CAPIHolder_ctor(this, api_name, output_slot):
+    CAPIHolderBase_ctor(this, api_name)     // base vtable + name
+    *this = &CAPIHolder_vftable             // derived vtable
+    this[2] = output_slot                   // remember the caller's pointer var
+    *output_slot = 0                        // NULL until resolved
+    CInterfaceDatabase_DatabaseItemCountInc()
+    CInterfaceDatabase_AddHolder(this)      // register the request
+```
+
+## Object layout (FEAR2 ground truth)
+
+| off | field | evidence |
+|-----|-------|----------|
+| 0x00 | vftable | set by base ctor, then overwritten with the derived vtable |
+| 0x04 | api_name (`const char*`) | stored by `CAPIHolderBase_ctor` |
+| 0x08 | output slot (`IBase**`) | used by all three virtuals |
+
+**Divergence from the source drop:** `ltmodule.h` puts `int32 version` at
+`+0x08` in `CAPIHolderBase`. FEAR2 has no version field there -- `p` occupies
+`+0x08`, every virtual reads it as the pointer slot, and the base constructor
+receives only the name (`retn 4`, one stack arg). Do not carry `version` over.
+
+## vtable (`CAPIHolder_vftable`, 4 slots)
+
+| slot | addr | body | virtual |
+|------|------|------|---------|
+| 0 | 0x407CA5 | dtor body, then conditional free | `~CAPIHolder` (scalar-deleting) |
+| 1 | 0x4435C4 | `*p = 0` | `APIRemoved()` |
+| 2 | 0x407C99 | `*p = api` | `APIFound(IBase*)` |
+| 3 | 0x40A33E | `return *p` | `Interface()` |
+
+## Resolution lifecycle
+
+Every `g_p<Interface>_<Instance>_<addr>` global is **null at static-init time**.
+`CInterfaceDatabase` later calls `APIFound(api)` to fill it, or `APIRemoved()`
+to clear it. So reading one of these slots before the database has resolved
+modules yields null -- that is by design, not a mapping error.
+
+Supporting globals: `g_pInterfaceDatabase` (`0x6EF220`, a lazily allocated
+36-byte object; `+0x18` is the holder list `AddHolder` pushes onto) and
+`g_InterfaceDatabaseItemCount` (`0x6EF224`).
+
+## The recovered table
+
+147 holders / 36 distinct interfaces. `define_holder` is emitted
+**per translation unit**, so one interface legitimately has many holders, each
+with its own holder object and output slot -- hence every generated name carries
+an `_<addr>` suffix. There is no single canonical `g_pILTClient`.
+
+| interface | holders | output pointer slots (`g_p<iface>_<inst>_<addr>`) |
+|-----------|---------|--------------------------------------------------|
+| IWorldServerBSP.Default | 15 | `6EF098` `6EF200` `6EF230` `6EF288` `6F29D8` `6F2E88` `6F2EBC` `6F2EF4` `6F2F24` `6F2FBC` `6F3078` `6F30C4` `6F3538` `6F355C` `6F6BBC` |
+| ILTClient.Default | 14 | `6ECC8C` `6ECD00` `6ECD38` `6ECD6C` `6ED490` `6EF250` `6F34F8` `6F7508` `72E0E8` `72E2B0` `72EBDC` `730480` `730558` `7305D8` |
+| IWorldClientBSP.Default | 14 | `6ECABC` `6ECB00` `6ECB68` `6ECC9C` `6ECD04` `6ECD40` `6EF1E0` `6EF22C` `6EF270` `6F34FC` `6F3558` `7305DC` `730630` `731394` |
+| IClientShell.Default | 12 | `6EC8C0` `6ECB64` `6ECC98` `6ECD3C` `6ECD68` `6F2254` `6F34F4` `6F3554` `6F35C8` `6F6378` `6F6E50` `6F7520` |
+| ILTDrawPrim.Default | 12 | `6ECB3C` `6ED080` `72EACC` `72ECF8` `72ED20` `7305D4` `730608` `73061C` `7306E0` `73075C` `730778` `7313B4` |
+| ICompress.Default | 7 | `6ECB1C` `6EF160` `6EF1D0` `6F2210` `6F2F90` `6F6BB8` `6F6D38` |
+| ILTServer.Default | 6 | `6ECAA8` `6EF254` `6F29E0` `6F2A34` `6F2EEC` `6F3534` |
+| IServerConsoleState.Default | 6 | `6EF09C` `6F29E4` `6F2A38` `6F2A60` `6F2FC0` `6F307C` |
+| ILTRenderer.Default | 5 | `6ECAE0` `6ECB4C` `6ECC90` `6ED078` `6F6E48` |
+| IServerShell.Default | 5 | `6EC8C4` `6F29DC` `6F2A5C` `6F2FB8` `6F3074` |
+| ICommandLineArgs.Default | 4 | `6EC8E4` `6ECC94` `6F3070` `6F6E54` |
+| ILTModel.Server | 4 | `6EF094` `6F2EAC` `6F2EC0` `6F2FB4` |
+| ILTUI.Default | 4 | `6ECB18` `6F7708` `6F77C8` `6F77D8` |
+| ILTCustomRender.Default | 3 | `6ECB48` `72E07C` `72E2C8` |
+| ILTModel.Client | 3 | `6ECAB8` `6ECB5C` `6F30DC` |
+| ILTResourceMgr.Default | 3 | `6ECB2C` `6F2F98` `6F6E38` |
+| ILTTextureMgr.Default | 3 | `6ECB40` `6F7614` `730568` |
+| ILTCommon.Server | 2 | `6F2EF0` `6F2FB0` |
+| ILTCursor.Default | 2 | `6ECB38` `6F6E4C` |
+| ILTFileMgr.Default | 2 | `6ECB54` `6F2FA8` |
+| ILTLoadingProgress.Default | 2 | `6ECB50` `6F2FA4` |
+| ILTPhysics.Client | 2 | `6ECB34` `6F2250` |
+| ILTPhysicsSim.Client | 2 | `6ECB30` `6ECCFC` |
+| ILTTextureString.Default | 2 | `6ECB20` `6ED07C` |
+| IWorldParticleBlockerData.Default | 2 | `6ECB24` `6F6DA0` |
+| ILTClientContentTransfer.Default | 1 | `6F34F0` |
+| ILTCommon.Client | 1 | `6ECB60` |
+| ILTInput.Default | 1 | `6ECC88` |
+| ILTPhysics.Server | 1 | `6F2FA0` |
+| ILTPhysicsSim.Server | 1 | `6F2F9C` |
+| ILTServerContentTransfer.Default | 1 | `6F2A58` |
+| ILTSoundMgr.Client | 1 | `6ECB58` |
+| ILTSoundMgr.Server | 1 | `6F2FAC` |
+| ILTTimer.Client | 1 | `6ECB28` |
+| ILTTimer.Server | 1 | `6F2F94` |
+| ILTVideoTexture.Default | 1 | `6ECB44` |
+
+Holder objects live at `g_hold_<iface>_<inst>_<addr>`; each pairs with the
+output slot constructed alongside it at the same call site.
+
+`0x6F6E54` (an `ICommandLineArgs.Default` slot) was already named
+`i_command_line_args` by hand before this pass and was deliberately left alone --
+it independently corroborates the interpretation.

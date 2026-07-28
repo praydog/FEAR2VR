@@ -36,6 +36,17 @@ for the full evidence trail this recipe produced).
   ONLY (AGENT.MD rule 9's last bullet), never assume exact FEAR2 layout from
   it. It tells you *what the method is probably called and roughly what it
   takes*, not where any field lives.
+- **Start from `reversing/INTERFACE_HOLDERS.md` when the concept is an engine
+  interface.** It lists every LithTech interface pointer slot in FEAR2.exe --
+  147 holders across 36 interfaces (ILTClient, ILTServer, ILTModel.Client/
+  .Server, ILTPhysics, ILTRenderer, ILTDrawPrim, ILTTextureMgr, IClientShell,
+  IServerShell, ...) with each slot's address, recovered by enumerating every
+  call site of `CAPIHolder_ctor`. That is usually a faster anchor than a
+  string or export search: pick the interface you want, take a slot address,
+  and xref it to find the code that actually uses that interface.
+  Two caveats: the slots are NULL until CInterfaceDatabase resolves modules,
+  and `define_holder` is per-translation-unit so one interface has many
+  equivalent slots (no single canonical one).
 
 ## Phase 1 — IDA static reversing
 
