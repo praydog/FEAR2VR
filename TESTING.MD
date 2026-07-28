@@ -50,9 +50,11 @@ latching, stop() semantics. If Tier-1 fails, the fix is in
 
 Tier-2 (`test/fixture_test_runner.cpp`) is the real loop:
 `spawn-or-attach FEAR2.exe -> inject fear2vr.dll -> /health live -> host-side
-assertions over diagnostics endpoints + ReadProcessMemory -> /unload ->
-module-vanish + game-alive proof -> re-inject freshness proof`.
-All assertions live in the runner; the DLL ships **no test code**.
+assertions over SDK-computed diagnostics + OS-level ground truth (Toolhelp32
+module geometry) -> /unload -> module-vanish + game-alive proof -> re-inject
+freshness proof`.
+All assertions live in the runner; the DLL ships **no test code**. The runner
+performs **no ReadProcessMemory at all** (rule 2 below).
 
 ## The fixture is ground truth — and tests are NOT in the mod
 
@@ -61,10 +63,10 @@ mapping claim. Concretely:
 
 - An address/offset/scan-pattern in `shared/sdk` is only *verified* when the
   fixture runner reproduces the claim from live process state: the diagnostics
-  endpoint reports a value AND `ReadProcessMemory` on the PID reads the same
-  bytes at the reported slot AND the value satisfies the structural invariant
-  (inside the owning module's `[base, base+size)` per the host's own Toolhelp32
-  module list — never per the DLL's self-report).
+  endpoint reports a value the SDK computed IN-PROCESS, that value satisfies
+  the structural invariant (inside the owning module's `[base, base+size)` per
+  the host's own Toolhelp32 module list — never per the DLL's self-report),
+  and the process/IPC survived the SDK making the call.
 - IDA static evidence (decompile, xrefs) justifies *writing* the mapping; the
   fixture test justifies *keeping* it. Both are required. A rename in IDA with
   no fixture coverage is a hypothesis, not a mapping.
@@ -84,10 +86,24 @@ before believing anything else.
 1. **Prove residency host-side.** Module geometry comes from the runner's own
    Toolhelp32 snapshot of the PID. "Pointer is inside module image" is asserted
    against THAT image list, with the image bounds printed on failure.
-2. **Cross-check the DLL's self-report.** Any value the DLL exposes over IPC
-   that can be read independently (a global slot) MUST also be read via
-   `ReadProcessMemory` and compared — otherwise the DLL could be hallucinating
-   its own diagnostics and no test would notice.
+2. **NO ReadProcessMemory. NO MAGIC VALUES. Test the SDK, not a copy of it.**
+   The mod runs in-process; the claim under test is "the SDK, compiled from
+   `reversing/fear2.genny`, produces what we expect when it runs there." A
+   host-side RPM read re-does what the SDK already did, and to do it the test
+   must hardcode offsets — which duplicates the schema as magic values in the
+   test and proves only that our hand-typed numbers agree with themselves.
+   **A test containing a literal struct offset is broken by construction**,
+   even when it passes: it silently rots the instant the schema changes.
+   - Need to assert a structural relationship? Add an SDK METHOD that
+     expresses the invariant through the generated schema (the compiler
+     derives the offsets), report it in diagnostics, assert on that. See
+     `sdk::CClientMgr::counter_node_registered()`.
+   - Need to catch the DLL "hallucinating" its diagnostics? Use invariants
+     between independently-mapped values (two schema fields at different
+     offsets/types that must agree numerically — if either offset were wrong,
+     they wouldn't), plus the OS-level oracle in rule 1. Toolhelp32 module
+     geometry is OS *metadata*, not a memory read, and is the one external
+     ground truth the DLL cannot fabricate.
 3. **Live behavior beats static shape.** A hook test asserts
    `frame_ticks` advanced between two polls (the hook fired) and that after
    unload the module is gone *and* the game process still lives. Static

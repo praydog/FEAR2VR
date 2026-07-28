@@ -203,23 +203,157 @@ class DatabaseMgr 0x20 {
     uint32_t unk_14                  @0x14   // observed 1; equals (array_end-array_begin)/8 in every snapshot so far
 }
 
-// 8-byte intrusive circular-list link. CClientMgr embeds (at least) two
-// sentinel heads of this shape (counter_list_head @0x13EC, start_shell_list
-// @0x1460 below) -- this is a generic, engine-wide list utility (used far
-// outside CClientMgr; NOT reverse-engineered as a general facility here,
-// only enough to explain CClientMgr's own two embedded list heads).
+// 8-byte intrusive circular-list link. A generic, engine-wide list utility
+// (used far outside CClientMgr; NOT reverse-engineered as a general
+// facility here, only enough to explain the heads/links that embed it).
+// CClientMgr embeds two sentinel heads of this shape (counter_list_head
+// @0x13EC, start_shell_list @0x1460) and LTObject embeds one @0xAC.
+//
+// Declared HERE, above its first by-value user, on purpose: `.genny`
+// forward declarations (`struct Foo {}`) make a name RESOLVABLE, which is
+// enough for POINTER members, but the forward-declared type resolves with
+// size 0 -- so anything embedding it BY VALUE would silently get a 0-byte
+// member. By-value users therefore need the real definition first.
 //
 // next: CONFIRMED live (2026-07) for counter_list_head specifically:
 // counter_list_head.next == CClientMgr.own_counter_node + 0x14 exactly, in
 // the same live snapshot that also matched CClientMgr::Init's insertion
 // code (dump 0x415B54: `*(result+20)=*this; *this=result+20;` -- i.e. the
 // newly-inserted node's link portion begins at node+0x14, and the head's
-// own `next` field points at it).
+// own `next` field points at it). Also confirmed by every LTObject list
+// walk: 3506 objects reached by following `.next` from 7 heads.
 // prev: position inferred from the same 8-byte link shape; not
 // independently read live.
 class CClientMgrListLink 0x8 {
     void* prev  @0x00   // unverified -- position inferred, not independently read live
-    void* next  @0x04   // CONFIRMED live for counter_list_head (see above)
+    void* next  @0x04   // CONFIRMED live (see above)
+}
+
+// A vector-like container of 4-byte elements, embedded in CClientMgr @0x68.
+// CONFIRMED by its two accessors, which the engine uses on this object:
+//   size():       dump 0x61C92C -- `v1 = this[1]; return v1 ? (this[2]-v1)>>2 : 0`
+//   operator[]():  dump 0x46D362 -- `if (i >= size()) invalid_parameter();
+//                                    return this[1] + 4*i`
+// so begin is at +0x04 and end at +0x08, elements 4 bytes wide. dump
+// 0x44ED89 uses `g_pClientMgr + 104` (this object) as a drop-in FALLBACK
+// for `dword_6F3080 + 1064`, which is what pins it as this shared container
+// type rather than something CClientMgr-specific.
+//
+// header: the DWORD at +0x00 is NOT part of begin/end. Its low byte is read
+// and cleared as a flag by dump 0x40CB42 (`if (this[104]) {...}
+// this[104] = 0;`). Read 0 live. Whether the upper 3 bytes are part of the
+// same flag word, padding, or something else is unverified.
+//
+// Size 0xC covers only the three confirmed DWORDs -- a capacity/allocator
+// field may follow; not investigated.
+class CClientMgrPtrVector 0xC {
+    uint32_t header @0x00   // low byte used as a commit-and-clear flag (dump 0x40CB42); rest unverified
+    void** begin    @0x04   // CONFIRMED via size()/operator[] (dumps 0x61C92C / 0x46D362)
+    void** end      @0x08   // CONFIRMED via size() (dump 0x61C92C)
+}
+
+// Object type. The VALUE SPACE is confirmed: CClientMgr.object_lists has
+// exactly 7 buckets (0..6), every object's .type equals its bucket index
+// (0 mismatches / 3490 live objects, single traversal), and each bucket
+// holds exactly one distinct vtable with ZERO vtables shared between
+// buckets (914/183/1476/221/-/474/222 objects behind vtables 0x00672360 /
+// 0x006736B0 / 0x006776E8 / 0x00671018 / - / 0x00677728 / 0x00670FD8).
+// That proves one concrete class per bucket.
+//
+// The NAMES below are SOURCE-ANALOGUE ALIASES, not FEAR2-confirmed. They
+// come from lithtech/sdk/inc/ltbasedefs.h's object-type enum (OT_NORMAL..
+// OT_PARTICLESYSTEM occupy exactly 0..6 there, and FEAR2 has exactly 7
+// buckets -- a strong structural match). Per AGENT.MD rule 9 the FEAR1/
+// LithTech sources are analogues for NAMING ONLY, never ground truth for
+// this build, and two observations argue for caution: OT_LIGHT (4) held
+// ZERO objects in a fully-loaded scene, and OT_CAMERA (5) held 474 --
+// unexpected if those labels are literal. Treat a name here as "the
+// LithTech slot with this index", not as a verified FEAR2 semantic.
+// RTTI is stripped from the shipping build, so the real class names could
+// not be recovered that way.
+enum LTObjectType : uint8_t {
+    OT_NORMAL = 0,
+    OT_MODEL = 1,
+    OT_WORLDMODEL = 2,
+    OT_SPRITE = 3,
+    OT_LIGHT = 4,
+    OT_CAMERA = 5,
+    OT_PARTICLESYSTEM = 6,
+}
+
+// 3-float vector. Confirmed by content: LTObject.position below reads as
+// plausible world coordinates (e.g. 3640.5, 1424.0, -1765.8) across every
+// sampled object.
+class LTVector 0xC {
+    float x @0x00
+    float y @0x04
+    float z @0x08
+}
+
+// 4-float quaternion. CONFIRMED BY INVARIANT, not by guess: sampled the
+// 4 floats at LTObject+0x20 across 3506 live objects and computed the
+// magnitude -- 3506/3506 (100.0%) were unit-length within 1e-2. Random
+// memory does not do that; only a real normalized quaternion does.
+class LTRotation 0x10 {
+    float x @0x00
+    float y @0x04
+    float z @0x08
+    float w @0x0C
+}
+
+// The engine's client-side object (LithTech "LTObject"). CClientMgr keeps
+// every one of these in the 7 type-bucketed lists at CClientMgr+0x00 (see
+// CClientMgr.object_lists).
+//
+// CONFIRMED LIVE across 3506 objects walked from all 7 lists in one
+// snapshot (main menu):
+//   - vtable: 3506/3506 (100.0%) point inside FEAR2.exe's image.
+//   - rotation: 3506/3506 (100.0%) unit-length quaternion (see LTRotation).
+//   - type: the byte at +0x10 EQUALS THE INDEX OF THE LIST the object was
+//     found in. Per-type counts matched per-list counts exactly for lists
+//     0/2/3/5 (914, 1480, 220, 474); lists 1 and 6 drifted slightly (192 vs
+//     202, 226 vs 264) purely because the game is LIVE and creating/
+//     destroying objects between the two walks. That is what makes
+//     "object_lists is bucketed BY TYPE" a confirmed fact rather than a
+//     hypothesis.
+//
+// list_link @0xAC: CONFIRMED -- every list walker in the engine recovers the
+// object base as `link - 172` (dump 0x40B52A `v3 = v2 - 172`, dump 0x40D065
+// `j - 172`). The lists thread through THIS field, not the object base.
+//
+// handle @0x12: CONFIRMED sentinel semantics -- dump 0x40B287 does
+// `v2 = *(WORD*)(a1+18); if (v2 != 0xFFFF) sub_40A4A8(v2);` i.e. 0xFFFF
+// means "no handle". Sampled object read exactly 0xFFFF.
+//
+// position/rotation: offsets confirmed by the quaternion invariant above
+// (a wrong offset would not produce 100% unit-length) plus plausible
+// world-coordinate content in position. What they are RELATIVE TO (world
+// origin? parent?) is not investigated.
+//
+// unk_38: CONFIRMED as a pointer the engine treats as owned/refcounted --
+// dump 0x40B287 and 0x40D065 both pass `*(a1+56)` to sub_445B16 during
+// teardown; 0x40B287 also tests `*(BYTE*)(*(a1+56)+47) & 1`. Pointee not
+// mapped.
+//
+// flags @0x44: CONFIRMED as a bitfield -- dump 0x40B287 tests
+// `(*(WORD*)(a1+68) & 0x600) != 0`. Individual bit meanings unverified.
+//
+// unk_D8: only touched when type == 6 (dump 0x40B287 passes it to
+// off_6ECC90's vtable slot 50, then zeroes it) -- a type-6-specific
+// resource handle. Not investigated further.
+//
+// Size is a HEADROOM MINIMUM past the highest confirmed field, NOT the
+// confirmed object size.
+class LTObject 0xE0 {
+    void* vtable          @0x00 [[code]]
+    LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal)
+    uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287)
+    LTVector position     @0x14
+    LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples
+    void* unk_38          @0x38   // CONFIRMED refcounted/owned pointer (passed to sub_445B16 on teardown); pointee unmapped
+    uint16_t flags        @0x44   // CONFIRMED bitfield (dump 0x40B287 tests & 0x600); bit meanings unverified
+    CClientMgrListLink list_link @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`)
+    void* unk_D8          @0xD8   // only used when type == 6 (dump 0x40B287); role unverified
 }
 
 // Node CClientMgr registers for itself in its own counter_list_head list
@@ -228,9 +362,9 @@ class CClientMgrListLink 0x8 {
 // list-insert call's return value, the raw allocated node, is what
 // CClientMgr.own_counter_node points at).
 //
-// Bytes 0x00-0x27 are the generic list machinery's own bookkeeping (link
-// portion at +0x14 per CClientMgrListLink's evidence above) plus whatever
-// else the allocator/list utility uses -- NOT investigated here.
+// Bytes 0x00-0x13 are the generic list machinery's own bookkeeping
+// (allocator header etc.) -- NOT investigated here. self_link @0x14 IS
+// investigated (see below).
 //
 // elapsed_ms/elapsed_time: CONFIRMED CORRELATED live -- sampled
 // elapsed_ms=2169885 and elapsed_time=2169.885 in the SAME live snapshot;
@@ -240,19 +374,26 @@ class CClientMgrListLink 0x8 {
 // spread across the engine, not just CClientMgr's own code (dump
 // 0x406DED/0x406DFC/0x406E0B/0x4692B1 all read this exact node).
 //
-// NOT "engine uptime" as first hypothesized: re-sampled minutes apart at
-// the main menu (no level loaded) and the value did NOT advance --
-// contradicts a free-running uptime/tick counter. More consistent with a
-// per-session or per-load timestamp/duration that only updates on some
-// event (level load? session start?), not continuously. Advancement
-// semantics are genuinely unknown; only the elapsed_ms/elapsed_time
-// correlation itself is confirmed.
+// Advancement semantics: UNVERIFIED. The value is not static -- it was
+// observed at 2169885 and later at 3243286 in this session. Beyond "it
+// changed between observations", nothing about it is established: not the
+// rate, not what it measures (wall time? accumulated frame time? time
+// since a load/session event?), not its zero point. No controlled
+// known-running interval has been measured.
+//
+// RETRACTED: an earlier note here claimed the value "did NOT advance when
+// re-sampled minutes apart". Those samples were taken while the game
+// process was suspended, so they say nothing about advancement. Do not
+// re-derive that claim without sampling a confirmed-running engine.
+//
+// Only the elapsed_ms/elapsed_time correlation is confirmed.
 //
 // unk_28/unk_2C: read by CClientMgr::Update itself (dump 0x40B665) --
 // unk_28 gates its FPS-limiter code block (checked truthy); unk_2C is read
 // as a float alongside that block's target-frametime computation. Neither
 // confirmed beyond "CClientMgr::Update reads and uses it here".
 class CClientMgrCounterNode 0x40 {
+    CClientMgrListLink self_link @0x14   // CONFIRMED via CClientMgr_Init's insertion code (`*(result+20)=*this`, i.e. this node's OWN link portion begins here) AND live: ADDRESS of this field (own_counter_node+0x14) == the owning CClientMgr.counter_list_head.next exactly (NOT self_link.next -- the field's address itself)
     uint32_t unk_28    @0x28   // gates CClientMgr::Update's FPS-limiter block (checked truthy); role beyond that unverified
     float unk_2C       @0x2C   // read as float in CClientMgr::Update's FPS-limiter block; role unverified
     uint32_t elapsed_ms @0x30   // CONFIRMED correlated with elapsed_time (see above)
@@ -287,31 +428,113 @@ class CClientMgrCounterNode 0x40 {
 // nodes actually represent (levels? archives? something else StartShell
 // tracks) is NOT confirmed; node payload not investigated.
 //
-// unk_1430/unk_4E4: both explicitly zeroed inside CClientMgr::Init
-// (`*(_WORD*)(a1+5168)=0`, `*(_DWORD*)(a1+1252)=0`) and BOTH observed
-// live with non-zero values later (0x1430 read 0x0020; 0x4E4 read a live
-// heap pointer 0x05F30498) -- confirms they are actively written post-init,
-// role otherwise unverified.
+// object_lists: CONFIRMED, and the biggest find of this pass. An array of
+// SEVEN CClientMgrListLink sentinel heads. Static evidence: two independent
+// loops iterate them identically -- dump 0x40CB24 (`for (i = 0; i < 0x38;
+// i += 8) sub_40B52A(i + g_pClientMgr, 1)`) and dump 0x40D065 (two more
+// `i < 0x38; i += 8` loops walking `*(v1+4)` until it returns to the head).
+// 0x38 / 8 == 7 heads.
 //
-// Also identified but NOT mapped as fields this pass (see
-// reversing/MAPPING_WORKFLOW.md -- don't force a field without confident
-// evidence): an embedded blob @0x90 passed BY ADDRESS to a global
-// subsystem's (dword_6ECC98) vtable slot 20 during Init -- size/type/
-// purpose unknown; a byte-sized field @0x68 used both as a "commit and
-// clear" flag (dump 0x40CB42) and, elsewhere, as a container base for what
-// looks like a generic list-iteration helper (dump 0x44ED89) -- plausibly
-// related to the network/ping debug HUD builder CClientMgr::Update also
-// touches at this offset, not confirmed.
+// Live: walked all 7 in one main-menu snapshot -- 3490 objects reached,
+// every list terminating cleanly back at its own head. The elements are
+// LTObjects (see LTObject above), recovered as `link - 172` exactly as the
+// engine's own walkers do.
+//
+// BUCKETED BY TYPE -- PROVEN PER-OBJECT, not inferred from totals: in a
+// SINGLE traversal, for every object reached from head N, read that same
+// object's LTObject.type and compared it to N.
+//   RESULT: 0 mismatches / 3490 objects.
+// Because both values come from the same object in the same pass, live
+// churn cannot explain the agreement. object_lists[N] holds exactly the
+// objects whose .type == N. (Per-list counts in that pass: 914 / 183 /
+// 1476 / 221 / 0 / 474 / 222 -- these drift between runs as the game
+// creates and destroys objects, which is why the PER-OBJECT check, not the
+// totals, is the evidence.)
+//
+// INVESTIGATED, UNCONFIRMED: an `ObjectMgr` sub-object
+// wrapping these lists. The FEAR1/LithTech source drop nests them one level
+// deeper -- `CClientMgr::m_ObjectMgr` (clientmgr.h:238),
+// `ObjectMgr::m_ObjectLists` (objectmgr.h:90) -- so mirroring that here is
+// tempting. Every checkable point of that reference LAYOUT is contradicted
+// by FEAR2:
+//   1. Reference `ObjectMgr : public WorldTreeHelper` has virtuals
+//      (IncFrameCode/GetFrameCode), so ITS offset 0 is a vptr. FEAR2's
+//      CClientMgr+0x00 is part of a list head: live it holds the head's OWN
+//      address -- a heap value outside the exe image, structurally
+//      incompatible with a vptr. (Why it self-points on a POPULATED list --
+//      list[0] had 914 entries in that snapshot -- is exactly why the field
+//      is still typed `prev` unverified; see CClientMgrListLink.)
+//   2. Reference `m_ObjectLists` is the LAST member of ObjectMgr, preceded
+//      by m_CurFrameCode, m_InternalLink, 4 StructBanks, 12 ObjectBanks and
+//      a bank-pointer array. FEAR2 puts the 7 heads at offset 0, with
+//      nothing ahead of them. (What actually follows at +0x38 is not mapped
+//      yet -- see the unclaimed span below; it was not matched against the
+//      reference's members and no such correspondence is asserted.)
+//   3. Reference element type `LTList` is 16 bytes (`m_nElements` + a
+//      12-byte `LTLink` carrying `m_pData`). FEAR2's heads are 8 bytes at
+//      stride 8 with no count, and its walkers recover the object by
+//      `link - 172` (INTRUSIVE) rather than reading `m_pData`. Different
+//      list implementation, not just a different offset.
+//   4. Every reference `om_*` routine takes an explicit `ObjectMgr*`
+//      (om_Init/om_Term/om_CreateObject/om_DestroyObject). The FEAR2 object
+//      routines examined here take no manager at all: 0x40CB24 and 0x40D065
+//      read the g_pClientMgr global directly, 0x40B52A takes a bare list
+//      head, and 0x40B287 takes only the object. 0x40BDC4 is a CClientMgr
+//      __thiscall (touches this[1294], this+1285, this+26) that walks the 7
+//      lists from `this + 0` inline. (Those five are the walkers/teardown
+//      path, not an exhaustive sweep of every object routine.)
+// Note (4) is suggestive, not decisive -- an embedded subobject at offset 0
+// is layout-INDISTINGUISHABLE from direct fields, so no binary access
+// pattern can prove or disprove a purely nominal wrapper. That cuts both
+// ways: it cannot be confirmed either, and AGENT.MD rule 9 says FEAR2 is
+// ground truth and the source drop is a NAMING hint only. So the lists stay
+// declared directly on CClientMgr. Do not re-import this nesting from the
+// source drop without FEAR2-side evidence.
+//
+// unk_68: a container/vector-like object, NOT a plain field. dump 0x44ED89
+// uses `g_pClientMgr + 104` as a DROP-IN FALLBACK for `dword_6F3080 + 1064`
+// and feeds it to sub_61C92C -- which computes `(this[2] - this[1]) >> 2`,
+// i.e. a size() over 4-byte elements -- and to sub_46D362, which is its
+// operator[] (`return this[1] + 4*index`, bounds-checked against that same
+// size()). So relative to unk_68: +0x04 = begin, +0x08 = end. Live: begin=
+// 0x175CA208 end=0x175CA20C, size 1. The DWORD at unk_68+0x00 itself is
+// separately read as a BYTE flag by dump 0x40CB42 (`if (this[104])
+// { ... } this[104] = 0;` -- a commit-and-clear), and read 0 live.
+// Modelled as CClientMgrPtrVector below.
+//
+// last_sent_bandwidth: CONFIRMED EXACTLY. dump 0x40B562 computes
+// `clamp(BandwidthTargetClient / 8000, 0, 0xFFFF)`, compares it against
+// this field, and ONLY IF IT CHANGED calls the connection object's vtable
+// slot 16 and re-sends -- then stores it back here. The value is written
+// into a bit-packed network message (sub_438CE5 is a bitstream writer:
+// `this[1] |= (val & mask) << bitpos`) as message id 7 in 4 bits followed
+// by this value in 16 bits. dword_6E34E4 is the **BandwidthTargetClient**
+// cvar -- proven from the engine's own cvar registration table at
+// 0x6E3944 = {name="BandwidthTargetClient", &dword_6E34E4, type 2}.
+// Live check: BandwidthTargetClient=256000, /8000 = 32, and this field
+// read exactly 32. This is a change-detection cache of the last bandwidth
+// value transmitted to the server, NOT a live bandwidth measurement.
+//
+// unk_4E4: explicitly zeroed inside CClientMgr::Init
+// (`*(_DWORD*)(a1+1252)=0`) and observed live holding a heap pointer
+// (0x05F30498) -- actively written post-init, role otherwise unverified.
+//
+// Still identified but NOT mapped (see reversing/MAPPING_WORKFLOW.md --
+// don't force a field without confident evidence): an embedded blob @0x90
+// passed BY ADDRESS to a global subsystem's (dword_6ECC98) vtable slot 20
+// during Init -- size/type/purpose unknown.
 //
 // Struct size below is a HEADROOM MINIMUM matching the highest mapped
 // field + alignment, exactly like DatabaseMgr's own "unconfirmed beyond
 // +0x18" note -- do NOT treat 0x1468 as the confirmed total object size,
 // only as "safe to reinterpret up to here".
 class CClientMgr 0x1468 {
+    CClientMgrListLink object_lists[7]       @0x00     // CONFIRMED: 7 heads, bucketed by LTObject.type (index == type)
+    CClientMgrPtrVector unk_68               @0x68     // CONFIRMED container shape; what it holds is unverified
     void* unk_4E4                            @0x4E4
     CClientMgrListLink counter_list_head     @0x13EC
     CClientMgrCounterNode* own_counter_node  @0x13F4
-    uint16_t unk_1430                        @0x1430   // CClientMgr::Init stores a WORD here (`*(_WORD*)(a1+5168)=0`); typed uint16_t to match -- bytes 0x1432-0x1433 are NOT claimed by this field, unmapped
+    uint16_t last_sent_bandwidth             @0x1430   // CONFIRMED == clamp(BandwidthTargetClient/8000, 0, 0xFFFF); live 256000/8000 == 32 == field
     void* client_shell                       @0x1434
     bool updating                            @0x143C
     CClientMgrListLink start_shell_list      @0x1460

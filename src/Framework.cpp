@@ -190,6 +190,15 @@ std::string build_targets_json() {
     char buf[1024];
     const auto* exe = sdk::Modules::get().exe();
     auto* client_mgr = sdk::CClientMgr::get();
+
+    // start_shell_list_count is std::optional: nullopt means the SDK's own
+    // walk did NOT terminate (corrupt list / wrong mapping) or faulted.
+    // Reported as -1 so a consumer can distinguish "didn't terminate" from
+    // "terminated with 0 entries" WITHOUT restating the SDK's internal cap
+    // (see that method's comment -- the cap must not leak outside the SDK).
+    const std::optional<size_t> shell_count =
+        client_mgr != nullptr ? client_mgr->start_shell_list_count() : std::optional<size_t>{};
+
     snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"exe_base\":\"0x%08X\",\"exe_size\":\"0x%08X\","
              "\"client_mgr_update\":\"0x%08X\",\"client_shell_update\":\"0x%08X\","
@@ -197,7 +206,8 @@ std::string build_targets_json() {
              "\"hWnd_slot\":\"0x%08X\",\"client_mgr\":\"0x%08X\","
              "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\","
              "\"client_mgr_updating\":%s,\"counter_elapsed_ms\":%u,"
-             "\"counter_elapsed_time\":%f,\"start_shell_list_count\":%zu}",
+             "\"counter_elapsed_time\":%f,\"start_shell_list_count\":%lld,"
+             "\"counter_node_registered\":%s}",
              static_cast<uint32_t>(exe->base), static_cast<uint32_t>(exe->size),
              static_cast<uint32_t>(sdk::CClientMgr::update_fn()),
              static_cast<uint32_t>(sdk::CClientShell::update_fn()),
@@ -211,8 +221,91 @@ std::string build_targets_json() {
              (client_mgr != nullptr && client_mgr->is_updating()) ? "true" : "false",
              client_mgr != nullptr ? client_mgr->counter_elapsed_ms() : 0u,
              client_mgr != nullptr ? client_mgr->counter_elapsed_time() : 0.0,
-             client_mgr != nullptr ? client_mgr->start_shell_list_count() : static_cast<size_t>(0));
+             shell_count.has_value() ? static_cast<long long>(*shell_count) : -1LL,
+             (client_mgr != nullptr && client_mgr->counter_node_registered()) ? "true" : "false");
     return buf;
+}
+
+// Diagnostics only -- goes entirely through sdk::CClientMgr's own
+// object_list_count()/object_count()/snapshot_objects(). Reports every
+// type bucket's live count plus a bounded sample of copied-out object
+// transforms.
+//
+// Uses the SNAPSHOT api deliberately: these lists mutate continuously while
+// we read them, so the SDK copies each object's fields in the same guarded
+// pass that walks the list, and we only ever format already-copied PODs
+// here (see sdk::CClientMgr's object-enumeration comment).
+std::string build_objects_json() {
+    auto* mgr = sdk::CClientMgr::get();
+    if (mgr == nullptr) {
+        return "{\"ok\":false,\"error\":\"CClientMgr::get() returned null\"}";
+    }
+
+    // Bucket count comes from the schema via the SDK -- never a literal here.
+    const size_t buckets = sdk::CClientMgr::object_list_count();
+
+    std::string out = "{\"ok\":true,\"bucket_count\":";
+    out += std::to_string(buckets);
+    out += ",\"buckets\":[";
+
+    size_t total = 0;
+    bool all_terminated = true;
+    for (size_t t = 0; t < buckets; ++t) {
+        if (t != 0) {
+            out += ",";
+        }
+        const auto n = mgr->object_count(t);
+        if (!n.has_value()) {
+            all_terminated = false;
+            out += "-1"; // walk faulted or did not terminate
+        } else {
+            total += *n;
+            out += std::to_string(*n);
+        }
+    }
+    out += "],\"total\":";
+    out += std::to_string(total);
+    out += ",\"all_terminated\":";
+    out += all_terminated ? "true" : "false";
+
+    // Bounded sample from the first non-empty bucket, proving the transforms
+    // are really reachable (not just that the list walks).
+    sdk::CClientMgr::ObjectSnapshot snaps[4]{};
+    long long sample_bucket = -1;
+    size_t got = 0;
+    for (size_t t = 0; t < buckets; ++t) {
+        const auto n = mgr->snapshot_objects(t, snaps, std::size(snaps));
+        if (n.has_value() && *n > 0) {
+            sample_bucket = static_cast<long long>(t);
+            got = *n;
+            break;
+        }
+    }
+    out += ",\"sample_bucket\":";
+    out += std::to_string(sample_bucket);
+    out += ",\"sample\":[";
+    for (size_t i = 0; i < got; ++i) {
+        if (i != 0) {
+            out += ",";
+        }
+        char b[320];
+        const auto& s = snaps[i];
+        // rotation magnitude: an independent correctness signal -- a wrong
+        // offset would not yield a unit quaternion.
+        const double mag = std::sqrt(static_cast<double>(s.rotation[0]) * s.rotation[0] +
+                                     static_cast<double>(s.rotation[1]) * s.rotation[1] +
+                                     static_cast<double>(s.rotation[2]) * s.rotation[2] +
+                                     static_cast<double>(s.rotation[3]) * s.rotation[3]);
+        snprintf(b, sizeof(b),
+                 "{\"address\":\"0x%08X\",\"vtable\":\"0x%08X\",\"type\":%u,\"handle\":%u,"
+                 "\"pos\":[%f,%f,%f],\"rot\":[%f,%f,%f,%f],\"rot_magnitude\":%f}",
+                 s.address, s.vtable, s.type, s.handle,
+                 s.position[0], s.position[1], s.position[2],
+                 s.rotation[0], s.rotation[1], s.rotation[2], s.rotation[3], mag);
+        out += b;
+    }
+    out += "]}";
+    return out;
 }
 
 // Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
@@ -393,6 +486,7 @@ bool Framework::initialize() {
     handlers.health = build_health_fragment;
     handlers.targets = build_targets_json;
     handlers.database = build_database_json;
+    handlers.objects = build_objects_json;
     handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);

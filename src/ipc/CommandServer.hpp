@@ -20,12 +20,20 @@
 //                                   almost always false when sampled here),
 //                                   counter_elapsed_ms/counter_elapsed_time
 //                                   (correlated pair, elapsed_ms==elapsed_time*
-//                                   1000 -- NOT confirmed as a free-running
-//                                   counter, see reversing/fear2.genny's
+//                                   1000 -- advancement semantics UNVERIFIED,
+//                                   see reversing/fear2.genny's
 //                                   CClientMgrCounterNode comment), and
 //                                   start_shell_list_count (bounded walk of a
 //                                   generic engine list CClientMgr::StartShell
 //                                   populates; 0 at the main menu) (diagnostics).
+//   GET /sdk/objects             -> JSON object: per-type live object counts from
+//                                   CClientMgr's 7 type-bucketed lists, plus a
+//                                   bounded sample of copied-out LTObject
+//                                   transforms (position/rotation, with the
+//                                   rotation magnitude included as a correctness
+//                                   signal). Snapshot-based: the SDK copies fields
+//                                   in the same guarded pass that walks the list,
+//                                   because these lists mutate live (diagnostics).
 //   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
 //                                   fields (vtable/array bounds/entry_count) plus, for
 //                                   entry0, real category/record enumeration (name,
@@ -47,12 +55,14 @@ namespace cmdsrv {
 using HealthFn = std::function<std::string()>;                    // JSON object FRAGMENT (no braces)
 using TargetsFn = std::function<std::string()>;                   // full JSON object
 using DatabaseFn = std::function<std::string()>;                  // full JSON object
+using ObjectsFn = std::function<std::string()>;                   // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 
 struct Handlers {
     HealthFn health{};           // optional; default reports state only
     TargetsFn targets{};         // optional; /sdk/targets 404s without it
     DatabaseFn database{};       // optional; /sdk/database 404s without it
+    ObjectsFn objects{};         // optional; /sdk/objects 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
 };
 

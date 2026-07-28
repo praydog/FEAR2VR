@@ -87,17 +87,34 @@ inject → test → uninject with the game never restarting.
      own in generated output) -- hand-written, permanent, never regenerated.
    - Diagnostics (`/sdk/database` etc.) call the SDK's own methods and
      serialize the result -- they do not reimplement traversal logic inline.
-   - **Testing corollary**: because the mod is truly injected and running
-     in-process, host-side tests must NOT reimplement the SDK's struct
-     traversal via ReadProcessMemory (that only proves hand-derived offsets
-     agree with themselves, not that the compiled SDK code is correct or
-     safe to actually call). Let the DLL exercise `entry_count()`/`entry(i)`/
-     etc. for real and report results; the host verifies OS-level ground
-     truth it alone can determine (Toolhelp32 module residency), sanity-
-     checks the reported content, and confirms the process/IPC survived the
-     call (crash-proof). RPM stays legitimate for simple global-pointer
-     cross-checks the DLL could otherwise "lie" about (e.g. `/sdk/targets`'s
-     `hWnd_slot`/`g_pClientMgr_slot`), never for re-walking a mapped struct.
+   - **Testing corollary -- NO ReadProcessMemory IN TESTS, EVER.** No
+     exceptions, no carve-outs. The mod is truly injected and running
+     in-process: the thing under test is whether the SDK -- compiled from
+     the `.genny` schema -- produces what we expect when it runs there.
+     A host-side RPM read proves nothing the SDK didn't already do, and it
+     forces the test to hardcode offsets, which:
+       1. duplicates the schema as MAGIC VALUES in the test (the schema is
+          the single source of truth; a test that restates offsets silently
+          rots the moment the schema changes), and
+       2. only demonstrates that our hand-typed numbers agree with
+          themselves -- not that the compiled SDK code is correct, or even
+          safe to call.
+     **THERE MUST BE NO MAGIC VALUES IN TESTS AT ALL.** If a test needs to
+     assert a structural relationship (e.g. "this node is linked into that
+     list"), the SDK gets a METHOD expressing that invariant through the
+     generated schema (`&node->self_link == head.next` -- the compiler
+     derives every offset), the diagnostics report its result, and the test
+     asserts on that. See `sdk::CClientMgr::counter_node_registered()` for
+     the canonical example.
+     What the host legitimately verifies: the SHAPE of what the DLL reports
+     (well-formed JSON, correct types, plausible ranges), INVARIANTS between
+     independently-mapped values (two schema fields at different offsets
+     that must correlate -- if either offset were wrong they wouldn't), that
+     the process and IPC SURVIVED the in-process call (crash-proof), and
+     OS-level ground truth it alone owns: module residency from the host's
+     own Toolhelp32 snapshot. Toolhelp32 is OS *metadata* about what is
+     mapped where -- it is NOT reading the target's memory, and is the one
+     external oracle the DLL cannot fake.
 6. **kananlib first.** Before writing any binary-analysis helper, check
    `I:\Programming\projects\kananlib\include\utility/*.hpp` (Scan, Module, Seh,
    Address, Patch, PointerHook, VtableHook). Do not reimplement what it has;

@@ -14,13 +14,22 @@
 //   4. inject
 //   5. ASSERTIONS (checker): health shape, frame hook liveness (ticks advance),
 //      /sdk/targets in-bounds vs the PID's real module list, /engine-hook
-//      "hwnd" positive + "fear2vr_no_such_hook" negative, cross-check the raw
-//      hWnd global via ReadProcessMemory (host-observed, not DLL-asserted)
+//      "hwnd" positive + "fear2vr_no_such_hook" negative, SDK-reported
+//      mapping invariants (see the no-RPM note below)
 //   6. graceful-unload proof: /unload -> module vanishes from module list AND
 //      the game process keeps running
 //   7. re-inject: health answers again, frame ticks reset to a small value
 //      (fresh instance -- proves the first instance's hooks/handles are gone)
 //   8. teardown: terminate the instance we spawned, else final unload
+//
+// NO ReadProcessMemory, ANYWHERE, EVER (TESTING.MD): the point is that the
+// SDK -- compiled from the fear2.genny schema and running IN-PROCESS --
+// produces what we expect. A host-side RPM walk with hardcoded offsets only
+// proves our hand-typed numbers agree with themselves, and it duplicates the
+// schema as magic values in the test. The DLL calls its own SDK methods and
+// reports results; the host validates shape, invariants, and OS-level ground
+// truth it alone owns (module residency from its own Toolhelp32 snapshot --
+// OS metadata about what's mapped, NOT reading the process's memory).
 
 #include <cstdint>
 #include <cstdio>
@@ -148,15 +157,6 @@ bool remote_find_module(uint32_t pid, const char* basename, RemoteModule& out) {
     }
     CloseHandle(snap);
     return found;
-}
-
-bool remote_read32(uint32_t pid, uintptr_t address, uint32_t& out) {
-    HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (proc == nullptr) return false;
-    SIZE_T n = 0;
-    const BOOL ok = ReadProcessMemory(proc, reinterpret_cast<LPCVOID>(address), &out, sizeof(out), &n);
-    CloseHandle(proc);
-    return ok && n == sizeof(out);
 }
 
 
@@ -408,26 +408,18 @@ int main(int argc, char** argv) {
             check(dbmgr >= db_mod.base && dbmgr < db_mod.base + db_mod.size, "database_mgr residency", detail);
         }
 
-        // Cross-check the raw globals host-side via ReadProcessMemory: the
-        // values the DLL reports must match the memory we read ourselves
-        // (guards against the DLL faking its own diagnostics).
-        uint32_t slot_client = 0, slot_hwnd = 0;
-        json_hex(body, "g_pClientMgr_slot", slot_client);
-        json_hex(body, "hWnd_slot", slot_hwnd);
-        uint32_t raw_client = 0, raw_hwnd = 0;
-        check(remote_read32(pid, slot_client, raw_client), "RPM g_pClientMgr");
-        check(remote_read32(pid, slot_hwnd, raw_hwnd), "RPM hWnd");
-        check(raw_client == client_mgr, "RPM g_pClientMgr value == DLL-reported client_mgr");
+        // (Per the no-RPM rule at the top of this file: every value below is
+        // computed IN-PROCESS by the SDK and reported over IPC; the host only
+        // validates shape/invariants and OS-level ground truth.)
 
-        // client_shell: proves the regenny-backed sdk::CClientMgr::client_shell()
-        // path (reversing/fear2.genny's CClientMgr.client_shell @0x1434), not
-        // just that the endpoint serialized something -- read the SAME field
-        // independently via RPM off the DLL-reported client_mgr instance and
-        // assert equality (TESTING.MD rule 2: cross-check the DLL's self-report).
-        uint32_t client_shell = 0, raw_shell = 0;
+        // client_shell: sdk::CClientMgr::client_shell() (regenny-backed --
+        // reversing/fear2.genny's CClientMgr.client_shell). Non-null and
+        // heap-resident (outside the exe image -- it's an allocated object,
+        // not a static).
+        uint32_t client_shell = 0;
         check(json_hex(body, "client_shell", client_shell) && client_shell != 0, "client_shell non-null");
-        check(remote_read32(pid, client_mgr + 0x1434, raw_shell), "RPM client_mgr+0x1434");
-        check(raw_shell == client_shell, "RPM client_mgr+0x1434 == DLL-reported client_shell (sdk::CClientMgr::client_shell() proof)");
+        check(client_shell < lo || client_shell >= hi,
+              "client_shell is heap-allocated (outside the FEAR2.exe image), as expected for a runtime object");
 
         // client_mgr_updating: regenny::CClientMgr.updating is true only for
         // the brief duration of CClientMgr::Update's own CClientShell::Update
@@ -436,56 +428,87 @@ int main(int argc, char** argv) {
         // only (never a specific value -- true is rare but real, not a bug).
         check(json_has(body, "\"client_mgr_updating\":true") || json_has(body, "\"client_mgr_updating\":false"),
               "client_mgr_updating is a well-formed JSON boolean");
-        check(raw_hwnd == main_hwnd, "RPM hWnd value == DLL-reported main_hwnd");
         check(main_hwnd != 0 && IsWindow(reinterpret_cast<HWND>(main_hwnd)),
               "main_hwnd is a live window (IsWindow, host-side)");
 
-        // counter_list_head/own_counter_node: proves the CClientMgr_Init
-        // wiring (reversing/fear2.genny's CClientMgrListLink comment) is a
-        // stable structural INVARIANT, not a one-time observation -- read
-        // BOTH sides independently via RPM off the DLL-reported client_mgr
-        // and assert the exact relationship holds live (TESTING.MD rule 2).
-        uint32_t counter_list_head_next = 0, own_counter_node = 0;
-        check(remote_read32(pid, client_mgr + 0x13F0, counter_list_head_next), "RPM client_mgr+0x13F0 (counter_list_head.next)");
-        check(remote_read32(pid, client_mgr + 0x13F4, own_counter_node), "RPM client_mgr+0x13F4 (own_counter_node)");
-        check(own_counter_node != 0 && counter_list_head_next == own_counter_node + 0x14,
-              "counter_list_head.next == own_counter_node+0x14 (CClientMgr_Init wiring proof)");
+        // counter_node_registered: sdk::CClientMgr::counter_node_registered()
+        // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely
+        // through the generated schema (&own_counter_node->self_link ==
+        // counter_list_head.next -- the compiler derives every offset from
+        // fear2.genny; no literal appears in the SDK or here). If the schema
+        // ever drifts, that method recomputes correctly rather than
+        // comparing stale numbers.
+        check(json_has(body, "\"counter_node_registered\":true"),
+              "SDK reports its own counter node correctly linked into counter_list_head (CClientMgr_Init wiring invariant)");
 
-        // start_shell_list_count: RPM-walk the SAME 8-byte-link list
-        // structure from client_mgr+0x1460 independently (same 10000 cap as
-        // sdk::CClientMgr::start_shell_list_count()) and assert the
-        // host-computed count matches the endpoint's -- a real mapping
-        // proof, not just a plausibility bound.
-        {
-            const uint32_t head = client_mgr + 0x1460;
-            uint32_t cur = 0;
-            check(remote_read32(pid, head + 4, cur), "RPM client_mgr+0x1464 (start_shell_list.next)");
-            size_t host_count = 0;
-            while (cur != head && host_count < 10000) {
-                uint32_t next = 0;
-                if (!remote_read32(pid, cur + 4, next)) break;
-                ++host_count;
-                cur = next;
-            }
-            int64_t reported_count = -1;
-            check(json_int(body, "start_shell_list_count", reported_count) && reported_count >= 0,
-                  "start_shell_list_count present and non-negative");
-            check(static_cast<int64_t>(host_count) == reported_count,
-                  "RPM-walked start_shell_list count == DLL-reported start_shell_list_count");
-        }
+        // start_shell_list_count: sdk::CClientMgr::start_shell_list_count()
+        // walked the list in-process and reports std::optional -- serialized
+        // as -1 when the walk did NOT terminate (corrupt list / wrong
+        // mapping) or faulted. Asserting >= 0 IS the termination proof; the
+        // SDK's internal fail-closed cap is deliberately NOT restated here
+        // (a literal like "< 10000" in a test is a magic value duplicating
+        // SDK internals -- see TESTING.MD rule 2).
+        int64_t shell_count = -1;
+        check(json_int(body, "start_shell_list_count", shell_count),
+              "start_shell_list_count present");
+        check(shell_count >= 0,
+              "SDK's start_shell_list walk terminated cleanly (list well-formed; -1 would mean it hit its own fail-closed cap or faulted)");
 
-        // counter_elapsed_ms/counter_elapsed_time: the ONLY confirmed
-        // invariant is the correlation (elapsed_ms == elapsed_time*1000),
-        // NOT that the value advances (re-sampled minutes apart at the main
-        // menu and it did not move -- see fear2.genny's comment). Assert
-        // the correlation with a small tolerance for float/double rounding.
-        {
-            int64_t elapsed_ms = -1;
-            double elapsed_time = -1.0;
-            check(json_int(body, "counter_elapsed_ms", elapsed_ms) && elapsed_ms >= 0, "counter_elapsed_ms present and non-negative");
-            check(json_double(body, "counter_elapsed_time", elapsed_time) && elapsed_time >= 0.0, "counter_elapsed_time present and non-negative");
-            const double diff = static_cast<double>(elapsed_ms) - elapsed_time * 1000.0;
-            check(diff > -2.0 && diff < 2.0, "counter_elapsed_ms == counter_elapsed_time*1000 within 2ms tolerance");
+        // counter_elapsed_ms/counter_elapsed_time: BOTH read in-process by
+        // the SDK from the SAME mapped node. The confirmed invariant is the
+        // correlation (elapsed_ms == elapsed_time*1000) -- NOT anything
+        // about advancement, whose semantics are unverified (see
+        // fear2.genny's comment). Two schema fields at different
+        // offsets/types agreeing numerically is a real mapping proof: if
+        // either offset were wrong, they would not correlate. Asserting on
+        // advancement here would also be flaky by construction -- it needs
+        // a confirmed-running engine, and the fixture may attach to an
+        // idle or suspended instance.
+        int64_t elapsed_ms = -1;
+        double elapsed_time = -1.0;
+        check(json_int(body, "counter_elapsed_ms", elapsed_ms) && elapsed_ms >= 0, "counter_elapsed_ms present and non-negative");
+        check(json_double(body, "counter_elapsed_time", elapsed_time) && elapsed_time >= 0.0, "counter_elapsed_time present and non-negative");
+        const double diff = static_cast<double>(elapsed_ms) - elapsed_time * 1000.0;
+        check(diff > -2.0 && diff < 2.0,
+              "counter_elapsed_ms == counter_elapsed_time*1000 (two distinct mapped fields agree -- offset proof)");
+    }
+
+    // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised
+    // IN-PROCESS. The DLL walks its own 7 type buckets via
+    // sdk::CClientMgr::object_count()/snapshot_objects() and reports the
+    // results; the host validates shape and invariants only.
+    //
+    // These assertions hold on a frozen engine as well as a running one --
+    // they are structural, not liveness. (The counts themselves drift as the
+    // game creates/destroys objects, so nothing here pins an exact total.)
+    {
+        std::string resp;
+        check(http::get(port, "/sdk/objects", resp), "/sdk/objects transport");
+        const std::string body = http::body_of(resp);
+
+        int64_t bucket_count = -1;
+        check(json_int(body, "bucket_count", bucket_count) && bucket_count == 7,
+              "object_lists has exactly 7 type buckets (schema-driven, not a literal in the test)");
+
+        // all_terminated is the SDK's own report that EVERY bucket walk ended
+        // back at its head without faulting, without hitting the fail-closed
+        // cap, and -- the strong part -- without a single object whose .type
+        // disagreed with its bucket index. A false here means the mapping
+        // drifted (wrong list_link offset would land container-of on garbage).
+        check(json_has(body, "\"all_terminated\":true"),
+              "every bucket walk terminated cleanly AND every object's type == its bucket index");
+
+        int64_t total = -1;
+        check(json_int(body, "total", total) && total >= 0,
+              "total object count present and non-negative");
+
+        // Sample shape: rotations are quaternions and were unit-length across
+        // every object sampled during mapping. A non-unit magnitude means we
+        // are reading the wrong offset, not that the game misbehaved.
+        double mag = -1.0;
+        if (json_double(body, "rot_magnitude", mag)) {
+            check(mag > 0.99 && mag < 1.01,
+                  "sampled object's rotation is a unit-length quaternion (offset proof)");
         }
     }
 
