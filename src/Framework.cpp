@@ -1,5 +1,7 @@
 #include "Framework.hpp"
 
+#include <atomic>
+#include <cinttypes>
 #include <cstdio>
 #include <iterator>
 #include <thread>
@@ -26,11 +28,60 @@ namespace {
 // --- frame hook (the framework's first real hook) ---------------------------
 // Detour on CClientShell::Update (sdk-mapped anchor). Counts ticks and fans
 // out Mods::on_frame. x86 __thiscall (ecx=this) -> __fastcall shim (edx dummy).
+
+// One-shot engine-thread object walk.
+//
+// sdk::CClientMgr::for_each_object hands the callback a live LTObject*, which
+// is only sound where nothing is mutating those lists -- the engine thread,
+// inside the engine's own update. Mods driven from on_frame() below are the
+// normal consumers. An off-thread caller (IPC/diagnostics) cannot satisfy
+// that precondition and must use snapshot_objects() instead.
+//
+// So when something off-thread wants an authoritative in-place count, it does
+// not walk anything itself: it raises this request and reads the result the
+// engine thread publishes. Cost on an idle frame is a single relaxed load --
+// walking every object every frame to keep a stat warm would be absurd in a
+// per-frame hot path.
+//
+// Only a count crosses the boundary. Nothing reached through the callback is
+// allowed to outlive it.
+std::atomic<bool> g_object_walk_requested{false};
+std::atomic<uint32_t> g_object_walk_type{0};
+std::atomic<int64_t> g_object_walk_count{-1};
+std::atomic<uint64_t> g_object_walk_generation{0};
+
+void service_object_walk_request() {
+    auto* mgr = sdk::CClientMgr::get();
+    if (mgr == nullptr) {
+        return; // leave the request pending; nothing consumed
+    }
+    // CLAIM the request atomically before walking. A plain load-then-store
+    // would erase a request that arrives while we are mid-walk, silently
+    // losing it; exchange means a late request stays pending for next frame.
+    if (!g_object_walk_requested.exchange(false, std::memory_order_acquire)) {
+        return;
+    }
+    const auto type = static_cast<sdk::ObjectType>(g_object_walk_type.load(std::memory_order_relaxed));
+    const auto walked = mgr->for_each_object(type, [](const regenny::LTObject*) {
+        // Counting body: for_each_object already returns the visited count, so
+        // there is nothing to accumulate here. A real consumer reads the
+        // object's transform at this point instead.
+    });
+    // Publish the count BEFORE bumping the generation, and bump with release,
+    // so a reader that acquire-loads the generation first is guaranteed to see
+    // the count belonging to it rather than the previous one.
+    g_object_walk_count.store(walked.has_value() ? static_cast<int64_t>(*walked) : -1,
+                              std::memory_order_relaxed);
+    g_object_walk_generation.fetch_add(1, std::memory_order_release);
+}
+
 int __fastcall frame_tick_detour(void* _this, void* edx) {
     Framework* fw = Framework::get();
     if (fw != nullptr) {
         fw->note_frame_tick();
     }
+
+    service_object_walk_request();
     Mods::get().on_frame();
 
     auto* hook = Hooks::get().find("CClientShell::Update");
@@ -200,29 +251,33 @@ std::string build_targets_json() {
         client_mgr != nullptr ? client_mgr->start_shell_list_count() : std::optional<size_t>{};
 
     snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"exe_base\":\"0x%08X\",\"exe_size\":\"0x%08X\","
-             "\"client_mgr_update\":\"0x%08X\",\"client_shell_update\":\"0x%08X\","
-             "\"get_engine_hook\":\"0x%08X\",\"g_pClientMgr_slot\":\"0x%08X\","
-             "\"hWnd_slot\":\"0x%08X\",\"client_mgr\":\"0x%08X\","
-             "\"client_shell\":\"0x%08X\",\"main_hwnd\":\"0x%08X\",\"database_mgr\":\"0x%08X\","
+             "{\"ok\":true,\"exe_base\":\"0x%08" PRIXPTR "\",\"exe_size\":\"0x%08" PRIXPTR "\","
+             "\"client_mgr_update\":\"0x%08" PRIXPTR "\",\"client_shell_update\":\"0x%08" PRIXPTR "\","
+             "\"get_engine_hook\":\"0x%08" PRIXPTR "\",\"g_pClientMgr_slot\":\"0x%08" PRIXPTR "\","
+             "\"hWnd_slot\":\"0x%08" PRIXPTR "\",\"client_mgr\":\"0x%08" PRIXPTR "\","
+             "\"client_shell\":\"0x%08" PRIXPTR "\",\"main_hwnd\":\"0x%08" PRIXPTR "\","
+             "\"database_mgr\":\"0x%08" PRIXPTR "\","
              "\"client_mgr_updating\":%s,\"counter_elapsed_ms\":%u,"
              "\"counter_elapsed_time\":%f,\"start_shell_list_count\":%lld,"
-             "\"counter_node_registered\":%s}",
-             static_cast<uint32_t>(exe->base), static_cast<uint32_t>(exe->size),
-             static_cast<uint32_t>(sdk::CClientMgr::update_fn()),
-             static_cast<uint32_t>(sdk::CClientShell::update_fn()),
-             static_cast<uint32_t>(sdk::Engine::get_engine_hook_fn()),
-             static_cast<uint32_t>(sdk::CClientMgr::instance_slot()),
-             static_cast<uint32_t>(sdk::Engine::main_hwnd_slot()),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(client_mgr)),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::CClientShell::get())),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd())),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get())),
+             "\"counter_node_registered\":%s,"
+             "\"last_sample_time_ms\":%u,\"pending_shell_release\":%s}",
+             static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
+             sdk::CClientMgr::update_fn(),
+             sdk::CClientShell::update_fn(),
+             sdk::Engine::get_engine_hook_fn(),
+             sdk::CClientMgr::instance_slot(),
+             sdk::Engine::main_hwnd_slot(),
+             reinterpret_cast<uintptr_t>(client_mgr),
+             reinterpret_cast<uintptr_t>(sdk::CClientShell::get()),
+             reinterpret_cast<uintptr_t>(sdk::Engine::main_hwnd()),
+             reinterpret_cast<uintptr_t>(sdk::DatabaseMgr::get()),
              (client_mgr != nullptr && client_mgr->is_updating()) ? "true" : "false",
              client_mgr != nullptr ? client_mgr->counter_elapsed_ms() : 0u,
              client_mgr != nullptr ? client_mgr->counter_elapsed_time() : 0.0,
              shell_count.has_value() ? static_cast<long long>(*shell_count) : -1LL,
-             (client_mgr != nullptr && client_mgr->counter_node_registered()) ? "true" : "false");
+             (client_mgr != nullptr && client_mgr->counter_node_registered()) ? "true" : "false",
+             client_mgr != nullptr ? client_mgr->last_sample_time_ms() : 0u,
+             (client_mgr != nullptr && client_mgr->has_pending_shell_release()) ? "true" : "false");
     return buf;
 }
 
@@ -254,7 +309,7 @@ std::string build_objects_json() {
         if (t != 0) {
             out += ",";
         }
-        const auto n = mgr->object_count(t);
+        const auto n = mgr->object_count(static_cast<sdk::ObjectType>(t));
         if (!n.has_value()) {
             all_terminated = false;
             out += "-1"; // walk faulted or did not terminate
@@ -268,13 +323,51 @@ std::string build_objects_json() {
     out += ",\"all_terminated\":";
     out += all_terminated ? "true" : "false";
 
+    // Per-bucket type names, so the numbers above are readable without
+    // cross-referencing the enum by hand.
+    out += ",\"bucket_names\":[";
+    for (size_t t = 0; t < buckets; ++t) {
+        if (t != 0) {
+            out += ",";
+        }
+        out += "\"";
+        out += sdk::object_type_name(static_cast<sdk::ObjectType>(t));
+        out += "\"";
+    }
+    out += "]";
+
+    // Ask the ENGINE THREAD for an in-place for_each_object count and report
+    // whatever it last published. Deliberately non-blocking: if the engine is
+    // not running frames (paused, suspended, pre-init) no result will ever
+    // arrive, and blocking the IPC thread on it would hang this endpoint.
+    // -1 means "no walk has completed yet". Compare `generation` across two
+    // polls to know a fresh result landed rather than a stale one.
+    // Read the LAST published result before raising a new request, and read
+    // the generation FIRST with acquire so the count we then read is the one
+    // that generation published (the reverse order would let us pair a fresh
+    // generation with a stale count).
+    const uint64_t walk_generation = g_object_walk_generation.load(std::memory_order_acquire);
+    const int64_t walk_count = g_object_walk_count.load(std::memory_order_relaxed);
+
+    g_object_walk_type.store(static_cast<uint32_t>(regenny::OT_MODEL), std::memory_order_relaxed);
+    g_object_walk_requested.store(true, std::memory_order_release);
+
+    out += ",\"engine_walk_type\":";
+    out += std::to_string(static_cast<unsigned>(regenny::OT_MODEL));
+    out += ",\"engine_walk_type_name\":\"";
+    out += sdk::object_type_name(regenny::OT_MODEL);
+    out += "\",\"engine_walk_count\":";
+    out += std::to_string(walk_count);
+    out += ",\"engine_walk_generation\":";
+    out += std::to_string(walk_generation);
+
     // Bounded sample from the first non-empty bucket, proving the transforms
     // are really reachable (not just that the list walks).
     sdk::CClientMgr::ObjectSnapshot snaps[4]{};
     long long sample_bucket = -1;
     size_t got = 0;
     for (size_t t = 0; t < buckets; ++t) {
-        const auto n = mgr->snapshot_objects(t, snaps, std::size(snaps));
+        const auto n = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps, std::size(snaps));
         if (n.has_value() && *n > 0) {
             sample_bucket = static_cast<long long>(t);
             got = *n;
@@ -288,7 +381,7 @@ std::string build_objects_json() {
         if (i != 0) {
             out += ",";
         }
-        char b[320];
+        char b[384];
         const auto& s = snaps[i];
         // rotation magnitude: an independent correctness signal -- a wrong
         // offset would not yield a unit quaternion.
@@ -297,9 +390,11 @@ std::string build_objects_json() {
                                      static_cast<double>(s.rotation[2]) * s.rotation[2] +
                                      static_cast<double>(s.rotation[3]) * s.rotation[3]);
         snprintf(b, sizeof(b),
-                 "{\"address\":\"0x%08X\",\"vtable\":\"0x%08X\",\"type\":%u,\"handle\":%u,"
+                 "{\"address\":\"0x%08" PRIXPTR "\",\"vtable\":\"0x%08" PRIXPTR "\","
+                 "\"type\":%u,\"type_name\":\"%s\",\"handle\":%u,"
                  "\"pos\":[%f,%f,%f],\"rot\":[%f,%f,%f,%f],\"rot_magnitude\":%f}",
-                 s.address, s.vtable, s.type, s.handle,
+                 s.address, s.vtable,
+                 static_cast<unsigned>(s.type), sdk::object_type_name(s.type), s.handle,
                  s.position[0], s.position[1], s.position[2],
                  s.rotation[0], s.rotation[1], s.rotation[2], s.rotation[3], mag);
         out += b;
@@ -380,11 +475,11 @@ std::string build_database_json() {
             const std::string path_a = sdk::DatabaseMgr::read_path(e->record_a);
             const std::string path_b = sdk::DatabaseMgr::read_path(e->record_b);
             entry0_json = "{\"record_a\":\"0x";
-            char hexbuf[16];
-            snprintf(hexbuf, sizeof(hexbuf), "%08X", static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e->record_a)));
+            char hexbuf[24];
+            snprintf(hexbuf, sizeof(hexbuf), "%08" PRIXPTR, reinterpret_cast<uintptr_t>(e->record_a));
             entry0_json += hexbuf;
             entry0_json += "\",\"record_b\":\"0x";
-            snprintf(hexbuf, sizeof(hexbuf), "%08X", static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e->record_b)));
+            snprintf(hexbuf, sizeof(hexbuf), "%08" PRIXPTR, reinterpret_cast<uintptr_t>(e->record_b));
             entry0_json += hexbuf;
             entry0_json += "\",\"record_a_path\":";
             json_escape_append(entry0_json, path_a);
@@ -420,15 +515,17 @@ std::string build_database_json() {
 
     char buf[512];
     snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"instance\":\"0x%08X\",\"vtable\":\"0x%08X\",\"unk_04\":%u,"
-             "\"array_begin\":\"0x%08X\",\"array_end\":\"0x%08X\",\"array_cap_end\":\"0x%08X\","
+             "{\"ok\":true,\"instance\":\"0x%08" PRIXPTR "\",\"vtable\":\"0x%08" PRIXPTR "\","
+             "\"unk_04\":%u,"
+             "\"array_begin\":\"0x%08" PRIXPTR "\",\"array_end\":\"0x%08" PRIXPTR "\","
+             "\"array_cap_end\":\"0x%08" PRIXPTR "\","
              "\"unk_14\":%u,\"entry_count\":%zu,",
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(db)),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->vtable)),
+             reinterpret_cast<uintptr_t>(db),
+             reinterpret_cast<uintptr_t>(r->vtable),
              r->unk_04,
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_begin)),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_end)),
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(r->array_cap_end)),
+             reinterpret_cast<uintptr_t>(r->array_begin),
+             reinterpret_cast<uintptr_t>(r->array_end),
+             reinterpret_cast<uintptr_t>(r->array_cap_end),
              r->unk_14, count);
     std::string out = buf;
     out += "\"entry0\":";
@@ -441,8 +538,8 @@ std::string build_engine_hook_json(const std::string& name) {
     void* out = nullptr;
     const int rc = sdk::Engine::get_engine_hook(name.c_str(), &out);
     char buf[256];
-    snprintf(buf, sizeof(buf), "{\"ok\":true,\"rc\":%d,\"value\":\"0x%08X\"}", rc,
-             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(out)));
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"rc\":%d,\"value\":\"0x%08" PRIXPTR "\"}", rc,
+             reinterpret_cast<uintptr_t>(out));
     return buf;
 }
 

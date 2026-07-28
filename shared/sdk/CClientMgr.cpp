@@ -170,22 +170,112 @@ bool CClientMgr::counter_node_registered() const {
     return ok;
 }
 
+// SEH-guarded like is_updating() above, and for the same reason: `this` can go
+// stale between get() and this call (level unload, engine teardown), so even a
+// direct scalar read off the singleton can fault. Each fails closed to a value
+// a caller cannot mistake for real data.
+
+uint32_t CClientMgr::last_sample_time_ms() const {
+    uint32_t v = 0;
+    KANANLIB_SEH_TRY {
+        v = regenny()->last_sample_time_ms;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return v;
+}
+
+bool CClientMgr::has_pending_shell_release() const {
+    bool v = false;
+    KANANLIB_SEH_TRY {
+        v = (regenny()->pending_shell_release != nullptr);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return v;
+}
+
+const char* object_type_name(ObjectType type) {
+    switch (type) {
+    case regenny::OT_NORMAL:         return "OT_NORMAL";
+    case regenny::OT_MODEL:          return "OT_MODEL";
+    case regenny::OT_WORLDMODEL:     return "OT_WORLDMODEL";
+    case regenny::OT_SPRITE:         return "OT_SPRITE";
+    case regenny::OT_LIGHT:          return "OT_LIGHT";
+    case regenny::OT_CAMERA:         return "OT_CAMERA";
+    case regenny::OT_PARTICLESYSTEM: return "OT_PARTICLESYSTEM";
+    }
+    return "OT_INVALID";
+}
+
 namespace {
 
-constexpr size_t kMaxObjectWalk = 100000; // fail closed on a corrupt/non-terminating object list rather than hang
+// Derive the object base from its embedded link via offsetof on the
+// generated schema -- the engine's own walkers use `link - 172`, and that
+// 172 is LTObject.list_link's offset, which the compiler computes here so
+// no literal ever appears.
+const regenny::LTObject* object_from_link(const regenny::CClientMgrListLink* link) {
+    return reinterpret_cast<const regenny::LTObject*>(
+        reinterpret_cast<uintptr_t>(link) - offsetof(regenny::LTObject, list_link));
+}
 
-// POD-only SEH helper (MSVC C2712). Walks one object bucket, counting
-// entries. Returns the count, or -1 if it faulted or did not terminate.
-int64_t seh_count_objects(const regenny::CClientMgrListLink* head) {
+// POD-only SEH helper (MSVC C2712). Reads one link's `next` and, when that
+// is not the head, the resulting object's `type`.
+//
+// `out_type` is written only when a real object was reached. Returns false
+// on fault. The type read happens INSIDE the guard on purpose: it is the
+// first dereference of a pointer we just followed, and it is exactly what
+// detects wrong container-of arithmetic (see the type check in the callers).
+struct RawStep {
+    const regenny::CClientMgrListLink* next;
+    uint8_t type;
+    bool at_end;
+};
+
+bool seh_step(const regenny::CClientMgrListLink* head,
+              const regenny::CClientMgrListLink* cur,
+              RawStep* out) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* next = cur->next;
+        out->next = next;
+        out->at_end = (next == head);
+        out->type = out->at_end ? 0u : static_cast<uint8_t>(object_from_link(next)->type);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+// POD-only SEH helper. Walks one object bucket, counting entries. Returns
+// the count, or -1 if it faulted, did not terminate, or found an object whose
+// type disagreed with its bucket.
+//
+// The type check is here so that ALL THREE read paths -- counting, iterating
+// (step_from) and snapshotting -- validate identically. Without it a caller
+// could get a count that the other two paths would have rejected, and
+// diagnostics reporting "the walk was clean" would be claiming more than this
+// function checked.
+int64_t seh_count_objects(const regenny::CClientMgrListLink* head,
+                          uint8_t expected_type, size_t cap) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0;
-        while (cur != head && n < kMaxObjectWalk) {
+        bool invariant_ok = true;
+        while (cur != head && n < cap) {
+            if (static_cast<uint8_t>(object_from_link(cur)->type) != expected_type) {
+                invariant_ok = false;
+                break;
+            }
             ++n;
             cur = cur->next;
         }
-        result = (cur == head) ? static_cast<int64_t>(n) : -1;
+        result = (invariant_ok && cur == head) ? static_cast<int64_t>(n) : -1;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         result = -1;
@@ -194,13 +284,9 @@ int64_t seh_count_objects(const regenny::CClientMgrListLink* head) {
 }
 
 // POD-only SEH helper. Walks one bucket AND copies each object's fields in
-// the SAME pass -- see the header's note on why we never hand out an
+// the SAME pass -- see the header on why a snapshot never hands out an
 // LTObject*. Returns the number written, or -1 on fault/non-termination/
 // invariant violation.
-//
-// The link -> object base step uses offsetof on the generated schema, so no
-// literal offset (the engine's own walkers use `link - 172`; that 172 is
-// LTObject.list_link's offset, which the compiler derives here).
 //
 // SELF-CHECK: every object reached from bucket N must have type == N. That
 // is the invariant proven live during mapping (0 mismatches / 3490 objects,
@@ -211,25 +297,23 @@ int64_t seh_count_objects(const regenny::CClientMgrListLink* head) {
 // the whole snapshot rather than returning plausible-looking wrong data.
 int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
                              uint8_t expected_type,
-                             CClientMgr::ObjectSnapshot* out, size_t max) {
+                             CClientMgr::ObjectSnapshot* out, size_t max, size_t cap) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, written = 0;
         bool invariant_ok = true;
-        while (cur != head && n < kMaxObjectWalk) {
-            const auto link_addr = reinterpret_cast<uintptr_t>(cur);
-            const auto* obj = reinterpret_cast<const regenny::LTObject*>(
-                link_addr - offsetof(regenny::LTObject, list_link));
+        while (cur != head && n < cap) {
+            const auto* obj = object_from_link(cur);
             if (static_cast<uint8_t>(obj->type) != expected_type) {
                 invariant_ok = false;
                 break;
             }
             if (written < max) {
                 auto& s = out[written];
-                s.address = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(obj));
-                s.vtable = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(obj->vtable));
-                s.type = static_cast<uint8_t>(obj->type);
+                s.address = reinterpret_cast<uintptr_t>(obj);
+                s.vtable = reinterpret_cast<uintptr_t>(obj->vtable);
+                s.type = obj->type;
                 s.handle = obj->handle;
                 s.position[0] = obj->position.x;
                 s.position[1] = obj->position.y;
@@ -253,23 +337,71 @@ int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
 
 } // namespace
 
-std::optional<size_t> CClientMgr::object_count(size_t type) const {
-    if (type >= object_list_count()) {
+// first_object/next_object share one step: advance from `cur` (the head on
+// the first call) and validate what we land on.
+CClientMgr::ObjectStep CClientMgr::step_from(ObjectType type,
+                                            const regenny::CClientMgrListLink* cur,
+                                            size_t index) const {
+    if (static_cast<size_t>(type) >= object_list_count()) {
+        return ObjectStep{nullptr, index, false};
+    }
+    const auto* head = &regenny()->object_lists[static_cast<size_t>(type)];
+    RawStep raw{};
+    if (!seh_step(head, cur, &raw)) {
+        return ObjectStep{nullptr, index, false};
+    }
+    if (raw.at_end) {
+        // Clean end of list. Checked BEFORE the walk bound so a bucket
+        // holding exactly max_object_walk objects still terminates cleanly --
+        // the bound rejects a (max_object_walk + 1)'th object, not a list
+        // that legitimately ends at the limit.
+        return ObjectStep{nullptr, index, true};
+    }
+    if (index >= max_object_walk) {
+        // Another object beyond the bound: the list is not terminating. Fail
+        // closed rather than return a plausible-looking truncation.
+        return ObjectStep{nullptr, index, false};
+    }
+    if (raw.type != static_cast<uint8_t>(type)) {
+        // Bucket invariant broken -- the mapping drifted, or we followed a
+        // reused node. Same reasoning as the snapshot's self-check.
+        return ObjectStep{nullptr, index, false};
+    }
+    return ObjectStep{object_from_link(raw.next), index + 1, true};
+}
+
+CClientMgr::ObjectStep CClientMgr::first_object(ObjectType type) const {
+    if (static_cast<size_t>(type) >= object_list_count()) {
+        return ObjectStep{nullptr, 0, false};
+    }
+    return step_from(type, &regenny()->object_lists[static_cast<size_t>(type)], 0);
+}
+
+CClientMgr::ObjectStep CClientMgr::next_object(ObjectType type, ObjectStep cur) const {
+    if (cur.object == nullptr) {
+        return ObjectStep{nullptr, cur.index, false};
+    }
+    return step_from(type, &cur.object->list_link, cur.index);
+}
+
+std::optional<size_t> CClientMgr::object_count(ObjectType type) const {
+    if (static_cast<size_t>(type) >= object_list_count()) {
         return std::nullopt;
     }
-    const int64_t n = seh_count_objects(&regenny()->object_lists[type]);
+    const int64_t n = seh_count_objects(&regenny()->object_lists[static_cast<size_t>(type)],
+                                        static_cast<uint8_t>(type), max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }
     return static_cast<size_t>(n);
 }
 
-std::optional<size_t> CClientMgr::snapshot_objects(size_t type, ObjectSnapshot* out, size_t max) const {
-    if (type >= object_list_count() || (out == nullptr && max != 0)) {
+std::optional<size_t> CClientMgr::snapshot_objects(ObjectType type, ObjectSnapshot* out, size_t max) const {
+    if (static_cast<size_t>(type) >= object_list_count() || (out == nullptr && max != 0)) {
         return std::nullopt;
     }
-    const int64_t n = seh_snapshot_objects(&regenny()->object_lists[type],
-                                           static_cast<uint8_t>(type), out, max);
+    const int64_t n = seh_snapshot_objects(&regenny()->object_lists[static_cast<size_t>(type)],
+                                           static_cast<uint8_t>(type), out, max, max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

@@ -25,15 +25,45 @@
 //                                   CClientMgrCounterNode comment), and
 //                                   start_shell_list_count (bounded walk of a
 //                                   generic engine list CClientMgr::StartShell
-//                                   populates; 0 at the main menu) (diagnostics).
+//                                   populates; 0 at the main menu),
+//                                   counter_node_registered (the CClientMgr_Init
+//                                   wiring invariant, computed from the schema's
+//                                   own offsetof -- see
+//                                   sdk::CClientMgr::counter_node_registered),
+//                                   last_sample_time_ms (the ms timestamp Update
+//                                   differences for its frame delta; unit
+//                                   confirmed, zero point and WRITER not --
+//                                   Update only reads it, so its advancement is
+//                                   not evidence about frames specifically),
+//                                   and pending_shell_release (true
+//                                   only inside the deferred-destruction window
+//                                   that CClientMgr.updating guards, so like
+//                                   client_mgr_updating it reads false here
+//                                   essentially always) (diagnostics).
 //   GET /sdk/objects             -> JSON object: per-type live object counts from
-//                                   CClientMgr's 7 type-bucketed lists, plus a
-//                                   bounded sample of copied-out LTObject
-//                                   transforms (position/rotation, with the
-//                                   rotation magnitude included as a correctness
-//                                   signal). Snapshot-based: the SDK copies fields
-//                                   in the same guarded pass that walks the list,
-//                                   because these lists mutate live (diagnostics).
+//                                   CClientMgr's 7 type-bucketed lists, with
+//                                   bucket_names[] giving each index's
+//                                   sdk::ObjectType name (OT_NORMAL..
+//                                   OT_PARTICLESYSTEM), plus a bounded sample of
+//                                   copied-out LTObject transforms
+//                                   (address/vtable/type/handle/pos/rot and a
+//                                   rotation magnitude as an offset sanity
+//                                   signal). all_terminated reports whether
+//                                   every bucket walk closed cleanly AND every
+//                                   object's type matched its bucket.
+//                                   Sampling uses snapshot_objects(), which
+//                                   copies fields inside the same guarded pass
+//                                   that walks the list, because these lists
+//                                   mutate live and this runs off-thread.
+//                                   engine_walk_* reports the engine thread's
+//                                   in-place for_each_object walk: reading this
+//                                   endpoint RAISES a one-shot request that the
+//                                   frame hook services, and reports the last
+//                                   published result (count -1 = none yet).
+//                                   Non-blocking, so a paused game simply never
+//                                   advances engine_walk_generation. Compare the
+//                                   generation across two polls to know a fresh
+//                                   walk landed (diagnostics).
 //   GET /sdk/database             -> JSON object: DatabaseMgr's own regenny()-mapped
 //                                   fields (vtable/array bounds/entry_count) plus, for
 //                                   entry0, real category/record enumeration (name,
@@ -43,7 +73,9 @@
 //                                   sdk::DatabaseMgr for the "complex logic lives
 //                                   in the SDK class" convention).
 //   GET /engine-hook?name=<n>    -> calls cis_GetEngineHook(<n>) in-process;
-//                                   {"ok":true,"rc":0,"value":"0x%08X"} on LT_OK,
+//                                   {"ok":true,"rc":0,"value":"0x0040CC5E"} on LT_OK
+//                                   (pointer-valued fields are printed full-width
+//                                   from uintptr_t, never truncated),
 //                                   rc<0 when our side couldn't call.
 //   GET|POST /unload             -> responds ok, then latches unload_requested()
 //                                   so the supervisor retires hooks and unmaps.

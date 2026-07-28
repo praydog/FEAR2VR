@@ -1,5 +1,7 @@
 #include "Modules.hpp"
 
+#include <cinttypes>
+
 #include <utility/Module.hpp>
 #include <utility/Scan.hpp>
 
@@ -17,7 +19,7 @@ uintptr_t Modules::scan_exe(const char* pattern, const char* name) const {
         LOGX("[sdk] pattern MISS: %s", name);
         return 0;
     }
-    LOGX("[sdk] %-22s -> 0x%08X", name, static_cast<uint32_t>(*result));
+    LOGX("[sdk] %-22s -> 0x%08" PRIXPTR, name, *result);
     return *result;
 }
 

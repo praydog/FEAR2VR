@@ -533,6 +533,38 @@ class CClientMgrCounterNode 0x40 {
 // (`*(_DWORD*)(a1+1252)=0`) and observed live holding a heap pointer
 // (0x05F30498) -- actively written post-init, role otherwise unverified.
 //
+// pending_shell_release @0x1438 + what `updating` is FOR: CONFIRMED, and it
+// turns `updating` from "a flag we observed" into a mechanism we understand.
+// Both halves are visible:
+//
+//   SET -- dump 0x409DDF (the shell-release path):
+//     if (client_shell) {
+//         if (updating) { <world/level teardown>; pending_shell_release = client_shell; }
+//         else          { (**client_shell)(client_shell, 1); }  // virtual delete now
+//         client_shell = 0;
+//     }
+//
+//   CONSUME -- dump 0x40B665 (CClientMgr::Update), immediately after it
+//   clears `updating`:
+//     updating = 1;
+//     CClientShell::Update(client_shell);       // dump 0x40CC5E
+//     updating = 0;
+//     if (...) sub_409DDF(this);                // may set pending_shell_release
+//     if (pending_shell_release) {
+//         (**pending_shell_release)(pending_shell_release, 1);  // vtable slot 0, arg 1
+//         pending_shell_release = 0;
+//     }
+//
+// So `updating` is a RE-ENTRANCY GUARD: it exists so a shell cannot be
+// destroyed while its own Update is on the stack. A release requested from
+// inside the update is parked in this field and performed by Update the
+// instant the guard drops. The `(ptr)(ptr, 1)` shape is the usual MSVC
+// scalar-deleting-destructor call through vtable slot 0.
+//
+// This also explains why a diagnostic sampling `updating` over IPC sees
+// false essentially always: the true window is one CClientShell::Update
+// call on the engine thread.
+//
 // Still identified but NOT mapped (see reversing/MAPPING_WORKFLOW.md --
 // don't force a field without confident evidence): an embedded blob @0x90
 // passed BY ADDRESS to a global subsystem's (dword_6ECC98) vtable slot 20
@@ -546,10 +578,13 @@ class CClientMgr 0x1468 {
     CClientMgrListLink object_lists[7]       @0x00     // CONFIRMED: 7 heads, bucketed by LTObject.type (index == type)
     CClientMgrPtrVector unk_68               @0x68     // CONFIRMED container shape; what it holds is unverified
     void* unk_4E4                            @0x4E4
-    CClientMgrListLink counter_list_head     @0x13EC
+    CClientMgrListLink counter_list_head     @0x13EC   // CONFIRMED: iterated per-frame by EngineList_ForEach(this+0x13EC) in CClientMgr::Update (dump 0x40B6A3)
     CClientMgrCounterNode* own_counter_node  @0x13F4
+    uint32_t last_sample_time_ms             @0x1400   // CONFIRMED milliseconds. CClientMgr::Update computes `sub_409FD0(now - this->last_sample_time_ms)` with now = dump 0x60AAF2 (dump 0x40B6AD/0x40B6C6), and sub_409FD0 divides that delta by exactly 1000.0 (dbl_66E738) to get seconds -- so this field's unit is ms. Live: advanced 1672342 -> 1673346 (delta 1004) across ~1.00s of wall clock, i.e. tracks real time 1:1 and is re-sampled continuously. The instruction that writes it was NOT located in the functions read so far.
+    float unk_1424                           @0x1424   // unverified float. Live: advances while the engine runs, but NOT by whole numbers and NOT at a fixed rate -- observed +168.000 over ~1.0s in one sample and +21.987 over ~2.0s in another. RETRACTED HYPOTHESIS: dump 0x409FD0 does `*(float*)(<ecx>+0x1424) += 1.0` (dbl_66EDF0 == 1.0), and this field was briefly named frame_counter on that basis. That was WRONG: the decompiler never established that 0x409FD0's ecx is CClientMgr, and the non-integral live deltas here disprove it -- either that function operates on a different object, or something else writes this field. Offset/type are sound (read as a float that changes); the meaning is not.
     uint16_t last_sent_bandwidth             @0x1430   // CONFIRMED == clamp(BandwidthTargetClient/8000, 0, 0xFFFF); live 256000/8000 == 32 == field
     void* client_shell                       @0x1434
+    void* pending_shell_release              @0x1438   // CONFIRMED deferred-destruction slot; see the class comment. Set only when `updating`, consumed at the end of CClientMgr::Update.
     bool updating                            @0x143C
     CClientMgrListLink start_shell_list      @0x1460
 }

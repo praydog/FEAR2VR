@@ -510,6 +510,58 @@ int main(int argc, char** argv) {
             check(mag > 0.99 && mag < 1.01,
                   "sampled object's rotation is a unit-length quaternion (offset proof)");
         }
+
+        // Type names come from the SDK's own enum mapping, so a bucket
+        // reordering in the schema would show up here rather than silently.
+        check(json_has(body, "\"bucket_names\":[\"OT_NORMAL\",\"OT_MODEL\",\"OT_WORLDMODEL\","
+                             "\"OT_SPRITE\",\"OT_LIGHT\",\"OT_CAMERA\",\"OT_PARTICLESYSTEM\"]"),
+              "bucket index -> ObjectType name mapping is in schema order");
+
+        // Engine-thread in-place iteration (for_each_object). The endpoint
+        // only RAISES a request; the walk itself happens in the frame hook on
+        // the engine thread, which is the only context that API's lifetime
+        // precondition covers. So this is genuinely testing the callback path,
+        // not re-testing the snapshot path.
+        //
+        // Requires frames to be running -- skipped rather than failed when
+        // they are not (a paused/suspended game can never service it, and
+        // that is an environment state, not a mapping defect).
+        int64_t gen_before = -1;
+        check(json_int(body, "engine_walk_generation", gen_before) && gen_before >= 0,
+              "engine_walk_generation present");
+
+        std::string resp2;
+        int64_t gen_after = -1, engine_count = -1;
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!http::get(port, "/sdk/objects", resp2)) continue;
+            const std::string b2 = http::body_of(resp2);
+            json_int(b2, "engine_walk_generation", gen_after);
+            json_int(b2, "engine_walk_count", engine_count);
+            if (gen_after > gen_before) break;
+        }
+
+        if (gen_after > gen_before) {
+            // Deterministic and sufficient: the generation only advances when
+            // the frame hook actually ran a for_each_object walk on the engine
+            // thread, and a non-negative count means that walk terminated
+            // cleanly (no fault, no fail-closed cap, no bucket-type
+            // violation). That is the whole claim.
+            //
+            // NOT asserted: agreement with the off-thread bucket count. The
+            // two walks happen at different instants against a list that
+            // genuinely churns, so any tolerance would be an invented number
+            // dressed up as an invariant. (They did agree exactly when
+            // observed by hand -- evidence, not a test.)
+            check(engine_count >= 0,
+                  "engine-thread for_each_object walk terminated cleanly (in-place, no snapshot)");
+        } else {
+            // Frames are not running (paused/suspended/pre-init), so nothing
+            // could service the request. Environment state, not a defect --
+            // reported, not failed.
+            printf("[fixture] NOTE: engine-thread for_each_object not exercised "
+                   "(no frames serviced the request)\n");
+        }
     }
 
     // 5c. /engine-hook positive + negative.

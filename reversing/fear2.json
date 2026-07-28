@@ -5,18 +5,78 @@
     },
     "process": {
         "filter": "fear2",
-        "id": 680920,
+        "id": 519212,
         "name": "FEAR2.exe"
     },
-    "props": null,
+    "props": {
+        "regenny.CClientMgr": {
+            "__collapsed": false,
+            "root": {
+                "__collapsed": false,
+                "counter_list_head": {},
+                "object_lists": {
+                    "__collapsed": false,
+                    "object_lists[0]": {
+                        "__collapsed": false,
+                        "prev": {
+                            "__collapsed": false,
+                            "prev": {
+                                "__collapsed": false
+                            }
+                        }
+                    },
+                    "object_lists[1]": {
+                        "__collapsed": false
+                    },
+                    "object_lists[2]": {
+                        "__collapsed": false
+                    },
+                    "object_lists[3]": {
+                        "__collapsed": false
+                    },
+                    "object_lists[4]": {
+                        "__collapsed": false
+                    },
+                    "object_lists[5]": {
+                        "__collapsed": false
+                    },
+                    "object_lists[6]": {
+                        "__collapsed": false
+                    }
+                },
+                "start_shell_list": {
+                    "__collapsed": false
+                },
+                "unk_68": {}
+            }
+        },
+        "regenny.DatabaseMgr": {
+            "__collapsed": false,
+            "root": {
+                "__collapsed": false
+            }
+        },
+        "regenny.LTObject": {
+            "__collapsed": false,
+            "root": {
+                "__collapsed": false,
+                "list_link": {},
+                "vtable": {
+                    "__collapsed": false
+                }
+            }
+        }
+    },
     "tabs": {
         "active_index": -1,
         "list": []
     },
     "type": {
         "addresses": {
-            "regenny.DatabaseMgr": "0xA022BC"
+            "regenny.CClientMgr": "<FEAR2.exe>+0x2ECCA0",
+            "regenny.DatabaseMgr": "0xA022BC",
+            "regenny.LTObject": ""
         },
-        "chosen": "regenny.DatabaseMgr"
+        "chosen": "regenny.CClientMgr"
     }
 }
