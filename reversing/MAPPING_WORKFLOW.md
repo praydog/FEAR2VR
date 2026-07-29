@@ -422,6 +422,28 @@ second copy at +0x40 that no reader had pointed at. Engines duplicate more than
 you would expect (this asset also stores its radius twice and its own address
 once), and each duplicate is another cross-route check that costs nothing.
 
+**A field that looks like a hash: try the standard ones ONCE, then go read the
+writer.** `LTModelAsset.node_hashes` held large pseudo-random dwords, one per
+node, beside an array of node names — obviously a hash of the name. Testing
+FNV-1, FNV-1a, djb2, djb2-xor, sdbm and CRC32 across as-is, lowercased and
+uppercased inputs scored **0 of 660**. That took one Lua cell and was worth doing,
+because a hit would have ended the question; what would NOT have been worth doing
+is trying another dozen variants, seeds and byte orders, which is an unbounded
+search with no guarantee the function is even a published one.
+
+The writer settled it in two decompiles. `LTModelAsset_ReadNodeTree` does
+`hashes[i] = String_HashI(names[i])`, and `String_HashI` is
+`h = 0; while (*s) h = g_HashCharTable[*s++] + 919 * h;` — a custom multiplier over
+a 256-byte translation table that is neither identity nor tolower, but a compact
+alphabet remap which happens to fold case. Reimplemented, it reproduced all 660
+live values exactly, and confirmed `hash("Head") == hash("head")`.
+
+The rule of thumb: guessing is only worth it while the candidate set is small and
+enumerable. Standard hashes are; "some custom hash with a table" is not. The
+moment the cheap enumeration fails, the writer is the only bounded path — and it
+gives you the table's address and the case behaviour as well, neither of which any
+amount of black-box matching would have produced.
+
 **A float blob's GROUPING is a hypothesis too — test it against a field you
 already know, never against how the numbers look.** Reading a span of floats
 and recognising a shape is the single easiest way to invent structure, because

@@ -941,8 +941,8 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
             // every derived pointer must land inside it. Checked against the
             // asset's OWN size field -- nothing external.
             const auto blob = reinterpret_cast<uintptr_t>(a->string_blob);
-            const auto ea = reinterpret_cast<uintptr_t>(a->entry_array_a);
-            const auto eb = reinterpret_cast<uintptr_t>(a->entry_array_b);
+            const auto ea = reinterpret_cast<uintptr_t>(a->node_names);
+            const auto eb = reinterpret_cast<uintptr_t>(a->node_hashes);
             const auto nm = reinterpret_cast<uintptr_t>(a->filename);
             const uint32_t bsz = a->string_blob_size;
             const bool sane = blob != 0 && bsz > 0 && bsz < 0x400000;
@@ -954,11 +954,11 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
                 if (nm <= ea && ea <= eb) {
                     ++*order_ok;
                 }
-                if (eb >= ea && a->entry_count == (eb - ea) / 4) {
+                if (eb >= ea && a->node_count == (eb - ea) / 4) {
                     ++*count_ok;
                 }
             }
-            if (a->entry_count_dup == a->entry_count) {
+            if (a->node_count_dup == a->node_count) {
                 ++*count_dup_ok;
             }
             const char* p = a->filename;
@@ -992,6 +992,164 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
         result = -1;
     }
     return result;
+}
+
+// Case-insensitive compare over the printable range. Deliberately not <cctype>:
+// this runs inside an SEH guard where a locale-dependent call is unwelcome, and
+// the engine's own hash folds case with a plain table.
+static bool name_equals_i(const char* a, const char* b, uint32_t cap) {
+    for (uint32_t i = 0; i < cap; ++i) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = static_cast<char>(ca + 32);
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = static_cast<char>(cb + 32);
+        }
+        if (ca != cb) {
+            return false;
+        }
+        if (ca == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// POD-only SEH helper for the node name/hash arrays. Reaches through the asset's
+// blob, so every pointer is range-checked against the asset's own recorded size
+// before it is read. Returns distinct assets visited, or -1 on fault.
+static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t max,
+                              size_t* nodes_total, size_t* in_blob, size_t* printable,
+                              size_t* distinct, size_t* repeated, size_t* consistent,
+                              size_t* collisions, size_t* count_dup_ok, size_t cap) {
+    constexpr size_t kMaxAssets = 512;
+    constexpr size_t kMaxNames = 4096;
+    constexpr uint32_t kMaxName = 128;
+    constexpr uint32_t kMaxNodes = 1024;
+    const regenny::LTModelAsset* seen[kMaxAssets]{};
+    const char* names[kMaxNames]{};
+    uint32_t hashes[kMaxNames]{};
+    uint32_t counts[kMaxNames]{};
+    size_t n_assets = 0, n_names = 0;
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* a = obj->record.asset;
+                bool fresh = a != nullptr;
+                for (size_t i = 0; i < n_assets && fresh; ++i) {
+                    if (seen[i] == a) {
+                        fresh = false;
+                    }
+                }
+                if (fresh && n_assets < kMaxAssets) {
+                    seen[n_assets++] = a;
+                    const auto blob = reinterpret_cast<uintptr_t>(a->string_blob);
+                    const uint32_t bsz = a->string_blob_size;
+                    const uint32_t nc = a->node_count;
+                    if (a->node_count_dup == nc) {
+                        ++*count_dup_ok;
+                    }
+                    if (blob != 0 && bsz > 0 && bsz < 0x400000 && nc > 0 && nc <= kMaxNodes &&
+                        a->node_names != nullptr && a->node_hashes != nullptr) {
+                        for (uint32_t k = 0; k < nc; ++k) {
+                            ++*nodes_total;
+                            const char* nm = a->node_names[k];
+                            const auto p = reinterpret_cast<uintptr_t>(nm);
+                            if (p < blob || p >= blob + bsz) {
+                                continue;  // counted in nodes_total, absent from in_blob
+                            }
+                            ++*in_blob;
+                            uint32_t len = 0;
+                            bool good = true;
+                            for (; len < kMaxName; ++len) {
+                                const unsigned char c = static_cast<unsigned char>(nm[len]);
+                                if (c == 0) {
+                                    break;
+                                }
+                                if (c < 0x20 || c > 0x7E) {
+                                    good = false;
+                                    break;
+                                }
+                            }
+                            if (!good || len == 0 || len >= kMaxName) {
+                                continue;
+                            }
+                            ++*printable;
+                            const uint32_t h = a->node_hashes[k];
+                            // Same name must always hash the same. The first sighting
+                            // defines it; every later one is a real comparison.
+                            size_t slot = n_names;
+                            for (size_t i = 0; i < n_names; ++i) {
+                                if (name_equals_i(names[i], nm, kMaxName)) {
+                                    slot = i;
+                                    break;
+                                }
+                            }
+                            if (slot == n_names) {
+                                if (n_names < kMaxNames) {
+                                    names[n_names] = nm;
+                                    hashes[n_names] = h;
+                                    counts[n_names] = 1;
+                                    ++n_names;
+                                }
+                                ++*consistent;  // first sighting is consistent by definition
+                            } else {
+                                ++counts[slot];
+                                if (hashes[slot] == h) {
+                                    ++*consistent;
+                                }
+                            }
+                        }
+                    }
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        if (cur != head) {
+            return -1;
+        }
+        *distinct = n_names;
+        for (size_t i = 0; i < n_names; ++i) {
+            if (counts[i] > 1) {
+                ++*repeated;
+            }
+            for (size_t j = i + 1; j < n_names; ++j) {
+                if (hashes[i] == hashes[j]) {
+                    ++*collisions;
+                }
+            }
+        }
+        result = static_cast<int64_t>(n_assets);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+std::optional<CClientMgr::NodeCheck> CClientMgr::check_model_nodes(size_t max) const {
+    constexpr size_t kModelType = 1;
+    if (regenny() == nullptr || kModelType >= object_list_count()) {
+        return std::nullopt;
+    }
+    NodeCheck out{};
+    const int64_t n = seh_check_nodes(&regenny()->object_lists[kModelType], max, &out.nodes_total,
+                                     &out.names_in_blob, &out.names_printable, &out.distinct_names,
+                                     &out.repeated_names, &out.hash_consistent,
+                                     &out.hash_collisions, &out.count_dup_ok, max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    out.assets = static_cast<size_t>(n);
+    return out;
 }
 
 std::optional<CClientMgr::AssetCheck> CClientMgr::check_model_assets(size_t max) const {

@@ -833,8 +833,53 @@ int main(int argc, char** argv) {
                 // derivation honest rather than merely restating it: if the field
                 // ever stops matching the gap, one of the two has moved.
                 check(cmatch == assets,
-                      "entry_count equals (entry_array_b - entry_array_a) / 4 on every asset");
-                check(cdup == assets, "entry_count_dup agrees with entry_count");
+                      "node_count equals (node_hashes - node_names) / 4 on every asset");
+                check(cdup == assets, "node_count_dup agrees with node_count");
+            }
+        }
+
+        // SKELETON NODES. The name array is validated by containment and decode,
+        // and the hash array by the one property a hash of a name must have: the
+        // same name always produces the same value. Nothing is recomputed
+        // host-side, so no translation table or module offset is baked in here.
+        //
+        // What gives that check teeth is repetition. If every node name were
+        // unique the comparison would be vacuous -- each name would define its own
+        // hash and nothing would ever be compared -- so repeated_names is asserted
+        // non-zero. Live 86 of 125 distinct names recur, which is what makes
+        // 660/660 consistency a real result.
+        {
+            const size_t np = body.find("\"model_nodes\":");
+            check(np != std::string::npos, "objects report includes the node check");
+            if (json_has(body, "\"model_nodes\":null")) {
+                check(false, "node walk completed");
+            } else if (np != std::string::npos) {
+                const size_t end = body.find('}', np);
+                const std::string nb = body.substr(np, end - np + 1);
+                int64_t nassets = -1, total = -1, inblob = -1, pr = -1, distinct = -1, rep = -1,
+                        cons = -1, coll = -1, cdup2 = -1;
+                json_int(nb, "assets", nassets);
+                json_int(nb, "nodes_total", total);
+                json_int(nb, "names_in_blob", inblob);
+                json_int(nb, "names_printable", pr);
+                json_int(nb, "distinct_names", distinct);
+                json_int(nb, "repeated_names", rep);
+                json_int(nb, "hash_consistent", cons);
+                json_int(nb, "hash_collisions", coll);
+                json_int(nb, "count_dup_ok", cdup2);
+
+                check(total > 0, "skeleton nodes are present");
+                check(inblob == total, "every node name pointer lies inside its asset's string_blob");
+                check(pr == total, "every node name decodes as printable NUL-terminated ASCII");
+                check(cons == total, "the same node name always carries the same hash");
+                check(rep > 0, "node names actually repeat, so the hash comparison is not vacuous");
+                check(distinct > 0 && distinct <= total, "distinct name count is sane");
+                check(cdup2 == nassets, "node_count_dup agrees on every asset with nodes");
+                // Collisions are REPORTED, not asserted to be zero. Injectivity is a
+                // property of this level's names, not something the mapping
+                // guarantees -- a future level could collide without anything being
+                // wrong, and asserting 0 would make that look like a regression.
+                check(coll >= 0, "hash collisions among distinct names are reported (live: 0)");
             }
         }
 

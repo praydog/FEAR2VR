@@ -5,12 +5,12 @@ class LTModelAsset {
 public:
     float radius; // 0x0
     private: char pad_4[0x1c]; public:
-    uint32_t entry_count; // 0x20
-    void* entry_array_a; // 0x24
-    void* entry_array_b; // 0x28
+    uint32_t node_count; // 0x20
+    char** node_names; // 0x24
+    uint32_t* node_hashes; // 0x28
     private: char pad_2c[0x10]; public:
     void* container_3C; // 0x3c
-    uint32_t entry_count_dup; // 0x40
+    uint32_t node_count_dup; // 0x40
     private: char pad_44[0x4]; public:
     void* self_ref; // 0x48
     private: char pad_4c[0x4]; public:

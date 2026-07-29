@@ -447,6 +447,23 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Skeleton nodes. The hash is NOT recomputed host-side -- the check is that
+    // the same name always carries the same hash, which needs no engine data.
+    out += ",\"model_nodes\":";
+    if (const auto nc = mgr->check_model_nodes(8192); nc.has_value()) {
+        char nb[416];
+        snprintf(nb, sizeof(nb),
+                 "{\"assets\":%zu,\"nodes_total\":%zu,\"names_in_blob\":%zu,"
+                 "\"names_printable\":%zu,\"distinct_names\":%zu,\"repeated_names\":%zu,"
+                 "\"hash_consistent\":%zu,\"hash_collisions\":%zu,\"count_dup_ok\":%zu}",
+                 nc->assets, nc->nodes_total, nc->names_in_blob, nc->names_printable,
+                 nc->distinct_names, nc->repeated_names, nc->hash_consistent,
+                 nc->hash_collisions, nc->count_dup_ok);
+        out += nb;
+    } else {
+        out += "null";
+    }
+
     // Bounding geometry across every type. Same self-check shape: these are
     // identities SetDims establishes, so a divergence means a moved offset in
     // the culling inputs (dims / radius / AABB).

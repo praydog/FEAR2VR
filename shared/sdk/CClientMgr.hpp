@@ -397,6 +397,40 @@ public:
         size_t count_dup_ok;    // entry_count_dup == entry_count
     };
 
+    // ---- skeleton nodes (names + hashes on the shared asset) -------------
+    //
+    // LTModelAsset::node_names is an array of node_count char* into the asset's
+    // string_blob, and node_hashes is a parallel array of case-insensitive name
+    // hashes. LTModelAsset_ReadNodeTree writes both in one recursive pass:
+    // `names[i] = ptr; hashes[i] = String_HashI(ptr)`.
+    //
+    // Live these are bone names -- Pelvis, Torso, Neck, Head, L_Shoulder, L_Hand,
+    // L_Thumb0, Face_Jaw. Worth having mapped well before any VR work needs to
+    // locate a head or hand bone: name lookup is how the engine itself does it.
+    //
+    // The hash is NOT recomputed here, on purpose. Doing so would mean either
+    // hardcoding the 256-byte translation table or reading it from a fixed module
+    // offset, and this project resolves engine data by pattern, never by absolute
+    // address. Instead the check exploits the ONE property a hash of a name must
+    // have: the same name must always produce the same value. Across 34 assets
+    // many node names repeat (11 assets carry a "Head"), so this compares the
+    // engine's stored hashes against each other with no external input at all.
+    struct NodeCheck {
+        size_t assets;           // assets with a usable node array
+        size_t nodes_total;      // node entries visited
+        size_t names_in_blob;    // name pointer lies inside that asset's string_blob
+        size_t names_printable;  // name decodes as printable NUL-terminated ASCII
+        size_t distinct_names;   // unique names, compared case-insensitively
+        size_t repeated_names;   // names that occur on more than one node/asset
+        size_t hash_consistent;  // nodes whose hash matches the first seen for that name
+        size_t hash_collisions;  // pairs of DIFFERENT names sharing one hash
+        size_t count_dup_ok;     // node_count_dup == node_count
+    };
+
+    // Walks up to `max` type-1 objects, visiting each distinct asset's nodes once.
+    // nullopt on fault or a walk that did not terminate.
+    std::optional<NodeCheck> check_model_nodes(size_t max) const;
+
     // Walks up to `max` type-1 objects, collecting distinct assets. nullopt on
     // fault or a walk that did not terminate.
     std::optional<AssetCheck> check_model_assets(size_t max) const;

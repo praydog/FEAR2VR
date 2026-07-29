@@ -333,6 +333,25 @@ correct, because moving fields between a base and its child leaves both totals
 untouched. State that limit next to the check, or the next reader will trust it
 for something it cannot do.
 
+**A check that compares things needs to be shown that it COMPARED something.**
+The node-hash check asserts that the same name always carries the same hash. It
+recomputes nothing — no translation table, no module offset — it just compares the
+engine's stored hashes against each other, which is what makes it portable. But
+that construction has a failure mode with no symptom: if every name were unique,
+every name would define its own hash on first sight, nothing would ever be
+compared, and the check would report a perfect `660/660` while testing nothing at
+all.
+
+So the fixture also asserts `repeated_names > 0`. Live 86 of 125 distinct node
+names recur across the 34 assets, so the consistency figure reflects real
+comparisons rather than 660 definitions.
+
+Generalise it: whenever a check's strength depends on the data having some
+property — duplicates to compare, a non-empty list to walk, both branches of a
+condition being taken — assert that property too, next to the check. Otherwise a
+scene change can quietly turn a strong check into a tautology, and a green
+`660/660` is exactly what that looks like from outside.
+
 **When you expect a biconditional and the data gives an IMPLICATION, assert the
 implication and report the other side.** Symmetry is an aesthetic preference, not
 evidence, and forcing it is the same error as widening a tolerance: it replaces
