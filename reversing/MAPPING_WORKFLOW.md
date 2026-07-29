@@ -963,19 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
-- **WHEN AN INSTRUMENT HAS A KNOWN BLIND SPOT, BUILD A SECOND ONE THAT DOES NOT SHARE IT.** The vtable-register
-  tracker missed cached-vtable calls, which is what invalidated an absence claim about Present. Rather than
-  patch it, the fix was a different key: COM stdcall pushes `this`, so `mov R, g_Renderer` ... `push R` ...
-  `call [Rv+off]` finds the call regardless of where the vtable came from.
+- **TWO INSTRUMENTS THAT SHARE A PREREQUISITE DO NOT HAVE DIFFERENT BLIND SPOTS.** The vtable-register tracker
+  missed cached-vtable calls, so I built a second keyed on the device PUSH instead, which locates a call
+  however the vtable was obtained. It reproduced the first's distribution closely and also found no Present --
+  and I wrote that up as independent corroboration.
   
-  The second instrument reproduces the first one's distribution closely (SetRenderState 64 against 66, and the
-  same leaders below it) and still finds no Present, BeginScene, EndScene, SetTransform or shader-constant
-  calls. Two instruments with different weaknesses agreeing is much better evidence than one -- and still not
-  absence, because both are linear scans with a fixed window that stop at an intervening call.
+  It is not. BOTH instruments start from a read of g_Renderer. If Present runs on a device from a heap field, a
+  parameter, or a register never reloaded from the global, neither can see it; they differ only in what happens
+  AFTER that read. Their agreement is therefore silent on the cached-device hypothesis, which is the one that
+  matters. Building a second tool is only worth something if its FIRST step differs.
   
-  It also produced a null result worth having: of 152 sites where the device value is read, ALL push it as an
-  argument and NONE store it. So the exe does not stash the device in any object field reachable that way,
-  which is the second independent strike against the cached-copy explanation.
+  Also: `push <device>` proves the device is an argument to the following call, not that the call's receiver is
+  the device -- it could be going to a helper.
+  
+  It did produce a narrower null result: of 152 sites where the device value is read, all push it and none
+  store it -- but that tracker only looks a few instructions past the read, so a cache written through an
+  alias, after a spill, or further away is outside its window. "No stores found by a narrow tracker" is not
+  "no caches exist", and the .data scan cannot see a heap object's field either.
   
   Next hypothesis, recorded not tested: the engine may present through IDirect3DSwapChain9, a separate
   interface whose Present is at index 3, which would explain zero device-Present calls without anything being

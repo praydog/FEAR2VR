@@ -1180,30 +1180,39 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE DEVICE VTABLE, READ FROM THE LIVE PROCESS ----
 //
-// A SECOND INSTRUMENT, WITH A DIFFERENT BLIND SPOT, AGREES ABOUT Present.
+// A SECOND INSTRUMENT AGREES ABOUT Present -- AND THAT AGREEMENT IS WORTH LESS THAN IT LOOKS.
 //
-// The first tracker keyed on the VTABLE register, so a cached vtable defeated it -- which is why the earlier
-// absence claim was retracted. A second one keys on the DEVICE PUSH instead: COM stdcall passes `this` on the
-// stack, so `mov R, g_Renderer` ... `push R` ... `call [Rv+off]` identifies the call however the vtable was
-// obtained. That instrument does NOT share the first one's weakness.
+// The first tracker keyed on the VTABLE register, so a cached vtable defeated it. A second keys on the DEVICE
+// PUSH instead: COM stdcall passes `this` on the stack, so `mov R, g_Renderer` ... `push R` ...
+// `call [Rv+off]` identifies a call however the vtable was obtained. It finds 151 sites across 31 offsets and
+// reproduces the first distribution closely -- SetRenderState 64 against 66, same leaders below -- and finds
+// no Present, BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF.
 //
-// It finds 151 call sites across 31 distinct offsets, and the top of the distribution matches the first
-// tracker closely (SetRenderState 64, SetSamplerState 7, Clear 6, SetRenderTarget 4, SetViewport 4). And it
-// still finds NO Present, BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF.
+// BUT THE TWO DO NOT HAVE DIFFERENT BLIND SPOTS, which an earlier draft of this note claimed. Both START from
+// a read of g_Renderer. If Present is called on a device obtained from a heap field, a parameter or a register
+// that was never reloaded from the global, NEITHER instrument can see it -- they differ only in how they
+// locate the vtable AFTER that read. Their agreement therefore says nothing about the cached-device
+// hypothesis, which is the live one.
 //
-// Two instruments with different blind spots agreeing is worth more than either alone, but it is still not
-// absence: both are linear scans with a fixed window that stop at an intervening call, so a call whose
-// argument setup is long enough would escape both.
+// A further limit on the push key: `push <device>` shows the device is an ARGUMENT to the following call, not
+// that the call's receiver IS the device. It could be passed to a helper. Confirming a site means checking the
+// indirect target derives from the same value.
 //
-// THE HYPOTHESIS THIS POINTS AT, untested: the engine may present through IDirect3DSwapChain9 rather than the
-// device -- a separate interface with its own vtable, where Present is at index 3 (offset 0xC). That would
-// explain zero device-Present calls without any of them being missed. Testing it means finding where a swap
-// chain is obtained and stored, which is the same shape of work as the Present trace already recorded above.
+// SO Present REMAINS OPEN, and only a runtime trace settles it -- hook the live Present cell, capture return
+// addresses, map them back. Recorded above as a deliberate step.
 //
-// WHERE THE DEVICE POINTER IS CACHED: NOWHERE ELSE IN .data. Scanning FEAR2.exe's writable data range
-// (IDB 0x6E3000..0x733000) for copies of the live device value found exactly ONE -- g_Renderer itself. So no
-// second exe-global holds a copy, which eliminates the tidiest explanation for the calls the static tracker
-// could not find.
+// A HYPOTHESIS WORTH TESTING FIRST, because it would explain the null cheaply: the engine may present through
+// IDirect3DSwapChain9, a separate interface with its own vtable where Present is index 3 (offset 0xC). That
+// needs finding where a swap chain is obtained and kept.
+//
+// WHERE THE DEVICE POINTER IS CACHED: NOT IN ANY .data GLOBAL. Scanning FEAR2.exe's writable data range
+// (IDB 0x6E3000..0x733000) for copies of the live device value found exactly ONE -- g_Renderer itself. That
+// eliminates a second exe-global holding a copy.
+//
+// It does NOT eliminate caching. A heap object's field would not appear in that range at all, and the narrow
+// store-scan below ("all 152 sites push, none store") only covers stores within a few instructions of a
+// g_Renderer read -- a cache written through an alias, after a spill, or further away is outside its window.
+// "No stores found by a narrow tracker" and "no caches exist" are different statements.
 //
 // IT DOES NOT SETTLE WHERE Present IS CALLED, and cannot. A call path may keep the device only in registers,
 // in a stack local, in a field of a heap object, or receive it as a parameter -- none of which a data scan
