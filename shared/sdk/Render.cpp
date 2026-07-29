@@ -150,6 +150,32 @@ std::optional<D3DPRESENT_PARAMETERS> Render::present_params() {
     return out;
 }
 
+uintptr_t Render::device_vtable() {
+    auto* dev = device();
+    if (dev == nullptr) {
+        return 0;
+    }
+    const auto vt = seh_read_ptr(reinterpret_cast<uintptr_t>(dev));
+    return vt.ok ? vt.value : 0;
+}
+
+bool Render::device_vtable_writable() {
+    const auto vt = device_vtable();
+    if (vt == 0) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(vt), &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+    const DWORD p = mbi.Protect & 0xFFu;
+    return p == PAGE_READWRITE || p == PAGE_WRITECOPY || p == PAGE_EXECUTE_READWRITE ||
+           p == PAGE_EXECUTE_WRITECOPY;
+}
+
 std::optional<std::string> Render::interface_impl_owner(IUnknown* iface, size_t method_slot) {
     if (iface == nullptr) {
         return std::nullopt;

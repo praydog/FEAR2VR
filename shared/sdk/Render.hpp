@@ -106,6 +106,38 @@ public:
     // COM interface at all. Every D3D9 interface is single-inheritance COM, so the
     // IUnknown* and the concrete pointer share one vtable slot 0 -- the conversion does
     // not move the pointer and slot indices stay meaningful.
+    // ---- THE DEVICE'S VTABLE, AND WHETHER IT CAN BE HOOKED -------------------
+    //
+    // Address of the device's vtable, i.e. the dword at the device pointer. 0 when there is no device yet
+    // or the read faulted.
+    //
+    // WHY A CONSUMER WANTS IT: this is the table a stereo path patches to intercept Present. Measured live,
+    // it is MODULE-UNOWNED WRITABLE STORAGE -- the vtable sits at 0x0EE0831C, outside d3d9.dll's
+    // 0x66830000..0x669C2000, in a committed private read/write region -- which is a different situation from
+    // the engine's own class vtables in .rdata.
+    //
+    // NOT SHOWN TO BE PER-DEVICE. Only one device exists in this process, so nothing here establishes whether
+    // D3D9 hands the same heap vtable to several device objects. A patch therefore affects every object that
+    // shares this table, however many that is; proving instance locality would need a second device to
+    // compare against.
+    //
+    // AND IT IS NOT A STABLE ADDRESS. What this returns is where the CURRENT device's vptr points. A device
+    // reset or recreation -- which happens on resolution and mode changes, exactly the events a stereo path
+    // provokes -- can replace the device or its table, so a consumer holding this must re-read it rather than
+    // cache it, and any installed hook has to be reinstated at that point.
+    static uintptr_t device_vtable();
+
+    // Is the device's vtable in writable memory? True when the containing region reports PAGE_*WRITE*.
+    //
+    // Measured live: true -- the containing region is committed read/write, no execute. So a vtable hook
+    // needs no VirtualProtect here, unlike a .rdata table. Established from page metadata via VirtualQuery
+    // only; nothing writes to the live table to test it.
+    //
+    // IT IS A REGION-LEVEL ANSWER. VirtualQuery reports the containing region's protection, and a caller
+    // that writes should still be prepared for that to change between the check and the write; this reports
+    // what protection IS, not a guarantee about what it will be.
+    static bool device_vtable_writable();
+
     static std::optional<std::string> interface_impl_owner(IUnknown* iface,
                                                            size_t method_slot = 2);
 };

@@ -1064,6 +1064,30 @@ int main(int argc, char** argv) {
         json_int(body, "wb_inside", wbin);
         json_int(body, "wb_bounds_probed", wbbp);
         json_int(body, "wb_bounds_ok", wbbok);
+        // ---- THE DEVICE VTABLE A STEREO PATH WOULD PATCH ------------------------------
+        //
+        // Three facts a consumer needs before hooking, and all three are checkable: the vtable resolves, it
+        // is NOT inside d3d9.dll, and its containing region is writable. The middle one matters because the
+        // engine's own class vtables live in module .rdata, and this one does not -- so the protection
+        // question has a different answer here.
+        //
+        // NOT asserted: that the table belongs to this device alone, or that its address is stable. Only one
+        // device exists to compare against, and a reset can replace it -- see Render.hpp.
+        {
+            uint32_t dvt = 0;
+            int64_t writable = -1, outside = -1;
+            const bool have = json_hex(body, "dev_vt", dvt);
+            check(json_int(body, "dev_vt_writable", writable), "dev_vt_writable is reported");
+            check(json_int(body, "dev_vt_outside_d3d9", outside), "dev_vt_outside_d3d9 is reported");
+            if (have && dvt != 0) {
+                check(outside == 1, "the device vtable is NOT inside d3d9.dll -- it is module-unowned storage");
+                check(writable == 1, "the device vtable's region is writable, so a hook needs no VirtualProtect");
+                printf("[fixture] device vtable 0x%08X: outside d3d9.dll, region writable\n", dvt);
+            } else {
+                printf("[fixture] device vtable NOTE: no device in this state -- UNEXERCISED\n");
+            }
+        }
+
         // ---- THE BIND POSE, AGAINST THE ENGINE'S OWN GETTER ---------------------------
         //
         // ILTModelClient vt[22] (GetBindPoseNodeTransform) copies the node record's +0x08 pair and INVERTS

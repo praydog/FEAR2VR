@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHEN STATIC ANALYSIS STALLS, READ THE LIVE PROCESS.** Two displacement scans and a def-use tracker failed
+  to pin the device's methods; reading g_Renderer's vptr in the running game answered it in one query, with
+  eleven entries landing in d3d9.dll at distinct addresses -- which also corroborates the corrected offsets
+  better than the header parse did.
+  
+  The new fact is where the table LIVES: heap, outside d3d9.dll, in a committed read/write region. So hooking
+  it needs no VirtualProtect, unlike the .rdata class vtables documented in Model.hpp. Now exposed as
+  Render::device_vtable() / device_vtable_writable() with the fixture asserting both.
+  
+  Two claims refused. Heap storage does not prove PER-DEVICE storage -- D3D9 may share one heap vtable across
+  devices and there is only one device here to compare -- so an earlier draft saying a patch "affects THIS
+  DEVICE ONLY" was wrong. And the address is not stable across a device reset, which is precisely what a
+  stereo path provokes, so it must be re-read rather than cached. Writability was established from page
+  metadata only; nothing wrote to the live table to test it.
+
 - **DISPLACEMENT SCANNING FAILED TWICE; TYPING THE RECEIVER WORKED FIRST TIME.** Searching for
   `call [reg+0x178]` found nothing, so I widened it to ANY instruction touching 0x170/0x178/0x1A0 -- and got
   LTModelObject_MarkNodeSubtreeDirty "referencing SetVertexShaderConstantF". Offsets that size are ordinary

@@ -987,6 +987,21 @@ std::string build_targets_json() {
             inv_edge /= edge_n;
         }
     }
+    // THE DEVICE'S VTABLE: where it lives and whether it is writable. A stereo path patches this table, so
+    // the reportable facts are its address, that it is NOT inside d3d9.dll, and its page protection.
+    const uintptr_t dev_vt = sdk::Render::device_vtable();
+    const int dev_vt_writable = sdk::Render::device_vtable_writable() ? 1 : 0;
+    int dev_vt_outside_d3d9 = 0;
+    {
+        const auto d3d9 = GetModuleHandleW(L"d3d9.dll");
+        if (d3d9 != nullptr && dev_vt != 0) {
+            const auto base = reinterpret_cast<uintptr_t>(d3d9);
+            const auto size = utility::get_module_size(d3d9);
+            if (size.has_value()) {
+                dev_vt_outside_d3d9 = (dev_vt < base || dev_vt >= base + *size) ? 1 : 0;
+            }
+        }
+    }
     // THE GAME DLL'S PER-FRAME HOOK ANCHORS. Reported so the slot map is checked against the live
     // build every run: the identity string must match, and all three addresses must land inside
     // gameclient.dll -- an implementation slot pointing anywhere else would mean the layout
@@ -1355,7 +1370,7 @@ std::string build_targets_json() {
              "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
              "\"lp_slots\":%d,\"lp_consistent\":%d,\"lp_accepted\":%d,"
-             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,\"gcs_entry_agrees\":%d,\"bp_raw_edge\":%.4f,\"bp_inv_edge\":%.4f,\"bp_edges\":%d,\"bp_rt_ok\":%d,\"bp_rt_n\":%d,\"bp_rt_worst\":%.5f,\"bp_rt_worst_mag\":%.2f,\"bp_eng_calls\":%d,\"bp_eng_rc_ok\":%d,\"bp_eng_match\":%d,\"bp_eng_worst\":%.5f,\"bp_reject_oor\":%d,"
+             "\"dev_vt\":\"0x%08zX\",\"dev_vt_writable\":%d,\"dev_vt_outside_d3d9\":%d,\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,\"gcs_entry_agrees\":%d,\"bp_raw_edge\":%.4f,\"bp_inv_edge\":%.4f,\"bp_edges\":%d,\"bp_rt_ok\":%d,\"bp_rt_n\":%d,\"bp_rt_worst\":%.5f,\"bp_rt_worst_mag\":%.2f,\"bp_eng_calls\":%d,\"bp_eng_rc_ok\":%d,\"bp_eng_match\":%d,\"bp_eng_worst\":%.5f,\"bp_reject_oor\":%d,"
              "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
@@ -1445,7 +1460,7 @@ std::string build_targets_json() {
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
              wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
-             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes, gcs_entry_agrees, raw_edge, inv_edge, edge_n, inv_roundtrip_ok, inv_roundtrip_n, rt_worst, rt_worst_mag, eng_calls, eng_rc_ok, eng_match, eng_worst, bp_reject_oor,
+             lp_slots, lp_consistent, lp_accepted, static_cast<size_t>(dev_vt), dev_vt_writable, dev_vt_outside_d3d9, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes, gcs_entry_agrees, raw_edge, inv_edge, edge_n, inv_roundtrip_ok, inv_roundtrip_n, rt_worst, rt_worst_mag, eng_calls, eng_rc_ok, eng_match, eng_worst, bp_reject_oor,
              wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],

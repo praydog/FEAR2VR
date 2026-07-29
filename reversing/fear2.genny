@@ -1178,6 +1178,34 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- THE DEVICE VTABLE, READ FROM THE LIVE PROCESS ----
+//
+// Where the static tracker could not settle things, the running game answers directly. Reading g_Renderer's
+// value and following its vptr:
+//
+//   device          0x0EE053C0   heap, module-unowned
+//   device vtable   0x0EE0831C   heap, OUTSIDE d3d9.dll (0x66830000..0x669C2000)
+//   containing region 0x0EBA0000..0x0EF9F000, committed, read=1 write=1 execute=0
+//
+// Every sampled entry points into d3d9.dll -- Present d3d9+0xE6120, BeginScene +0x647F0, Clear +0x64720,
+// SetTransform +0x608D0, SetVertexShaderConstantF +0x67420 and so on -- which independently corroborates the
+// corrected offsets, since eleven of them all land in one module at distinct addresses.
+//
+// WHAT THIS MEANS FOR A STEREO PATH: the table is module-unowned WRITABLE storage, so patching it needs no
+// VirtualProtect -- unlike the engine's own class vtables, which sit in .rdata. sdk::Render::device_vtable()
+// and device_vtable_writable() expose exactly that, and the fixture asserts both plus "not inside d3d9.dll".
+//
+// TWO THINGS DELIBERATELY NOT CLAIMED. Heap storage does NOT prove the table is per-device: D3D9 may hand one
+// heap vtable to several devices, and with a single device in this process there is nothing to compare
+// against. And the address is NOT stable -- a device reset or recreation, which is exactly what resolution and
+// mode changes provoke, can replace device or table, so a consumer must re-read rather than cache and
+// reinstate any hook afterwards.
+//
+// The overlay question was already answered by an earlier pass and is unchanged: Steam wraps
+// IDirect3D9::CreateDevice, so the FACTORY's methods point into gameoverlayrenderer.dll while the DEVICE it
+// returns is genuine d3d9.dll. Live vtable ownership shows what implements a method now, not where FEAR2
+// calls it from.
+
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
 // WHICH DEVICE METHODS THE ENGINE IS SEEN TO CALL -- CANDIDATES, NOT A CENSUS. Extracted by tracking
