@@ -277,21 +277,24 @@ public:
     // diagnostics that want to enumerate the array as it actually is.
     std::optional<ObjectBankInfo> bank_at(size_t index) const;
 
-    // ---- type-5 (OT_CAMERA analogue) cached transforms -----------------
+    // ---- cached transforms (WorldModel state, inherited by Camera) -------
     //
-    // Type-5 objects are 320 bytes: an LTObject base plus a cached 3x4 world
-    // transform and its exact rigid inverse (a view-matrix pair). See
-    // fear2.genny's LTCameraObject for the evidence, and note the NAME is a
-    // reference-SDK analogue, not proven.
+    // The cached 3x4 world transform and its rigid inverse belong to the
+    // WORLDMODEL class (type 2, 0x13C) and are INHERITED by Camera (type 5,
+    // which adds only a uint16). The hierarchy is proven by the destructor
+    // chain -- see fear2.genny's LTWorldModelObject. An earlier version of this
+    // check only walked type 5, which is why the mis-attribution went unnoticed:
+    // it never looked at the 1473 objects that carry the same fields.
     //
-    // This is a MAPPING SELF-CHECK, not a feature. It recomputes the two
-    // relationships the mapping asserts and reports whether they hold, so the
-    // fixture can catch schema drift without re-deriving offsets host-side:
-    //   * the transform's 3x3 equals the rotation matrix of the object's own
-    //     quaternion, and
-    //   * the second block is the rigid inverse of the first.
-    // Snapshot-based for the same reason as snapshot_objects(): the lists
-    // mutate, so nothing here hands out a pointer.
+    // A MAPPING SELF-CHECK, not a feature. It recomputes what the mapping claims
+    // and reports whether it holds:
+    //   * det(3x3) == 1, i.e. the matrix is a proper rotation. HARD invariant on
+    //     both types.
+    //   * the 3x3 equals R(the object's own quaternion), and the second block is
+    //     the rigid inverse of the first. Both hold on 474/474 cameras but only
+    //     1464/1473 and 1450/1473 worldmodels, because a worldmodel is moving
+    //     level geometry whose cached transform can lag its quaternion between
+    //     updates. Those two are therefore REPORTED per type, not asserted.
     struct TransformCheck {
         size_t sampled;        // objects examined
         size_t rotation_match; // 3x3 == R(quaternion)
@@ -299,9 +302,10 @@ public:
         size_t det_ok;         // det(3x3) == 1
     };
 
-    // Walks up to `max` type-5 objects, checking both relationships. nullopt
-    // when the walk faulted or did not terminate.
-    std::optional<TransformCheck> check_type5_transforms(size_t max) const;
+    // `type` must be 2 (WorldModel) or 5 (Camera); anything else is nullopt,
+    // because no other type has these fields. nullopt also on fault or a walk
+    // that did not terminate.
+    std::optional<TransformCheck> check_transforms(size_t type, size_t max) const;
 
     // ---- bounding geometry (every object type) --------------------------
     //

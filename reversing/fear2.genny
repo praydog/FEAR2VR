@@ -882,40 +882,60 @@ class LTMatrix3x4 0x30 {
     float m[12]   @0x00   // row-major; row r = m[r*4 .. r*4+3], translation is m[r*4+3]
 }
 
-// The concrete class behind object type 5. Derives from LTObject: the first
-// 0xCC bytes ARE an LTObject (same vtable slot, same type/handle/position/
-// rotation/list_link), and the allocator for this type hands out 320 bytes
-// (0x140), so everything from 0xCC up is type-5-specific.
+// The concrete class behind object type 2 -- and, as it turns out, the BASE of
+// type 5. 316 bytes (0x13C) from its bank's element_size.
+//
+// THE HIERARCHY IS PROVEN BY THE DESTRUCTORS, which is also how an earlier
+// mis-attribution here was caught. OT_CAMERA_scalar_dtor installs
+// vtbl_OT_CAMERA and then calls OT_WORLDMODEL_dtor_body (0x465344), which
+// installs vtbl_OT_WORLDMODEL and then calls LTObject_dtor_body. That is the
+// MSVC derived-destructor chain, so:
+//     LTObject  <-  WorldModel  <-  Camera
+// It explains what the vtable survey had already shown without explaining: the
+// two types share slots 2..15 and differ only in slots 0 and 1.
+//
+// The sizes clinch it. WorldModel is 0x13C and the transform pair below ends at
+// exactly 0x13C; Camera is 0x140 and adds ONLY a uint16. An earlier pass mapped
+// the transform pair onto LTCameraObject as though it were camera-specific --
+// wrong, and the fix matters for a mod: 1473 worldmodels carry these matrices,
+// not just 474 cameras.
+//
+// CONFIRMED live on OT_WORLDMODEL (1473 objects):
+//   * determinant of world_transform's 3x3 is 1.0 on 1473/1473 -- every matrix
+//     is a proper rotation.
+//   * the 3x3 equals R(base.rotation) on 1464/1473, and inverse_transform is the
+//     exact rigid inverse on 1450/1473. The shortfalls are NOT asserted: a
+//     worldmodel is the engine's moving level geometry (doors, lifts), so a
+//     cached transform can legitimately lag the quaternion between updates.
+//     Cameras show no such lag -- 474/474 on all three.
+class LTWorldModelObject 0x13C {
+    LTObject base                  @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
+    void* unk_CC                   @0xCC    // CONFIRMED as WorldModel's FIRST own field: OT_WORLDMODEL_dtor_body branches on `this[51]` (+0xCC) and releases it via 0x43B85C. Live 1034 of 1473 are null and the rest are 439 distinct heap pointers. Pointee unmapped.
+    LTMatrix3x4 world_transform    @0xDC    // CONFIRMED rigid transform; 3x3 == R(base.rotation) on 1464/1473, det 1.0 on 1473/1473
+    LTMatrix3x4 inverse_transform  @0x10C   // CONFIRMED exact rigid inverse on 1450/1473. Ends at 0x13C == the class size.
+}
+
+// The concrete class behind object type 5. Derives from WorldModel (see above),
+// which is why it inherits the cached transform pair and adds only 4 bytes:
+// 320 - 316 == the uint16 below plus padding.
 //
 // NAME IS A LithTech-SDK ANALOGUE (AGENT.MD rule 9): the shipping build has no
 // RTTI, so "camera" comes from the reference enum's ordering, not from FEAR2.
-// The layout evidence is CONSISTENT with a camera/view -- a cached world
-// transform plus its exact inverse is precisely a view-matrix pair -- but that
-// is corroboration, not proof of the name. 474 live instances at the main menu
-// is more than a player camera count, so treat the name with suspicion even
-// though the geometry fits.
+// The inherited transform-plus-inverse is exactly a view-matrix pair, which fits
+// a camera -- but now that the pair is known to come from WorldModel it is much
+// weaker corroboration than it looked, since 1473 worldmodels have it too. 474
+// live instances is also more than a player-camera count. Treat the name as a
+// label.
 //
-// CONFIRMED (live, 60 objects sampled unless noted):
-//   * world_transform's 3x3 == the rotation matrix built from this object's own
-//     LTObject.rotation quaternion. Max component difference 0.00000 over 40
-//     objects; determinant 1.0 on all 40. It also discriminates from the
-//     transpose: an object with a real (non-identity) rotation matched the
-//     matrix at difference 0.0 and its transpose at 2.0.
-//   * inverse_transform is the EXACT rigid inverse of world_transform:
-//     R2 == R1^T on 60/60, and t2 == -R1^T * t1 on 60/60 (max error 1e-4).
-//   * world_transform's translation equals LTObject.position on 55/60, and
-//     differs by 3..50 units on the other 5. So they are related but NOT the
-//     same field -- do not treat the matrix translation as the position, and
-//     do not assume the two are updated in the same pass.
+// On the inherited fields, cameras are the well-behaved case: 3x3 == R(rotation),
+// exact inverse and det 1.0 all hold on 474/474.
 //
-// unk_13C is a uint16 (not a dword): dump 0x46510E writes it as
-// `this[158]` through a WORD* -- 158 * 2 == 0x13C -- copying a WORD from
-// another object's +0x02. Observed values 1/6/7/9. Role unverified.
+// unk_13C is a uint16 (not a dword): dump 0x46510E writes it as `this[158]`
+// through a WORD* -- 158 * 2 == 0x13C -- copying a WORD from another object's
+// +0x02. Observed values 1/6/7/9. Role unverified.
 class LTCameraObject 0x140 {
-    LTObject base                  @0x00    // CONFIRMED: type-5 objects are LTObjects for their first 0xCC bytes
-    LTMatrix3x4 world_transform    @0xDC    // CONFIRMED rigid transform; 3x3 == R(base.rotation)
-    LTMatrix3x4 inverse_transform  @0x10C   // CONFIRMED exact rigid inverse of world_transform (60/60)
-    uint16_t unk_13C               @0x13C   // unverified; written as a WORD by dump 0x46510E
+    LTWorldModelObject base @0x00    // CONFIRMED: type 5 derives from type 2, proven by the destructor chain
+    uint16_t unk_13C        @0x13C   // unverified; written as a WORD by dump 0x46510E. The ONLY field camera adds.
 }
 
 // Node CClientMgr registers for itself in its own counter_list_head list

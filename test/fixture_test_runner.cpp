@@ -605,41 +605,58 @@ int main(int argc, char** argv) {
             check(all_match, "every bank: pool block_size == (element_size + 8) & ~7");
         }
 
-        // Type-5 cached transforms. This is the assertion that would catch a
-        // wrong LTCameraObject offset before it turned into wrong VR camera
-        // math: the SDK recomputes the rotation matrix from each object's own
-        // quaternion and the rigid inverse of the cached 3x4, and every sampled
-        // object must satisfy both. A shifted world_transform or
-        // inverse_transform offset makes these counts diverge from `sampled`.
+        // Cached transforms. The pair is WORLDMODEL state that Camera inherits,
+        // so BOTH types are checked -- an earlier version of this block looked
+        // only at type 5, which is exactly why the fields sat mis-attributed to
+        // LTCameraObject for several passes. Checking the type that actually
+        // owns a field is what catches that class of error.
         //
-        // Note the shape of the check: it does NOT compare against values
-        // recorded from a previous run, and it invents no tolerance beyond the
-        // float-noise epsilon the SDK uses -- it asserts an identity the data
-        // must satisfy on its own terms.
-        {
-            const size_t tp = body.find("\"type5_transforms\":");
-            check(tp != std::string::npos, "objects report includes the type-5 transform check");
-            if (tp != std::string::npos) {
-                if (json_has(body, "\"type5_transforms\":null")) {
-                    // A fault or non-terminating walk. Not "pass by absence":
-                    // the type-5 list is populated whenever the client manager
-                    // is live, so null here means the walk broke.
-                    check(false, "type-5 transform walk completed (null == faulted)");
-                } else {
-                    const size_t end = body.find('}', tp);
-                    const std::string tb = body.substr(tp, end - tp + 1);
-                    int64_t sampled = -1, rot = -1, inv = -1, det = -1;
-                    json_int(tb, "sampled", sampled);
-                    json_int(tb, "rotation_match", rot);
-                    json_int(tb, "inverse_ok", inv);
-                    json_int(tb, "det_ok", det);
-                    check(sampled > 0, "type-5 objects present to check transforms against");
-                    check(rot == sampled,
-                          "every type-5 world_transform 3x3 == R(its own rotation quaternion)");
-                    check(inv == sampled,
-                          "every type-5 inverse_transform is the exact rigid inverse");
-                    check(det == sampled, "every type-5 world_transform 3x3 has determinant 1");
-                }
+        // The asymmetry is deliberate and matches the data:
+        //   det_ok is a HARD invariant on both -- every matrix must be a proper
+        //     rotation, and a wrong offset cannot produce determinant 1.
+        //   rotation_match / inverse_ok are exact on cameras (474/474) but lag on
+        //     worldmodels (1464 and 1450 of 1473), because a worldmodel is moving
+        //     level geometry whose cache can trail its quaternion between
+        //     updates. Asserting them for type 2 would be asserting that nothing
+        //     in the level is mid-motion.
+        for (const char* key : {"\"worldmodel_transforms\":", "\"camera_transforms\":"}) {
+            const bool is_camera = std::string_view{key}.find("camera") != std::string_view::npos;
+            const size_t tp = body.find(key);
+            const std::string has_label = std::string{"objects report includes "} + key;
+            check(tp != std::string::npos, has_label.c_str());
+            if (tp == std::string::npos) {
+                continue;
+            }
+            const std::string nullpat = std::string{key} + "null";
+            if (json_has(body, nullpat.c_str())) {
+                const std::string done_label = std::string{"transform walk completed for "} + key;
+                check(false, done_label.c_str());
+                continue;
+            }
+            const size_t end = body.find('}', tp);
+            const std::string tb = body.substr(tp, end - tp + 1);
+            int64_t sampled = -1, rot = -1, inv = -1, det = -1;
+            json_int(tb, "sampled", sampled);
+            json_int(tb, "rotation_match", rot);
+            json_int(tb, "inverse_ok", inv);
+            json_int(tb, "det_ok", det);
+
+            const std::string present_label = std::string{"objects present for "} + key;
+            check(sampled > 0, present_label.c_str());
+            const std::string det_label =
+                std::string{"every cached 3x3 has determinant 1 for "} + key;
+            check(det == sampled, det_label.c_str());
+            if (is_camera) {
+                check(rot == sampled,
+                      "every camera world_transform 3x3 == R(its own rotation quaternion)");
+                check(inv == sampled,
+                      "every camera inverse_transform is the exact rigid inverse");
+            } else {
+                // Reported, not asserted: see the comment above.
+                check(rot > 0 && rot <= sampled,
+                      "worldmodel rotation_match is a sane count (cache may lag, not asserted)");
+                check(inv > 0 && inv <= sampled,
+                      "worldmodel inverse_ok is a sane count (cache may lag, not asserted)");
             }
         }
 

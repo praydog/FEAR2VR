@@ -144,6 +144,28 @@ for the full evidence trail this recipe produced).
   camera has flags bit 0. Had the gate been checked first and matched, the
   geometric contribution would still have been unmeasured and the note would have
   read "probably the gate" instead of a number.
+- **The DESTRUCTOR CHAIN gives you the class hierarchy, and derived-class fields
+  are the commonest thing to mis-attribute without it.** MSVC emits, for each
+  class in a chain, a destructor that installs ITS OWN vtable and then calls the
+  base's. So reading one destructor names one inheritance edge:
+  `OT_CAMERA_scalar_dtor` installs `vtbl_OT_CAMERA` then calls
+  `OT_WORLDMODEL_dtor_body`, which installs `vtbl_OT_WORLDMODEL` then calls
+  `LTObject_dtor_body` — i.e. `LTObject <- WorldModel <- Camera`.
+  This corrected a real mistake. The cached transform pair at +0xDC had been
+  mapped onto `LTCameraObject` as camera-specific for several passes. It is
+  WorldModel state: the type-2 allocator hands out 0x13C and the pair ends at
+  exactly 0x13C, while type 5 is 0x140 and adds only a uint16. So 1473 objects
+  carry those matrices, not 474 — a nearly 4x difference in what a mod can reach.
+  Two habits follow:
+  * **Read the destructor before writing a derived class.** It is usually a
+    handful of instructions and it tells you both the parent and (from the calls
+    it makes before delegating) which fields this level owns. `this[51]` released
+    by WorldModel's body is how `unk_CC` was identified as its first own field.
+  * **A vtable survey that shows two types sharing most slots is a HINT of
+    inheritance, not an explanation.** The earlier survey had already recorded
+    that types 2 and 5 differ only in slots 0 and 1 and left it as a curiosity.
+    Sharing slots is what inheritance looks like from the outside; go get the
+    destructor and confirm the direction.
 - **When you finally find a manager/container object, re-read its header against
   everything you already derived the hard way.** Inferences you paid for with
   scanning and climbing are very often plain fields in there, and finding them

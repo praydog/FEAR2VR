@@ -27,6 +27,7 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTMemoryPool.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrObjectBank.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTMatrix3x4.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTWorldModelObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTCameraObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrCounterNode.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgr.hpp" \

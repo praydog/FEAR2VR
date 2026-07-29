@@ -362,20 +362,23 @@ std::string build_objects_json() {
     }
     out += "]";
 
-    // Type-5 cached transforms: a self-check of the LTCameraObject mapping.
-    // Recomputes, in-process, the two relationships the schema claims -- that
-    // the 3x4's rotation part is the object's own quaternion, and that the
-    // second 3x4 is its exact rigid inverse -- so schema drift shows up as a
-    // count mismatch instead of silently producing wrong VR camera math later.
-    out += ",\"type5_transforms\":";
-    if (const auto tc = mgr->check_type5_transforms(64); tc.has_value()) {
-        char tb[192];
-        snprintf(tb, sizeof(tb),
-                 "{\"sampled\":%zu,\"rotation_match\":%zu,\"inverse_ok\":%zu,\"det_ok\":%zu}",
-                 tc->sampled, tc->rotation_match, tc->inverse_ok, tc->det_ok);
-        out += tb;
-    } else {
-        out += "null";
+    // Cached transforms. The pair is WORLDMODEL state inherited by Camera, so
+    // both types are reported: an earlier version walked only type 5, which is
+    // precisely why the mis-attribution to LTCameraObject went unnoticed for
+    // several passes. det_ok is the hard invariant on both; rotation_match and
+    // inverse_ok are exact on cameras but lag on moving worldmodels, so the test
+    // asserts them only for type 5.
+    for (const size_t type : {size_t{2}, size_t{5}}) {
+        out += type == 2 ? ",\"worldmodel_transforms\":" : ",\"camera_transforms\":";
+        if (const auto tc = mgr->check_transforms(type, 8192); tc.has_value()) {
+            char tb[192];
+            snprintf(tb, sizeof(tb),
+                     "{\"sampled\":%zu,\"rotation_match\":%zu,\"inverse_ok\":%zu,\"det_ok\":%zu}",
+                     tc->sampled, tc->rotation_match, tc->inverse_ok, tc->det_ok);
+            out += tb;
+        } else {
+            out += "null";
+        }
     }
 
     // Bounding geometry across every type. Same self-check shape: these are

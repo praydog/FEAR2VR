@@ -18,6 +18,7 @@
 #include "regenny/regenny/LTSpriteObject.hpp"
 #include "regenny/regenny/LTVisPlane.hpp"
 #include "regenny/regenny/LTVisSector.hpp"
+#include "regenny/regenny/LTWorldModelObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
@@ -486,15 +487,18 @@ namespace {
 // schema -- no literal appears here.
 //
 // Returns the number sampled, or -1 on fault / non-termination.
-int64_t seh_check_type5(const regenny::CClientMgrListLink* head, size_t max,
-                        size_t* rot_ok, size_t* inv_ok, size_t* det_ok, size_t cap) {
+int64_t seh_check_transforms(const regenny::CClientMgrListLink* head, size_t max,
+                            size_t* rot_ok, size_t* inv_ok, size_t* det_ok, size_t cap) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
             if (sampled < max) {
-                const auto* obj = reinterpret_cast<const regenny::LTCameraObject*>(
+                // The transform pair is WorldModel state; LTWorldModelObject is
+                // therefore the right view for BOTH type 2 and type 5, since
+                // camera only appends a uint16 past it.
+                const auto* obj = reinterpret_cast<const regenny::LTWorldModelObject*>(
                     reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
                 const float qx = obj->base.rotation.x, qy = obj->base.rotation.y;
                 const float qz = obj->base.rotation.z, qw = obj->base.rotation.w;
@@ -620,16 +624,20 @@ int64_t seh_check_geometry(const regenny::CClientMgrListLink* head, size_t max, 
 
 } // namespace
 
-std::optional<CClientMgr::TransformCheck> CClientMgr::check_type5_transforms(size_t max) const {
-    // Bank index 4 serves type 5; go through the type, not the index.
-    constexpr auto kType = static_cast<ObjectType>(5);
-    if (static_cast<size_t>(kType) >= object_list_count()) {
+std::optional<CClientMgr::TransformCheck> CClientMgr::check_transforms(size_t type,
+                                                                      size_t max) const {
+    // Only WorldModel (2) and the Camera (5) that derives from it carry the
+    // cached transform pair. Any other type would read past its allocation.
+    if (type != 2 && type != 5) {
+        return std::nullopt;
+    }
+    if (type >= object_list_count()) {
         return std::nullopt;
     }
     TransformCheck out{};
-    const int64_t n = seh_check_type5(&regenny()->object_lists[static_cast<size_t>(kType)], max,
-                                     &out.rotation_match, &out.inverse_ok, &out.det_ok,
-                                     max_object_walk);
+    const int64_t n = seh_check_transforms(&regenny()->object_lists[type], max,
+                                          &out.rotation_match, &out.inverse_ok, &out.det_ok,
+                                          max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }
