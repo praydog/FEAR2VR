@@ -128,6 +128,25 @@ bool Events::verify(const Event& event) {
     return false;
 }
 
+std::string Events::as_interface_name(Category category) {
+    // "Monolith.I%sEvents" with the category in the middle -- the sender's error string is the source of this
+    // shape, not a guess about naming conventions.
+    std::string out = "Monolith.I";
+    out += (category == Category::Menu) ? "Menu" : "Player";
+    out += "Events";
+    return out;
+}
+
+std::string Events::as_method_name(std::string_view path, std::string_view event_name) {
+    if (path.empty()) {
+        return {};  // exactly what the sender refuses, with a log line about a missing implementation path
+    }
+    std::string out{path};
+    out += '.';
+    out += event_name.empty() ? kDefaultMethod : std::string{event_name};
+    return out;
+}
+
 size_t Events::verified_count() {
     size_t n = 0;
     for (const auto& e : all()) {

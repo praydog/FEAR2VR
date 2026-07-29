@@ -3,32 +3,46 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
 //
-// THE GAME'S NAMED EVENT BUS -- how gameclient.dll tells its UI that state changed, by NAME and with a TYPED
-// payload.
+// THE GAME CALLING ITS FLASH UI -- Scaleform ActionScript invocation, by name and with a TYPED payload.
 //
-// Each event has a one-line dispatcher that calls a shared sender with four things: a category ("Player",
-// "Menu"), the source, the event NAME as a string literal, and a FORMAT STRING describing the payload.
-// Harvested from the binary there are 87 such dispatchers and about as many distinct events.
+// THIS WAS FIRST DOCUMENTED HERE AS "the game's named event bus", which was directionally right and
+// mechanically wrong. The sender's own error string names what it is:
+//
+//     "[UI - ActionScript]: Error - Invoke called for Monolith.I%sEvents.%s without a path to the
+//      implementation object."
+//
+// So the CATEGORY fills that %s to form an ActionScript interface name -- Monolith.IPlayerEvents -- and each
+// "event" is a method call into the Flash HUD. Not a C++ observer bus at all.
+//
+// WHAT THE SENDER DOES, which is what makes the payload readable:
+//   * `source` is a STRING, not an object: strncpy_s copies it and the guard dereferences it as a char. It is
+//     the dot-separated PATH to the implementation object on the AS side, and it lives at a1 + 0x10 of
+//     whatever object the dispatcher was handed.
+//   * it builds "<path>.<EventName>", falling back to "<path>.Default" when no name is supplied
+//   * it marshals the format string and the argument block into a local value array
+//   * it invokes SLOT 14 of the target -- the GFx movie/value object -- with that name and array
+//
+// Each event still has a one-line dispatcher, 87 of them, so each remains a precise hook point. Harvested from
+// the binary the payload alphabet is d = int, f = float, s = string, b = bool:
 //
 //     HealthChanged        "d"     one int
-//     FlashlightMaxCharge  "f"     one float
+//     FlashlightMaxCharge  "f"     one float, EIGHT bytes on the stack -- see payload_stack_bytes
 //     AmmoCountChanged     "sdd"   a string and two ints
 //     ShowCrosshair        "b"     one bool
 //
-// The format alphabet is d = int, f = float, s = string, b = bool. An event with no payload has none.
-//
 // THIS IS A SEPARATE MECHANISM FROM THE DELEGATE CHANNELS in sdk::Delegates, and the two should not be
 // confused. A delegate channel is an intrusive list of C++ objects on a subject; this is a name-and-format
-// bus aimed at the UI layer. The player object carries 21 of the former; the events below are the latter.
+// call into Flash. The player object carries 21 of the former; the events below are the latter.
 //
 // WHY A CONSUMER WANTS IT. These names are the game's own vocabulary for the state a mod cares about --
-// health, armour, ammo, weapon selection, slow-mo, player alive/dead -- and each dispatcher is a
-// single-purpose function, so it is a precise hook point. The format string says how to read the arguments
-// once hooked, which is the part that is otherwise guesswork.
+// health, armour, ammo, weapon selection, slow-mo, player alive/dead -- and hooking a dispatcher intercepts
+// the game TELLING THE HUD about a change, which is both a notification and the point at which a stereo
+// consumer can suppress or redirect a HUD element.
 //
 // THE CATALOGUE IS CURATED, NOT COMPLETE: the player and HUD events are here because those are the ones a mod
 // reaches for. The rest (achievements, menus, matchmaking, CTF, control points, PDA) exist in the binary and
@@ -114,6 +128,21 @@ public:
 
     // Every entry verified, as a count -- so a partial mismatch is visible rather than collapsing to false.
     static size_t verified_count();
+
+    // The ActionScript interface a category addresses, as the sender's own error string spells it:
+    // "Monolith.I" + category + "Events". A consumer inspecting the Flash side needs this name, not the bare
+    // category.
+    static std::string as_interface_name(Category category);
+
+    // The full AS method a dispatcher will invoke, given the implementation path the source string carries:
+    // "<path>.<EventName>". Empty when the name is unknown; a null or empty path is what the sender itself
+    // refuses, so it is refused here too.
+    static std::string as_method_name(std::string_view path, std::string_view event_name);
+
+    // The vtable slot the sender invokes on the target GFx object, and the fallback method name it uses when
+    // no event name is supplied. Both read off the sender.
+    static constexpr size_t kInvokeSlot = 14;
+    static constexpr const char* kDefaultMethod = "Default";
 };
 
 }  // namespace sdk

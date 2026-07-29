@@ -4457,6 +4457,18 @@ int main(int argc, char** argv) {
                       json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
                   "a three-argument payload measures three arguments and twelve stack bytes");
 
+            // THE ACTIONSCRIPT NAMES, because this is a Flash call and not a C++ event bus -- the sender's own
+            // error string says "Monolith.I%sEvents.%s", so the category is an AS INTERFACE name and the event
+            // is a METHOD on a dot-separated implementation path.
+            //
+            // The empty-path case is asserted too: that is precisely what the sender refuses, logging a missing
+            // implementation path, so composing a name for it would invent a call the game would never make.
+            bool ev_asi = false, ev_asm = false;
+            check(json_bool(body, "ev_as_interface", ev_asi) && ev_asi,
+                  "a category composes the ActionScript interface the sender's error string names");
+            check(json_bool(body, "ev_as_method", ev_asm) && ev_asm,
+                  "an event composes <path>.<Event>, falls back to Default, and refuses an empty path");
+
             // THE CALL FRAME, checked against the `add esp, N` the disassembly actually contains. This is the
             // rare case where a computed number can be compared to an instruction operand:
             //

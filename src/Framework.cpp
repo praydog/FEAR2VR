@@ -4484,6 +4484,19 @@ std::string build_shader_params_json() {
                                  sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
                            : -1.0,
                        0);
+    // THE ACTIONSCRIPT NAMES the sender composes. Its error string spells the interface as
+    // "Monolith.I<category>Events", and the invoked method as "<path>.<EventName>" with a "Default" fallback.
+    json_append_bool(out, "ev_as_interface",
+                     sdk::Events::as_interface_name(sdk::Events::Category::Player) ==
+                             "Monolith.IPlayerEvents" &&
+                         sdk::Events::as_interface_name(sdk::Events::Category::Menu) ==
+                             "Monolith.IMenuEvents");
+    json_append_bool(out, "ev_as_method",
+                     sdk::Events::as_method_name("HUD.Health", "HealthChanged") ==
+                             "HUD.Health.HealthChanged" &&
+                         sdk::Events::as_method_name("HUD.Health", "") == "HUD.Health.Default" &&
+                         sdk::Events::as_method_name("", "HealthChanged").empty());
+
     // THE FRAME ARITHMETIC, against the two events whose `add esp, N` is visible in the disassembly. These
     // are the numbers a consumer checks its hook against, and they reconcile only with a float at 8 bytes.
     const auto health = sdk::Events::find("HealthChanged");

@@ -4981,3 +4981,40 @@ class LTInputDeviceMouse 0x30 {
 // readable; what the sender DOES with them is not established and is not claimed.
 //
 // 1027 checks, 0 failures.
+
+// ---- THE "EVENT BUS" IS A FLASH CALL, AND ITS SOURCE IS A STRING -----------------------------------
+//
+// Two passes ago I documented 87 dispatchers as "the game's named event bus with typed payloads", then mapped
+// the call frame without ever reading the sender's body. The sender's own error string says what it is:
+//
+//     "[UI - ActionScript]: Error - Invoke called for Monolith.I%sEvents.%s without a path to the
+//      implementation object."
+//
+// SO THE CATEGORY IS AN ACTIONSCRIPT INTERFACE NAME -- Monolith.IPlayerEvents -- and each event is a METHOD
+// CALL INTO THE FLASH HUD. Scaleform invocation, not a C++ observer bus. "Named event bus with typed payloads"
+// described the shape correctly and the mechanism wrongly.
+//
+// AND THE `source` ARGUMENT IS A STRING, which the earlier pass had recorded as an object: strncpy_s copies it
+// and the guard tests `!*Source`, dereferencing it as a char. It is the dot-separated PATH to the implementation
+// object on the AS side, and a1 + 0x10 -- which I had noted as "the source the bus reports" -- is where the
+// dispatcher's argument object keeps that path.
+//
+// WHAT THE SENDER DOES:
+//     composes "<path>.<name>" into a 0x40 buffer, or "<path>.Default" when the name is null
+//     builds a 16-slot value array (UI_ValueArray_Init)
+//     marshals format+args into it (UI_MarshalActionScriptArgs) -- d int, f float, s string, b bool
+//     invokes SLOT 14 of the target GFx object with that name and array
+//
+// > I mapped the call frame down to the byte -- 20 for an int payload, 24 for a float -- while believing the
+// > first argument was an object. The frame arithmetic was right and the semantics were wrong, and nothing in
+// > the frame could have revealed that. Reading the callee's body was the only thing that would.
+//
+// The correction does not weaken the hook: each dispatcher is still one line and still a precise interception
+// point. It sharpens what interception MEANS -- catching the game telling the HUD, which is where a stereo
+// consumer would suppress or redirect a HUD element rather than merely observe a value.
+//
+// EXPOSED: sdk::Events gains as_interface_name (composing Monolith.I<category>Events, from the error string
+// rather than from a naming convention), as_method_name (<path>.<Event>, with the Default fallback, and
+// REFUSING an empty path because that is exactly what the sender refuses), kInvokeSlot and kDefaultMethod.
+//
+// 1029 checks, 0 failures.
