@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE CLASS INDEX HOLDS UP AGAINST THE RUNNING GAME: 15 OF 15.** Reading each indexed vtable's slot 1 in
+  the live process returned exactly the class name recorded statically. Worth doing rather than assuming --
+  the static side only shows a pointer run whose slot 1 has the right shape; the live read shows the engine
+  is actually using that table.
+  
+- **RTTI IN THIS BINARY IS HAVOK'S, NOT LITHTECH'S.** 206 type descriptors: 5 std::/CRT, 201 all hk*/hkp*.
+  Earlier I concluded "this class has no RTTI" from one [vt-4] sample and noted the image did carry
+  descriptors, which left the door open to per-class variation. Counting closes it: no engine class has RTTI,
+  so slot 1's self-naming string is the ONLY class-identity signal available for them, and the COL route is
+  not worth trying again. It also says where the physics is -- hkpMultiThreadedSimulation and the character
+  proxy machinery behind ILTModel's Add/RemoveCharacterProxyToWorld.
+  
+- **regenny_attach NEEDS BOTH pid AND name.** Passing either alone fails with a JSON type error about the
+  other being null ("type must be number, but is null" / "type must be string, but is null"), which reads
+  like a bad value rather than a missing one. Also: after the game restarts, regenny stays attached to the
+  DEAD process and its module list simply comes back without FEAR2.exe -- so a Lua read failing to find the
+  exe means re-attach, not a bad address.
+
 - **A CLASS THAT NAMES ITSELF IS THE CHEAPEST MAP THERE IS -- 26 TABLES IN ONE PASS.** Slot 1 of every
   IBase-derived class is `mov eax, <class name>; retn`, so scanning .rdata for that entry-sequence shape and
   reading the immediate names the class without calling anything. 32 tables matched; 26 were unnamed.

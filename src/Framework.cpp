@@ -3177,7 +3177,7 @@ std::string build_interfaces_json() {
     // miswired kName or a getter bound to the wrong instance shows up here
     // instead of being masked by a registry lookup with the right string.
     size_t resolved_count = 0, slot1_shaped_count = 0;
-    std::string iltclient_slot1, iclientshell_slot1;
+    std::string iltclient_slot1, iclientshell_slot1, iltmodel_slot1;
     const auto* entries = sdk::interfaces::all_interfaces();
     const size_t count = sdk::interfaces::all_interface_count();
     for (size_t i = 0; i < count; ++i) {
@@ -3205,6 +3205,11 @@ std::string build_interfaces_json() {
         if (strcmp(e.name, "IClientShell.Default") == 0 && slot1.has_value()) {
             iclientshell_slot1 = *slot1;
         }
+        // The model interface this project's skeleton work goes through. Reported so the suite can pin the
+        // implementing class, not just that something resolved.
+        if (strcmp(e.name, "ILTModel.Client") == 0 && slot1.has_value()) {
+            iltmodel_slot1 = *slot1;
+        }
         char b[512];
         snprintf(b, sizeof(b),
                  "{\"name\":\"%s\",\"holders\":%zu,\"non_null\":%zu,\"all_agree\":%s,"
@@ -3221,8 +3226,10 @@ std::string build_interfaces_json() {
     char tail[256];
     snprintf(tail, sizeof(tail),
              "\"resolved\":%zu,\"slot1_constant_strings\":%zu,"
-             "\"iltclient_slot1\":\"%s\",\"iclientshell_slot1\":\"%s\"}",
-             resolved_count, slot1_shaped_count, iltclient_slot1.c_str(), iclientshell_slot1.c_str());
+             "\"iltclient_slot1\":\"%s\",\"iclientshell_slot1\":\"%s\","
+             "\"iltmodel_slot1\":\"%s\"}",
+             resolved_count, slot1_shaped_count, iltclient_slot1.c_str(), iclientshell_slot1.c_str(),
+             iltmodel_slot1.c_str());
     out += tail;
     return out;
 }

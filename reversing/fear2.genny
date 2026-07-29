@@ -1180,6 +1180,20 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE ENGINE'S POLYMORPHIC CLASSES, FROM THEIR OWN SLOT 1 ----
 //
+// VERIFIED LIVE (2026-07): 15 of these tables were read in the running process and every one's slot 1
+// returned exactly the class name recorded here -- CLTClient, CLTServer, CLTModelClient, CLTModelServer,
+// CLTInput, CLTCursor, CLTRenderer, CSoundMgr, CLTFileMgr, CLTCommonClient, CLTUI, CLTTextureMgr,
+// ILTOnlineService, CLTGameUtil, CLTTextureString. So these are the tables the engine actually uses, not
+// merely pointer runs that look like vtables.
+//
+// NO RTTI ON ANY OF THEM, and that is now measured rather than inferred from one sample: the image holds 206
+// type descriptors, of which 5 are std::/CRT and the other 201 are ALL Havok (hk*, hkp*). So FEAR 2 ships
+// Havok compiled with RTTI while the LithTech classes are built without it -- which is why [vt-4] is never a
+// Complete Object Locator here, and why the self-naming slot 1 is the only class-identity signal available
+// for engine classes. It also locates the physics: hkpMultiThreadedSimulation, hkpBvTreeAgent and the
+// character-proxy machinery behind ILTModel's Add/RemoveCharacterProxyToWorld.
+
+//
 // Every one of these classes NAMES ITSELF: vtable slot 1 is IBase::_InterfaceImplementation, whose body is
 // `mov eax, <string>; retn`, so the class's own name can be read out of the instruction without calling it.
 // Scanning .rdata for that shape found 32 such tables; 26 were unnamed and are now named <Class>_vftable.

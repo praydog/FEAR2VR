@@ -1139,6 +1139,12 @@ int main(int argc, char** argv) {
                   "ILTClient's slot 1 names CLTClient");
             check(json_str(ibody, "iclientshell_slot1", s_shell) && s_shell == "CGameClientShell",
                   "IClientShell's slot 1 names CGameClientShell");
+            // The interface this project's bind-pose and socket work dispatches through. Pinning the
+            // implementing CLASS means a future build that re-points ILTModel.Client at something else
+            // fails here rather than silently changing what the skeleton helpers read.
+            std::string s_model;
+            check(json_str(ibody, "iltmodel_slot1", s_model) && s_model == "CLTModelClient",
+                  "ILTModel.Client is implemented by CLTModelClient");
             printf("[fixture] slot1 entry sequence: %lld/%lld resolved of %lld descriptors; ILTClient=%s\n",
                    static_cast<long long>(ishaped), static_cast<long long>(iresolved),
                    static_cast<long long>(itotal), s_lt.c_str());
