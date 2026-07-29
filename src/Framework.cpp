@@ -25,6 +25,7 @@
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/Render.hpp"
+#include "sdk/SceneCamera.hpp"
 #include "sdk/ShaderParams.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
@@ -3308,6 +3309,32 @@ std::string build_shader_params_json() {
     // Must be refused: same type as k_mObjectToWorld but an array, so the fixed-size
     // accessor has to decline rather than hand back the first of many.
     const auto array_via_fixed = sdk::ShaderParams::matrix4x3("k_mModelObjectNodes");
+
+    // The scene camera record, taken as ONE snapshot through sdk::SceneCamera. Every predicate
+    // reported here is the snapshot's own method, so a consumer validating what it read runs
+    // exactly this code rather than a copy of it.
+    const auto scam = sdk::SceneCamera::snapshot();
+    char sc[448];
+    if (scam.has_value()) {
+        snprintf(sc, sizeof(sc),
+                 "\"scene_camera\":true,\"sc_mode\":%u,\"sc_vp_w\":%lld,\"sc_vp_h\":%lld,"
+                 "\"sc_viewport_valid\":%s,\"sc_view_identity\":%s,\"sc_ortho\":%s,"
+                 "\"sc_ortho_matches_viewport\":%s,\"sc_proj_off_x\":%.4f,"
+                 "\"sc_proj_off_y\":%.4f,\"sc_hvp_x\":%.4f,\"sc_hvp_y\":%.4f,"
+                 "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,",
+                 scam->mode, static_cast<long long>(scam->viewport_width()),
+                 static_cast<long long>(scam->viewport_height()),
+                 scam->viewport_valid() ? "true" : "false",
+                 scam->view_is_identity() ? "true" : "false",
+                 scam->is_orthographic_projection() ? "true" : "false",
+                 scam->projection_matches_viewport_ortho() ? "true" : "false",
+                 scam->proj_center_offset_x, scam->proj_center_offset_y,
+                 scam->half_view_plane_x, scam->half_view_plane_y,
+                 scam->depth_min, scam->depth_max);
+    } else {
+        snprintf(sc, sizeof(sc), "\"scene_camera\":false,");
+    }
+    out += sc;
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A RECORD THE RENDER THREAD OWNS MUST BE COPIED IN ONE READ.** The scene camera's 360 bytes are
+  rewritten per pass. Reading mode, then the viewport, then the matrices can splice two passes together
+  with no access violation and a completely plausible result. One guarded memcpy bounds that window; it
+  cannot close it, because nothing synchronises with the render thread. Say "bounds" and not "prevents".
+  
+- **THE BEST VALIDATOR TIES TWO REGIONS THAT ARE WRITTEN SEPARATELY.** `[0][0] == 2/width` links the
+  viewport INTS to the projection FLOATS, so it catches both a wrong offset and a tear across that pair.
+  It is still partial -- a tear inside the view or derived matrices passes it -- so it is a coherence
+  check on two regions, not an atomicity proof for the record.
+  
+- **AN IDENTITY IN THE DATA CAN SETTLE A MATRIX CONVENTION.** Row-major versus column-major would have
+  been a coin flip. Reading `[0][3] = -1`, `[1][3] = 1` and `[0][0] = 2/width` on a known 5120x1440
+  viewport fixes it: translation is in column 3, row-major. Numbers matching to eight decimals beat any
+  amount of staring at the disassembly.
+
 - **A LIVE READ THAT DISAGREES WITH THE CODE IS USUALLY A STATE QUESTION, NOT A BAD OFFSET.** The
   scene camera's z-range source read (0.0, 1.0) while `k_vScene_ZRange` held (4.3, 100000). The offsets
   were right: the writer skips that store when the pass mode is 2, and mode 2 was the last pass to run,

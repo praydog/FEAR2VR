@@ -3729,6 +3729,56 @@ int main(int argc, char** argv) {
               "the reported depth range is ordered and non-negative");
         check(json_has(body, "\"camera_dir\":true"),
               "k_vWorldSpaceCameraDir reads through the typed float3 accessor");
+
+        // ---- THE SCENE CAMERA RECORD -------------------------------------------------
+        //
+        // Taken as ONE snapshot in the DLL, because the render thread rewrites this record per
+        // pass and a field-by-field read can splice two passes together without faulting. The
+        // checks below are the snapshot's own predicates, so they exercise what a consumer
+        // would call, not a reimplementation.
+        check(json_has(body, "\"scene_camera\":true"), "the scene camera record snapshots");
+        check(json_has(body, "\"sc_viewport_valid\":true"),
+              "the camera's viewport rect is non-degenerate");
+
+        int64_t sc_mode = -1, sc_w = -1, sc_h = -1;
+        (void)json_int(body, "sc_mode", sc_mode);
+        const bool have_dims = json_int(body, "sc_vp_w", sc_w) && json_int(body, "sc_vp_h", sc_h);
+        check(have_dims && sc_w > 0 && sc_h > 0, "the camera reports positive viewport extents");
+
+        // THE INVARIANT THAT EARNS ITS KEEP. For an orthographic pass the projection must
+        // satisfy [0][0] == 2/width and [1][1] == -2/height. Those floats and the viewport ints
+        // are written at different moments by the render thread, so the identity fails on a wrong
+        // offset AND on a tear that paired one pass's rect with another's matrix. It covers those
+        // two regions only -- a tear confined to the view, derived or trailing matrices would
+        // still pass, so this is not an atomicity check on the whole record. Gated on the
+        // projection actually being orthographic, since the identity does not apply otherwise.
+        if (json_has(body, "\"sc_ortho\":true")) {
+            check(json_has(body, "\"sc_ortho_matches_viewport\":true"),
+                  "the orthographic projection matches its own viewport (2/w, -2/h) -- ties the "
+                  "matrix to the rect");
+        }
+
+        // The engine's screen pass, whose shape is known: identity view, and half-view-plane
+        // extents that are literally half the viewport in PIXELS. That second identity is what
+        // established the units of k_vHalfViewPlane, so it is worth defending. Gated on the mode
+        // because a 3D pass legitimately leaves other values here.
+        if (sc_mode == 2) {
+            check(json_has(body, "\"sc_view_identity\":true"),
+                  "the screen pass's view matrix is identity");
+            double hx = 0.0, hy = 0.0;
+            if (json_double(body, "sc_hvp_x", hx) && json_double(body, "sc_hvp_y", hy)) {
+                const double want_x = static_cast<double>(sc_w) / 2.0;
+                const double want_y = static_cast<double>(sc_h) / 2.0;
+                check(hx > want_x * 0.99 && hx < want_x * 1.01 &&
+                          hy > want_y * 0.99 && hy < want_y * 1.01,
+                      "in the screen pass the half view-plane is half the viewport in pixels "
+                      "(what fixed the units of k_vHalfViewPlane)");
+            }
+        }
+        printf("[fixture] scene camera: mode %lld, viewport %lldx%lld, ortho %s\n",
+               static_cast<long long>(sc_mode), static_cast<long long>(sc_w),
+               static_cast<long long>(sc_h),
+               json_has(body, "\"sc_ortho\":true") ? "yes" : "no");
         printf("[fixture] shader params: %lld records, %lld bound, %lld pending upload, "
                "screen %.0fx%.0f\n",
                static_cast<long long>(count), static_cast<long long>(bound),

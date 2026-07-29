@@ -1429,6 +1429,67 @@ class CClientMgrCounterNode 0x40 {
 // wrong order, torn value -- which is worth asserting, but it cannot independently confirm the
 // viewport, because there is only one upstream.
 //
+// ---- THE SCENE CAMERA'S MATRICES ----
+//
+// sub_610BA1 BUILDS THEM, and +184 is the finished VIEW-PROJECTION. This is the structure a
+// stereo path actually needs, and it is reachable by a read -- unlike the D3D interception this
+// project spent two passes failing to locate statically.
+//
+// THE FULL RECORD, at g_SceneRenderer+8, 360 bytes:
+//
+//     +0x00   u32 pass mode        2 = the engine's screen/2D pass
+//     +0x04   i32 viewport left, then top, right, bottom at +0x08/+0x0C/+0x10
+//     +0x14   view transform source, LTTransform_Copy's destination
+//     +0x30   half view-plane x, y -> published as k_vHalfViewPlane
+//     +0x38   projection CENTRE OFFSET x, y
+//     +0x40   depth min, max       -> fed to the projection builder
+//     +0x48   view matrix, 3 rows of 4
+//     +0x78   projection = proj(depth) * shear
+//     +0xB8   VIEW-PROJECTION = projection * view
+//     +0xF8   derived from +0xB8 via sub_610333; role not established
+//     +0x138  12 trailing floats from sub_610658
+//
+// THE CENTRE OFFSET IS APPLIED AS A SHEAR, straight out of the builder:
+//
+//     [ 1 0 -offX 0 ]
+//     [ 0 1 -offY 0 ]
+//     [ 0 0   1   0 ]
+//
+// so the projection need not be centred. It read (0, 0) in the screen pass. That IS the
+// mechanism an off-centre or per-eye projection would use, but the engine's own use of it is not
+// established, so it is named for the maths and not for a purpose.
+//
+// EVERY OFFSET ABOVE IS CONFIRMED BY A LIVE READ, not by reading the arithmetic:
+//   - The viewport ints read (0, 0, 5120, 1440) -- exactly the screen.
+//   - The projection's [0][0] read 0.00039063 against 2/5120 = 0.00039063, and [1][1] read
+//     -0.00138889 against -2/1440, to EIGHT DECIMALS, with [0][3] = -1 and [1][3] = 1. So the
+//     screen pass builds a screen-to-clip orthographic matrix, and these matrices are ROW-MAJOR
+//     with translation in column 3. That settles a convention that would otherwise have been a
+//     coin flip.
+//   - THE COMPOSE IS VERIFIED, not assumed: with the view matrix identity, +0xB8 equalled +0x78
+//     exactly, which is what P*I = P requires.
+//   - The half view-plane read (2560, 720) -- exactly half the viewport, in pixels, which is the
+//     independent confirmation of the units established last pass.
+//
+// THE PROJECTION BRANCHES ON THE MODE: 0 -> sub_610560(depthMin), 1 -> sub_6105DA(depthMin,
+// depthMax), otherwise the stored matrix via sub_610658/sub_60C2FE.
+//
+// EXPOSED AS sdk::SceneCamera, and the shape of that class is dictated by a hazard: THE RENDER
+// THREAD REWRITES THIS RECORD ONCE PER PASS. A field-by-field read can pair one pass's viewport
+// with the next pass's matrices, fault nothing, and look entirely plausible. So snapshot() takes
+// the whole 360 bytes in ONE guarded memcpy, which bounds the window without closing it.
+//
+// projection_matches_viewport_ortho() is the useful validator -- for an orthographic pass
+// [0][0] must be 2/width and [1][1] -2/height, which ties the viewport INTS to the projection
+// FLOATS. It catches a wrong offset and a tear between those two regions. It is NOT an atomicity
+// check: a tear confined to the view, derived or trailing matrices satisfies it, and no invariant
+// here proves the whole record came from one pass.
+//
+// is_orthographic_projection() also settles the precondition that made an FOV accessor
+// impossible last pass. [3][3] is 1 for orthographic and 0 for row-major perspective, so a
+// consumer can now establish FROM THE DATA -- not by trusting `mode` -- whether it is looking at
+// a perspective pass, and therefore whether half_view_plane may be read as tan(fov/2).
+//
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
 // WHICH DEVICE METHODS THE ENGINE IS SEEN TO CALL -- CANDIDATES, NOT A CENSUS. Extracted by tracking
