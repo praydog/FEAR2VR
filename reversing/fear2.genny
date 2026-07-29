@@ -1178,6 +1178,41 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- HOW FAR THE REFERENCE SDK'S INTERFACES DIVERGE FROM THIS BUILD ----
+//
+// With extents measured, the reference headers can be checked instead of trusted. Counting virtuals per
+// CLASS BODY (forward declarations excluded -- they otherwise overwrite a real body with zero) and adding 2
+// for the leading pair every table has -- the implementation-only slot 0 and IBase's single virtual at
+// slot 1 -- gives a predicted entry count:
+//
+//   interface           declared  predicted  measured   divergence
+//   ILTCursor                  8         10        10   MATCH
+//   ILTTextureString          21         23        22   reference has 1 more
+//   ILTPhysics                19         21        19   reference has 2 more
+//   ILTCommon                 24         26        19   reference has 7 more
+//   ILTModelClient            59         61        83   FEAR2 has 22 more
+//   ILTModel                  56         58        81   FEAR2 has 23 more
+//   ILTClient                102        104       147   FEAR2 has 43 more
+//   ILTServer                 75         77       138   FEAR2 has 61 more
+//
+// TWO THINGS COME OUT OF THIS.
+//
+// The +2 FORMULA IS CONFIRMED FROM A NEW DIRECTION. ILTCursor's 8 declared methods predict exactly the 10
+// entries measured. This project derived that leading pair from CGameClientShell's slot map -- slot 1
+// returning a class literal, so slot 0 is implementation-only -- and here an unrelated interface reproduces
+// it arithmetically. That is worth more than either observation alone.
+//
+// AND THE REFERENCE CANNOT ALIGN THE BIG INTERFACES. ILTServer diverges by 61 methods, ILTClient by 43,
+// ILTModel by 23. Divergence also runs BOTH ways: the reference declares more than this build for ILTCommon,
+// ILTPhysics and ILTTextureString, so it is not simply an older, smaller version. Any slot mapping for those
+// interfaces has to come from FEAR2's own bodies, callers and strings -- which is what the error-string chain
+// and the vtable-membership tests are for.
+//
+// ILTCursor is the ONE table whose shape the reference matches, which makes it the only sensible candidate
+// for trying the reference's declaration ORDER. Not attempted here, and it would still be a hypothesis per
+// slot: a matching count constrains nothing about which method sits where, and order has already failed
+// twice in this project.
+
 // ---- THE ENGINE'S POLYMORPHIC CLASSES, FROM THEIR OWN SLOT 1 ----
 //
 // VERIFIED LIVE (2026-07) IN TWO SEPARATE SENSES, because the weaker one is easy to mistake for the stronger.

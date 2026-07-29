@@ -963,6 +963,22 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **MEASURE THE REFERENCE'S DIVERGENCE BEFORE TRUSTING OR DISCARDING IT.** With extents in hand, counting
+  virtuals per reference class body and adding 2 for the leading pair predicts an entry count. ILTCursor:
+  8 declared -> 10 predicted -> 10 measured, MATCH. ILTServer diverges by 61 methods, ILTClient by 43,
+  ILTModel by 23 -- and the reference declares MORE than this build for ILTCommon (+7), ILTPhysics (+2) and
+  ILTTextureString (+1), so it is not merely an earlier smaller version. Divergence runs both ways.
+  
+  The ILTCursor match is the useful part: it confirms the "+2 leading pair" from a completely different
+  direction. This project derived that from CGameClientShell's slot 1 returning a class literal, hence slot 0
+  being implementation-only; an unrelated interface now reproduces the same arithmetic. Two independent routes
+  to one structural fact.
+  
+  Two parsing traps worth remembering, both of which silently produce zeros: a forward declaration
+  (`class ILTModel;`) creates an entry with no virtuals and will overwrite the real body if seen later, so
+  keep the richest definition; and counting virtuals per FILE rather than per CLASS mixes helper classes into
+  the total (iltcursor.h has ILTCursorInst's 3 on top of ILTCursor's 8).
+
 - **THE CLASS INDEX HOLDS UP AGAINST THE RUNNING GAME: 30 OF 30.** Reading each indexed vtable's slot 1 in
   the live process returned exactly the class name recorded statically. Worth doing rather than assuming --
   the static side only shows a pointer run whose slot 1 has the right shape; the live read shows the engine
