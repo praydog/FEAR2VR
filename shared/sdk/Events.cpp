@@ -74,11 +74,43 @@ size_t Events::payload_arg_count(std::string_view payload) {
 
 bool Events::payload_is_well_formed(std::string_view payload) {
     for (const char c : payload) {
-        if (c != 'd' && c != 'f' && c != 's' && c != 'b') {
+        if (tag_for(c) == 0) {
             return false;
         }
     }
     return true;
+}
+
+uint32_t Events::tag_for(char letter) {
+    switch (letter) {
+    case 'b':
+    case 'd':
+        return kTagInt;
+    case 'f':
+        return kTagFloat;
+    case 's':
+        return kTagString;
+    case 'w':
+        return kTagWideString;
+    default:
+        return 0;
+    }
+}
+
+uint32_t Events::value_type_for(char letter) {
+    switch (letter) {
+    case 'b':
+        return 2;
+    case 'd':
+    case 'f':
+        return 3;
+    case 's':
+        return 4;
+    case 'w':
+        return 5;
+    default:
+        return 0;
+    }
 }
 
 std::optional<size_t> Events::payload_stack_bytes(std::string_view payload) {
@@ -99,7 +131,13 @@ std::optional<size_t> Events::frame_bytes(std::string_view payload) {
     if (!payload_bytes.has_value()) {
         return std::nullopt;
     }
-    return kHeaderBytes + kMarkerBytes + *payload_bytes + kMarkerBytes;
+    (void)payload_bytes;
+    // One tag PER ARGUMENT, then a single terminator.
+    size_t total = kHeaderBytes + kTerminatorBytes;
+    for (const char c : payload) {
+        total += kTagBytes + ((c == 'f') ? sizeof(double) : sizeof(uint32_t));
+    }
+    return total;
 }
 
 bool Events::verify(const Event& event) {

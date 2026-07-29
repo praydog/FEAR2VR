@@ -4488,6 +4488,24 @@ int main(int argc, char** argv) {
                   "a one-int event's frame is 20 bytes, matching its add esp, 14h");
             check(evf && ev_ff == 24.0,
                   "a one-float event's frame is 24 bytes, matching its add esp, 18h");
+
+            // THE MULTI-ARGUMENT CASES, which are the ones that matter: each argument carries its OWN type
+            // tag, so a formula charging one tag for the whole payload reproduces the two above and is wrong
+            // by 8 and 12 here. Both single-argument events passed the old formula, which is exactly why the
+            // error survived a pass.
+            double ev_fsdd = -1.0, ev_fddf = -1.0;
+            check(json_double(body, "ev_frame_sdd", ev_fsdd) && ev_fsdd == 36.0,
+                  "a string-and-two-ints frame is 36 bytes, matching its add esp, 24h");
+            check(json_double(body, "ev_frame_ddf", ev_fddf) && ev_fddf == 40.0,
+                  "a two-ints-and-a-float frame is 40 bytes, matching its add esp, 28h");
+
+            // The alphabet and tags come from the MARSHALLER's switch, not from the letters the catalogue
+            // happens to use -- 'w' is legitimate and was missing. Int and bool share a tag but not a type.
+            bool ev_w = false, ev_tm = false;
+            check(json_bool(body, "ev_wide_accepted", ev_w) && ev_w,
+                  "the wide-string letter the marshaller accepts is accepted here too");
+            check(json_bool(body, "ev_tags_map", ev_tm) && ev_tm,
+                  "every letter maps to the tag and GFx value type the marshaller assigns it");
             check(evf && ev_fl == 8.0 && ev_in == 4.0,
                   "a float payload is eight bytes and an int four -- the difference the frames prove");
 

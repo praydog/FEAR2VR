@@ -4511,6 +4511,28 @@ std::string build_shader_params_json() {
                            ? static_cast<double>(sdk::Events::frame_bytes(slowmo->payload).value_or(0))
                            : -1.0,
                        0);
+    // FOUR observed cleanups, three format shapes. The one-tag-per-payload formula reproduced the first two
+    // and was wrong by 8 and 12 on the others, which is why all four are here.
+    json_append_double(out, "ev_frame_sdd",
+                       static_cast<double>(sdk::Events::frame_bytes("sdd").value_or(0)), 0);
+    json_append_double(out, "ev_frame_ddf",
+                       static_cast<double>(sdk::Events::frame_bytes("ddf").value_or(0)), 0);
+    // The alphabet is the marshaller's switch: 'w' is legitimate and was missing.
+    json_append_bool(out, "ev_wide_accepted",
+                     sdk::Events::payload_is_well_formed("w") &&
+                         sdk::Events::tag_for('w') == sdk::Events::kTagWideString &&
+                         sdk::Events::value_type_for('w') == 5);
+    // Tags and value types, as the marshaller's switch assigns them -- int and bool SHARE a tag but not a type.
+    json_append_bool(out, "ev_tags_map",
+                     sdk::Events::tag_for('d') == sdk::Events::kTagInt &&
+                         sdk::Events::tag_for('b') == sdk::Events::kTagInt &&
+                         sdk::Events::tag_for('f') == sdk::Events::kTagFloat &&
+                         sdk::Events::tag_for('s') == sdk::Events::kTagString &&
+                         sdk::Events::tag_for('x') == 0 &&
+                         sdk::Events::value_type_for('b') == 2 &&
+                         sdk::Events::value_type_for('d') == 3 &&
+                         sdk::Events::value_type_for('f') == 3 &&
+                         sdk::Events::value_type_for('s') == 4);
     json_append_double(out, "ev_float_bytes",
                        static_cast<double>(sdk::Events::payload_stack_bytes("f").value_or(0)), 0);
     json_append_double(out, "ev_int_bytes",

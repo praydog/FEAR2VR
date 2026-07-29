@@ -88,9 +88,42 @@ public:
     // How many arguments the payload describes. 0 for an empty or null format.
     static size_t payload_arg_count(std::string_view payload);
 
-    // Is every character one this bus uses? An unknown letter means the format was misread, and a consumer
-    // reading arguments off a stack from a bad format is worse off than one that refused.
+    // Is every character one this bus uses? The alphabet is the MARSHALLER's switch, not the set of letters
+    // that happen to appear in the catalogue: b, d, f, s and w. An earlier version omitted 'w' and would have
+    // rejected a format the game supports.
     static bool payload_is_well_formed(std::string_view payload);
+
+    //
+    // THE WIRE FORMAT, read off the marshaller rather than inferred from stack sizes.
+    //
+    // Each argument is preceded by its OWN TYPE TAG, and the list ends with a terminator. The marshaller
+    // REFUSES the call if a tag does not match the format letter, so these are not decoration:
+    //
+    //     b   tag 0x12345678   one dword, non-zero test   -> GFx value type 2 (bool)
+    //     d   tag 0x12345678   one dword, widened         -> type 3 (number)
+    //     f   tag 0x12345679   a DOUBLE, eight bytes      -> type 3 (number)
+    //     s   tag 0x1234567A   one pointer                -> type 4 (string)
+    //     w   tag 0x1234567C   one pointer                -> type 5 (wide string)
+    //     end tag 0x1234567D
+    //
+    // AN EARLIER PASS CALLED THESE "a marker before the payload and a second marker after". That reading fits
+    // a one-argument event perfectly and is wrong for every other: at n = 1 a per-argument tag and a bracket
+    // are indistinguishable, and both events measured then had one argument.
+    static constexpr uint32_t kTagInt = 0x12345678;  // also bool
+    static constexpr uint32_t kTagFloat = 0x12345679;
+    static constexpr uint32_t kTagString = 0x1234567A;
+    static constexpr uint32_t kTagWideString = 0x1234567C;
+    static constexpr uint32_t kTagEnd = 0x1234567D;
+
+    // Each marshalled output slot is 16 bytes: the GFx value type at +0 and the value at +8.
+    static constexpr size_t kValueSlotBytes = 16;
+
+    // The tag a caller must push before an argument of this letter, or 0 for an unknown letter. A consumer
+    // building its own invoke needs this, and the marshaller rejects a mismatch outright.
+    static uint32_t tag_for(char letter);
+
+    // The GFx value type a letter marshals to, or 0 for an unknown letter.
+    static uint32_t value_type_for(char letter);
 
     // Total bytes the payload occupies as pushed arguments.
     //
@@ -108,13 +141,23 @@ public:
     // nullopt for a malformed format.
     static std::optional<size_t> payload_stack_bytes(std::string_view payload);
 
-    // THE WHOLE CALL FRAME a hook will see, in bytes: source, target, a MARKER, the payload, and a second
-    // MARKER. The markers are literal sentinels the senders push around the payload (0x12345678 / 0x1234567D,
-    // with the leading one varying by payload kind), which is what makes the frame layout readable at all.
+    // THE WHOLE CALL FRAME a hook will see, in bytes: source, target, then for EACH argument a type tag
+    // followed by its value, then the terminator.
+    //
+    // VERIFIED AGAINST FOUR OBSERVED CLEANUPS with three distinct format shapes:
+    //     HealthChanged     "d"     add esp, 14h = 20
+    //     SlowMoMaxChanged  "f"     add esp, 18h = 24
+    //     AmmoCountChanged  "sdd"   add esp, 24h = 36
+    //     SetChainPrompt    "ddf"   add esp, 28h = 40
+    //
+    // An earlier formula charged ONE tag for the whole payload rather than one per argument. It reproduced 20
+    // and 24 exactly and was wrong by 8 and 12 on the other two -- an error invisible at one argument, which
+    // is all that had been measured.
     //
     // This is the number that appears as the `add esp, N` after the call, so a consumer can check its hook
     // against the disassembly it is patching. nullopt for a malformed format.
-    static constexpr size_t kMarkerBytes = 4;
+    static constexpr size_t kTagBytes = 4;
+    static constexpr size_t kTerminatorBytes = 4;
     static constexpr size_t kHeaderBytes = 8;  // source + target
     static std::optional<size_t> frame_bytes(std::string_view payload);
 

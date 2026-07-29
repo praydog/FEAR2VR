@@ -5018,3 +5018,46 @@ class LTInputDeviceMouse 0x30 {
 // REFUSING an empty path because that is exactly what the sender refuses), kInvokeSlot and kDefaultMethod.
 //
 // 1029 checks, 0 failures.
+
+// ---- THE MARSHALLER IS THE AUTHORITY ON THE FORMAT, AND n=1 HID A BUG ------------------------------
+//
+// Last pass ended by noting that frame arithmetic can be exactly right while the semantics are wrong, because
+// the callee was never read. Applying that to my own remaining shape-derived claims: the payload alphabet
+// (d/f/s/b) came from the format strings I happened to observe, and "a float is eight bytes" came from stack
+// arithmetic. Neither came from the code that CONSUMES the format. Reading it confirmed one and broke two.
+//
+// UI_MarshalActionScriptArgs switches on each format letter and VALIDATES A PER-ARGUMENT TYPE TAG, refusing the
+// call on a mismatch:
+//
+//     'b'  tag 0x12345678   one dword, non-zero test    -> GFx value type 2 (bool)
+//     'd'  tag 0x12345678   one dword, widened          -> type 3 (number)
+//     'f'  tag 0x12345679   A DOUBLE, eight bytes       -> type 3 (number)
+//     's'  tag 0x1234567A   one pointer                 -> type 4 (string)
+//     'w'  tag 0x1234567C   one pointer                 -> type 5 (wide string)
+//      0   tag 0x1234567D   terminator
+//
+// Output slots are 16 bytes: type at +0, value at +8.
+//
+// CONFIRMED: 'f' really is read as a double. The frame arithmetic had implied it; the consumer states it.
+//
+// BROKEN, FIRST: the sentinels are not a pair bracketing the payload, as I recorded them. Each argument carries
+// its OWN tag and the list is terminated. AT ONE ARGUMENT THOSE TWO READINGS ARE INDISTINGUISHABLE -- and both
+// events I had measured have one argument. So the frame formula charged one tag per PAYLOAD, reproduced
+// add esp, 14h (20) and 18h (24) exactly, and was wrong by 8 and 12 on the multi-argument cases:
+//
+//     AmmoCountChanged  "sdd"   add esp, 24h = 36     (formula said 28)
+//     SetChainPrompt    "ddf"   add esp, 28h = 40     (formula said 28)
+//
+// Both now verified against the disassembly, so four observed cleanups across three format shapes pin the rule.
+//
+// BROKEN, SECOND: the alphabet has a fifth letter. 'w' is legitimate and my validator -- built from the letters
+// the catalogue happened to contain -- rejected it.
+//
+// > A formula that reproduces every case you measured is not validated if every case you measured was the
+// > degenerate one. Two independent checks passed on n=1 payloads and neither could distinguish a per-argument
+// > tag from a bracket. The fix came from the switch statement, not from more measurements of the same shape.
+//
+// EXPOSED: tag_for and value_type_for (the marshaller's own mapping, so a consumer building its own invoke
+// pushes tags the marshaller will accept), kValueSlotBytes, and a corrected frame_bytes.
+//
+// 1033 checks, 0 failures.
