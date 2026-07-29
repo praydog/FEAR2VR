@@ -1420,7 +1420,14 @@ class CClientMgrCounterNode 0x40 {
 // Exposed as sdk::ShaderParams::half_view_plane() / z_range() / world_space_camera_dir(), with
 // HalfViewPlane::reciprocals_consistent() and aspect() as the invariant checks a consumer can
 // call on its own read. The suite asserts both: the reciprocal identity, and agreement between
-// k_vHalfViewPlane's aspect and k_vScene_ScreenRes -- two parameters nothing forces to agree.
+// k_vHalfViewPlane's aspect and k_vScene_ScreenRes.
+//
+// THAT SECOND CHECK IS CONSISTENCY, NOT CORROBORATION, and an earlier draft of this note
+// oversold it as "two parameters nothing forces to agree". The mode-2 sample is what disproves
+// that: the half-plane extents were literally half the screen dimensions, so both parameters
+// descend from the same viewport. Agreement catches a misread of either record -- wrong offset,
+// wrong order, torn value -- which is worth asserting, but it cannot independently confirm the
+// viewport, because there is only one upstream.
 //
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //

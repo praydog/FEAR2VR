@@ -3699,18 +3699,20 @@ int main(int argc, char** argv) {
         check(json_has(body, "\"hvp_reciprocals_consistent\":true"),
               "k_vHalfViewPlane's stored reciprocals match its extents (tuple invariant)");
 
-        // INVARIANT 2, and the stronger one: TWO INDEPENDENT PARAMETERS AGREE. The half
-        // view plane's extent ratio is the viewport aspect, and k_vScene_ScreenRes reports
-        // that viewport separately. Nothing in the engine forces these to be consistent
-        // with each other, so agreement means both were read correctly. Gated on the view
-        // plane being populated, because before the first 3D pass it legitimately is not.
+        // INVARIANT 2: two SEPARATE records, read through separate accessors, must describe
+        // the same viewport. This is a consistency check on the two reads -- a wrong offset,
+        // a swapped pair or a torn value in either shows up here -- and NOT independent
+        // corroboration of the viewport itself: sampling the engine's screen pass showed the
+        // half-plane extents are literally half the screen dimensions, so both parameters
+        // descend from one upstream. Gated on the view plane being populated, because before
+        // the first 3D pass it legitimately is not.
         double hvp_aspect = 0.0, hvp_h = 0.0;
         if (json_double(body, "hvp_half_h", hvp_h) && hvp_h != 0.0 &&
             json_double(body, "hvp_aspect", hvp_aspect) && res_h > 0.0) {
             const double screen_aspect = res_w / res_h;
             const double rel = (hvp_aspect - screen_aspect) / screen_aspect;
             check(rel > -0.01 && rel < 0.01,
-                  "k_vHalfViewPlane's aspect agrees with k_vScene_ScreenRes (two parameters, "
+                  "k_vHalfViewPlane's aspect agrees with k_vScene_ScreenRes (two records, "
                   "one viewport)");
             double hvp_w = 0.0;
             (void)json_double(body, "hvp_half_w", hvp_w);

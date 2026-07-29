@@ -974,9 +974,12 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   3D pass (2.2651, 0.6371), a ratio matching the screen aspect. Neither sample alone pins the meaning;
   together they say "half extent of the view plane, in the pass's own space".
   
-- **AN INVARIANT ACROSS TWO INDEPENDENT VALUES BEATS A VALUE ASSERTION.** `hvp_aspect == screen_w/screen_h`
-  holds at every resolution and comes from two parameters nothing forces to agree, so it catches a misread
-  without hard-coding this machine's 5120x1440. Same for the stored reciprocals matching their extents.
+- **A SHAPE INVARIANT BEATS A VALUE ASSERTION -- BUT CHECK WHETHER THE TWO SIDES SHARE AN UPSTREAM.**
+  `hvp_aspect == screen_w/screen_h` holds at every resolution, so it catches a misread without hard-coding
+  5120x1440, and that much is solid. I first wrote it up as two INDEPENDENT parameters agreeing; the
+  mode-2 sample refutes that, since the half-plane extents were literally half the screen dimensions. Both
+  descend from one viewport, so it is a consistency check on the two READS, not corroboration of the
+  viewport. The stored-reciprocal check is the stronger of the two: that identity is internal to one tuple.
 
 - **THE PRODUCTIVE DIRECTION WAS THE ONE I ALMOST DISCARDED.** A raw `call [reg+0x44]` hit was a
   displacement collision, and the honest conclusion was "static scanning cannot find Present". But the
