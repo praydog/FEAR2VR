@@ -365,6 +365,14 @@ public:
         size_t root_mismatches;  // linked objects reaching a DIFFERENT root than the first
         uintptr_t root;          // the root the first linked object reached
         size_t max_depth;        // deepest parent chain observed
+        // CROSS-ROUTE CHECK. The world-tree root is reachable two completely
+        // independent ways: climbed from an object's world_tree_link (what this
+        // walk does), or read straight out of LTWorldClientBSP.world_tree_root.
+        // An earlier pass only had the first. Agreement is evidence for
+        // parent_offset, world_tree_link AND that header field at once, and it
+        // needs no recorded baseline -- the engine supplies both sides.
+        uintptr_t bsp_root;      // LTWorldClientBSP.world_tree_root, 0 if unavailable
+        bool root_matches_bsp;   // the climbed root equals it
     };
 
     // Walks up to `max_objects` objects per type. nullopt on fault or a walk

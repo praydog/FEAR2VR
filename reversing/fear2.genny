@@ -615,6 +615,53 @@ class LTVisTree 0x24 {
     void* unk_20            @0x20   // unmapped
 }
 
+// The client-side world container: the engine object behind the
+// IWorldClientBSP interface. A STATIC INSTANCE in FEAR2.exe's data, whose
+// address the interface holder points at.
+//
+// Reading this header replaced two earlier inferences with fields, and gave the
+// world tree a named-global route it did not have before:
+//   * bounds_min/max at +0x04 hold the same values as the pair at +0x22C that
+//     IWorldClientBSP_IsPointOutsideWorld reads. TWO COPIES, live identical.
+//     The slot-16 test uses the +0x22C pair, so that is the authoritative one
+//     for "is this point outside the world".
+//   * world_tree_root / world_tree_node_count: an earlier pass found the world
+//     tree only by climbing parent_offset from a linked object, and counted its
+//     nodes by walking. Both are fields here, and both agree exactly -- 649
+//     nodes walked == the stored count, and the stored root IS the address that
+//     climbing from objects reaches. Two independent routes, same answer.
+//   * vis_tree is EMBEDDED at +0x24, which is what IWorldClientBSP's vtable
+//     slot 14 returns (`return this + 36`).
+//
+// world_path is the loaded world file: live
+// "worlds\sp\m05_outershell\m05_outershell.wld". Worth knowing for what the
+// "main menu" actually is -- a real level is loaded, which is why 3583 objects
+// and 263 vis sectors exist there at all.
+//
+// Size is the MAPPED EXTENT and the true class is certainly larger; the
+// world_path array length is the observed string plus its terminator, NOT a
+// proven buffer capacity.
+class LTWorldClientBSP 0x244 {
+    void* vftable              @0x00 [[code]]   // CONFIRMED: live 0x6775F0, and slots 7/13/14/16 are mapped
+    LTVector bounds_min        @0x04   // CONFIRMED: equals the +0x22C copy live
+    LTVector bounds_max        @0x10   // CONFIRMED
+    uint32_t world_tree_node_count @0x1C   // CONFIRMED == 649 live, exactly the nodes reached by walking world_tree_root
+    LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED: the same root that climbing LTObject.world_tree_link's parent chain reaches
+    LTVisTree vis_tree         @0x24   // CONFIRMED embedded sub-object: IWorldClientBSP vtable slot 14 is `return this + 36`
+    uint8_t unk_48             @0x48   // vtable slot 7 returns this byte (IWorldClientBSP_GetFlag48); live 1
+    uint8_t unk_49             @0x49   // live 1
+    char world_path[44]        @0x4A   // CONFIRMED: the loaded .wld path. Length is the observed string + NUL; the real buffer is probably larger and its capacity is unverified.
+    LTVector bounds_min_2      @0x22C  // CONFIRMED: the pair IWorldClientBSP_IsPointOutsideWorld actually reads
+    LTVector bounds_max_2      @0x238  // CONFIRMED
+}
+
+// NOT an invariant: object positions lying inside the world bounds. Live it is
+// 3579 of 3583, and all 263 vis-sector AABBs fit, but four objects sit outside.
+// That is consistent with the engine's own behaviour -- the outside-world test
+// exists precisely because objects can leave, and LTObjectOwner_OnObjectChanged
+// has a "pin objects that have gone outside the world" path -- so the rate is
+// recorded rather than asserted.
+
 // ---- The base virtual interface (from the six object vtables) --------------
 //
 // Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's

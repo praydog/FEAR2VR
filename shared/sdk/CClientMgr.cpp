@@ -20,6 +20,7 @@
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
+#include "VisTree.hpp"
 #include "Log.hpp"
 #include "Modules.hpp"
 
@@ -751,6 +752,18 @@ std::optional<CClientMgr::WorldTreeCheck> CClientMgr::check_world_tree(size_t ma
         }
         out.objects_seen += static_cast<size_t>(n);
     }
+    // Compare the root we climbed to against the one the engine stores. Two
+    // independent routes to the same address; neither side is a baseline of
+    // ours, so this stays valid in any level.
+    if (const auto* bsp = WorldBSP::get()) {
+        KANANLIB_SEH_TRY {
+            out.bsp_root = reinterpret_cast<uintptr_t>(bsp->world_tree_root);
+        }
+        KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+            out.bsp_root = 0;
+        }
+    }
+    out.root_matches_bsp = out.bsp_root != 0 && out.bsp_root == out.root;
     return out;
 }
 

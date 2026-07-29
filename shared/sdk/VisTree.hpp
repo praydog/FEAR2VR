@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "regenny/regenny/LTVisTree.hpp"
+#include "regenny/regenny/LTWorldClientBSP.hpp"
 
 namespace sdk {
 
@@ -56,6 +57,45 @@ public:
     // nullopt when the interface is unresolved, the tree is empty, or the walk
     // faulted / failed to terminate.
     static std::optional<TreeCheck> check(size_t max_nodes = 8192);
+};
+
+
+// The client world container behind IWorldClientBSP: world bounds, the world
+// tree (the X/Z quadtree objects are bucketed into), the embedded vis tree, and
+// the loaded .wld path.
+//
+// Same reachability story as VisTree: the interface is resolved by engine-side
+// NAME, and this only adds schema-confirmed offsets.
+class WorldBSP {
+public:
+    // nullptr when IWorldClientBSP is unresolved. Never cache across a frame.
+    static const regenny::LTWorldClientBSP* get();
+
+    // Structural self-check of the WORLD tree (distinct from VisTree::check,
+    // which checks the vis KD-tree).
+    //
+    // The valuable part is `root_matches_objects`: the world-tree root is
+    // reachable two completely independent ways -- read from this header, or
+    // found by climbing LTObject.world_tree_link's parent chain from any linked
+    // object. An earlier pass only had the second route. Agreement between them
+    // is strong evidence for parent_offset, world_tree_link AND this field at
+    // once; disagreement means one of the three moved.
+    struct WorldTreeCheck {
+        size_t stored_node_count; // the engine's own count
+        size_t nodes_walked;      // nodes reached from the stored root
+        size_t occupied;          // nodes holding at least one object
+        size_t max_depth;
+        // root_matches_objects lives in CClientMgr::check_world_tree, which
+        // already climbs parent_offset from a linked object; see the note there.
+        bool bounds_ordered;       // bounds_min <= bounds_max componentwise
+        bool bounds_copies_agree;  // the +0x04 and +0x22C pairs are identical
+        size_t sectors_in_bounds;  // vis sectors whose AABB fits inside the bounds
+        size_t sector_count;
+    };
+
+    // nullopt when the interface is unresolved, no world is loaded, or a walk
+    // faulted / failed to terminate.
+    static std::optional<WorldTreeCheck> check(size_t max_nodes = 8192);
 };
 
 } // namespace sdk

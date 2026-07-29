@@ -399,15 +399,37 @@ std::string build_objects_json() {
     // the parent chain -- so one report exercises world_tree_link,
     // parent_offset and occupied_count together.
     out += ",\"world_tree\":";
-    if (const auto wt = mgr->check_world_tree(512); wt.has_value()) {
-        char wb[320];
+    if (const auto wt = mgr->check_world_tree(8192); wt.has_value()) {
+        char wb[448];
         snprintf(wb, sizeof(wb),
                  "{\"objects_seen\":%zu,\"linked\":%zu,\"unlinked\":%zu,\"node_found\":%zu,"
                  "\"root_reached\":%zu,\"counts_monotonic\":%zu,\"root_mismatches\":%zu,"
-                 "\"root\":\"0x%08" PRIXPTR "\",\"max_depth\":%zu}",
+                 "\"root\":\"0x%08" PRIXPTR "\",\"max_depth\":%zu,"
+                 "\"bsp_root\":\"0x%08" PRIXPTR "\",\"root_matches_bsp\":%s}",
                  wt->objects_seen, wt->linked, wt->unlinked, wt->node_found, wt->root_reached,
-                 wt->counts_monotonic, wt->root_mismatches, wt->root, wt->max_depth);
+                 wt->counts_monotonic, wt->root_mismatches, wt->root, wt->max_depth,
+                 wt->bsp_root, wt->root_matches_bsp ? "true" : "false");
         out += wb;
+    } else {
+        out += "null";
+    }
+
+    // The world container itself, reached from IWorldClientBSP by name. Holds
+    // the world bounds (two copies), the world-tree root and node count, and the
+    // embedded vis tree -- so this walk validates the world tree from the HEADER
+    // side, independently of the object-side walk above.
+    out += ",\"world_bsp\":";
+    if (const auto wbsp = sdk::WorldBSP::check(); wbsp.has_value()) {
+        char bb[352];
+        snprintf(bb, sizeof(bb),
+                 "{\"stored_node_count\":%zu,\"nodes_walked\":%zu,\"occupied\":%zu,"
+                 "\"max_depth\":%zu,\"bounds_ordered\":%s,\"bounds_copies_agree\":%s,"
+                 "\"sectors_in_bounds\":%zu,\"sector_count\":%zu}",
+                 wbsp->stored_node_count, wbsp->nodes_walked, wbsp->occupied, wbsp->max_depth,
+                 wbsp->bounds_ordered ? "true" : "false",
+                 wbsp->bounds_copies_agree ? "true" : "false", wbsp->sectors_in_bounds,
+                 wbsp->sector_count);
+        out += bb;
     } else {
         out += "null";
     }

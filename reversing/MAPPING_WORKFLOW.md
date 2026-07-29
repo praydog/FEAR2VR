@@ -144,6 +144,25 @@ for the full evidence trail this recipe produced).
   camera has flags bit 0. Had the gate been checked first and matched, the
   geometric contribution would still have been unmeasured and the note would have
   read "probably the gate" instead of a number.
+- **When you finally find a manager/container object, re-read its header against
+  everything you already derived the hard way.** Inferences you paid for with
+  scanning and climbing are very often plain fields in there, and finding them
+  both confirms the inference and replaces it with a cheap, stable route.
+  `LTWorldClientBSP` did this twice in one sitting:
+  * `vis_tree.sectors` / `sector_count` are the sector array base and length that
+    an earlier pass had found only by scanning outwards from one known sector
+    until the AABBs stopped looking valid.
+  * `world_tree_root` / `world_tree_node_count` are the quadtree root and size
+    that another pass had found only by climbing `parent_offset` from a linked
+    object and counting nodes during the walk.
+  Both agreed exactly — same address, same counts — which is far better than
+  either result alone: two independent derivations of the same value are evidence
+  that neither route is misreading, and it turns a "found by scanning" note into
+  a field with a name.
+  So the habit is: after mapping a container, list the things you currently reach
+  by search or traversal and go looking for each of them in its header. Anything
+  you find there should become the primary route, with the derivation kept in the
+  comment as corroboration rather than as the mechanism.
 - Two functions at *different vtable slots* sharing the *identical* body
   address is real (ICF/linker folding when two methods compile identically —
   e.g. `GetNumRecords`/some other `GetNumX` both reducing to `return *(a1+8)`).

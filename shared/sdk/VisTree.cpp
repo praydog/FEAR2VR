@@ -6,6 +6,8 @@
 
 #include "regenny/regenny/LTVisSector.hpp"
 #include "regenny/regenny/LTVisTreeNode.hpp"
+#include "regenny/regenny/LTWorldTreeLink.hpp"
+#include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "interfaces/IWorldClientBSP.hpp"
 
@@ -152,6 +154,166 @@ std::optional<VisTree::TreeCheck> VisTree::check(size_t max_nodes) {
         return std::nullopt;
     }
     out.nodes_walked = static_cast<size_t>(walked);
+    return out;
+}
+
+
+namespace {
+
+// Walks the world tree (the X/Z quadtree) from a node. 24-byte nodes; the four
+// children live at node + sizeof*(child_offset + k), and child_offset 0 marks a
+// leaf. POD-only for the guard.
+//
+// Returns nodes walked, or -1 on fault / non-termination.
+int64_t seh_walk_world_tree(const regenny::LTWorldTreeNode* root, size_t* occupied,
+                            size_t* max_depth, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::LTWorldTreeNode* stack[256];
+        size_t depth_of[256];
+        size_t sp = 0;
+        stack[sp] = root;
+        depth_of[sp] = 0;
+        ++sp;
+
+        size_t walked = 0;
+        bool overflow = false;
+        while (sp != 0 && walked < cap) {
+            --sp;
+            const auto* n = stack[sp];
+            const size_t d = depth_of[sp];
+            if (n == nullptr) {
+                continue;
+            }
+            ++walked;
+            if (d > *max_depth) {
+                *max_depth = d;
+            }
+            // A node is "occupied" when its own object list is non-empty. The
+            // list head is the node's first field and self-points when empty.
+            if (n->objects.next != reinterpret_cast<const regenny::LTWorldTreeLink*>(&n->objects)) {
+                ++*occupied;
+            }
+            const uint16_t co = n->child_offset;
+            if (co == 0) {
+                continue; // leaf
+            }
+            if (sp + 4 > 256) {
+                overflow = true;
+                break;
+            }
+            for (uint16_t k = 0; k < 4; ++k) {
+                stack[sp] = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                    reinterpret_cast<uintptr_t>(n) +
+                    sizeof(regenny::LTWorldTreeNode) * static_cast<size_t>(co + k));
+                depth_of[sp] = d + 1;
+                ++sp;
+            }
+        }
+        result = (sp == 0 && !overflow) ? static_cast<int64_t>(walked) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+// Climbs parent_offset to the root from an arbitrary node. Returns nullptr on
+// fault or if the chain did not terminate.
+const regenny::LTWorldTreeNode* seh_climb_to_root(const regenny::LTWorldTreeNode* node) {
+    const regenny::LTWorldTreeNode* result = nullptr;
+    KANANLIB_SEH_TRY {
+        const auto* p = node;
+        size_t hops = 0;
+        while (p != nullptr && p->parent_offset != 0 && hops < 64) {
+            p = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                reinterpret_cast<uintptr_t>(p) -
+                sizeof(regenny::LTWorldTreeNode) * p->parent_offset);
+            ++hops;
+        }
+        result = (p != nullptr && p->parent_offset == 0) ? p : nullptr;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = nullptr;
+    }
+    return result;
+}
+
+// Bounds + sector containment, guarded together.
+bool seh_bounds(const regenny::LTWorldClientBSP* bsp, WorldBSP::WorldTreeCheck* out) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        const auto& a = bsp->bounds_min;
+        const auto& b = bsp->bounds_max;
+        out->bounds_ordered = a.x <= b.x && a.y <= b.y && a.z <= b.z;
+        const auto& a2 = bsp->bounds_min_2;
+        const auto& b2 = bsp->bounds_max_2;
+        out->bounds_copies_agree = a.x == a2.x && a.y == a2.y && a.z == a2.z && b.x == b2.x &&
+                                   b.y == b2.y && b.z == b2.z;
+
+        const auto& tree = bsp->vis_tree;
+        out->sector_count = tree.sector_count;
+        if (tree.sectors != nullptr && tree.sector_count != 0 && tree.sector_count < 65536u) {
+            for (uint32_t i = 0; i < tree.sector_count; ++i) {
+                const auto& s = tree.sectors[i];
+                if (s.aabb_min.x >= a.x && s.aabb_min.y >= a.y && s.aabb_min.z >= a.z &&
+                    s.aabb_max.x <= b.x && s.aabb_max.y <= b.y && s.aabb_max.z <= b.z) {
+                    ++out->sectors_in_bounds;
+                }
+            }
+        }
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+} // namespace
+
+const regenny::LTWorldClientBSP* WorldBSP::get() {
+    auto* bsp = interfaces::IWorldClientBSP::get();
+    if (bsp == nullptr) {
+        return nullptr;
+    }
+    return reinterpret_cast<const regenny::LTWorldClientBSP*>(bsp);
+}
+
+std::optional<WorldBSP::WorldTreeCheck> WorldBSP::check(size_t max_nodes) {
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    WorldTreeCheck out{};
+    const regenny::LTWorldTreeNode* root = nullptr;
+    KANANLIB_SEH_TRY {
+        out.stored_node_count = bsp->world_tree_node_count;
+        root = bsp->world_tree_root;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    if (root == nullptr || out.stored_node_count == 0) {
+        return std::nullopt; // no world loaded
+    }
+
+    const int64_t walked =
+        seh_walk_world_tree(root, &out.occupied, &out.max_depth, max_nodes);
+    if (walked < 0) {
+        return std::nullopt;
+    }
+    out.nodes_walked = static_cast<size_t>(walked);
+
+    if (!seh_bounds(bsp, &out)) {
+        return std::nullopt;
+    }
+
+    // NOTE: the "does the stored root match the one reachable from objects?"
+    // cross-check deliberately lives in CClientMgr::check_world_tree instead of
+    // here -- that walk already climbs parent_offset from a linked object, so
+    // duplicating the object-side traversal in this file would mean two copies
+    // of the same fragile logic. It compares against WorldBSP::get()'s field.
     return out;
 }
 

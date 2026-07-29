@@ -726,6 +726,52 @@ int main(int argc, char** argv) {
                     // depth 0 the monotonic and root checks would be trivially
                     // true without ever dereferencing parent_offset.
                     check(depth > 0, "parent chain was actually climbed (max_depth > 0)");
+
+                    // CROSS-ROUTE. The root we climbed to from an object must be
+                    // the one LTWorldClientBSP stores. Two independent routes,
+                    // both supplied by the engine -- no baseline of ours -- so
+                    // this is valid in any level and fails if parent_offset,
+                    // world_tree_link or that header field moved.
+                    check(json_has(body, "\"root_matches_bsp\":true"),
+                          "the climbed world-tree root equals LTWorldClientBSP.world_tree_root");
+                }
+            }
+        }
+
+        // The world container. This validates the world tree from the HEADER
+        // side: the engine stores its own node count, so the walk is checked
+        // against the engine's number rather than anything recorded host-side.
+        {
+            const size_t bp = body.find("\"world_bsp\":");
+            check(bp != std::string::npos, "objects report includes the world-BSP check");
+            if (bp != std::string::npos) {
+                if (json_has(body, "\"world_bsp\":null")) {
+                    check(false, "world BSP resolved (null == unresolved interface or no world)");
+                } else {
+                    const size_t end = body.find('}', bp);
+                    const std::string bb = body.substr(bp, end - bp + 1);
+                    int64_t stored = -1, walked = -1, occ = -1, depth = -1, sib = -1, sc = -1;
+                    json_int(bb, "stored_node_count", stored);
+                    json_int(bb, "nodes_walked", walked);
+                    json_int(bb, "occupied", occ);
+                    json_int(bb, "max_depth", depth);
+                    json_int(bb, "sectors_in_bounds", sib);
+                    json_int(bb, "sector_count", sc);
+
+                    check(stored > 0, "world BSP reports a world-tree node count");
+                    check(walked == stored,
+                          "walking the world tree reaches exactly world_tree_node_count nodes");
+                    check(occ > 0, "world-tree nodes hold objects");
+                    check(depth > 0, "world tree is deeper than a single node");
+                    check(json_has(bb, "\"bounds_ordered\":true"),
+                          "world bounds are ordered (min <= max)");
+                    // TWO copies of the bounds exist (+0x04 and +0x22C) and the
+                    // outside-world test reads the second. They agree live; a
+                    // divergence would mean one of the two offsets is wrong.
+                    check(json_has(bb, "\"bounds_copies_agree\":true"),
+                          "both world-bounds copies hold the same values");
+                    check(sc > 0, "world BSP reports a sector count");
+                    check(sib == sc, "every vis sector's AABB fits inside the world bounds");
                 }
             }
         }
