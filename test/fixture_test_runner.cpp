@@ -4052,6 +4052,53 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE VTABLE CATALOGUE ----------------------------------------------------------
+            //
+            // 54 engine class vtables with exact slot counts, and this is where they earn the word
+            // "exact". Each is checked in BOTH directions against live memory: one slot too long and the
+            // extra dword is the head of the class-name string rather than an in-image address; one slot
+            // too short and the trailing-string read lands on a function pointer instead of text. A
+            // single-sided check would pass either error, which is precisely how this project has
+            // published four wrong extents already.
+            double vt_total = -1.0, vt_ver = -1.0, vt_slots = -1.0, vt_names = -1.0, vt_sum = -1.0;
+            const bool vtc = json_double(body, "vtable_catalogue_total", vt_total) &&
+                             json_double(body, "vtable_catalogue_verified", vt_ver) &&
+                             json_double(body, "vtable_catalogue_slots_in_image", vt_slots) &&
+                             json_double(body, "vtable_catalogue_names_match", vt_names) &&
+                             json_double(body, "vtable_catalogue_slots_sum", vt_sum);
+            check(vtc && vt_total == 54.0, "the catalogue holds 54 verified class vtables");
+            check(vtc && vt_ver == vt_total, "every entry could be read from live memory");
+            check(vtc && vt_slots == vt_total,
+                  "every slot of every table points inside the exe image");
+            check(vtc && vt_names == vt_total,
+                  "and the string immediately after each table is its catalogued class name");
+            // 1578 slots across 54 tables. Pinned because the sum moves if ANY single extent changes,
+            // which makes it a cheap one-number tripwire over the whole catalogue.
+            check(vtc && vt_sum == 1578.0, "the catalogue accounts for 1578 vtable slots in total");
+
+            // A minority do not return their name from slot 0/1/2, so their name pairing rests on a
+            // weaker observation -- the Scaleform ActionScript identifiers among them are known false
+            // positives. Reported rather than treated as an error: the SLOT COUNT comes from the
+            // terminator, not from the name, so it holds either way.
+            double vt_conv = -1.0;
+            check(json_double(body, "vtable_catalogue_convention", vt_conv) && vt_conv > 0.0 &&
+                      vt_conv <= vt_total,
+                  "the convention-following subset is a proper subset of the catalogue");
+
+            // THE BOUNDS CHECK A CONSUMER RELIES ON, exercised at the boundary itself.
+            bool res_last = false, res_past = false, res_unknown = false, res_agree = false;
+            check(json_bool(body, "vtable_resolve_last_slot", res_last) && res_last,
+                  "the last valid slot of CLTRenderer resolves");
+            check(json_bool(body, "vtable_resolve_past_end_refused", res_past) && res_past,
+                  "and one slot past the end is refused rather than read");
+            check(json_bool(body, "vtable_unknown_name_refused", res_unknown) && res_unknown,
+                  "an unknown class name yields no address and no slot");
+            // Independent agreement: the catalogue's CLTInput vtable is the one the live object holds.
+            // NOTE the distinction this check was first written wrong on -- the interface ADDRESS is the
+            // object, the catalogue records its VTABLE.
+            check(json_bool(body, "vtable_catalogue_agrees_with_input", res_agree) && res_agree,
+                  "the catalogued CLTInput vtable is the one the live object points at");
+
             // ---- THE DEVICE VTABLES' EXTENT ----------------------------------------------------
             //
             // Eleven slots each. An earlier pass recorded TEN, stopping at a nullsub -- which is where a

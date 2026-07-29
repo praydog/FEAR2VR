@@ -28,6 +28,7 @@
 #include "sdk/Engine.hpp"
 #include "sdk/EngineVars.hpp"
 #include "sdk/Input.hpp"
+#include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
 #include "sdk/ShaderParams.hpp"
@@ -4099,6 +4100,59 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_readable", sdk::Input::main_window() != 0);
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
+
+    // ---- THE VTABLE CATALOGUE, VERIFIED AGAINST LIVE MEMORY -------------------------------------
+    //
+    // Every entry's extent is checked in BOTH directions, which is what makes this worth running rather
+    // than trusting: one slot too long and the extra dword is the first four bytes of the class-name
+    // string, not an in-image address; one slot too short and the trailing-string read lands on a
+    // function pointer instead of text. A single-sided check would pass either way.
+    size_t vt_total = 0;
+    const auto* vt_entries = sdk::Vtables::all(vt_total);
+    size_t vt_verified = 0, vt_slots_ok = 0, vt_names_ok = 0, vt_slots_sum = 0, vt_convention = 0;
+    for (size_t i = 0; i < vt_total; ++i) {
+        const auto& e = vt_entries[i];
+        if (e.follows_convention()) {
+            ++vt_convention;
+        }
+        const auto v = sdk::Vtables::verify(e);
+        if (!v.has_value()) {
+            continue;
+        }
+        ++vt_verified;
+        vt_slots_sum += v->slots_checked;
+        if (v->slots_in_image) {
+            ++vt_slots_ok;
+        }
+        if (v->name_matches) {
+            ++vt_names_ok;
+        }
+    }
+    json_append_double(out, "vtable_catalogue_total", static_cast<double>(vt_total), 0);
+    json_append_double(out, "vtable_catalogue_verified", static_cast<double>(vt_verified), 0);
+    json_append_double(out, "vtable_catalogue_slots_in_image", static_cast<double>(vt_slots_ok), 0);
+    json_append_double(out, "vtable_catalogue_names_match", static_cast<double>(vt_names_ok), 0);
+    json_append_double(out, "vtable_catalogue_slots_sum", static_cast<double>(vt_slots_sum), 0);
+    json_append_double(out, "vtable_catalogue_convention", static_cast<double>(vt_convention), 0);
+
+    // The bounds check a consumer actually relies on: the last valid slot resolves, one past it does not.
+    const auto* renderer_entry = sdk::Vtables::find("CLTRenderer");
+    json_append_bool(out, "vtable_resolve_last_slot",
+                     renderer_entry != nullptr &&
+                         sdk::Vtables::resolve("CLTRenderer",
+                                               renderer_entry->slot_count - 1).has_value());
+    json_append_bool(out, "vtable_resolve_past_end_refused",
+                     renderer_entry != nullptr &&
+                         !sdk::Vtables::resolve("CLTRenderer", renderer_entry->slot_count).has_value());
+    json_append_bool(out, "vtable_unknown_name_refused",
+                     !sdk::Vtables::resolve("NoSuchClassHere", 0).has_value() &&
+                         sdk::Vtables::address("NoSuchClassHere") == 0);
+    // The catalogue's recorded vtable must be the one the LIVE OBJECT holds. Note the distinction the
+    // first version of this check got wrong: interface_address() is the CLTInput object, while the
+    // catalogue records its VTABLE, so comparing those two could only ever disagree.
+    json_append_bool(out, "vtable_catalogue_agrees_with_input",
+                     sdk::Vtables::address("CLTInput") == sdk::Input::interface_vtable() &&
+                         sdk::Input::interface_vtable() != 0);
 
     // ---- THE DEVICE VTABLES' EXTENT -------------------------------------------------------------
     //

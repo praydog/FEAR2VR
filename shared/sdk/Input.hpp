@@ -292,7 +292,15 @@ public:
     static constexpr size_t kInterfaceSlotCount = 28;
 
     // The ILTInput object, which is the CLTInput singleton. 0 when the exe is not mapped.
+    //
+    // NOTE THIS IS THE OBJECT, NOT ITS VTABLE -- a distinction easy to lose: a first version of the
+    // suite's catalogue cross-check compared this against sdk::Vtables::address("CLTInput"), which is the
+    // vtable, and of course disagreed. Use interface_vtable() for that comparison.
     static uintptr_t interface_address();
+
+    // The vtable the live object actually holds, read through a guard. Comparing it against the
+    // catalogue's recorded address is how a consumer confirms the object is the class it expects.
+    static uintptr_t interface_vtable();
 
     // ---- DEVICE SIZES, WHICH PROVE THE LAYOUTS ------------------------------------------
     //

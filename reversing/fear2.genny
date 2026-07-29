@@ -3758,3 +3758,55 @@ class LTInputDeviceMouse 0x30 {
 // compared plus modifier-carrying equals every record walked.
 //
 // 862 checks, 0 failures.
+
+// ==================================================================================================
+// THE VTABLE CATALOGUE: 54 ENGINE CLASSES WITH EXACT SLOT COUNTS
+// ==================================================================================================
+//
+// Four times in this project a scan's stopping point has been recorded as a structure's end -- the engine
+// variable table twice (22, then 106, actually 107), ILTInput's vtable (12, actually 28), and the input
+// device vtables (10, actually 11). A slot count is that same kind of fact, so rather than keep discovering
+// it one table at a time, the terminator rule proven on CLTInput was applied to the whole image.
+//
+// THE RULE: MSVC places a class's name literal immediately after its vtable in this binary, so THE STRING
+// IS THE BOUNDARY. A sweep of .rdata for "a run of in-image function pointers followed by an
+// identifier-shaped string" finds 114 candidates.
+//
+// THE RULE IS NECESSARY BUT NOT SUFFICIENT, which is the part worth writing down. A pointer run that
+// happens to be followed by an unrelated string looks identical: StreamBuffer would have been recorded with
+// 155 slots, alongside curveTo, showMenu, getTextExtent, DDS and gfxVersion -- Scaleform ActionScript
+// identifiers and format strings. So candidates were filtered by asking whether any slot IN the table
+// references the trailing string, which is exactly what InterfaceImplementation does. 54 of 114 survive.
+//
+// AND THAT FILTER HAS ITS OWN FALSE POSITIVE, recorded rather than hidden: a GFx vtable can reach an
+// ActionScript identifier from inside one of its own methods, which is how `available`, `captureFocus` and
+// `gfxVersion` pass. All three report their name at slot 3, whereas the engine's convention returns it from
+// slot 0, 1 or 2 -- 33 of the 54 do. The SLOT COUNT is trustworthy either way, because it comes from the
+// terminator and not from the name.
+//
+// THE LARGEST TABLES, which are also the ones a mod is most likely to call into:
+//     CLTClient           147     CLTModelClient       83     CLTResourceMgr      35
+//     CLTServer           138     CLTModelServer       81     CWin32CustomRender  29
+//     CLTPhysicsSimClient  97     CSoundMgr            52     CLTInput            28
+//     CLTPhysicsSimServer  97     ILTClientContentTransfer 42 CLTGameUtil         24
+//     CLTRenderer          92                                 CD3DDrawPrim        23
+//
+// EXPOSED AS sdk::Vtables, whose resolve(name, slot) BOUNDS-CHECKS against the recorded extent -- asking
+// for slot 92 of CLTRenderer returns nothing instead of the first four bytes of the string "CLTRenderer"
+// reinterpreted as an address. The table is GENERATED from reversing/vtable_catalogue.txt, which the sweep
+// writes, because hand-transcribing 54 rows is exactly the step that would introduce an off-by-one into
+// data whose purpose is to prevent one.
+//
+// VERIFIED IN BOTH DIRECTIONS AT RUNTIME, over every entry, which is the only reason the word "exact"
+// belongs here:
+//     one slot too LONG  -> the extra dword is the head of the name string, not an in-image address
+//     one slot too SHORT -> the trailing-string read lands on a function pointer instead of text
+// A single-sided check would pass either error. 54/54 tables verify, 1578 slots in total, and that sum is
+// asserted as a one-number tripwire: it moves if any single extent changes.
+//
+// A DISTINCTION THIS EXERCISE NEARLY LOST: the first version of the cross-check compared the catalogue's
+// CLTInput entry against sdk::Input::interface_address(), and it failed -- correctly. That accessor returns
+// the CLTInput OBJECT; the catalogue records its VTABLE. sdk::Input::interface_vtable() now reads the
+// pointer the live object actually holds, and the two agree.
+//
+// 876 checks, 0 failures.

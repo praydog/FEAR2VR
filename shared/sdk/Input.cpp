@@ -396,6 +396,18 @@ uintptr_t Input::interface_address() {
     return exe_at(kCLTInput);
 }
 
+uintptr_t Input::interface_vtable() {
+    const uintptr_t obj = interface_address();
+    if (obj == 0) {
+        return 0;
+    }
+    uint32_t vt = 0;
+    if (!seh_copy(&vt, obj, sizeof(vt))) {
+        return 0;
+    }
+    return vt;
+}
+
 namespace {
 
 // Resolve an ILTInput vtable slot, guarded and bounds-checked into the exe.
