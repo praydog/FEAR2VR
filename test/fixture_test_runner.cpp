@@ -4309,6 +4309,34 @@ int main(int argc, char** argv) {
             check(dln && del_player >= 4.0 && del_player <= del_n,
                   "most delegate subjects lie inside the player object's own region");
 
+            // ---- WHO IS LISTENING, AND A WALK THAT VALIDATES ITSELF --------------------------------
+            //
+            // The camera's delegate records which list it is threaded into. Walking that list must find the
+            // camera again -- the camera names the list, the list names the camera, and neither statement is
+            // derived from the other.
+            //
+            // All 329 delegate vtables share one detach method in slot 2, so every node a walk produces can be
+            // CHECKED rather than assumed. That is asserted positively AND with a negative control: the
+            // camera's own primary vtable is a genuine vtable that is not a delegate's, so a validator that
+            // accepted everything would fail there.
+            bool dlg_res = false, dlg_in = false, dlg_listening = false, dlg_rej = false, dlg_null = false;
+            check(json_bool(body, "dlg_detach_resolved", dlg_res) && dlg_res,
+                  "the shared delegate detach method resolves");
+            double dlg_n = -1.0, dlg_v = -1.0;
+            const bool dgn = json_double(body, "dlg_listeners", dlg_n) &&
+                             json_double(body, "dlg_listeners_valid", dlg_v);
+            check(dgn && dlg_n >= 2.0, "the player's delegate list holds several listeners");
+            check(dgn && dlg_v == dlg_n,
+                  "every listener found is a real delegate by its own vtable's detach slot");
+            check(json_bool(body, "dlg_camera_in_list", dlg_in) && dlg_in,
+                  "and the camera is among them -- the list confirms what the camera's node claimed");
+            check(json_bool(body, "dlg_is_listening", dlg_listening) && dlg_listening,
+                  "the is_listening accessor agrees");
+            check(json_bool(body, "dlg_validator_rejects", dlg_rej) && dlg_rej,
+                  "the validator REJECTS a real vtable that is not a delegate's");
+            check(json_bool(body, "dlg_null_refused", dlg_null) && dlg_null,
+                  "null subjects, nodes and vtables are all refused");
+
             // TWO POSE GENERATIONS, and which one the engine carries matters to anyone reading the view.
             //
             // The +232 pair is bit-equal to the camera object's own LTObject transform; the +300 pair's

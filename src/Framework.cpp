@@ -22,6 +22,7 @@
 #include "sdk/CClientMgr.hpp"
 #include "sdk/CClientShell.hpp"
 #include "sdk/DatabaseMgr.hpp"
+#include "sdk/Delegates.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
@@ -4343,6 +4344,41 @@ std::string build_shader_params_json() {
         }
         json_append_double(out, "cam_delegates_on_player",
                            static_cast<double>(del_subject_in_player), 0);
+
+        // WHO IS LISTENING TO THE PLAYER. Take the subject one of the camera's own delegates records, treat
+        // it as a list head, and walk it: the camera must be among the listeners it finds. That closes the
+        // loop -- the camera says which list it is in, and the list says the camera is in it.
+        size_t lst_total = 0, lst_valid = 0;
+        bool lst_camera_found = false;
+        if (!cam_dels.empty()) {
+            const auto subject = cam_dels.front().subject;
+            const auto found = sdk::Delegates::listeners(subject);
+            lst_total = found.size();
+            for (const auto& l : found) {
+                if (l.vtable_valid) {
+                    ++lst_valid;
+                }
+                if (l.owner == pm_player->holder) {
+                    lst_camera_found = true;
+                }
+            }
+            json_append_bool(out, "dlg_is_listening",
+                             sdk::Delegates::is_listening(subject, pm_player->holder));
+        }
+        json_append_double(out, "dlg_listeners", static_cast<double>(lst_total), 0);
+        json_append_double(out, "dlg_listeners_valid", static_cast<double>(lst_valid), 0);
+        json_append_bool(out, "dlg_camera_in_list", lst_camera_found);
+        json_append_bool(out, "dlg_detach_resolved", sdk::Delegates::detach_fn() != 0);
+        // The validator must REJECT something that is not a delegate vtable -- the camera's own primary
+        // vtable is a real vtable and is not one of the 329, so it is the honest negative control.
+        const auto cam_primary = sdk::mem::read_u32(pm_player->holder).value_or(0);
+        json_append_bool(out, "dlg_validator_rejects",
+                         cam_primary != 0 && !sdk::Delegates::is_delegate_vtable(cam_primary));
+        json_append_bool(out, "dlg_null_refused",
+                         sdk::Delegates::listeners(0).empty() &&
+                             !sdk::Delegates::read_node(0).has_value() &&
+                             !sdk::Delegates::is_delegate_vtable(0) &&
+                             !sdk::Delegates::is_listening(0, pm_player->holder));
 
         // A null link is refused rather than reported as an empty list.
         json_append_bool(out, "cam_link_null_refused",

@@ -4824,3 +4824,40 @@ class LTInputDeviceMouse 0x30 {
 // been torn down and its cached pose must not be trusted.
 //
 // 1004 checks, 0 failures.
+
+// ---- THE OBSERVER PATTERN IS THE GAME'S SKELETON: 329 DELEGATES --------------------------------------
+//
+// Delegate_Detach was named last pass as "shared by all eight of the camera's sinks and by other classes using
+// the same pattern". That last clause was an assumption; it is now a measurement, and the number is larger than
+// the phrase suggested.
+//
+// 329 VTABLE SLOTS IN gameclient HOLD THIS ONE FUNCTION, at slots 2, 5, 8, 11, 14 ... -- every THIRD. So a
+// delegate vtable is exactly three slots, {handler, handler, Detach}, and the module contains 329 delegate
+// implementations. It also explains an artefact from last pass: the camera's sink vtables looked like six slots
+// when dumped because consecutive 3-slot tables are contiguous, and a 6-slot dump reads into the next one.
+//
+// WALKING FROM A SUBJECT: the subject is a {prev, next} pair whose `next` holds the first node's LINK address,
+// and a node's base is link - 4. Live, the list at player+0x70 holds four listeners with four DISTINCT vtables,
+// one of them the player camera.
+//
+// THAT CLOSES A LOOP WORTH HAVING. The camera's own node records player+0x70 as its subject, and walking
+// player+0x70 finds the camera. Neither statement is derived from the other: one is a field in the camera, the
+// other is a traversal of someone else's list.
+//
+// AND THE WALK VALIDATES ITSELF, which is rare in this project. Because all 329 delegate vtables carry the same
+// function in slot 2, a node reached by pointer-chasing can be CHECKED to be a delegate rather than assumed. A
+// walk that strays produces nodes failing that test instead of plausible-looking owners -- which is precisely
+// the failure mode that has cost this project the most: a wrong address landing on mapped memory that reads
+// back as sensible data.
+//
+// The suite checks the validator BOTH WAYS: it accepts all four listeners on the player's list, and REJECTS the
+// player camera's own primary vtable -- a genuine vtable that is not a delegate's. A validator that accepted
+// everything would pass the first check and fail the second.
+//
+// EXPOSED AS sdk::Delegates: detach_fn, is_delegate_vtable, read_node, read_node_from_link (named separately
+// because the link-minus-four adjustment is the easy mistake), listeners and is_listening.
+//
+// > "Who is listening to this object" is now a question a consumer can ask of ANY object in the game, not just
+// > the player. That is worth more than the camera work that led to it.
+//
+// 1011 checks, 0 failures.
