@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **"NO SIGNAL DETECTED" IS NOT "NO SIGNAL PRESENT", INCLUDING FROM MY OWN TOOL.** The boundary analyzer
+  reported CLTModelClient_vftable as 83 entries with the strongest evidence class, and I wrote "extent
+  proven". But its interior-boundary check matches ONE instruction shape (`mov [reg], offset X`), so a table
+  installed differently, or one whose destructor does not reset a vptr, would sit inside the run unseen.
+  What the tool actually establishes is that the RUN ends at 83.
+  
+  The fix was to try the corroborations and record that they do not apply, rather than let their absence read
+  as agreement:
+  * RTTI is present in the image (206 ".?AV" descriptors) but NOT for these classes -- [vt-4] is string
+    bytes, not a Complete Object Locator. Worth knowing generally: RTTI existing somewhere in a binary says
+    nothing about the class you are looking at.
+  * There is no constructor to corroborate from. The table has exactly one reference image-wide -- the
+    instance's own vptr field -- because the singleton is statically initialised, its vptr baked into .data
+    at link time.
+  * The reference header declares ~59 virtuals across ILTModel and ILTModelClient. Different engine version,
+    so context only, and this project has already been burned assuming the reference's layout transfers.
+  
+  Recorded as an 83-entry RUN with the slot indices as build observations. The mapping is just as useful --
+  60 of 83 implementations were already named, so the indices attached for free, which is the whole reason
+  the table was worth walking.
+
 - **THE BOUNDARY LESSON IS NOW TOOLING: reversing/ida_vtable_boundary.py.** Five repetitions of one error
   earned a script rather than another paragraph. `report(vt)` prints boundary CANDIDATES with evidence --
   never a proven extent -- from three signals: the dword stops being a function (a string here is the

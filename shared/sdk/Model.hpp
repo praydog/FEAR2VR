@@ -213,6 +213,10 @@ public:
     // was tested and refuted. Each half of each pair carries its own evidence, so they are treated
     // separately rather than as two poses:
     //
+    //   ILTModel_GetBindPoseNodeTransform is ILTModelClient vtable SLOT 22 in this build
+    //   (CLTModelClient_vftable 0x66E7E8; the reference declares it on the BASE ILTModel, which fits an
+    //   early slot). It has no callers inside FEAR2.exe, so anything composing its output lives in
+    //   gameclient.dll and reaches it as vt[22].
     //   +0x08  THE BIND POSE. ILTModel_GetBindPoseNodeTransform computes
     //          `(node << 6) + asset->node_records + 8` and copies from there. Its COORDINATE SPACE is
     //          unresolved -- see below.

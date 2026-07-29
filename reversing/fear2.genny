@@ -1178,6 +1178,64 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- ILTModelClient's VTABLE: 83 SLOTS, EXTENT PROVEN ----
+//
+// Instance g_CLTModelClient_instance (FEAR2.exe 0x6E30EC), vtable CLTModelClient_vftable (0x66E7E8);
+// gameclient.dll's g_pILTModelClient holds the instance. Slot 1 returns "CLTModelClient".
+//
+// EXTENT: an 83-ENTRY RUN, which is the strongest signal available here but short of proof. What holds is
+// that the executable-pointer run ENDS at 83 -- the string "CLTModelClient" is the next defined item -- and
+// that no interior vptr store was DETECTED. The second half is weaker than it sounds: the detector matches
+// `mov [reg], offset X`, so an adjacent table installed by some other instruction form, or one whose
+// destructor is not vptr-resetting, could sit inside this run unseen.
+//
+// Three corroborations were tried and none applies, so they are recorded rather than left implied:
+//   * RTTI: no. The image DOES carry RTTI (206 ".?AV" type descriptors, all std:: as far as sampled), but
+//     [vt-4] for this table is string bytes, not a Complete Object Locator -- these interface classes were
+//     built without it.
+//   * A constructor installing the vptr: none exists. The table has exactly ONE reference in the whole
+//     image, the instance's own vptr field at 0x6E30EC, i.e. the singleton is statically initialised and
+//     there is no ctor to read.
+//   * The reference SDK's count: iltmodel.h declares ~59 virtuals across ILTModel and ILTModelClient
+//     together. That is CONTEXT, not agreement -- it is a different engine version, and this project has
+//     already been burned assuming the reference's layout transfers.
+// So treat 83 and every slot index below as BUILD OBSERVATIONS from this executable.
+//
+// 60 of the 83 implementations were already named by earlier passes, so mapping the table attached the slot
+// indices for free. THIS IS WHY THE TABLE WAS WORTH MAPPING -- it connects this project's existing skeleton
+// work to the engine's own entry points:
+//
+//    0  abstract_base_dtor (shared with CLTClient_vftable slot 0)   1  _InterfaceImplementation
+//    2  GetSocket                     3  GetSocketTransform
+//    7  GetPieceName                  8/9  Get/SetPieceHideStatus
+//   10/11 Get/SetLODDistanceBias      12  GetNode        13  GetNodeName
+//   18  GetNumChildren                19  GetChild       20  GetParent      21  GetNumNodes
+//   22  GetBindPoseNodeTransform  <-- the bind pose getter this project already reversed. The reference
+//                                     declares it on ILTModel, the BASE, which fits its early slot
+//   28  UpdateMainTracker             29  GetNumAnimations
+//   30  GetAnimInterpolationTime      33  GetAnimKeyFrames
+//   34  GetAnimNodeTransform      <-- the +0x24 animation-fallback reader
+//   36  GetPlaybackState              37  AddTracker     38  RemoveTracker
+//   41/42/43 GetAnimIndex/GetAnimName/GetCurAnim         44  SetCurAnim
+//   45  GetIsInterpolating            46  ResetAnim      47/48 Get/SetLooping
+//   49/50 Get/SetPlaying              52/53 Get/SetCurAnimTime   55/56 Set/GetAnimRate
+//   57  GetNumWeightSets              60  SetWeightSet
+//   61..64 physics weight sets and GetPhysicsVisNode
+//   65  DirtyAllNodeTransforms        66  DirtyNodeTransform     67  UpdateModelAttachments
+//   68  GetModelFilename              69  GetMaterialFilename    70  SetMaterialFilename
+//   71  GetMovementEncodingTransform  72  ResetMovementEncodingTransform
+//   73  SetMovementEncodingTracker    74  DisableMovementEncoding
+//   75  IsAnimDataLoaded              78  UpdatePhysicsOnlyOnDeath
+//   79/80 Add/RemoveCharacterProxyToWorld                 81/82 Get/SetMaterial
+//
+// SLOTS 22 AND 34 ARE THE PAIR THIS PROJECT ALREADY ARGUED ABOUT. The earlier pass established, from the
+// code, that slot 22 reads node_records + (index << 6) + 8 -- the +0x08 pose -- while slot 34's evaluator
+// path takes only the POSITION from +0x24 and its rotation from an animation buffer. Neither reading changes
+// here; what is new is that both are reachable as vt[22] and vt[34], which is how a gameclient.dll caller
+// gets at them, and slot 22 was the function noted then as having no in-exe callers.
+//
+// The remaining 23 slots are unnamed.
+
 // ---- ILTClient's VTABLE: 147 SLOTS, EXTENT PROVEN ----
 //
 // Instance g_CLTClient_instance (FEAR2.exe 0x6E3138), vtable CLTClient_vftable (0x66F258). This is the
