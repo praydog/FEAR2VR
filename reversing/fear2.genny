@@ -4648,3 +4648,50 @@ class LTInputDeviceMouse 0x30 {
 // produce a comfortable result, only to be the knob that controls the named behaviour.
 //
 // 987 checks, 0 failures.
+
+// ---- CPlayerCamera'S FIELDS, AND THE POSE THIS SDK WAS READING WAS THE WRONG ONE -------------------
+//
+// The class is identified; this maps its instance. Method: scan the live object for 4-float groups of unit
+// length and 3-float groups near the player's world position, then discriminate the candidates by comparing
+// them against the camera object's own LTObject fields.
+//
+//     +188  LTObject*   the CAMERA OBJECT (the reference's m_hCamera)
+//     +232  LTVector    position   \  the APPLIED pose -- BIT-EQUAL to the camera object's
+//     +244  LTRotation  rotation   /  LTObject.position/.rotation on every sample
+//     +272  LTRotation  identity
+//     +300  LTVector    position   \  a SECOND generation: position consistently a few thousandths
+//     +324  LTRotation  rotation   /  from the applied one (2183.0332 against 2183.0381)
+//     +312  LTVector    zero on this build -- plausibly an offset, unproven
+//     +340  LTRotation  the same rotation again
+//     +356  +372        identity
+//     +540  LTVector    position, equal to +300's
+//     +552  identity    +568  the same rotation again
+//     +600  LTObject*   the CLIENT-ONLY player model
+//     +660  identity
+//
+// A SCANNING TRAP WORTH RECORDING: the first sweep reported 21 unit quaternions, because a quaternion's four
+// floats read at +4, +8 and +12 offsets still sum to 1 -- the same values, shifted. Collapsing runs cut it to
+// nine, and only three of those are non-identity. Any "find me all the vectors" sweep on a float-dense struct
+// produces this, and the count is the tell: 21 candidates in 700 bytes is too many to be real.
+//
+// ONLY POSITION IS DOUBLE-BUFFERED. The rotation reads identical at +244, +324, +340 and +568, and all four
+// equal the camera object's, which is why an earlier pass could report "the rotation is bit-identical, the
+// position lags" without noticing there were two position fields rather than one lagging field.
+//
+// > sdk::PlayerMgr shipped +300 as "the camera's pose" for two passes. It is not the pose the engine carries.
+// > The engine's copy comes from +232, and the difference is small enough -- thousandths of a unit -- that
+// > nothing but a bit comparison against the engine object would have separated them.
+//
+// Both are now exposed: applied_pose (+232/+244, matching the engine) and pose (+300/+324), with
+// applied_pose_matches_camera_object as the staleness check. The suite asserts BOTH that the applied pair
+// matches bit-for-bit AND that the other pair's position does not -- either alone would pass on a bug (reading
+// one pair twice, or reading two unrelated fields).
+//
+// The reference declares m_vPos and m_vActivePos on this class, consistent with two generations, but which
+// member is which is NOT pinned. The SDK names them by what was measured, not by the reference's ordering.
+//
+// NO TUNABLE IS CACHED AS A MEMBER: no float in the instance equals FovY (65), CameraClipDist (30),
+// PitchClamp (2), YawClamp (6) or ChaseCamDistBack (180). The class reads its VarTracks on demand, so a
+// consumer changing the FOV changes the console variable and there is no struct field to patch instead.
+//
+// 990 checks, 0 failures.

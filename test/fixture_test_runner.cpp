@@ -4261,6 +4261,20 @@ int main(int argc, char** argv) {
             check(json_bool(body, "pmgr_camera_rot_matches", pm_ar) && pm_ar,
                   "the camera object's rotation is bit-identical to the camera pose");
 
+            // TWO POSE GENERATIONS, and which one the engine carries matters to anyone reading the view.
+            //
+            // The +232 pair is bit-equal to the camera object's own LTObject transform; the +300 pair's
+            // POSITION is consistently a few thousandths away. Both facts are asserted, because "they match"
+            // alone would also hold if this SDK were reading one pair twice, and "they differ" alone would
+            // hold if it were reading two unrelated fields.
+            bool pm_applied = false, pm_gens = false, pm_arot = false;
+            check(json_bool(body, "pmgr_applied_matches_object", pm_applied) && pm_applied,
+                  "the applied pose is bit-identical to the camera object's own transform");
+            check(json_bool(body, "pmgr_pose_generations_differ", pm_gens) && pm_gens,
+                  "and the camera's other position generation is NOT the same value");
+            check(json_bool(body, "pmgr_applied_rot_unit", pm_arot) && pm_arot,
+                  "the applied pose carries a unit quaternion too");
+
             // The eye offset a VR mod needs, and its shape is the check: the anchor sits ABOVE the model by
             // most of the offset's length, which is what an eye height looks like and what a mis-offset
             // field would not produce.

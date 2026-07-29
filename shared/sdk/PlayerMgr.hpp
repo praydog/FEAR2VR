@@ -14,7 +14,9 @@
 // +300 and +324, and that holder is also what owns the two engine objects that matter:
 //
 //     holder +188  ->  the CAMERA OBJECT (engine LTObject, OT_NORMAL) -- see below
-//     holder +300      position        LTVector
+//     holder +232      position        LTVector      <- the APPLIED pose; see below
+//     holder +244      rotation        LTRotation
+//     holder +300      position        LTVector      <- a DIFFERENT generation
 //     holder +324      rotation        LTRotation, unit quaternion
 //     holder +600  ->  the PLAYER MODEL (engine LTObject, OT_MODEL)
 //
@@ -79,9 +81,27 @@ public:
     static constexpr uintptr_t kSlotsBegin = 80;
     static constexpr uintptr_t kSlotsEnd = 96;  // begin + 4 pointers
 
+    //
+    // THERE ARE TWO POSITION GENERATIONS, and only one of them is what the engine carries.
+    //
+    // Measured over repeated samples: the position at +232 is BIT-EQUAL to the camera object's own
+    // LTObject.position, every time. The one at +300 is consistently a few thousandths away (2183.0381 vs
+    // 2183.0332 on the sample this was established from) and equals a third copy at +540. The rotation is the
+    // same value in both places, so only position is double-buffered.
+    //
+    // So +232 is the pose that has been APPLIED to the engine object, and +300 is the camera's other
+    // generation -- logical, pre-offset, or one frame behind; which of those is not established. A consumer
+    // that wants the pose the engine is actually using wants applied_pose.
+    //
+    // The reference declares both m_vPos and m_vActivePos on this class, which is consistent with two
+    // generations existing, but WHICH member is which is NOT pinned here -- the names below describe what was
+    // measured (one matches the engine object, one does not) rather than asserting the reference's mapping.
+    //
     // Player-object and holder layout.
     static constexpr uintptr_t kHolder = 252;
     static constexpr uintptr_t kCameraObject = 188;
+    static constexpr uintptr_t kAppliedPosition = 232;
+    static constexpr uintptr_t kAppliedRotation = 244;
     static constexpr uintptr_t kPosition = 300;
     static constexpr uintptr_t kRotation = 324;
     static constexpr uintptr_t kModelObject = 600;
@@ -99,7 +119,13 @@ public:
     struct Player {
         uintptr_t object{};       // the game-side player object -- the slot's contents
         uintptr_t holder{};       // object + 252
-        Pose pose{};              // the game's pose, from the holder
+        // The camera's other generation, from +300. Kept because it is what two earlier passes recorded, and
+        // because the pair being different is itself the finding.
+        Pose pose{};
+
+        // THE POSE THE ENGINE CARRIES, from +232 -- bit-equal to the camera object's LTObject fields. This is
+        // the one to read when the question is "where is the view".
+        Pose applied_pose{};
         uintptr_t camera_object{};  // the camera's engine LTObject, transform-only; 0 when absent
 
         // The CLIENT-ONLY player model -- not the object CClientShell::local_player returns. See the note
@@ -141,8 +167,16 @@ public:
     // HELPERS, exposed because a consumer needs the same questions answered that this class needed.
     //
 
-    // Read a pose out of a holder address the caller already has. Validated as above.
-    static std::optional<Pose> read_pose(uintptr_t holder);
+    // Read a pose out of a holder address the caller already has. Validated as above. `applied` selects the
+    // +232/+244 pair rather than +300/+324.
+    static std::optional<Pose> read_pose(uintptr_t holder, bool applied = false);
+
+    // Does the applied pose match the camera object's own transform, field for field? Compared as BITS: the
+    // point is whether they are the same stored value, and an epsilon would hide a recomputed one.
+    //
+    // Live this is true for both position and rotation. A consumer can use it as a staleness check on a
+    // camera pose it cached, or as a guard before trusting either source after a level transition.
+    static std::optional<bool> applied_pose_matches_camera_object(unsigned index);
 
     // Is this quaternion unit-length? The free function behind Pose::rotation_is_unit, for a caller holding
     // four floats from somewhere else.

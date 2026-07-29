@@ -108,14 +108,17 @@ std::optional<unsigned> PlayerMgr::first_occupied_slot() {
     return std::nullopt;
 }
 
-std::optional<PlayerMgr::Pose> PlayerMgr::read_pose(uintptr_t holder) {
+std::optional<PlayerMgr::Pose> PlayerMgr::read_pose(uintptr_t holder, bool applied) {
     if (holder == 0) {
         return std::nullopt;
     }
 
+    const uintptr_t pos_off = applied ? kAppliedPosition : kPosition;
+    const uintptr_t rot_off = applied ? kAppliedRotation : kRotation;
+
     Pose pose{};
-    if (!mem::copy(pose.position.data(), holder + kPosition, sizeof(pose.position)) ||
-        !mem::copy(pose.rotation.data(), holder + kRotation, sizeof(pose.rotation))) {
+    if (!mem::copy(pose.position.data(), holder + pos_off, sizeof(pose.position)) ||
+        !mem::copy(pose.rotation.data(), holder + rot_off, sizeof(pose.rotation))) {
         return std::nullopt;
     }
 
@@ -153,6 +156,11 @@ std::optional<PlayerMgr::Player> PlayerMgr::player(unsigned index) {
     p.object = *object;
     p.holder = *holder;
     p.pose = *pose;
+    // The applied pair is read too, and a failure there does NOT fail the whole player: a caller that only
+    // wants the camera's own pose should still get it.
+    if (const auto applied = read_pose(*holder, true)) {
+        p.applied_pose = *applied;
+    }
 
     // Both engine objects are validated as engine objects rather than trusted: a non-null field whose vtable
     // is not in the exe is not an LTObject, and reporting it as one would send a caller reading LTObject
@@ -199,6 +207,40 @@ std::optional<std::array<float, 3>> PlayerMgr::eye_offset(unsigned index) {
         out[i] = anchor[i] - model[i];
     }
     return out;
+}
+
+std::optional<bool> PlayerMgr::applied_pose_matches_camera_object(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->camera_object == 0) {
+        return std::nullopt;
+    }
+
+    std::array<float, 3> obj_pos{};
+    std::array<float, 4> obj_rot{};
+    if (!mem::copy(obj_pos.data(), p->camera_object + kObjectPosition, sizeof(obj_pos)) ||
+        !mem::copy(obj_rot.data(), p->camera_object + kObjectRotation, sizeof(obj_rot))) {
+        return std::nullopt;
+    }
+
+    // Bit comparison, for the reason given in the header.
+    const auto same_bits = [](float a, float b) {
+        uint32_t x = 0;
+        uint32_t y = 0;
+        std::memcpy(&x, &a, sizeof(x));
+        std::memcpy(&y, &b, sizeof(y));
+        return x == y;
+    };
+    for (size_t i = 0; i < obj_pos.size(); ++i) {
+        if (!same_bits(obj_pos[i], p->applied_pose.position[i])) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < obj_rot.size(); ++i) {
+        if (!same_bits(obj_rot[i], p->applied_pose.rotation[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::optional<bool> PlayerMgr::camera_rotation_matches_pose(unsigned index) {

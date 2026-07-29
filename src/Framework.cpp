@@ -4273,6 +4273,25 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pmgr_camera_no_dims",
                          dims_ok && anchor_dims[0] == 0.0f && anchor_dims[1] == 0.0f &&
                              anchor_dims[2] == 0.0f);
+        // TWO POSE GENERATIONS: the applied pair matches the engine object bit-for-bit, and the other pair's
+        // POSITION does not. Both halves reported, because "they match" alone would also be true if this SDK
+        // were reading one pair twice.
+        json_append_bool(out, "pmgr_applied_matches_object",
+                         sdk::PlayerMgr::applied_pose_matches_camera_object(0).value_or(false));
+        bool pm_gens_differ = false;
+        if (const auto other = sdk::PlayerMgr::read_pose(pm_player->holder, false)) {
+            for (size_t i = 0; i < 3; ++i) {
+                uint32_t a = 0;
+                uint32_t b = 0;
+                std::memcpy(&a, &other->position[i], sizeof(a));
+                std::memcpy(&b, &pm_player->applied_pose.position[i], sizeof(b));
+                if (a != b) {
+                    pm_gens_differ = true;
+                }
+            }
+        }
+        json_append_bool(out, "pmgr_pose_generations_differ", pm_gens_differ);
+        json_append_bool(out, "pmgr_applied_rot_unit", pm_player->applied_pose.rotation_is_unit());
         json_append_bool(out, "pmgr_camera_rot_matches",
                          sdk::PlayerMgr::camera_rotation_matches_pose(0).value_or(false));
         if (const auto eye = sdk::PlayerMgr::eye_offset(0)) {
