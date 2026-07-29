@@ -1263,6 +1263,17 @@ int64_t ModelSkeleton::engine_iface_gate_byte() {
     return v;
 }
 
+std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::socket_pose(size_t handle) const {
+    // The clean path first: no engine call, no mutation, and independently confirmed to match the
+    // engine's own answer on every clean socket.
+    if (const auto cached = socket_world_transform(handle); cached.has_value() && !cached->stale) {
+        return cached;
+    }
+    // Otherwise let the engine do the work. This is the branch that needs the game thread.
+    return engine_socket_transform(handle, 1);
+}
+
 bool ModelSkeleton::engine_socket_transform_available() {
     return resolve_get_socket_transform() != nullptr;
 }

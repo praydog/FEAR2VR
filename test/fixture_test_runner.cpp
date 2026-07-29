@@ -365,11 +365,15 @@ int main(int argc, char** argv) {
         }
     };
 
-    // 3. Clear stale instance; 4. inject.
+    // 3. Clear stale instance; 4. load.
     if (http::port_open(port)) {
         run_injector(injector, "unload", dll, port);
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+    // INJECT, the verified path. A `reload` variant was tried here to survive a dormant leftover
+    // and it HUNG the run, so it is not kept: an unverified change to the harness that starts the
+    // game is worse than the problem it addressed. The leftover state that motivated it is covered
+    // in reversing/MAPPING_WORKFLOW.md instead -- the real fix is not to wedge the payload.
     if (run_injector(injector, "inject", dll, port) != 0) {
         printf("[fixture] injection failed -- skipping (no injection rights?)\n");
         cleanup();

@@ -963,6 +963,43 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A PER-FRAME HOOK HAS A BUDGET, and exceeding it wedges the payload beyond recovery.** I wired
+  a walk that evaluated every dirty skeleton on every model into the frame hook, driven by an
+  off-thread request that then SLEPT waiting for the result. The game survived; the injected DLL's
+  IPC did not.
+
+  THAT FAILURE MODE IS UNUSUALLY EXPENSIVE, because `unload` is itself an IPC request. A dead IPC
+  means there is no way to ask the module to leave, `--inject` refuses while any instance is
+  resident, and every later run skips. The harness stops working until the game restarts -- which
+  is exactly the cost this project is built to avoid.
+
+  Rules taken from it: engine-thread work raised from off-thread must be BOUNDED per frame (a fixed
+  small number of items, accumulated across frames), and the requester must not block on it. If a
+  measurement needs hundreds of engine calls, it does not belong in a frame hook at all.
+
+- **DO NOT "FIX" THE HARNESS THAT STARTS THE GAME WITH AN UNVERIFIED CHANGE.** Wedged out of
+  `--inject`, I switched the fixture to `--reload` (which paints a fresh DLL name and so tolerates
+  a dormant predecessor). It hung the run and cost a second restart.
+
+  The reasoning was sound and the change may well be right, but the fixture is the one thing that
+  must work before anything can be measured -- so it is the last thing to modify while recovering
+  from a broken state, not the first. Reverted to the verified path; the leftover-instance problem
+  is addressed by not wedging the payload.
+
+- **`LNK1104` on the output DLL is not proof the game has it mapped.** The link failed to open
+  `build/bin/fear2vr.dll` while a dormant instance was resident, which looked like the obvious
+  cause. Renaming the file SUCCEEDED, so it was never locked -- a transient handle was. The
+  genuinely mapped image was the renamed copy, which then refused deletion.
+
+  One command distinguished a real mapping from a transient lock, and it was cheaper than any of
+  the theories: try to MOVE the file. A mapped image cannot be deleted but a locked-by-a-stale-handle
+  file can often be renamed.
+
+- **RELATIONSHIP ASSERTIONS SURVIVE A RESTART; COUNTS DO NOT.** The game was restarted twice
+  mid-session and the clean-socket population moved from 181 to 183, with the model-space split
+  going from 131+50 to 131+52. Every check still passed, because they assert `engine == mine`,
+  `a + b == total` and `usable == clean` rather than the numbers themselves. The one check that had
+  been written as an absolute -- "every transform is finite" -- is the one that broke.
 - **`retn N` AND THE FIRST INSTRUCTION SETTLE A CALLING CONVENTION. The decompiler does not.**
   Hex-Rays typed `ILTModel_GetSocketTransform` as `__stdcall(a1, a2, a3, a4)` and passed only three
   of them onward, which is not a signature you can call. Two reads fixed it exactly: `retn 10h`

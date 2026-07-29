@@ -316,6 +316,36 @@ public:
     // other, and getting it wrong calls an arbitrary function rather than failing. This compares
     // the slot against the function's known module offset, so the call above can refuse rather
     // than guess. Exposed so a consumer can check once at startup instead of per call.
+    // THE ONE CALL AN ATTACHMENT WANTS: a usable world pose for this socket, evaluating the
+    // skeleton if the engine has not already.
+    //
+    // socket_world_transform() reads the cache and is honest about staleness, which leaves a
+    // consumer holding 181 usable poses out of 702 and no way forward. This closes that: when the
+    // cache is clean it returns the composed pose (a pure read, and the engine has been shown to
+    // agree with it on every one); when it is stale it asks the engine, which EVALUATES the
+    // skeleton and returns a real pose rather than old bytes.
+    //
+    // MUST BE CALLED ON THE GAME THREAD whenever the cache might be dirty, because evaluation
+    // mutates engine state -- it poses the model and clears the dirty flag. From a mod's
+    // on_frame() that is automatic. Off-thread callers should stick to
+    // socket_world_transform_is_usable() and accept the smaller population.
+    //
+    // THE EVALUATING BRANCH IS NOT EXERCISED BY THE TEST SUITE, and the reason is structural rather
+    // than an omission: the suite drives everything over IPC from its own thread, where forcing an
+    // evaluation races the engine's update. So what IS verified is the clean path -- which the
+    // engine itself agrees with on every clean socket -- and the engine call mechanism, verified on
+    // that same population. The dirty path is the engine's own per-frame code being asked to do
+    // what it already does, but a consumer should know it carries less evidence than the rest of
+    // this header.
+    //
+    // An attempt to verify it by walking every dirty skeleton from the frame hook wedged the
+    // payload; see reversing/MAPPING_WORKFLOW.md. A bounded few-per-frame refresh is the shape that
+    // would work.
+    //
+    // nullopt when the socket cannot be resolved or the engine reports failure; the result is
+    // never stale by construction.
+    std::optional<SocketTransform> socket_pose(size_t handle) const;
+
     static bool engine_socket_transform_available();
 
     // Diagnostics for the call above: the engine's own return code from the most recent attempt,
