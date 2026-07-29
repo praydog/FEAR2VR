@@ -969,15 +969,33 @@ class CClientMgr 0x1468 {
 // OT_WORLDMODEL's holds a real AABB -- so the single live exception to the
 // record mapping is explained by this gate rather than left as residue.
 
+// A SHARED model asset record. Live, 215 OT_MODEL objects point at only 34
+// distinct instances of this, and never at null (215/215) -- so it is per-ASSET,
+// not per-instance, which is what makes LTModelObject.asset a resource handle
+// rather than an owned sub-object.
+//
+// Size is the MAPPED EXTENT, not a proven class size.
+//
+// NOT MAPPED, and specifically tested and rejected: the fields after +0x04 look
+// like (pointer, count) array descriptors at +0x04/+0x0C/+0x14/+0x1C, which
+// would be a normal asset header. Checking all four pairs across all 34 assets,
+// only 69 of 136 had both a heap-shaped pointer and a plausible count, and the
+// dword at +0x08 reads 0 on 14 assets, 1 on 10 and 11 on 10. That is not an
+// array header; the shape was a guess and it failed, so nothing beyond radius is
+// claimed here.
+class LTModelAsset 0x4 {
+    float radius   @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 20, 25, 100, 120, 200, 240 across 15 distinct readings -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one.
+}
+
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
 // element_size. Only the cull-volume fields are mapped; the rest of the derived
 // span is unexplored.
 class LTModelObject 0x198 {
     LTObject base            @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
-    void* unk_EC             @0xEC    // CONFIRMED as a pointer: the branch-A radius is `**(float**)(this+0xEC)`, i.e. the first float of whatever this points at. Pointee unmapped.
-    uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume: non-zero takes centre from +0x160 and radius from *unk_EC; zero takes centre from LTObject.position and radius from vis_radius*scale. Live: 22 non-zero / 193 zero of 215.
+    LTModelAsset* asset      @0xEC    // CONFIRMED non-null on 215/215 and SHARED -- 34 distinct across 215 objects. Its radius is what branch A of OT_MODEL_GetCullVolume uses. SlotIndex_WantsSlot also requires this non-null for type 1, so it is a mandatory resource handle.
+    uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume. The two branches differ in MORE than where they read from, which is why both exist: non-zero takes the centre from sphere_center and the radius from asset->radius UNSCALED; zero takes the centre from LTObject.position and the radius from vis_radius * LTObject.scale. Since asset->radius == vis_radius on 215/215, the real distinction is explicit-centre-and-unscaled versus object-centre-and-scaled. Live: 22 non-zero / 193 zero of 215.
     LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position)
-    float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give the cull radius. Live > 0 on 215/215 models; the sampled models all read exactly 100.0.
+    float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give branch B's cull radius. Live > 0 on 215/215. It is a CACHE of the shared asset->radius -- the two are equal on 215/215 objects -- so a mod must not treat them as independent knobs. An earlier note said "the sampled models all read exactly 100.0", which was true only of the six models sampled then; across all 34 assets the values are 20/25/100/120/200/240 and more.
 }
 
 // The concrete class behind object type 6. 264 bytes (0x108) from its bank's

@@ -390,6 +390,13 @@ public:
         size_t models;               // OT_MODEL objects examined
         size_t model_vis_radius_pos; // vis_radius > 0
         size_t model_radius_ok;      // vis_radius * scale is finite and > 0
+        // The asset link. `asset` is a SHARED per-asset record (34 distinct
+        // across 215 objects live) and vis_radius is a CACHE of its radius, so
+        // comparing them checks the pointer AND both float offsets at once. A
+        // stale cache would be a genuine engine bug, not a mapping error -- which
+        // is exactly why it is worth watching.
+        size_t model_asset_nonnull;  // asset != nullptr
+        size_t model_asset_radius_eq; // asset->radius == vis_radius
         size_t particles;            // OT_PARTICLESYSTEM objects examined
         size_t particle_type_ok;     // cull_volume_type is 1 or 2
         size_t particle_sphere;      // cull_volume_type == 1

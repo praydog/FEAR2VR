@@ -292,6 +292,35 @@ setter notifies. Here the notify chain led to owner slot 1, which asks the objec
 for a bounding volume through slot 2, and the per-type slot-2 bodies are where
 every geometry field is finally consumed.
 
+**Count the DISTINCT values of a pointer field to tell a resource handle from an
+owned sub-object.** It is one read per object and it settles the question
+outright. `LTModelObject.asset` (+0xEC) is non-null on 215/215 live models but
+takes only **34 distinct values** — so it points at a shared per-ASSET record,
+not at something each object owns. That changes what may be written about it
+(shared state, so a mod must not mutate it per-instance) and it changes the
+lifetime story (the pointee outlives any one object). A field with 215 distinct
+values across 215 objects would have meant the opposite. Do this before mapping
+the pointee, because it decides whether "per-object" belongs in the comment.
+
+**When a per-object field always equals a value reachable through a pointer, it
+is a CACHE — and the interesting question is why both are read.** `vis_radius`
+(+0x16C) equals `asset->radius` on 215/215 objects. The lazy conclusion is "one
+is redundant". The actual answer came from the two READERS inside a single
+function: `OT_MODEL_GetCullVolume`'s first branch uses `asset->radius` UNSCALED
+with an explicit centre, and its second uses the cached copy multiplied by
+`LTObject.scale` with the object's own position. Same number, different
+treatment — that is why the engine keeps both.
+
+So when equality holds:
+
+- Say "cache of X" in the schema, not "duplicate of X" — it tells the next
+  reader which one is authoritative.
+- Warn against treating them as independent knobs. Writing one will not affect
+  the consumer that reads the other, which is exactly the kind of bug that looks
+  like a wrong offset and is not.
+- Then go find why both are read. The difference in USE is usually the real
+  finding, and it is invisible if you stop at the equality.
+
 **Corollary, and this is the part that actually cost time: do not argue against a
 hypothesis using a correlation between two fields you have not finished
 mapping.** The earlier pass rejected "scale" because the models whose value was

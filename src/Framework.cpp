@@ -416,13 +416,15 @@ std::string build_objects_json() {
     // expression that identified `scale` in the first place.
     out += ",\"cull_volumes\":";
     if (const auto cv = mgr->check_cull_volumes(512); cv.has_value()) {
-        char cb[448];
+        char cb[512];
         snprintf(cb, sizeof(cb),
                  "{\"models\":%zu,\"model_vis_radius_pos\":%zu,\"model_radius_ok\":%zu,"
+                 "\"model_asset_nonnull\":%zu,\"model_asset_radius_eq\":%zu,"
                  "\"particles\":%zu,\"particle_type_ok\":%zu,\"particle_sphere\":%zu,"
                  "\"particle_aabb\":%zu,\"sprites\":%zu,\"sprite_aabb\":%zu,"
                  "\"sprite_sphere\":%zu,\"sprite_aabb_ordered\":%zu,\"sprite_radius_ok\":%zu}",
-                 cv->models, cv->model_vis_radius_pos, cv->model_radius_ok, cv->particles,
+                 cv->models, cv->model_vis_radius_pos, cv->model_radius_ok,
+                 cv->model_asset_nonnull, cv->model_asset_radius_eq, cv->particles,
                  cv->particle_type_ok, cv->particle_sphere, cv->particle_aabb, cv->sprites,
                  cv->sprite_aabb, cv->sprite_sphere, cv->sprite_aabb_ordered,
                  cv->sprite_radius_ok);

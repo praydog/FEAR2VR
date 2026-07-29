@@ -764,6 +764,20 @@ int main(int argc, char** argv) {
                     check(radok == models,
                           "every OT_MODEL cull radius (vis_radius * scale) is positive and finite");
 
+                    // The asset link. `asset` is shared per model asset (34
+                    // distinct across 215 objects), and vis_radius caches its
+                    // radius. One comparison therefore exercises the pointer at
+                    // +0xEC and both float offsets. A divergence is worth a hard
+                    // failure: it is either a moved offset or a stale cache, and
+                    // the culling radius is wrong either way.
+                    int64_t anonnull = -1, aradeq = -1;
+                    json_int(cb, "model_asset_nonnull", anonnull);
+                    json_int(cb, "model_asset_radius_eq", aradeq);
+                    check(anonnull == models,
+                          "every OT_MODEL has a non-null asset (SlotIndex_WantsSlot requires it)");
+                    check(aradeq == models,
+                          "every OT_MODEL's vis_radius equals its shared asset's radius");
+
                     check(parts > 0, "OT_PARTICLESYSTEM objects present to check volume kinds");
                     // The provider RETURNS this byte, so 1/2 are the only values
                     // the interface defines -- this is an interface constraint,

@@ -9,6 +9,7 @@
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
+#include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
@@ -755,7 +756,8 @@ namespace {
 // Recomputes OT_MODEL's cull radius from its two inputs. POD-only for the SEH
 // guard. Returns objects examined, or -1 on fault / non-termination.
 int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t max,
-                                size_t* vis_pos, size_t* radius_ok, size_t cap) {
+                                size_t* vis_pos, size_t* radius_ok, size_t* asset_nonnull,
+                                size_t* asset_radius_eq, size_t cap) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
         const regenny::CClientMgrListLink* cur = head->next;
@@ -772,6 +774,16 @@ int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t 
                 const float r = m->vis_radius * m->base.scale;
                 if (r > 0.0f && r == r && r < 1.0e30f) {
                     ++*radius_ok;
+                }
+                // The asset link. asset->radius and vis_radius are the same
+                // value stored twice (215/215 live); the object's copy is a
+                // cache, so a divergence means either a moved offset or a stale
+                // cache -- both worth surfacing.
+                if (m->asset != nullptr) {
+                    ++*asset_nonnull;
+                    if (approx_eq(m->asset->radius, m->vis_radius)) {
+                        ++*asset_radius_eq;
+                    }
                 }
                 ++seen;
             }
@@ -874,7 +886,8 @@ std::optional<CClientMgr::CullVolumeCheck> CClientMgr::check_cull_volumes(
     CullVolumeCheck out{};
     const int64_t nm = seh_check_model_volumes(&regenny()->object_lists[kModel], max_per_type,
                                               &out.model_vis_radius_pos, &out.model_radius_ok,
-                                              max_object_walk);
+                                              &out.model_asset_nonnull,
+                                              &out.model_asset_radius_eq, max_object_walk);
     if (nm < 0) {
         return std::nullopt;
     }
