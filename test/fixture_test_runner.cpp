@@ -667,6 +667,37 @@ int main(int argc, char** argv) {
         printf("[fixture] console variables: %lld entries, %lld/%lld name round-trips\n",
                static_cast<long long>(cvc), static_cast<long long>(cvr),
                static_cast<long long>(cvp));
+
+        // ---- THE LOCAL PLAYER --------------------------------------------------------
+        //
+        // Whether a player exists at all is scene state -- a menu with no level loaded
+        // has none -- so presence is REPORTED. What is asserted is the consistency the
+        // mapping rests on: the shell stores the object twice, once as a handle and once
+        // as a pointer, and resolving the handle through the engine's own table must land
+        // on the same object. Two independently-stored routes agreeing is the difference
+        // between a mapping and a lucky offset.
+        int64_t pcount = -1, phandle = -2;
+        json_int(body, "player_count", pcount);
+        json_int(body, "player_handle", phandle);
+        check(pcount >= 0 && pcount <= 4,
+              "the local player count is inside the engine's own 4-slot bound");
+        const bool have_player = json_has(body, "\"player_ok\":true");
+        if (have_player) {
+            check(json_has(body, "\"player_routes_agree\":true"),
+                  "the player's handle and cached pointer name the SAME object");
+            check(phandle >= 0 && phandle != 0xFFFF,
+                  "the player's handle is a real handle, not the empty sentinel");
+            check(pcount >= 1, "a resolvable player implies a non-zero player count");
+            // REPORTED, not matched: which model the player wears is the level's art.
+            const size_t mp = body.find("\"player_mdl\":\"");
+            check(mp != std::string::npos && body[mp + 14] != '"',
+                  "the player object names a model path");
+            printf("[fixture] local player: handle %lld, %lld slot(s) filled\n",
+                   static_cast<long long>(phandle), static_cast<long long>(pcount));
+        } else {
+            printf("[fixture] NOTE: no local player in this state -- the handle/pointer "
+                   "cross-check was NOT exercised.\n");
+        }
     }
 
     // 5b1. /sdk/models: the CONSUMER API, tested the way a mod uses it.

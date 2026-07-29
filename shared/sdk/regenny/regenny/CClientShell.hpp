@@ -1,6 +1,9 @@
 #pragma once
 #include "CClientMgrListLink.hpp"
 namespace regenny {
+class LTObject;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class CClientShell {
 public:
@@ -21,10 +24,12 @@ public:
     private: char pad_3c[0x14]; public:
     regenny::CClientMgrListLink list_50; // 0x50
     regenny::CClientMgrListLink list_58; // 0x58
-    uint16_t handles_60[4]; // 0x60
+    uint16_t local_player_handles[4]; // 0x60
     private: char pad_68[0x1]; public:
     uint8_t unk_69; // 0x69
-    private: char pad_6a[0x6]; public:
-}; // Size: 0x70
+    private: char pad_6a[0x2]; public:
+    regenny::LTObject* local_player_objects[4]; // 0x6c
+    private: char pad_7c[0x4]; public:
+}; // Size: 0x80
 #pragma pack(pop)
 }

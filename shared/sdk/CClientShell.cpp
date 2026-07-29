@@ -166,3 +166,67 @@ std::optional<float> CClientShell::frame_interval_seconds() {
 }
 
 } // namespace sdk
+
+namespace {
+
+// The handle and the resolved pointer for one slot, read together under one guard so a
+// caller never sees a handle from one instant paired with a pointer from another.
+struct LocalPlayerRaw {
+    const void* object;
+    uint16_t handle;
+    bool ok;
+};
+
+LocalPlayerRaw seh_local_player(sdk::CClientShell* shell, unsigned index) {
+    LocalPlayerRaw r{};
+    KANANLIB_SEH_TRY {
+        const auto* s = reinterpret_cast<const regenny::CClientShell*>(shell);
+        r.handle = s->local_player_handles[index];
+        r.object = s->local_player_objects[index];
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+} // namespace
+
+namespace sdk {
+
+std::optional<CClientShell::LocalPlayer> CClientShell::local_player(unsigned index) {
+    // Four slots, the same bound the engine uses for local client ids.
+    if (index >= 4) {
+        return std::nullopt;
+    }
+    CClientShell* shell = get();
+    if (shell == nullptr) {
+        return std::nullopt;
+    }
+    const LocalPlayerRaw r = seh_local_player(shell, index);
+    // An empty slot is BOTH sentinels at once; requiring both guards against reading a
+    // half-updated pair rather than trusting either alone.
+    if (!r.ok || r.handle == 0xFFFF || r.object == nullptr) {
+        return std::nullopt;
+    }
+    LocalPlayer out{};
+    out.object = static_cast<const regenny::LTObject*>(r.object);
+    out.handle = r.handle;
+    return out;
+}
+
+std::optional<unsigned> CClientShell::local_player_count() {
+    if (get() == nullptr) {
+        return std::nullopt;
+    }
+    unsigned n = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (local_player(i).has_value()) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+} // namespace sdk

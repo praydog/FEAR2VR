@@ -3,19 +3,23 @@
 #include <cstdint>
 #include <optional>
 
+
+// Forward declaration rather than the generated header: this class only hands out
+// pointers to LTObject, so a caller that wants to dereference one includes it itself.
+namespace regenny {
+class LTObject;
+}
+
 namespace sdk {
 
 // Engine-side CClientShell (CNetHandler subclass in the LithTech sources).
 // Reached through CClientMgr::client_shell() (m_pClientShellDE at +0x1434).
 //
-// No regenny::CClientShell struct yet -- CClientShell::Update (dump
-// 0x40CC5E) touches at least a byte field @+0x69, a uint16_t[4] handle
-// table @+0x60 (0xFFFF-sentineled, resolved through what looks like a
-// generic engine handle-manager indirection), and the resolved uint32_t[4]
-// @+0x6C, but none of these were pinned down to a confident semantic this
-// pass (see reversing/MAPPING_WORKFLOW.md: don't force a struct/field name
-// without confident evidence). Deliberately out of scope, not forgotten --
-// next slice if this class needs more than update_fn()/get().
+// regenny::CClientShell now exists and this class reads through it. An earlier version
+// of this comment listed the three fields CClientShell::Update touches -- a byte at
+// +0x69, a 0xFFFF-sentineled uint16[4] at +0x60, and a resolved uint32[4] at +0x6C --
+// and said none had a confident semantic yet. Two of the three do now: the pair at
+// +0x60/+0x6C is the LOCAL PLAYER, by handle and by pointer. See local_player() below.
 class CClientShell {
 public:
     // Live instance via the client manager. nullptr when no shell exists
@@ -89,6 +93,34 @@ public:
     // notion of a target frame length should read it rather than assume 60Hz, but do
     // not mistake it for a measured delta -- it does not move.
     static std::optional<float> frame_interval_seconds();
+
+    // ---- THE LOCAL PLAYER ---------------------------------------------------------
+    //
+    // The object a VR mod is anchored to, reachable directly instead of by searching.
+    // Earlier passes found the player's viewmodel by enumerating every model and
+    // matching a path substring; the shell simply names it.
+    //
+    // The shell keeps one slot per local client -- four of them, the same width and the
+    // same index space as local_client_id() above -- in TWO parallel forms: the object's
+    // HANDLE, and the already-resolved POINTER. Live slot 0 holds handle 7394 and the
+    // pointer that handle resolves to, and the object is an OT_MODEL whose .mdl is
+    // `char\player\player\fp_playerm05.mdl` with dims (40, 95, 40) -- a player-sized
+    // collision box. Slots 1..3 are empty, which is what single-player looks like.
+    //
+    // WHICH FORM TO USE: the handle for anything that goes through an ILT* entry point
+    // (those take an HOBJECT), the pointer for a direct read through this SDK. They are
+    // the same object; the pair exists so a caller does not have to convert.
+    struct LocalPlayer {
+        const regenny::LTObject* object;
+        uint16_t handle;
+    };
+
+    // nullopt for an out-of-range index, a missing shell, or an empty slot. The three
+    // are not distinguished because a caller can do nothing different about them.
+    static std::optional<LocalPlayer> local_player(unsigned index);
+
+    // How many local player slots are filled (0..4). Single-player reports 1.
+    static std::optional<unsigned> local_player_count();
 };
 
 } // namespace sdk

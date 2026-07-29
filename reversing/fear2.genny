@@ -1088,7 +1088,7 @@ class CClientMgrCounterNode 0x40 {
 // single sample from one paused main-menu state, which is much weaker evidence than
 // this file's object-level claims. The CODE that reads each field is the real
 // evidence; the values are illustration.
-class CClientShell 0x70 {
+class CClientShell 0x80 {
     void* vtable            @0x00   // live 0x66F9E8
     uint32_t unk_04         @0x04   // live 1440
     double game_time        @0x08   // CONFIRMED a clock that STOPS with the game: read by ClientShell_GetGameTime (0x407490), and across 1.5s of measured wall time at a paused menu it did not move at all (1186.6610 three times). Its origin differs from the counter node's clock (1186 vs 127), so the two are different quantities, not the same clock scaled.
@@ -1104,7 +1104,8 @@ class CClientShell 0x70 {
     uint32_t unk_38         @0x38   // live 32
     CClientMgrListLink list_50 @0x50 // CONFIRMED an intrusive list head, currently EMPTY: both words equal the field's own address (0x5F87080). Reusing CClientMgrListLink for field order (prev@0x00/next@0x04) as elsewhere.
     CClientMgrListLink list_58 @0x58 // CONFIRMED a second empty list head, self-pointing at 0x5F87088
-    uint16_t handles_60[4]  @0x60   // the 0xFFFF-sentineled uint16 table CClientShell::Update walks (recorded in sdk/CClientShell.hpp before this class existed). Live the first two words are 0x1CE2 and 0xFFFF, so one slot is occupied. What they index is unmapped.
+    uint16_t local_player_handles[4] @0x60   // CONFIRMED the LOCAL PLAYERS' object HANDLES, one slot per local client, 0xFFFF for an empty slot. Resolved through CClientMgr's handle table, slot 0 gives handle 7394 -> an OT_MODEL whose .mdl is `char\player\player\fp_playerm05.mdl` -- the first-person player viewmodel -- with dims (40, 95, 40), i.e. a player-sized collision box. Slots 1..3 are 0xFFFF, matching local_client_ids at +0x24, which has one occupied slot and three at 0xFF: the two arrays are index-aligned by local-client slot. // An earlier note here said only "the 0xFFFF-sentineled uint16 table CClientShell::Update walks... what they index is unmapped". It indexes the handle table, and what comes out is the player.
+    LTObject* local_player_objects[4] @0x6C  // CONFIRMED the SAME objects as the handles above, already resolved to pointers: slot 0 holds 0x2876BDA0, which is exactly what resolving handle 7394 returns, and slots 1..3 are null where the handles are 0xFFFF. Two routes to the local player that agree -- the handle for anything the engine's ILT* API needs, the pointer for a direct read. This is the anchor object a VR mod needs, reachable without scanning or heuristics.
     uint8_t unk_69          @0x69   // copied out by sub_408D2F, which substitutes 5 when no shell exists -- so 5 is a meaningful default for whatever this selects. Live 1 (from the 0x401 dword at +0x68).
 }
 

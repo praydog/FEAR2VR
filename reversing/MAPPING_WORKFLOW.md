@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **When a structure stores the SAME thing twice, that redundancy is your best test.**
+  The client shell keeps each local player in two parallel arrays: a `uint16` handle at
+  +0x60 and the already-resolved `LTObject*` at +0x6C. Neither array proves anything on
+  its own -- but resolving the handle through the engine's handle table and comparing the
+  result against the cached pointer does, because the two are stored independently and a
+  wrong offset on either side breaks the equality.
+
+  This is the cheapest kind of confirmation available and worth looking for deliberately:
+  a cached copy beside its source, a count beside a list, a hash beside a name, an index
+  beside a pointer. The project has now used all four -- `entry_count` against a walked
+  length, `name_hash` against a recomputed hash, `handle` against a table lookup, and
+  here a pointer against a resolved handle -- and every one of them caught or would have
+  caught a wrong offset that looked plausible in isolation.
+
+  Corollary for the API: expose BOTH forms when the engine does. A caller talking to an
+  ILT* entry point needs the handle, a caller reading through this SDK wants the pointer,
+  and converting between them is exactly the step where a mistake hides.
 - **Once you have a named API surface, AUDIT YOUR UNKNOWNS AGAINST IT.** The previous
   entry's lesson (a writer gives shape, a reader gives meaning) turns into a concrete
   procedure once the error-string pass has named a few hundred functions: take each field

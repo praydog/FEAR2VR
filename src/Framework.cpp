@@ -258,6 +258,29 @@ std::string build_targets_json() {
             ++convars_named;
         }
     }
+    // THE LOCAL PLAYER, and a cross-check worth having: the shell keeps the object as a
+    // HANDLE and as a POINTER, so resolving the handle through the engine's own table
+    // must land on the same object the pointer names. Two independently-stored routes
+    // agreeing is what makes this a mapping rather than a lucky offset.
+    const auto player = sdk::CClientShell::local_player(0);
+    const auto player_n = sdk::CClientShell::local_player_count();
+    bool player_routes_agree = false;
+    std::string player_mdl;
+    if (player.has_value()) {
+        if (auto* mgr2 = sdk::CClientMgr::get(); mgr2 != nullptr) {
+            player_routes_agree = mgr2->object_from_handle(player->handle) == player->object;
+        }
+        // What the object IS, in plain text -- the cheapest proof it is the player.
+        // A .mdl path is a Windows path, so its backslashes must be doubled to keep the
+        // JSON valid -- the same requirement the models endpoint already handles.
+        for (const char ch : sdk::model_filename(player->object).value_or(std::string{})) {
+            if (ch == '\\') {
+                player_mdl += "\\\\";
+            } else {
+                player_mdl += ch;
+            }
+        }
+    }
     // ROUND TRIP, and deliberately not against a hardcoded name: take variables the
     // table itself reported, upper-case them, and require the lookup to find each one
     // with the same value. That tests the case-insensitive path without assuming which
@@ -315,7 +338,11 @@ std::string build_targets_json() {
              // included because "the table has entries" and "I can find the one I want"
              // are different claims.
              "\"convar_count\":%zu,\"convar_named\":%zu,\"convar_probed\":%zu,"
-             "\"convar_roundtrip\":%zu}",
+             "\"convar_roundtrip\":%zu,"
+             // The local player: how many slots are filled, whether the two routes to
+             // slot 0 agree, and what the object says it is.
+             "\"player_count\":%d,\"player_ok\":%s,\"player_handle\":%d,"
+             "\"player_routes_agree\":%s,\"player_mdl\":\"%s\"}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -351,7 +378,12 @@ std::string build_targets_json() {
              force.value_or(sdk::Engine::ForceVector{}).y,
              force.value_or(sdk::Engine::ForceVector{}).z,
              force.has_value() ? "true" : "false",
-             convars.size(), convars_named, convar_probed, convar_roundtrip);
+             convars.size(), convars_named, convar_probed, convar_roundtrip,
+             static_cast<int>(player_n.value_or(0)),
+             player.has_value() ? "true" : "false",
+             player.has_value() ? static_cast<int>(player->handle) : -1,
+             player_routes_agree ? "true" : "false",
+             player_mdl.c_str());
     return buf;
 }
 
