@@ -228,6 +228,17 @@ public:
     //
     // A single read cannot detect it either. Sample this twice with real time in between: unchanged means
     // the render path has not run and every other reading is a snapshot of the past.
+    //
+    // THERE ARE THREE INDEPENDENT LIVENESS SIGNALS AND THEY DISAGREE, which is the whole reason this
+    // accessor is worth having. Measured on an unfocused game with a level loaded:
+    //
+    //     CClientShell::Update calls   ADVANCING, about 173 per second -- the main loop is pumping
+    //     the engine clock             FROZEN -- simulation is not advancing
+    //     k_fTime (this)               FROZEN -- no frame has been rendered
+    //
+    // So a mod whose hook is firing must NOT conclude the game is simulating, and a mod reading engine
+    // state must not conclude it is rendering. Each layer has its own signal and only its own signal
+    // answers for it.
     static std::optional<float> frame_time();
 
     // The modulus BeginFrame wraps the clock with: g_LTShaderTimeModulus, exactly 1000.0 seconds. So

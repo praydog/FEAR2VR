@@ -3927,15 +3927,47 @@ int main(int argc, char** argv) {
             check(json_double(body, "frame_time", clock_a),
                   "the engine's per-frame clock (k_fTime) reads");
             {
+                // Same spacing requirement: k_fTime only changes when a frame is rendered, so an
+                // immediate second request would report IDLE on a perfectly busy game.
                 std::string resp2;
                 double clock_b = -1.0;
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
                 if (http::get(port, "/sdk/shader-params", resp2)) {
                     (void)json_double(http::body_of(resp2), "frame_time", clock_b);
                 }
                 const bool advancing = clock_a >= 0.0 && clock_b >= 0.0 && clock_a != clock_b;
-                printf("[fixture] render path: %s (k_fTime %.5f -> %.5f)%s\n",
-                       advancing ? "RUNNING" : "IDLE", clock_a, clock_b,
-                       advancing ? "" : " -- camera/shader readings are a frozen snapshot");
+
+                // THREE LAYERS, THREE SIGNALS, AND THEY DISAGREE. Measured on an unfocused game: the
+                // main loop pumps at ~173 Hz while the engine clock and the render clock are both
+                // frozen. So "my hook fired" does not mean "the game simulated", and neither means "a
+                // frame was drawn". Reported together precisely because each one alone is misleading --
+                // this is the shape of the mistake that produced the stale-reading corrections.
+                double eng_a = -1.0, eng_b = -1.0;
+                (void)json_double(body, "engine_seconds", eng_a);
+                (void)json_double(http::body_of(resp2), "engine_seconds", eng_b);
+                // SPACED DELIBERATELY. Two back-to-back requests cannot span a ~6 ms tick, so the
+                // first version of this report read the same counter twice and called a firing hook
+                // idle -- measuring the sampler rather than the engine. 300 ms is many ticks at any
+                // plausible rate and still negligible against the suite's runtime.
+                int64_t ticks_a = -1, ticks_b = -1;
+                std::string hz1, hz2;
+                if (http::get(port, "/health", hz1)) {
+                    (void)json_int(http::body_of(hz1), "frame_ticks", ticks_a);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                if (http::get(port, "/health", hz2)) {
+                    (void)json_int(http::body_of(hz2), "frame_ticks", ticks_b);
+                }
+                printf("[fixture] liveness: hook %s (frame_ticks %lld->%lld) | engine clock %s "
+                       "(%.3f->%.3f) | render %s (k_fTime %.5f->%.5f)\n",
+                       (ticks_b > ticks_a) ? "FIRING" : "idle",
+                       static_cast<long long>(ticks_a), static_cast<long long>(ticks_b),
+                       (eng_a != eng_b) ? "TICKING" : "frozen", eng_a, eng_b,
+                       advancing ? "RUNNING" : "idle", clock_a, clock_b);
+                if (!advancing) {
+                    printf("[fixture]   -> camera/shader readings are a frozen snapshot of the last "
+                           "executed pass\n");
+                }
             }
             printf("[fixture] scene renderer state: %.0f (1 idle, 2 frame, 3 target, 4 pass; "
                    "0 observed but unexplained)\n", rst);

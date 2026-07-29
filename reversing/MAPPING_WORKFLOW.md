@@ -963,6 +963,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **"THE ENGINE IS STOPPED" NEEDED WALKING BACK TOO -- THERE ARE THREE LAYERS, NOT ONE.** Having just corrected
+  "the engine parks in mode 2", I replaced it with "the whole engine is stopped", which was also too strong. The
+  frame hook fires at ~170/s throughout: the main loop pumps, while simulation and rendering are separately
+  gated off. Three signals -- hook calls, the engine clock, k_fTime -- and each answers only for its own layer.
+  Two corrections in two passes on the same observation, both from summarising several layers with one verb.
+  
+- **A LIVENESS PROBE WITH NO TIME IN IT MEASURES THE PROBE.** My first three-way report read frame_ticks twice
+  back-to-back and pronounced a firing hook idle: two HTTP round-trips can be quicker than a 6 ms tick. Both
+  pairs now straddle a 300 ms sleep. Any "did it change" check needs enough elapsed time that a NO answer means
+  something about the subject rather than about the sampler.
+
 - **A WALL CLOCK ADVANCING IS NOT EVIDENCE THE ENGINE RUNS.** Four clocks are reachable here and only one
   moved: shell_real_time gained 2.015 s over two seconds while game time, the engine clock and k_fTime all
   sat frozen. A check phrased "the clock advanced" would pass with the process suspended. Pick the clock the
