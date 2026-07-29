@@ -2950,6 +2950,37 @@ int main(int argc, char** argv) {
                 check(scam >= 0 && scam <= st, "camera sockets are a reported count");
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
 
+                // EYE GEOMETRY, from asset data -- no bone cache, so no staleness and nothing to
+                // evaluate. The invariant is the helper's precondition: both sockets hang off ONE
+                // node, which is what makes subtracting their offsets meaningful at all.
+                int64_t egeom = -1, elevel = -1, eleftneg = -1, ecam = -1;
+                double esmin = -1.0, esmax = -1.0, easym = -1.0;
+                json_int(ab, "eye_geom", egeom);
+                json_int(ab, "eye_level", elevel);
+                json_int(ab, "eye_left_neg", eleftneg);
+                json_int(ab, "eye_vs_camera", ecam);
+                json_double(ab, "eye_sep_min", esmin);
+                json_double(ab, "eye_sep_max", esmax);
+                json_double(ab, "eye_asym_max", easym);
+                check(egeom == seye,
+                      "EVERY model with both eye sockets hangs them off ONE node");
+                check(ecam == seye,
+                      "and its camera socket hangs off that same node");
+
+                // REPORTED, NOT ASSERTED, because measurement killed the obvious invariants: the
+                // separation can be ZERO (one rig puts both eyes at the same point), the eyes are
+                // level on only a minority, and `left` is not reliably the -x side. Asserting any
+                // of those would encode a wish about the art rather than a fact about the engine.
+                check(esmin >= 0.0 && esmax >= esmin,
+                      "the eye separation range is well-ordered and non-negative");
+                check(elevel >= 0 && elevel <= egeom, "level-eye rigs are a reported fraction");
+                check(eleftneg >= 0 && eleftneg <= egeom,
+                      "left-is-negative-x rigs are a reported fraction");
+                printf("[fixture] eye rigs: %lld of %lld share a node; separation %.3f..%.3f, "
+                       "%lld level, %lld left-negative, worst asymmetry %.3f\n",
+                       static_cast<long long>(egeom), static_cast<long long>(seye), esmin, esmax,
+                       static_cast<long long>(elevel), static_cast<long long>(eleftneg), easym);
+
                 // CACHED NODE TRANSFORMS. The contract being defended is the DIRTY
                 // FLAG: a slot the engine considers clean holds a usable position, and
                 // a dirty one holds whatever was there last -- live, 187 of the dirty

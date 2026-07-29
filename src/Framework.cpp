@@ -2110,6 +2110,7 @@ std::string build_objects_json() {
                api_att_placed = 0, api_socket_total = 0, api_socket_ok = 0,
                api_socket_named_node = 0, api_socket_roundtrip = 0,
                api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
+               api_eye_geom = 0, api_eye_level = 0, api_eye_left_neg = 0, api_eye_vs_camera = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2132,6 +2133,7 @@ std::string build_objects_json() {
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
+        float api_eye_sep_min = -1.0f, api_eye_sep_max = 0.0f, api_eye_asym_max = 0.0f;
         float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
               api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
@@ -2563,6 +2565,37 @@ std::string build_objects_json() {
                         if (sk->find_socket("socket_left_eye").has_value() &&
                             sk->find_socket("socket_right_eye").has_value()) {
                             ++api_socket_eyes;
+                            // EYE GEOMETRY from asset data: no cache, no staleness, no engine
+                            // call. Reported so the numbers can be checked for plausibility as
+                            // anatomy rather than merely for being finite.
+                            if (const auto eg = sk->eye_geometry(); eg.has_value()) {
+                                ++api_eye_geom;
+                                if (eg->separation > api_eye_sep_max) {
+                                    api_eye_sep_max = eg->separation;
+                                }
+                                if (api_eye_sep_min < 0.0f || eg->separation < api_eye_sep_min) {
+                                    api_eye_sep_min = eg->separation;
+                                }
+                                // MIRROR SYMMETRY about the node's own sagittal plane: a rig puts
+                                // the eyes at opposite x with matching height and depth. This is
+                                // the check that catches a left/right swap, which no distance
+                                // measurement can see.
+                                const float sx = eg->left.x + eg->right.x;
+                                const float sy = eg->left.y - eg->right.y;
+                                const float sz = eg->left.z - eg->right.z;
+                                if (std::fabs(sy) < 0.01f && std::fabs(sz) < 0.01f) {
+                                    ++api_eye_level;
+                                }
+                                if (std::fabs(sx) > api_eye_asym_max) {
+                                    api_eye_asym_max = std::fabs(sx);
+                                }
+                                if (eg->left.x < eg->right.x) {
+                                    ++api_eye_left_neg;
+                                }
+                            }
+                            if (sk->camera_to_eye_center().has_value()) {
+                                ++api_eye_vs_camera;
+                            }
                         }
                     }
                 }
@@ -2602,6 +2635,13 @@ std::string build_objects_json() {
         .u("socket_roundtrip", api_socket_roundtrip)
         .u("socket_camera", api_socket_camera)
         .u("socket_eyes", api_socket_eyes)
+        .u("eye_geom", api_eye_geom)
+        .u("eye_level", api_eye_level)
+        .u("eye_left_neg", api_eye_left_neg)
+        .u("eye_vs_camera", api_eye_vs_camera)
+        .f("eye_sep_min", api_eye_sep_min, 4)
+        .f("eye_sep_max", api_eye_sep_max, 4)
+        .f("eye_asym_max", api_eye_asym_max, 4)
         .u("node_xform_ok", api_node_xform_ok)
         .u("node_xform_stale", api_node_xform_stale)
         .u("node_xform_clean", api_node_xform_clean)

@@ -1263,6 +1263,55 @@ int64_t ModelSkeleton::engine_iface_gate_byte() {
     return v;
 }
 
+std::optional<ModelSkeleton::EyeGeometry> ModelSkeleton::eye_geometry() const {
+    const auto li = find_socket("socket_left_eye");
+    const auto ri = find_socket("socket_right_eye");
+    if (!li.has_value() || !ri.has_value()) {
+        return std::nullopt;
+    }
+    const auto ls = socket(*li);
+    const auto rs = socket(*ri);
+    if (!ls.has_value() || !rs.has_value()) {
+        return std::nullopt;
+    }
+    // DIFFERENT NODES MEAN DIFFERENT FRAMES. Refuse instead of subtracting across them.
+    if (ls->node_index != rs->node_index) {
+        return std::nullopt;
+    }
+    EyeGeometry out{};
+    out.left = ls->position;
+    out.right = rs->position;
+    out.node_index = ls->node_index;
+    const float dx = ls->position.x - rs->position.x;
+    const float dy = ls->position.y - rs->position.y;
+    const float dz = ls->position.z - rs->position.z;
+    out.separation = std::sqrt(dx * dx + dy * dy + dz * dz);
+    out.center.x = (ls->position.x + rs->position.x) * 0.5f;
+    out.center.y = (ls->position.y + rs->position.y) * 0.5f;
+    out.center.z = (ls->position.z + rs->position.z) * 0.5f;
+    return out;
+}
+
+std::optional<regenny::LTVector> ModelSkeleton::camera_to_eye_center() const {
+    const auto eyes = eye_geometry();
+    if (!eyes.has_value()) {
+        return std::nullopt;
+    }
+    const auto ci = find_socket("camera");
+    if (!ci.has_value()) {
+        return std::nullopt;
+    }
+    const auto cs = socket(*ci);
+    if (!cs.has_value() || cs->node_index != eyes->node_index) {
+        return std::nullopt;
+    }
+    regenny::LTVector out{};
+    out.x = eyes->center.x - cs->position.x;
+    out.y = eyes->center.y - cs->position.y;
+    out.z = eyes->center.z - cs->position.z;
+    return out;
+}
+
 std::optional<ModelSkeleton::SocketTransform>
 ModelSkeleton::socket_pose(size_t handle) const {
     // The clean path first: no engine call, no mutation, and independently confirmed to match the

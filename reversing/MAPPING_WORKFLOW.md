@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **PREFER THE STALENESS-FREE SOURCE when one exists.** Socket offsets live in the ASSET, not in a
+  per-object cache, so eye and camera geometry can be measured with no evaluation, no engine call,
+  no dirty flag and no game-thread requirement -- and the answer is identical on every instance of
+  the model. After several passes fighting the bone cache, the useful measurement turned out to sit
+  in data that was never volatile.
+
+  Ask which of a fact's several representations is IMMUTABLE before reaching for the live one.
+
+- **ANATOMY IS NOT AN INVARIANT. Measure the art before asserting anything about it.** I expected a
+  character rig to place eye sockets symmetrically, level, with `left` on one side. All three failed:
+  |left.x + right.x| reaches 6.013, only 8 of 30 rigs have the eyes level in y and z, and `left` is
+  the -x side in 22 of 30. One rig has the two sockets at the SAME point, so the separation is 0.0 --
+  which would have made a stereo baseline divide by zero.
+
+  Assert the ENGINE's structure (both sockets share a node: 30/30, and the camera socket with them),
+  report the ARTIST's numbers. A plausible geometric claim about content is a wish, and the range is
+  what a consumer actually needs.
+
 - **A PER-FRAME HOOK HAS A BUDGET, and exceeding it wedges the payload beyond recovery.** I wired
   a walk that evaluated every dirty skeleton on every model into the frame hook, driven by an
   off-thread request that then SLEPT waiting for the result. The game survived; the injected DLL's

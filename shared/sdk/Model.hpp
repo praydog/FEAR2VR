@@ -162,6 +162,57 @@ public:
     // across assets, so a case-sensitive search would miss half the weapons.
     std::optional<size_t> find_socket(const char* name) const;
 
+    // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------
+    //
+    // A stereo renderer needs to know where a character's eyes are and how far apart. That is
+    // available WITHOUT touching the bone cache at all: socket offsets are asset data, so unlike
+    // socket_world_transform() they are never stale, never need evaluation, and are identical on
+    // every instance of the model.
+    //
+    // THE CATCH IS THAT TWO SOCKET POSITIONS ARE ONLY COMPARABLE IF THEY SHARE A NODE. Each offset
+    // is relative to its own node_index, so subtracting positions taken from different bones is
+    // meaningless -- it mixes two coordinate frames. These helpers check that and refuse rather
+    // than returning a plausible number, which is the whole reason they exist instead of leaving
+    // callers to subtract socket().position themselves.
+
+    struct EyeGeometry {
+        // Offsets from the shared node, in asset space.
+        regenny::LTVector left;
+        regenny::LTVector right;
+        // The node both hang off -- feed it to node_name().
+        size_t node_index;
+        // Distance between them, in engine units.
+        //
+        // DO NOT ASSUME IT IS NON-ZERO. Measured across the 30 rigged characters live, this ranges
+        // from 0.0 to 5.54 -- at least one rig places both eye sockets at the SAME point, so a
+        // consumer using this as a stereo baseline must handle zero rather than dividing by it.
+        float separation;
+        // Midpoint, which is where a stereo pair should be centred.
+        regenny::LTVector center;
+    };
+
+    // nullopt when either socket is absent (most models -- only characters are rigged with them),
+    // when they hang off DIFFERENT nodes, or when a read faulted. Socket names are matched
+    // case-insensitively, as the engine matches them.
+    //
+    // THE SHARED-NODE CHECK HAS NEVER FAILED LIVE: all 30 models carrying both sockets hang them
+    // off one node, and the camera socket too. It is still checked, because the refusal is the
+    // difference between a meaningless number and no number.
+    //
+    // AND THE RIGS ARE NOT ANATOMICALLY TIDY -- three plausible assumptions died on measurement.
+    // The eyes are NOT mirror-symmetric about the node origin (|left.x + right.x| reaches 6.01),
+    // they are NOT level with each other (only 8 of 30 match in y and z within 0.01), and `left`
+    // is not reliably the -x side (22 of 30). So this returns the art as it is and asserts nothing
+    // about its shape; a consumer wanting a symmetric stereo pair must impose that itself.
+    std::optional<EyeGeometry> eye_geometry() const;
+
+    // The `camera` socket's offset from the same node the eyes use, so a caller can relate the
+    // engine's view attach point to the eyes -- the offset a VR camera has to undo.
+    //
+    // nullopt when there is no camera socket, no eye geometry, or the camera hangs off a different
+    // node than the eyes.
+    std::optional<regenny::LTVector> camera_to_eye_center() const;
+
     // ---- CACHED NODE TRANSFORMS -------------------------------------------------
     //
     // Where a bone actually IS, as the engine last computed it -- position and
