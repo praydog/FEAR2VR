@@ -139,6 +139,25 @@ std::optional<uintptr_t> Vtables::resolve(std::string_view name, size_t slot) {
     return static_cast<uintptr_t>(fn);
 }
 
+uintptr_t Vtables::purecall_address() {
+    // _purecall lives at exe+0x252900 in this build. Resolved through the module base rather than hardcoded
+    // absolute, like every other address in this SDK.
+    const uintptr_t base = exe_base();
+    return base == 0 ? 0 : base + 0x252900;
+}
+
+std::optional<bool> Vtables::is_pure_virtual(uintptr_t vtable, size_t slot) {
+    const uintptr_t pure = purecall_address();
+    if (vtable == 0 || pure == 0) {
+        return std::nullopt;
+    }
+    uint32_t fn = 0;
+    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn))) {
+        return std::nullopt;
+    }
+    return static_cast<uintptr_t>(fn) == pure;
+}
+
 const Vtables::Entry* Vtables::find_by_vtable(uintptr_t vtable) {
     const uintptr_t base = exe_base();
     if (base == 0 || vtable == 0 || vtable < base) {

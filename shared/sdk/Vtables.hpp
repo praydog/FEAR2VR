@@ -99,6 +99,20 @@ public:
     // catalogue covers only classes that publish a name, not every class in the image.
     static std::optional<std::string> class_name_of(uintptr_t object);
 
+    // ---- PURE VIRTUALS: SLOTS A CONSUMER MUST NOT CALL ---------------------------------
+    //
+    // A slot holding _purecall is an unimplemented pure virtual. Calling it does not return an error --
+    // it terminates the process. So this is a safety question a consumer should be able to ask before
+    // dispatching through a slot index it read out of a map.
+    //
+    // ACROSS ALL 57 CATALOGUED TABLES THERE ARE EXACTLY THREE, all in CLTTimer -- which is how that class
+    // was identified as an ABSTRACT BASE rather than a peer of CLTTimerClient and CLTTimerServer.
+    // Comparing the three tables slot by slot accounts for every entry: 17 identical in all three
+    // (inherited), 3 pure in the base and overridden distinctly in both subclasses, 1 per-class name
+    // getter, and 1 destructor where the base is abstract and the subclasses share a concrete one.
+    static uintptr_t purecall_address();
+    static std::optional<bool> is_pure_virtual(uintptr_t vtable, size_t slot);
+
     struct Verification {
         size_t slots_checked{};
         bool slots_in_image{};  // every slot points inside the exe

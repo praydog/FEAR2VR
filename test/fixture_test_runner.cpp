@@ -4052,6 +4052,35 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- PURE VIRTUALS, AND THE HIERARCHY THEY REVEAL ----------------------------------
+            //
+            // A _purecall slot terminates the process rather than returning an error, so a consumer
+            // dispatching through a slot index needs to be able to ask first. Counting them across the
+            // catalogue also identifies abstract bases for free.
+            double pv_total = -1.0, pv_base = -1.0, pv_cli = -1.0, pv_srv = -1.0;
+            const bool pv = json_double(body, "vtable_pure_total", pv_total) &&
+                            json_double(body, "vtable_pure_timer_base", pv_base) &&
+                            json_double(body, "vtable_pure_timer_client", pv_cli) &&
+                            json_double(body, "vtable_pure_timer_server", pv_srv);
+            check(pv && pv_total == 3.0,
+                  "exactly three pure-virtual slots exist across all 57 catalogued tables");
+            // WHICH IS HOW CLTTimer WAS IDENTIFIED AS AN ABSTRACT BASE rather than a peer of its two
+            // suffixed siblings: all three pure slots are its, and both subclasses have none.
+            check(pv && pv_base == 3.0 && pv_cli == 0.0 && pv_srv == 0.0,
+                  "all three belong to CLTTimer, and neither subclass has any");
+
+            // THE ACCOUNTING CLOSES over the 22 slots: inherited unchanged by all three, pure in the base
+            // and overridden distinctly by both, or per-class (the destructor and the name getter). No
+            // slot is unexplained, which is what makes this a hierarchy rather than three similar tables.
+            double t_inh = -1.0, t_po = -1.0, t_oth = -1.0;
+            const bool tacc = json_double(body, "timer_slots_inherited", t_inh) &&
+                              json_double(body, "timer_slots_pure_overridden", t_po) &&
+                              json_double(body, "timer_slots_other", t_oth);
+            check(tacc && t_inh == 17.0 && t_po == 3.0 && t_oth == 2.0,
+                  "17 timer slots are inherited, 3 pure-overridden, 2 per-class");
+            check(tacc && (t_inh + t_po + t_oth) == 22.0,
+                  "and together they account for all 22 slots");
+
             // ---- ILTCommon, AND ITS SERVER TWIN ------------------------------------------------
             //
             // FEAR 2 REORDERED this interface relative to the reference -- slot 2 is the reference's 16th

@@ -3994,3 +3994,62 @@ class LTInputDeviceMouse 0x30 {
 // that are established.
 //
 // 903 checks, 0 failures.
+
+// ==================================================================================================
+// THE CLIENT/SERVER TWINS, AND A NAMING TECHNIQUE I HAD OVER-TRUSTED
+// ==================================================================================================
+//
+// SIX TWIN PAIRS EXIST in the catalogue, and every one aligns at offset +0 -- no shift, so a client table is
+// its server counterpart with per-side overrides in place rather than methods inserted:
+//
+//     CLTClient        147 vs CLTServer        138   -- only 22 slots identical; the two sides genuinely differ
+//     CLTCommonClient   19 vs CLTCommonServer   19   -- 11 identical
+//     CLTModelClient    83 vs CLTModelServer    81   -- 61 identical, client has 2 extra tail slots
+//     CLTPhysicsClient  18 vs CLTPhysicsServer  17   -- 8 identical, client has 1 extra (RotatePushObjects)
+//     CLTPhysicsSimClient 98 vs CLTPhysicsSimServer 98 -- 95 IDENTICAL; only the dtor, name getter and last
+//                                                        slot differ, so that 98-slot interface is almost
+//                                                        entirely side-agnostic
+//     CLTTimerClient    22 vs CLTTimerServer    22   -- 18 identical
+//
+// A shared implementation pins a slot on BOTH sides at once, and a divergence localises the override. That is
+// what makes the twin an evidence source rather than a curiosity.
+//
+// ---- AND IT CAUGHT ME MISUSING METHOD STRINGS ---------------------------------------------------
+//
+// I had been treating "this function references the string Class::Method" as ground truth, and named 9 slot
+// functions from it. ALL NINE referenced a string SHARED with another function in the same table -- which is
+// precisely why earlier passes had left them alone. The filter checked that a FUNCTION had exactly one
+// string; it never checked that a STRING had exactly one function.
+//
+// The duplicates split cleanly, and the discriminator is ADJACENCY:
+//
+//   ADJACENT slots sharing a name are a C++ OVERLOAD PAIR and share an assert string legitimately --
+//     CLTClient::GetObjectGameData (141/142), CSoundMgr::SetSoundFilterParam (25/26),
+//     CLTSoundMgrServer::KillSoundLoop (6/7). Those names stand.
+//
+//   NON-ADJACENT is a COPY-PASTED LOG LINE. CLTPhysicsServer::MoveObject appears in three functions at slots
+//     12, 15 and 16. At most one can be MoveObject, and the twin says the other two occupy UpdateMovement
+//     and MovePushObjects -- whose CLIENT counterparts carry distinct strings of their own. Renamed from the
+//     structure, with the conflicting string recorded in the IDB so the next reader sees why.
+//
+// ---- CLTTimer IS AN ABSTRACT BASE, AND _purecall PROVED IT -------------------------------------
+//
+// There are exactly THREE pure-virtual slots across all 57 catalogued tables, and all three are CLTTimer's.
+// That is not a peer of CLTTimerClient and CLTTimerServer; it is their base. Comparing the three tables
+// accounts for every one of the 22 slots with nothing left over:
+//
+//     17  identical in all three          -- inherited base implementations
+//      3  _purecall in the base, distinct in both subclasses -- the pure virtuals (slots 2, 8, 9)
+//      1  all three different             -- the per-class name getter (slot 1)
+//      1  base abstract, subclasses share -- the destructor (slot 0)
+//
+// (A first pass at this compared 0x672878 against the server and concluded "the client is missing
+// implementations". 0x672878 is CLTTimer, not CLTTimerClient -- there are THREE timer tables, and I had
+// hardcoded the wrong one into my own diff. The pure-slot census is what surfaced it.)
+//
+// EXPOSED AS sdk::Vtables::is_pure_virtual(vtable, slot), because this is a safety question: a _purecall
+// slot does not return an error, it terminates the process, so a consumer dispatching through a slot index
+// out of a map should be able to ask first. The suite asserts the census (3, all CLTTimer, none in either
+// subclass) and the 22-slot accounting.
+//
+// 907 checks, 0 failures.

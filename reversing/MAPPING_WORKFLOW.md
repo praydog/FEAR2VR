@@ -963,6 +963,29 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A METHOD-NAME STRING IS NOT GROUND TRUTH WHEN IT IS SHARED.** I had been treating "the function references
+  `Class::Method`" as evidence from the binary itself, and named 9 slot functions from it in one pass. Every
+  one of those 9 turned out to reference a string **shared with another function in the same table** -- which
+  is exactly why earlier passes had left them unnamed. My filter checked that a FUNCTION had one string, not
+  that a STRING had one function.
+    - **Adjacent slots sharing a name are an OVERLOAD PAIR.** Legitimate C++, and a legitimately shared assert
+      string. `CLTClient::GetObjectGameData` (slots 141/142), `CSoundMgr::SetSoundFilterParam` (25/26) and
+      `CLTSoundMgrServer::KillSoundLoop` (6/7) are all this. Keep them.
+    - **Non-adjacent slots sharing a name is a COPY-PASTED LOG LINE.** `CLTPhysicsServer::MoveObject` appears
+      in three functions at slots 12, 15 and 16. At most one can be MoveObject, and the client/server twin
+      says the other two are UpdateMovement and MovePushObjects -- whose *client* counterparts carry distinct
+      strings. The structure wins over the string.
+  So: require the string to be unique within the table, and use adjacency plus the twin to classify the
+  duplicates rather than trusting or discarding them wholesale.
+
+- **THE CLIENT/SERVER TWIN IS AN EVIDENCE SOURCE, NOT JUST A CURIOSITY.** Six pairs exist in the catalogue and
+  all align at offset +0. Shared implementations pin slots across both sides at once, divergences localise the
+  per-side overrides, and a third table turns the pair into a hierarchy: `CLTTimer` / `CLTTimerClient` /
+  `CLTTimerServer` account for all 22 slots as 17 inherited unchanged, 3 pure in the base and overridden
+  distinctly by both subclasses, 1 per-class name getter and 1 destructor. That is what identified `CLTTimer`
+  as an ABSTRACT BASE rather than a peer -- and `_purecall` is the marker: exactly 3 such slots exist across
+  all 57 catalogued tables, all of them its.
+
 - **A VTABLE ENDS WHERE ITS TERMINATOR SAYS, AND THIS BINARY HAS THREE OF THEM.** I published ILTInput as 12
   slots (it has 28) and the input device vtables as 10 (they have 11). Both numbers were where a dump stopped.
   Auditing every vtable I had published a count for turned up the second error immediately, which is the

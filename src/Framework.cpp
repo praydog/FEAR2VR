@@ -4103,6 +4103,67 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- PURE VIRTUALS, AND THE CLASS HIERARCHY THEY REVEAL -----------------------------------
+    //
+    // A _purecall slot terminates the process rather than returning an error, so "may I call this slot"
+    // is a safety question. Counting them across the catalogue also identifies abstract bases for free.
+    size_t pure_total = 0, pure_timer = 0, pure_timer_client = 0, pure_timer_server = 0;
+    size_t pure_cat_count = 0;
+    const auto* pure_cat = sdk::Vtables::all(pure_cat_count);
+    for (size_t i = 0; i < pure_cat_count; ++i) {
+        const auto& e = pure_cat[i];
+        const uintptr_t vt = sdk::Vtables::address(e.name);
+        if (vt == 0) {
+            continue;
+        }
+        for (size_t sl = 0; sl < e.slot_count; ++sl) {
+            const auto pure = sdk::Vtables::is_pure_virtual(vt, sl);
+            if (!pure.has_value() || !*pure) {
+                continue;
+            }
+            ++pure_total;
+            if (std::strcmp(e.name, "CLTTimer") == 0) {
+                ++pure_timer;
+            } else if (std::strcmp(e.name, "CLTTimerClient") == 0) {
+                ++pure_timer_client;
+            } else if (std::strcmp(e.name, "CLTTimerServer") == 0) {
+                ++pure_timer_server;
+            }
+        }
+    }
+    json_append_double(out, "vtable_pure_total", static_cast<double>(pure_total), 0);
+    json_append_double(out, "vtable_pure_timer_base", static_cast<double>(pure_timer), 0);
+    json_append_double(out, "vtable_pure_timer_client", static_cast<double>(pure_timer_client), 0);
+    json_append_double(out, "vtable_pure_timer_server", static_cast<double>(pure_timer_server), 0);
+
+    // THE HIERARCHY ACCOUNTING: across CLTTimer and its two subclasses, every one of the 22 slots is
+    // either inherited unchanged by all three, pure in the base and overridden by both, or per-class.
+    const uintptr_t tb = sdk::Vtables::address("CLTTimer");
+    const uintptr_t tc = sdk::Vtables::address("CLTTimerClient");
+    const uintptr_t ts = sdk::Vtables::address("CLTTimerServer");
+    size_t t_all_same = 0, t_pure_overridden = 0, t_other = 0;
+    if (tb != 0 && tc != 0 && ts != 0) {
+        for (size_t sl = 0; sl < 22; ++sl) {
+            const auto a = sdk::Vtables::vtable_of(tb + sl * sizeof(uint32_t));
+            const auto b = sdk::Vtables::vtable_of(tc + sl * sizeof(uint32_t));
+            const auto d = sdk::Vtables::vtable_of(ts + sl * sizeof(uint32_t));
+            if (!a.has_value() || !b.has_value() || !d.has_value()) {
+                continue;
+            }
+            const bool base_pure = *a == sdk::Vtables::purecall_address();
+            if (*a == *b && *b == *d) {
+                ++t_all_same;
+            } else if (base_pure && *b != *d) {
+                ++t_pure_overridden;
+            } else {
+                ++t_other;
+            }
+        }
+    }
+    json_append_double(out, "timer_slots_inherited", static_cast<double>(t_all_same), 0);
+    json_append_double(out, "timer_slots_pure_overridden", static_cast<double>(t_pure_overridden), 0);
+    json_append_double(out, "timer_slots_other", static_cast<double>(t_other), 0);
+
     // ---- ILTCommon: THE SLOT MAP, AND ITS SERVER TWIN -----------------------------------------
     //
     // The structural fact worth checking is the PAIRING: CLTCommonServer aligns with the client slot for
