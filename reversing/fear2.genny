@@ -1178,6 +1178,52 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- THE ENGINE'S POLYMORPHIC CLASSES, FROM THEIR OWN SLOT 1 ----
+//
+// Every one of these classes NAMES ITSELF: vtable slot 1 is IBase::_InterfaceImplementation, whose body is
+// `mov eax, <string>; retn`, so the class's own name can be read out of the instruction without calling it.
+// Scanning .rdata for that shape found 32 such tables; 26 were unnamed and are now named <Class>_vftable.
+//
+// TWO GATES BEFORE ANY NAME WAS APPLIED, because a `{code pointer, constant-string getter}` pair can occur
+// INSIDE a table as well as at its start -- a class implementing several interfaces has one such pair per
+// base:
+//   * START EVIDENCE. Each address had to be installed as a vptr somewhere: a `mov [reg], offset table` in
+//     code, or an aligned .data dword holding it (a statically initialised singleton, which is how most of
+//     these are built). All 30 qualified -- 22 by a .data vptr slot alone, with no code store at all.
+//   * EXTENT. Reported by reversing/ida_vtable_boundary.py, and recorded only where a defined data item
+//     follows the run AND no interior address looks like a table start. All 30 came out that way.
+//     THESE COUNTS ARE STRONGLY BOUNDED, NOT PROVEN. The trailing string bounds the SCANNED RUN; that the
+//     FIRST table spans all of it rests on no interior start being DETECTED, by two recognizers -- a vptr
+//     field in initialised data (.data, .rdata and .bss) and a vptr store in code. A start installed some
+//     other way would go unseen. The counts did survive broadening both recognizers, which is worth more
+//     than the original run: same 30 numbers under a strictly stronger test.
+//
+// That second gate needed the analyzer fixed first: it detected interior starts only through code vptr
+// stores, so for statically initialised singletons -- most of this list -- an adjacent table's start was
+// invisible and a run could quietly continue into the next class. It now also treats a .data dword pointing
+// at an interior address as a start.
+//
+//   CLTClient                 0x0066F258  147     CLTServer                 0x00675670  138
+//   ILTOnlineService          0x00678A60  129     CLTRenderer               0x0068FD20   92
+//   CLTModelClient            0x0066E7E8   83     CLTModelServer            0x00674CD8   81
+//   CSoundMgr                 0x00676520   52     CLTResourceMgr            0x00672708   35
+//   CWin32CustomRender        0x0068FEA0   29     CLTInput                  0x00677FA0   28
+//   CLTGameUtil               0x006D3270   24     CLTTextureString          0x00672808   22
+//   CLTTimer                  0x00672878   22     CLTTimerClient            0x006728E0   22
+//   CLTTimerServer            0x00672948   22     CLTCommonClient           0x0066E600   19
+//   CLTCommonServer           0x00674BD8   19     CLTPhysicsClient          0x0066EA70   19
+//   CLTFileMgr                0x00672130   18     CLTPhysicsServer          0x00674E90   17
+//   CLTSoundMgrServer         0x00674F60   15     CLTVideoTexture           0x00690090   13
+//   CCompress                 0x0066FC38   11     CLTTextureMgr             0x006900D4   11
+//   CLTUI                     0x0067820C   11     CLTCursor                 0x00677E3C   10
+//   ILTClientContentTransfer  0x006720C8    9     ILTServerContentTransfer  0x006727A4    9
+//   CWorldParticleBlockerData 0x0067764C    6     CLTLoadingProgress        0x00672184    4
+//
+// WORTH NOTING for future work: CLTTimer, CLTTimerClient and CLTTimerServer are all 22 entries, the shape of
+// a base and two derived classes; and the client/server pairs (CLTCommon*, CLTPhysics*, CLTModel*) differ in
+// size, so they are separate implementations rather than one table shared two ways -- which the
+// GetModelAnimUserDims case shows can also happen at the individual-slot level.
+
 // ---- ILTClient's VTABLE: A 147-ENTRY RUN, BOUNDED BY A STRING ----
 //
 // Instance g_CLTClient_instance (FEAR2.exe 0x6E3138), vtable CLTClient_vftable (0x66F258). This is the

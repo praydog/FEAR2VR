@@ -963,6 +963,40 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A CLASS THAT NAMES ITSELF IS THE CHEAPEST MAP THERE IS -- 26 TABLES IN ONE PASS.** Slot 1 of every
+  IBase-derived class is `mov eax, <class name>; retn`, so scanning .rdata for that entry-sequence shape and
+  reading the immediate names the class without calling anything. 32 tables matched; 26 were unnamed.
+  
+  It needed two gates, because the shape is NOT unique to a table start -- a class implementing several
+  interfaces has one `{code ptr, constant-string getter}` pair per base, and an interior coincidence is
+  possible too:
+  * START EVIDENCE: the address must be installed as a vptr, by a code store or an aligned .data dword. All
+    30 qualified, and 22 by a .data slot ALONE -- these singletons have their vptr baked in at link time and
+    never store it, so a code-store-only test would have rejected most of the list.
+  * EXTENT: only recorded where a data item follows the run and no interior address looks like a table
+    start -- which is STRONGLY BOUNDED, not proven. The string bounds the scanned RUN; "no interior start"
+    is absence of a hit from two recognizers, so a start installed some other way would be missed. Worth
+    more than the first run though: after broadening the data search to .rdata and .bss and adding a
+    separate weak address-taken signal, all 30 counts came out identical.
+  
+  And the extent gate was worthless until the analyzer was fixed: it looked for interior starts only via
+  `mov [reg], offset X`, which is exactly the evidence these statically initialised classes do not produce.
+  A neighbouring table's start was therefore invisible and a run could continue into the next class while
+  reporting the strongest signal. Same lesson as the truncation/overrun pair: the detector's blind spot was
+  aligned with the population being measured, so it looked confident everywhere it was weakest.
+  
+  Two more corrections while hardening it. Appending the address-taken hits to the vptr-slot list labelled a
+  WEAK signal as a strong one -- taking an address is not installing it, since the usual install is two
+  instructions (`mov reg, offset table` then `mov [ptr], reg`) and this recognizer only sees the first. It is
+  now a separate ADDRESS_TAKEN tier kept out of the extent decision. And the broadened search rescanned all
+  of .text per interior slot, which made a 30-table run time out; one indexing pass over .text and the data
+  segments now answers every query.
+  
+- **A SHARED-GLOBALS SCRIPT HOST HIDES MISSING IMPORTS.** _static_vptr_slots called struct.pack while its
+  module never imported struct, and it ran anyway because an earlier script had left `struct` in IDA's shared
+  globals. Fixed the import, and reversing/ida_measure_vtables.py now loads the analyzer into a FRESH dict
+  so a stale symbol cannot make a broken run look fine.
+
 - **THE SELF-NAMING SCAN FOUND NO NEW NAMES AND ONE WRONG ONE -- WHICH WAS THE POINT.** Generalising the
   string chain to all 259 Class::Method strings resolved 219 to a single function, and every one already had
   a name: earlier passes had exhausted this seam. The value was the AGREEMENT CHECK, which flagged a function
