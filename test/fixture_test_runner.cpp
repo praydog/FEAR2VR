@@ -771,6 +771,34 @@ int main(int argc, char** argv) {
         check(ablend >= 0 && ablend <= aok,
               "models with differing index pair are a reported count, not a requirement");
 
+        // THE ANIMATION NAME, resolved through the engine's own index->record->name
+        // chain. REPORTED, not required equal: the engine null-checks the record slot
+        // itself, so a model whose current index has no record is a legal state -- and
+        // the counts bear that out, with the public API answering for all 215 in one
+        // sample and a raw probe of the same chain getting 214 in another. What is
+        // asserted is that the chain WORKS at all, which a moved offset would break
+        // outright rather than reduce.
+        int64_t anamed = -1;
+        json_int(body, "anim_named", anamed);
+        check(anamed > 0, "current animation names resolve through the record vector");
+        check(anamed <= aok, "named animations are a subset of models with anim state");
+
+        // PIECE VISIBILITY. The interesting assertion is that the accessor ENFORCES
+        // the engine's piece-count bound: the endpoint asks about indices 0..63 for
+        // every model, so an unbounded implementation would answer 64 times per model.
+        // It answers once per real piece instead.
+        int64_t pans = -1, phid = -1, mobj = -1;
+        json_int(body, "piece_answers", pans);
+        json_int(body, "piece_hidden", phid);
+        json_int(body, "model_objects", mobj);
+        check(pans > 0, "piece visibility answers for real pieces");
+        check(mobj > 0 && pans < 64 * mobj,
+              "the piece accessor refuses indices beyond the model's piece count");
+        // REPORTED: nothing is hidden in the sampled scene, so a floor here would be
+        // asserting the level's art rather than the engine's mechanism.
+        check(phid >= 0 && phid <= pans,
+              "hidden pieces are a reported fraction of pieces");
+
         // The record's two NODE indices. All three of these are the evidence that
         // named them, so all three are requirements rather than reports:
         //   in_range -- they stay inside node_count, which is the bound that

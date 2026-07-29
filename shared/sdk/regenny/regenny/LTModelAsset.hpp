@@ -1,5 +1,6 @@
 #pragma once
 #include "LTAnimNameTable.hpp"
+#include "LTAnimRecordTable.hpp"
 namespace regenny {
 class LTModelNode;
 }
@@ -30,8 +31,7 @@ public:
     uint16_t unk_52; // 0x52
     uint16_t material_count; // 0x54
     private: char pad_56[0x6]; public:
-    void* subobject_5C; // 0x5c
-    private: char pad_60[0xc]; public:
+    regenny::LTAnimRecordTable anim_records; // 0x5c
     regenny::LTAnimNameTable anim_names; // 0x6c
     uint32_t refcount; // 0x7c
     float radius_from_file; // 0x80

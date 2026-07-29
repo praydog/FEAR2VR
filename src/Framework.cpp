@@ -429,6 +429,7 @@ std::string build_models_json() {
     size_t bone_slots = 0, bone_slots_live = 0, models_with_palette = 0;
     size_t anim_ok = 0, anim_index_in_range = 0, anim_frac_in_range = 0, anim_blending = 0;
     size_t anim_nodes_in_range = 0, anim_nodes_named = 0, anim_nodes_ordered = 0;
+    size_t anim_named = 0, piece_answers = 0, piece_hidden = 0;
     for (size_t si = 0; si < *taken; ++si) {
         const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
         const auto skel = sdk::ModelSkeleton::from_object(obj);
@@ -458,14 +459,32 @@ std::string build_models_json() {
         const auto anim_n = sdk::model_anim_count(obj);
         if (anim.has_value() && anim_n.has_value()) {
             ++anim_ok;
-            if (*anim_n > 0 && anim->index < *anim_n && anim->index_b < *anim_n) {
+            if (*anim_n > 0 && anim->index < *anim_n && anim->current < *anim_n) {
                 ++anim_index_in_range;
             }
             if (anim->fraction >= 0.0f && anim->fraction <= 1.0f) {
                 ++anim_frac_in_range;
             }
-            if (anim->index != anim->index_b) {
+            if (anim->index != anim->current) {
                 ++anim_blending;
+            }
+            // THE NAME, which is what a mod actually reacts to. Resolved through the
+            // engine's own chain, so if this stops answering the mapping moved.
+            if (const auto nm = sdk::model_current_anim_name(obj);
+                nm.has_value() && !nm->empty()) {
+                ++anim_named;
+            }
+            // Piece visibility, asked for every piece the model reports. Live nothing
+            // is hidden, so this counts ANSWERS rather than hidden pieces -- the
+            // accessor must respect the engine's piece-count bound.
+            for (size_t pi = 0; pi < 64; ++pi) {
+                const auto h = sdk::model_piece_hidden(obj, pi);
+                if (h.has_value()) {
+                    ++piece_answers;
+                    if (*h) {
+                        ++piece_hidden;
+                    }
+                }
             }
             // The consumer flow that makes these fields worth exposing: a track's
             // node index handed to the skeleton comes back as a BONE NAME. If that
@@ -523,12 +542,13 @@ std::string build_models_json() {
              "\"bone_slots\":%zu,\"bone_slots_live\":%zu,\"models_with_palette\":%zu,"
              "\"anim_ok\":%zu,\"anim_index_in_range\":%zu,\"anim_frac_in_range\":%zu,"
              "\"anim_blending\":%zu,\"anim_nodes_in_range\":%zu,"
-             "\"anim_nodes_named\":%zu,\"anim_nodes_ordered\":%zu}",
+             "\"anim_nodes_named\":%zu,\"anim_nodes_ordered\":%zu,"
+             "\"anim_named\":%zu,\"piece_answers\":%zu,\"piece_hidden\":%zu}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
              handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
              everything.size(), bone_slots, bone_slots_live, models_with_palette, anim_ok,
              anim_index_in_range, anim_frac_in_range, anim_blending, anim_nodes_in_range,
-             anim_nodes_named, anim_nodes_ordered);
+             anim_nodes_named, anim_nodes_ordered, anim_named, piece_answers, piece_hidden);
     if (want < 0 || static_cast<size_t>(want) >= sizeof(sum)) {
         // Say so in the payload rather than shipping half a field. A reader that
         // sees this knows the numbers are missing, not that the socket broke.

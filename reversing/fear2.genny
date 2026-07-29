@@ -1360,6 +1360,51 @@ class LTAnimNameTable 0x10 {
     LTAnimNameEntry* end_cap   @0x0C
 }
 
+// ---- The ANIMATION RECORD table: index -> record -> NAME ---------------------
+//
+// An asset carries TWO animation tables and they are complementary, not redundant:
+// LTAnimNameTable at +0x6C is sorted by name hash for LOOKUP BY NAME, and this one at
+// +0x5C is indexed directly for LOOKUP BY INDEX. Their entry counts agree on 34/34
+// live assets, so they describe the same animation set from two directions -- which
+// also settles that the count taken from the name table is the correct bound for an
+// index into this vector (verified: the current index is inside it on 215/215).
+//
+// Read straight out of ILTModel_GetAnimName:
+//   v4 = asset + 92;                                   // +0x5C
+//   if (index < StdVector8_Size(v4)) {
+//       rec = *(void**)(StdVector8_At(v4, index) + 4);  // slot+0x04 -> the record
+//       if (rec) copy(dst, *(char**)(rec + 32), cap);   // record+0x20 -> the NAME
+//   }
+//
+// Live this resolves the animations models are ACTUALLY PLAYING: base (x128), World,
+// World_Physics, Ragdoll, PostFire, Corpse_surface_faceup, Alma_Stand_Searching,
+// ghostChild_Stand4. Counts run 1..1039 per asset -- 1 for a shell casing, 34 for an
+// assault rifle, 846 for a grunt.
+//
+// CAUTION ON THE ENGINE'S OWN LOGGING: GetAnimName's not-found path logs the string
+// "GetNodeName", which is a copy-paste bug in the shipped binary. The error-string
+// naming technique is excellent and this is its failure mode -- a function can name
+// somebody else. Trust the identification here because the CODE reads an animation
+// table, not because of what it prints.
+class LTAnimRecord 0x24 {
+    char* name @0x20   // CONFIRMED the animation's name, from GetAnimName's own `*(char**)(rec + 32)`. Live it yields real animation names on 214 of 215 models. Everything below +0x20 is unmapped -- this class is deliberately a partial view of a record whose true size is unknown.
+}
+
+// One slot of the record vector: 8 bytes, of which the engine only ever reads the
+// second dword.
+class LTAnimRecordSlot 0x8 {
+    uint32_t unk_00        @0x00   // never read by GetAnimName; unmapped
+    LTAnimRecord* record   @0x04   // CONFIRMED: the slot field GetAnimName dereferences, and it null-checks it before use, so a null record is a real state
+}
+
+// The vector itself -- MSVC's std::vector shape, same as LTAnimNameTable's.
+class LTAnimRecordTable 0x10 {
+    void* proxy               @0x00
+    LTAnimRecordSlot* first   @0x04   // CONFIRMED the data pointer: StdVector8_At returns `this[1] + 8*i`
+    LTAnimRecordSlot* last    @0x08   // CONFIRMED the end pointer: StdVector8_Size is `(this[2] - this[1]) >> 3`
+    LTAnimRecordSlot* end_cap @0x0C
+}
+
 // One skeleton node. 64 bytes, and the size is pinned from both ends: the reader
 // strides by 64 (`this + 64 * i`) and the two transform pairs below end at exactly
 // 0x40. Written by LTModelAsset_ReadNodeTree (0x4261B0), a recursive descent that
@@ -1497,7 +1542,7 @@ class LTModelAsset 0xA0 {
     uint16_t unk_52        @0x52   // ctor writes 1
     LTAnimNameTable anim_names @0x6C   // CONFIRMED the model's ANIMATION-NAME lookup table (see LTAnimNameTable). Identified by hashing every string in the asset's own string_blob and intersecting: all 42 entries of a character asset matched, and the names are animations -- ATC_Corpse1_LOOP, Corpse_Drag, Corpse_surface_faceup, Corpse_edge_facedown_Hit. Live the hashes are ASCENDING on 34/34, which they must be, since LTModelAsset_FindAnimByName binary-searches them. Note the count is NOT node_count (42 against 61 nodes here), which is what first showed the table is about animations and not the skeleton.
     uint16_t material_count @0x54  // CONFIRMED the asset's MATERIAL (piece) count, and the value every model's material_count is set from: they are equal on 215/215 live. Found from the allocation side rather than a reader -- LTModelObject_BindAsset sizes one of its regions as `28 * asset->unk_54`, and 28 is sizeof(std::string) in this build, so the term is an array of that many material paths. Read as a WORD straight from the file, gated behind a byte flag the loader reads first. Live 1..8, and 8 on the player's viewmodel.
-    void* subobject_5C     @0x5C   // the loader finalises `this + 0x5C` through 0x458894 before accepting the model, so a sub-object starts here. Unmapped.
+    LTAnimRecordTable anim_records @0x5C   // CONFIRMED the ANIMATION RECORD VECTOR, indexed by animation index (see LTAnimRecordTable). ILTModel_GetAnimName reads `asset + 92`, bounds the index with StdVector8_Size, takes `slot + 4` and copies the string at `record + 32`. An earlier note called this "a sub-object starts here, unmapped" -- it was spotted because the loader finalises it through 0x458894, which turns out to BE StdVector8_Size. Live its entry count equals the name table's on 34/34 assets, so the two tables cover the same animation set by index and by hash respectively.
     LTModelSocket* sockets @0x84   // CONFIRMED the socket ARRAY, from LTModelAsset_FindSocketByName's `asset[33] + 40*i` walk. Live non-null on every asset that reports a count, and walking it yields 186 named sockets across the 34 live assets.
     uint32_t socket_count  @0x88   // CONFIRMED the socket count, the loop bound in that same function (`if (++index >= asset[34]) return 0`) and the split point of the engine's UNIFIED socket/node index space: LTModelObject_GetSocketTransform does `if (index >= socket_count) return GetNodeTransform(index - socket_count, ...)`, so a caller's "socket handle" addresses sockets first and then skeleton nodes. Live 1..15 per asset.
     uint32_t refcount      @0x7C   // CONFIRMED the refcount, from TWO sites: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing a fresh asset out, and LTModelAsset_FindCached does `++*(hit + 124)` on a cache hit -- same offset, two independent paths. The ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset (34/34). A tidier shape does NOT survive counting: refcount == 2*users + 1 fits 27 of 34, but 6 assets fall BELOW that and 1 above -- and below refutes a per-model floor outright. Eyeballing the ten biggest rows made it look exact; counting all 34 did not.
@@ -1527,12 +1572,13 @@ class LTModelAsset 0xA0 {
 // ModelInstance header to check against, so the name stays structural.
 class LTModelRecord 0x34 {
     CClientMgrListLink link  @0x00   // CONFIRMED: self-pointed by this ctor, then linked into the owning model's list_head by OT_MODEL_ctor, which is the write that takes list_count to 1
-    void* self_ref           @0x08   // ctor writes `this` -- the record's OWN base address, not this field's address. Live it still does on 215/215 embedded records. Probably the tail/head pointer of an inner list that is empty in every sample; unmapped.
+    void* self_ref           @0x08   // CONFIRMED the LIST-WALK RECOVERY POINTER, which an earlier note guessed was "probably the tail/head pointer of an inner list, unmapped". It is not: LTModelObject_FindTrackerById walks the owning model's list from +0x100 and recovers each record as `link[2]`, i.e. exactly this field at link + 0x08. Same device as LTObject.self at +0x84 -- a walker holding a bare link needs a way back to the object. The ctor writes `this` and live it still does on 215/215.
+    uint8_t tracker_id       @0x18   // CONFIRMED the TRACKER ID a caller names this record by: LTModelObject_FindTrackerById walks the model's record list and returns the first whose `*(uint8_t*)(rec + 24)` equals its argument, and ILTModel_GetCurAnim is exactly that lookup followed by a read of current_anim. Live the EMBEDDED record is 255 on 215/215 -- so 255 is the main track -- while the 74 non-embedded records carry small distinct ids (22, 23, 24, 27, 28, 31, 32, 33). What selects a given id is unmapped.
     uint32_t unk_1C          @0x1C   // ctor writes 0
     LTModelAsset* asset      @0x20   // CONFIRMED non-null and SHARED -- 34 distinct assets across 215 models. Its radius is what branch A of OT_MODEL_GetCullVolume uses (`**(float**)(obj+0xEC)`), and SlotIndex_WantsSlot requires it non-null for type 1, so it is a mandatory resource handle.
-    uint16_t anim_index      @0x24   // CONFIRMED an ANIMATION INDEX by its bound: it is strictly less than the owning asset's animation-table entry count on 215/215 models, and the ctor writes 0. That bound is the evidence -- a field that stays inside a per-asset count across 34 different assets with counts from 1 to 457 is an index into that table, not a coincidence. Live non-zero on 76 of 215.
+    uint16_t anim_index      @0x24   // CONFIRMED an ANIMATION INDEX by its bound: strictly less than the owning asset's animation-table entry count on 215/215 models, and the ctor writes 0. That bound is the evidence -- a field staying inside a per-asset count across 34 assets whose counts run 1..1039 is an index into that table, not a coincidence. Live non-zero on 76 of 215. NOT the one the engine calls current: see current_anim below. (An earlier version of this note said the counts ran "1 to 457"; re-measured across all 34 assets they run 1..1039.)
     uint16_t node_a          @0x26   // CONFIRMED a NODE INDEX, by two tests it passes and one it fails. It is strictly inside the asset's node_count on 215/215, and unlike a small-valued field that fits any bound, its maximum SCALES with node_count -- 9 on a 20-node model, 14 on 38, 37 on 84. (Contrast list_count, which passes the same bound while capping at 6 regardless: that is the false positive this discrimination exists to catch.) Resolved through node_names the values are real bones -- Null, Anim, joint1, cube9, Root_assault, Pelvis. Live non-zero on 80 of 215.
-    uint16_t anim_index_b    @0x28   // CONFIRMED a second animation index, same bound and same 215/215 result. Equal to anim_index on 214 of 215 models, differing on exactly one -- so the pair is a current/target or current/previous couple that normally coincides. WHICH of those it is has not been established.
+    uint16_t current_anim    @0x28   // CONFIRMED THE CURRENT ANIMATION INDEX, and this is the engine's own word for it: ILTModel_GetCurAnim resolves a tracker and returns `*(uint16_t*)(tracker + 40)`, which is exactly this field. That closes a question an earlier pass left open -- the pair at +0x24/+0x28 was recorded as "a current/target or current/previous couple" with WHICH being which unestablished. The engine hands out this one. // Indexing the asset's anim_records with it yields the animations models are ACTUALLY PLAYING on 214 of 215: base (x128), World, World_Physics, Ragdoll, PostFire, Corpse_surface_faceup, Alma_Stand_Searching, ghostChild_Stand4. Inside the record vector on 215/215. Still equal to anim_index on 214 of 215, so the two normally coincide; what makes them diverge is unmapped.
     uint16_t node_b          @0x2A   // CONFIRMED a second NODE INDEX, same bound and same scaling (max 38 on the 84-node model). Resolves to Anim, joint2, cube9, Pelvis, Offset_Assault, Hand_attach_Jnt. ORDERED WITH node_a: node_b >= node_a on 215/215, and the pair is either EQUAL (105) or EXACTLY ADJACENT (110) -- nothing else occurs. Their ROLE is unresolved. A subtree span was the obvious reading and it FAILS: of the 110 adjacent pairs, node_b's parent chain reaches node_a on only 104, and a real span would additionally need node_b to be the LAST descendant, which was never tested because the weaker condition already broke. Note also the interleaved layout (anim, node, anim, node) suggests two (animation, node) couples, but the correlation refutes that too -- the anim indices agree on 214 of 215 models while the node indices agree on only 105. DO NOT retry the displacement grep for a writer: +0F2h/+0F6h look distinctive but the only four matches in the image are a byte compare in unrelated code, a string-search helper whose fields are char arrays at those offsets, an immediate `push 0F2h`, and a constructor for a different class. The offsets are small enough to be a BYTE field in something else, which is what breaks the trick here.
     float anim_fraction      @0x2C   // CONFIRMED a NORMALISED fraction: live it is within [0,1] on 215/215, min exactly 0.0 and max exactly 1.0, with 33 models at zero. The ctor writes 0.0. WHAT it measures is deliberately not claimed -- playback position through the current animation and blend weight between the two indices both fit, and the data does not separate them: 178 of the 214 models whose indices are EQUAL sit at exactly 0 or 1, but 36 hold a mid-range value while their indices agree, which a pure blend weight would not do.
     uint32_t unk_30          @0x30   // NOT written by the ctor, and live it is 0 on 215/215. Included to carry the record up to the owning model's list_head at +0x100; the boundary is inferred from that adjacency, not proven.
@@ -1617,6 +1663,7 @@ class LTModelObject 0x198 {
     LTModelRecord record     @0xCC    // CONFIRMED: the embedded record, linked into list_head below. Holds `asset`, which is why no separate asset field appears on this class.
     CClientMgrListLink list_head @0x100   // CONFIRMED list head: the ctor self-points both halves (an empty list) and then links `record` in. Live it is never empty for that reason. Members are recovered as LTModelRecord addresses.
     uint32_t list_count      @0x108   // CONFIRMED the list's OWN stored count: it equals the walked member count on 215/215, and the ctor increments it to 1 as it links `record`. Live distribution 1 (x184), 2 (x6), 3 (x12), 4 (x9), 5 (x3), 6 (x1) -- so one embedded record plus up to five extras. All 289 members across 215 models bind the SAME asset as their owner (289/289), which is what identifies them as LTModelRecords; why a model wants several is unmapped.
+    uint32_t piece_hide_bits[2] @0x10C  // CONFIRMED the PIECE HIDE BITMASK, and the reader leaves no room for interpretation: LTModelObject_GetPieceHideBit is the whole of ILTModel::GetPieceHideStatus's body and reads `(this[(piece >> 5) + 67] & (1 << (piece & 31))) != 0` -- dwords starting at +0x10C, one bit per piece. The LENGTH is pinned by adjacency, not chosen: material_names begins at +0x114, so exactly two dwords fit, i.e. the engine supports at most 64 pieces (live material_count never exceeds 8). // UNEXERCISED IN THIS SCENE: every bit is clear on all 215 models, so nothing here is hidden and the live data CANNOT corroborate the reader -- it is merely consistent with it. The identification rests on the code alone, which for a function the engine itself names GetPieceHideStatus is strong; a scene with a hidden piece would be worth re-measuring against.
     StdString* material_names @0x114  // CONFIRMED an OWNED ARRAY of std::string, from TWO independent routes. The teardown calls 0x429771(this+0x114, this+0x118), which is `for (i = count; i; --i) { ~string(p); p += 28; }`. And a READER agrees: LTModelObject_GetMaterialFilename (0x4291E1, reached through ILTModel's vtable slot 69) does `if (i >= this[70]) return 0; strcpy(dst, std::string::c_str(this[69] + 28*i))` -- the same base, the same length field, the same 28-byte stride, and it names the element type outright by calling c_str on it. A destructor and a getter arriving at the same layout is as good as this gets without symbols. Live these are MATERIAL PATHS -- e.g. "weapons\_global\shellcasings\assault_rifle_new\mat\assault_rifle_casing1.mat" -- 476 strings across 215 models, every one NUL-terminated at [size]. This is the first place in the mapping where an object says in plain text WHAT it is.
     uint32_t material_count   @0x118  // CONFIRMED the array length from the destructor, and CONFIRMED as a BOUND by the getter above, which rejects any index >= this value before touching the array. Live it takes six distinct values with a maximum of 8, and 1 is by far the most common (125 of 215); 34 of the 476 strings are empty. (An earlier note here said "1..6" -- an artefact of a probe that capped its own loop at 8, not a measurement.)
     uint32_t unk_11C          @0x11C  // ctor writes 0; live it is a non-null pointer unique to each model (215 distinct). Owner unmapped -- no teardown call in OT_MODEL_dtor_body reaches it directly.

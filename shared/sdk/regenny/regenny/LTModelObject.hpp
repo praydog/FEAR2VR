@@ -20,7 +20,7 @@ public:
     regenny::LTModelRecord record; // 0xcc
     regenny::CClientMgrListLink list_head; // 0x100
     uint32_t list_count; // 0x108
-    private: char pad_10c[0x8]; public:
+    uint32_t piece_hide_bits[2]; // 0x10c
     regenny::StdString* material_names; // 0x114
     uint32_t material_count; // 0x118
     uint32_t unk_11C; // 0x11c

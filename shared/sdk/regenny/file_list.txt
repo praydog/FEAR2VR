@@ -37,6 +37,9 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgr.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameEntry.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameTable.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimRecord.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimRecordSlot.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimRecordTable.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelNode.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelSocket.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelAsset.hpp" \

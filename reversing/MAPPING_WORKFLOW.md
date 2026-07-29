@@ -1016,6 +1016,16 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   Note the SDK version of this walk carries the cycle guard into shipped code for a
   different reason -- the engine's list can be torn mid-frame -- so the test habit and
   the production requirement happen to agree here.
+
+- **CONFIRMED failure mode of the error-string naming technique.**
+  `ILTModel::GetAnimName`'s not-found path logs the string **"GetNodeName"** -- a
+  copy-paste bug in the shipped binary. So a function CAN print somebody else's name,
+  exactly as the earlier warning feared. Two mitigations, both already in the recipe
+  and both load-bearing: requiring a string to have exactly ONE referencing function
+  drops most of these, and spot-checking behaviour catches the rest. Here the
+  identification survives because the CODE indexes an animation table and copies a
+  name out of the record -- what a function prints on failure is the least reliable
+  thing about it.
 - **THE ENGINE NAMES ITS OWN FUNCTIONS. Read the error strings first.** This is the
   highest-yield technique in this file and it should be tried before any behavioural
   classification, because when it applies it gives an EXACT name, not a guess.

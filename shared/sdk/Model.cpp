@@ -9,6 +9,8 @@
 #include "regenny/regenny/LTAnimNameEntry.hpp"
 #include "regenny/regenny/LTModelSocket.hpp"
 #include "regenny/regenny/LTNodeTransform.hpp"
+#include "regenny/regenny/LTAnimRecordSlot.hpp"
+#include "regenny/regenny/LTAnimRecord.hpp"
 #include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -624,7 +626,7 @@ AnimRaw seh_anim(const regenny::LTObject* obj) {
             const auto* asset = model->record.asset;
             if (asset != nullptr) {
                 r.index = model->record.anim_index;
-                r.index_b = model->record.anim_index_b;
+                r.index_b = model->record.current_anim;
                 r.fraction = model->record.anim_fraction;
                 r.node_a = model->record.node_a;
                 r.node_b = model->record.node_b;
@@ -817,6 +819,84 @@ std::optional<ModelSkeleton::NodeTransform> ModelSkeleton::node_transform(size_t
     // Non-zero is the engine's own test -- it recomputes rather than reading the slot.
     out.stale = r.dirty != 0;
     return out;
+}
+
+} // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// The animation-record lookup, guarded, following exactly the chain
+// ILTModel_GetAnimName walks: bound the index against the vector, take slot+0x04,
+// null-check the record, then hand back its name POINTER for the caller to copy
+// through seh_copy_cstr (nesting SEH frames is the mistake this split avoids).
+const char* seh_anim_name_ptr(const regenny::LTObject* obj) {
+    const char* name = nullptr;
+    KANANLIB_SEH_TRY {
+        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
+            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+            const auto* asset = model->record.asset;
+            if (asset != nullptr) {
+                const auto* first = asset->anim_records.first;
+                const auto* last = asset->anim_records.last;
+                if (first != nullptr && last > first) {
+                    const size_t n = static_cast<size_t>(last - first);
+                    const size_t i = model->record.current_anim;
+                    if (i < n && first[i].record != nullptr) {
+                        name = first[i].record->name;
+                    }
+                }
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+    return name;
+}
+
+// Returns 1/0 for the bit, or -1 on fault or an out-of-range piece.
+int seh_piece_hidden(const regenny::LTObject* obj, size_t index) {
+    int result = -1;
+    KANANLIB_SEH_TRY {
+        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
+            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+            // Two bounds, both the engine's: the mask is two dwords (pinned by
+            // material_names starting right after it), and a piece index only means
+            // anything below the model's own piece count.
+            if (index < model->material_count && index < 64) {
+                const uint32_t word = model->piece_hide_bits[index >> 5];
+                result = ((word & (1u << (index & 31))) != 0) ? 1 : 0;
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<std::string> model_current_anim_name(const regenny::LTObject* obj) {
+    const char* src = seh_anim_name_ptr(obj);
+    if (src == nullptr) {
+        return std::nullopt;
+    }
+    char buf[kMaxName]{};
+    if (seh_copy_cstr(src, buf, sizeof(buf)) < 0) {
+        return std::nullopt;
+    }
+    return std::string{buf};
+}
+
+std::optional<bool> model_piece_hidden(const regenny::LTObject* obj, size_t index) {
+    const int r = seh_piece_hidden(obj, index);
+    if (r < 0) {
+        return std::nullopt;
+    }
+    return r != 0;
 }
 
 } // namespace sdk

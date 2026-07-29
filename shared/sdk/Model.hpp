@@ -243,12 +243,17 @@ std::optional<std::vector<std::string>> model_materials(const regenny::LTObject*
 struct AnimState {
     // Both are indices into the asset's animation table, and that bound is how they
     // were identified: strictly less than the table's entry count on 215/215 models
-    // across 34 assets whose counts range 1..457.
+    // across 34 assets whose counts range 1..1039.
+    //
+    // WHICH ONE IS CURRENT IS NOW SETTLED, by the engine rather than by inference:
+    // ILTModel::GetCurAnim resolves a tracker and returns the field `current` mirrors.
+    // An earlier version of this struct exposed the pair as `index`/`index_b` and said
+    // the roles were unestablished; use `current` for "what is playing", and prefer
+    // model_current_anim_name() over either if what you want is the NAME.
     uint16_t index;
-    // A second index, equal to `index` on 214 of 215 models live. Whether the pair is
-    // current/target or current/previous is NOT established, so both are exposed and
-    // neither is named for a role it might not have.
-    uint16_t index_b;
+    // THE CURRENT ANIMATION, as the engine reports it. Equal to `index` on 214 of 215
+    // models live, so the two normally coincide; what makes them diverge is unmapped.
+    uint16_t current;
     // Within [0,1] on 215/215. Deliberately not called "progress" or "blend weight":
     // 36 models hold a mid-range value while their two indices agree, which a pure
     // blend weight would not do, and a pure playback position would not explain the
@@ -275,6 +280,39 @@ std::optional<AnimState> model_anim_state(const regenny::LTObject* obj);
 // caller can validate or range-check without a second lookup. The count comes from
 // the asset's animation-name table, which the engine binary-searches by name hash.
 std::optional<size_t> model_anim_count(const regenny::LTObject* obj);
+
+// THE NAME of the animation this model is currently playing, e.g. "Ragdoll",
+// "PostFire", "Alma_Stand_Searching", "Corpse_surface_faceup".
+//
+// This is the most legible thing the model subsystem exposes, and it is what a mod
+// actually wants: reacting to "the player is reloading" beats tracking an opaque
+// index that changes meaning between assets. Resolved exactly as ILTModel::GetAnimName
+// does -- the current index into the asset's animation-record vector, then the record's
+// name pointer -- so it agrees with whatever the engine would report.
+//
+// Live it answered for every model in one sample (215/215) while a raw probe of the
+// same chain got 214/215 in another -- models come and go between samples, and the
+// engine null-checks the record slot itself, so a nullopt is a LEGAL state rather than
+// a failure. nullopt also when the object is not a model or the read faulted; those
+// three are not distinguished because a caller can do nothing different about them.
+std::optional<std::string> model_current_anim_name(const regenny::LTObject* obj);
+
+// Whether a PIECE is hidden -- the engine's own per-piece visibility bit.
+//
+// `index` is the engine's piece index, the same numbering model_materials() uses, so
+// a caller can find the piece it wants by material path and then ask about it. This is
+// the mechanism a VR mod needs to hide a viewmodel's arms or a character's head
+// without touching geometry.
+//
+// HONEST STATE OF THE EVIDENCE: the reader is unambiguous -- it is the entire body of
+// ILTModel::GetPieceHideStatus, a bit test against a two-dword mask. But live, every
+// bit is clear on all 215 models, so nothing in the sampled scene is hidden and the
+// data cannot corroborate the reader; it is only consistent with it. Treat a `true`
+// from this function as trustworthy in mechanism and untested in the field.
+//
+// nullopt when the object is not a model, the index is at or beyond the model's piece
+// count, or the read faulted.
+std::optional<bool> model_piece_hidden(const regenny::LTObject* obj, size_t index);
 
 
 // How a mod finds the object it cares about.
