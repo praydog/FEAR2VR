@@ -603,27 +603,26 @@ int main(int argc, char** argv) {
         check(fa == model_objects, "find_models(\"\") returns every live model object");
         check(fw > 0 && fw <= fa, "find_models(\"weapons\") matches a real subset");
 
-        // THE PER-NODE 48-BYTE REGION, through node_matrix_raw. The accessor's
-        // CONTRACT is assertable even though the data's meaning is not: the engine
-        // allocates the region for every model (it is gated on a flag bit that is set
-        // on all of them), sized at 48 * node_count, so the accessor must answer for
-        // every model and for every node index below that count.
-        int64_t mwr = -1, nslots = -1, nrigid = -1;
-        json_int(body, "models_with_region", mwr);
-        json_int(body, "node_slots", nslots);
-        json_int(body, "node_slots_rigid", nrigid);
-        check(mwr == with_skeleton,
-              "node_matrix_raw answers for every model that has a skeleton");
-        check(nslots > 0, "per-node matrix slots were actually read");
-        // REPORTED, not asserted equal. Live only 181 of 2222 slots hold a rigid
-        // matrix, so requiring all of them would encode a guess about what the region
-        // holds -- see fear2.genny's node_matrices. What IS required is that the
-        // count is a sane fraction, i.e. is_rigid is discriminating rather than
-        // trivially true or trivially false.
-        check(nrigid >= 0 && nrigid <= nslots,
-              "rigid node matrices are a reported fraction of the slots, not a claim");
-        check(nrigid > 0,
-              "is_rigid accepts at least some slots, so it is not rejecting everything");
+        // THE BONE MATRIX PALETTE, through bone_matrix(). The accessor's CONTRACT is
+        // assertable: the engine allocates the palette for every model (it is gated on
+        // a flag bit set on all of them) at 48 * node_count, so the accessor must
+        // answer for every model and every node index below that count.
+        //
+        // The CONTENTS are not asserted at all, and that is the point. This is
+        // per-frame render state -- the renderer fills a mesh's bones during its draw
+        // -- so on an idle frame most slots are legitimately zero (live: 169 of 215
+        // models entirely zero, the player's viewmodel included). Requiring a
+        // populated palette would make this test depend on the game happening to
+        // render at the instant it runs, which is exactly the kind of flake a fixture
+        // suite must not have.
+        int64_t mwr = -1, nslots = -1, nlive = -1;
+        json_int(body, "models_with_palette", mwr);
+        json_int(body, "bone_slots", nslots);
+        json_int(body, "bone_slots_live", nlive);
+        check(mwr == with_skeleton, "bone_matrix answers for every model that has a skeleton");
+        check(nslots > 0, "palette slots were actually read");
+        check(nlive >= 0 && nlive <= nslots,
+              "populated palette slots are a reported fraction, never a requirement");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised

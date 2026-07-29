@@ -333,6 +333,29 @@ correct, because moving fields between a base and its child leaves both totals
 untouched. State that limit next to the check, or the next reader will trust it
 for something it cannot do.
 
+**Never assert on PER-FRAME state you do not control.** The bone matrix palette is
+the clean example: the engine fills a model's 48-byte-per-node palette during that
+model's draw, so whether any given slot holds a matrix depends on whether the
+renderer touched that model in the instant the test ran. Live, on an idle game, 169
+of 215 models read entirely zero — including the player's own viewmodel.
+
+So the fixture asserts the ACCESSOR's contract and only reports the contents:
+
+- asserted: `bone_matrix()` answers for every model with a skeleton, and for every
+  node index below `node_count` — that follows from the allocator reserving
+  `48 * node_count` unconditionally, and it holds whether or not a frame ran
+- reported: how many slots are populated, with no floor
+
+Requiring a populated palette would have produced a test that passes while the
+player is moving and fails on a pause menu. That is worse than no test, because the
+failure looks like a mapping regression and sends the next reader hunting for a
+moved offset that never moved.
+
+The tell for this class of field: its value is written by a subsystem on its own
+schedule (render, animation, network) rather than at construction or load. Map it,
+expose it with a populated-ness predicate so callers can tell, and let the test
+watch the shape rather than the contents.
+
 **A check that compares things needs to be shown that it COMPARED something.**
 The node-hash check asserts that the same name always carries the same hash. It
 recomputes nothing — no translation table, no module offset — it just compares the

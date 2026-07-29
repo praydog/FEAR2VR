@@ -88,32 +88,37 @@ public:
     // parent chain returns nullopt instead of looping.
     std::optional<std::vector<size_t>> path_to_root(size_t index) const;
 
-    // ---- the per-node 48-byte region (see fear2.genny's node_matrices) -----
+    // ---- the bone matrix palette (see fear2.genny's node_matrices) ---------
     //
-    // PROVEN, from LTModelObject_BindAsset: the engine reserves exactly
-    // 48 * node_count bytes and stores the base on the object, so the stride and
-    // the length here are the allocator's arithmetic, and the region sits inside a
-    // single parent allocation this can be bounds-checked against.
+    // CONFIRMED what this is, from its two consumers: the renderer walks a mesh's
+    // bone index list, writes `palette + 48*bone` into a shader constant slot for
+    // each, then uploads 48*count bytes -- capped at 24 bones, gated on the constant
+    // registers being bound. It is the SKINNING PALETTE handed to the vertex shader.
+    // Stride and length come from the allocator (48 * node_count), so indexing here
+    // is bounds-checked against node_count and against the parent allocation.
     //
-    // NOT PROVEN: what the 48 bytes mean. A per-node 3x4 array in an animated model
-    // reads as a world-transform cache, and this is named for the SHAPE rather than
-    // that guess because the data does not currently support it -- live, only 181 of
-    // 2222 node slots hold a matrix with unit rows and determinant +1. Offered raw so
-    // a caller can investigate (this is what VR bone attachment will need) without
-    // inheriting a guess baked into a method name.
-    struct NodeMatrix {
+    // THE CATCH, and it decides how a mod must use this: the palette is PER-FRAME
+    // RENDER STATE. It is filled during the draw, for the models actually being
+    // drawn. Read from an idle game it is mostly zeros -- live, 169 of 215 models
+    // read entirely zero, the player's own viewmodel included. So:
+    //   * reading it off the render path gives blank or stale data, not an error, and
+    //   * is_populated() below is the difference between a real matrix and a slot
+    //     nobody has written this frame.
+    // A caller that wants reliable bone transforms should read this from a render
+    // hook, or get them from the skeleton's own poses instead.
+    struct BoneMatrix {
         float m[12];  // three rows of four
     };
 
-    // nullopt for an out-of-range index, a model without the region (it is gated on
+    // nullopt for an out-of-range index, a model without the palette (it is gated on
     // a flag bit), or a faulted read.
-    std::optional<NodeMatrix> node_matrix_raw(size_t index) const;
+    std::optional<BoneMatrix> bone_matrix(size_t index) const;
 
-    // Whether a matrix's 3x3 part is a proper rotation. Use it to tell POPULATED
-    // slots from unpopulated ones instead of trusting every read -- most slots are
-    // not populated in a idle scene, and a caller that skips the test will consume
-    // zeros as though they were transforms.
-    static bool is_rigid(const NodeMatrix& mat);
+    // Whether a slot has actually been written: all twelve floats finite, and not
+    // all zero. This is the right question for a palette entry -- an earlier version
+    // of this API tested whether the 3x3 was a proper ROTATION, which is the wrong
+    // question, because an unwritten slot is zeros rather than a bad rotation.
+    static bool is_populated(const BoneMatrix& mat);
 
     // The asset backing this skeleton. Two models with the same value share node
     // indices; comparing it is how a caller can cache per-asset work.
