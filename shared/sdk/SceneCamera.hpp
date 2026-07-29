@@ -197,6 +197,28 @@ public:
     static std::optional<std::array<float, 16>> make_affine_projection(float half_x, float half_y,
                                                                       float near_z, float far_z);
 
+    // ---- COMPOSING MATRICES THE WAY THE ENGINE DOES ---------------------------------
+    //
+    // Transcribed from LTMatrix_Mul4x4ByAffine (0x610193), which is how the camera builder composes
+    // both the shear and the view matrix. `b` is AFFINE: 12 floats, its fourth row taken as
+    // (0, 0, 0, 1) -- which is not an assumption but the storage, since the engine keeps the view
+    // matrix and the shear as 3x4.
+    //
+    // out = a * b, ROW-MAJOR with translation in column 3, so points are COLUMN vectors and the
+    // engine's own composition reads view_projection = projection * view. A consumer building a
+    // per-eye matrix must use this order; the transpose silently produces a plausible-looking wrong
+    // result, which is exactly the class of bug worth spending a helper to avoid.
+    static std::array<float, 16> multiply_by_affine(const std::array<float, 16>& a,
+                                                   const std::array<float, 12>& b);
+
+    // The engine's own composition, named for what it is. Equivalent to multiply_by_affine with the
+    // view matrix as the affine operand, and the order the builder uses at record+0xB8.
+    static std::array<float, 16> compose_view_projection(const std::array<float, 16>& projection,
+                                                        const regenny::LTMatrix3x4& view);
+
+    // The affine identity, for callers wanting an unmodified composition or a starting point.
+    static std::array<float, 12> affine_identity();
+
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();
 

@@ -1481,7 +1481,41 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- THE PROJECTION BUILDERS, AND WHAT THEY PROVE ABOUT THE HALF-PLANE ----
+// // ---- HOW THE ENGINE MULTIPLIES MATRICES ----
+//
+// TWO MULTIPLIES, DIFFERING IN WHICH OPERAND IS AFFINE. Both are out = A * B; the difference is
+// whose fourth row is assumed rather than read, and that is legible directly in the arithmetic.
+//
+//     LTMatrix_Mul4x4ByAffine  0x610193   B is affine 3x4 (row 3 taken as 0,0,0,1)
+//     LTMatrix_MulAffineBy4x4  0x610333   A is affine 3x4
+//
+// For 0x610193, columns 0..2 of each output row sum only THREE products, and column 3 adds A[r][3]
+// on its own -- precisely what B[3] = (0,0,0,1) contributes. All four rows of A are computed, so A
+// is a full 4x4. Its two call sites agree with the storage: B is the 12-float shear, then the
+// 48-byte view matrix, both 3x4 in memory, so the implicit row is the layout rather than a guess.
+//
+// For 0x610333 the mirror holds: rows 0..2 are full four-term products and the output's row 3 is
+// B's row 3 COPIED, which is what A[3] = (0,0,0,1) would produce.
+//
+// SO THE COMPOSITION IS view_projection = projection * view, points as COLUMN vectors, row-major
+// with translation in column 3. A consumer building a per-eye matrix needs that order; the
+// transpose produces a plausible-looking wrong answer, which is why sdk::SceneCamera exposes
+// multiply_by_affine() and compose_view_projection() rather than leaving each caller to guess.
+//
+// VERIFIED AGAINST THE ENGINE'S OWN OUTPUT, which is stronger than the synthetic probes elsewhere
+// in this file: the record holds the projection at +0x78, the view at +0x48 and the engine's own
+// product at +0xB8, so running the transcription over the first two must reproduce the third. It
+// does. The strength is pass-dependent and the suite says so -- while the view matrix is identity,
+// which is every sample reachable from outside a render hook, the product cannot distinguish a
+// transposed implementation. What covers the ORDER is a synthetic case checked against the closed
+// form of P * T in all sixteen coefficients, including the homogeneous row, since a bug confined to
+// row 3 passes both an identity multiply and a translation checked only at [3] and [7].
+//
+// +0xF8'S ROLE REMAINS OPEN. LTMatrix_MulAffineBy4x4 derives it from +0xB8 and a 48-byte local
+// whose contents are not established. The multiply's shape is settled; its inputs are not, so the
+// earlier note calling +0xF8 "derived, role not established" still stands.
+//
+// ---- THE PROJECTION BUILDERS, AND WHAT THEY PROVE ABOUT THE HALF-PLANE ----
 //
 // THE HALF-PLANE UNITS ARE NOW PROVEN, not inferred from a ratio. Two earlier passes could only
 // say "consistent with tan(fov/2)"; LTMatrix_BuildPerspectiveProjection settles it. The caller does

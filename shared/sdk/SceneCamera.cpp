@@ -312,6 +312,37 @@ std::optional<std::array<float, 16>> SceneCamera::make_affine_projection(float h
     };
 }
 
+std::array<float, 12> SceneCamera::affine_identity() {
+    return {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+}
+
+std::array<float, 16> SceneCamera::multiply_by_affine(const std::array<float, 16>& a,
+                                                      const std::array<float, 12>& b) {
+    std::array<float, 16> out{};
+    for (size_t row = 0; row < 4; ++row) {
+        const float a0 = a[row * 4 + 0];
+        const float a1 = a[row * 4 + 1];
+        const float a2 = a[row * 4 + 2];
+        const float a3 = a[row * 4 + 3];
+        for (size_t col = 0; col < 3; ++col) {
+            // Three terms only: b's implicit fourth row contributes nothing outside column 3.
+            out[row * 4 + col] = a0 * b[0 * 4 + col] + a1 * b[1 * 4 + col] + a2 * b[2 * 4 + col];
+        }
+        // Column 3 picks up a[row][3] directly, which is what b[3] = (0,0,0,1) contributes.
+        out[row * 4 + 3] = a0 * b[0 * 4 + 3] + a1 * b[1 * 4 + 3] + a2 * b[2 * 4 + 3] + a3;
+    }
+    return out;
+}
+
+std::array<float, 16> SceneCamera::compose_view_projection(const std::array<float, 16>& projection,
+                                                           const regenny::LTMatrix3x4& view) {
+    std::array<float, 12> affine{};
+    for (size_t i = 0; i < 12; ++i) {
+        affine[i] = view.m[i];
+    }
+    return multiply_by_affine(projection, affine);
+}
+
 uintptr_t SceneCamera::record_address() {
     return exe_at(kRecordOffset);
 }

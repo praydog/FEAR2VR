@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHICH OPERAND IS AFFINE IS READABLE FROM THE TERM COUNT.** Two multiplies here look alike until you
+  count products: three-term sums with a bare `A[r][3]` added to column 3 mean B's fourth row is the
+  implicit (0,0,0,1); four-term sums with B's row 3 COPIED to the output mean A's is. The engine stores
+  those operands as 3x4, so the implicit row is the layout rather than an inference.
+  
+- **A CHECK THAT SKIPS THE HOMOGENEOUS ROW MISSES THE CONVENTION IT IS TESTING.** My translation probe
+  asserted out[0][3] and out[1][3] and passed -- but a multiply bug confined to row 3, the part that
+  actually distinguishes these conventions, would pass identically. Now all sixteen coefficients are
+  checked against the closed form of P * T, which pins out[2][3] = tz - near and out[3][3] = tz.
+  
+- **GATE ON THE NARROWEST PREDICATE THAT MAKES THE IDENTITY TRUE.** The 2/width identity was gated on
+  `affine`, but the mode-1 builder is affine too and scaled by (far - near), so its m[0][0] is k/half and
+  the identity legitimately fails. A rare mode-1 sample would have been a flake. Gated on
+  is_normalized_orthographic_projection() instead, which is the condition the identity actually needs.
+
 - **VALIDATING THE INPUT IS NOT VALIDATING THE OUTPUT.** The projection builders rejected non-finite and
   non-positive half-extents, so `optional` looked like it meant "usable matrix". It did not: a finite
   POSITIVE extent near the bottom of float range overflows its reciprocal to infinity, and the builder

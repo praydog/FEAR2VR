@@ -3315,6 +3315,29 @@ std::string build_shader_params_json() {
     // reported here is the snapshot's own method, so a consumer validating what it read runs
     // exactly this code rather than a copy of it.
     const auto scam = sdk::SceneCamera::snapshot();
+
+    // RECOMPOSING THE ENGINE'S OWN OUTPUT. The record holds the projection (+0x78), the view
+    // (+0x48) and the view-projection the engine built from them (+0xB8). Running our transcription
+    // of LTMatrix_Mul4x4ByAffine over the first two must reproduce the third.
+    //
+    // This is real corroboration, unlike the synthetic probes: the inputs and the expected output
+    // are all the engine's. Its strength depends on the pass, though -- while the view matrix is
+    // identity the comparison cannot distinguish a transposed implementation, so it is reported
+    // together with whether the view was identity at the time.
+    bool compose_matches_record = false;
+    if (scam.has_value()) {
+        const auto recomposed =
+            sdk::SceneCamera::compose_view_projection(scam->projection, scam->view);
+        compose_matches_record = true;
+        for (size_t i = 0; i < 16; ++i) {
+            const float want = scam->view_projection[i];
+            const float got = recomposed[i];
+            const float allow = fabsf(want) * 1e-4f + 1e-5f;
+            if (!(fabsf(got - want) <= allow)) {
+                compose_matches_record = false;
+            }
+        }
+    }
     // Sized with headroom and CHECKED: an earlier 448 silently truncated once the projection
     // classifiers were added, and a half-written object is invalid JSON that fails downstream as
     // "missing field" rather than as "the report is broken".
@@ -3324,12 +3347,14 @@ std::string build_shader_params_json() {
         sc_len = snprintf(sc, sizeof(sc),
                  "\"scene_camera\":true,\"sc_mode\":%u,\"sc_vp_w\":%lld,\"sc_vp_h\":%lld,"
                  "\"sc_viewport_valid\":%s,\"sc_view_identity\":%s,\"sc_perspective\":%s,"
-                 "\"sc_ortho_matches_viewport\":%s,\"sc_proj_off_x\":%.4f,"
+                 "\"sc_normalized_ortho\":%s,\"sc_ortho_matches_viewport\":%s,"
+                 "\"sc_proj_off_x\":%.4f,"
                  "\"sc_proj_off_y\":%.4f,\"sc_hvp_x\":%.4f,\"sc_hvp_y\":%.4f,"
                  "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,"
                  "\"sc_pose_rot_unit\":%s,\"sc_pose_pos_finite\":%s,"
                  "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
                  "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,"
+                 "\"sc_compose_matches_record\":%s,"
                  "\"sc_affine\":%s,\"sc_w_row_scale\":%.6f,\"sc_fov_present\":%s,"
                  "\"sc_fov_y_deg\":%.3f,\"sc_proj_agrees_hvp\":%s,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
@@ -3337,6 +3362,7 @@ std::string build_shader_params_json() {
                  scam->viewport_valid() ? "true" : "false",
                  scam->view_is_identity() ? "true" : "false",
                  scam->is_perspective_projection() ? "true" : "false",
+                 scam->is_normalized_orthographic_projection() ? "true" : "false",
                  scam->projection_matches_viewport_ortho() ? "true" : "false",
                  scam->proj_center_offset_x, scam->proj_center_offset_y,
                  scam->half_view_plane_x, scam->half_view_plane_y,
@@ -3345,6 +3371,7 @@ std::string build_shader_params_json() {
                  scam->pose_position_is_finite() ? "true" : "false",
                  scam->pose.position.x, scam->pose.position.y, scam->pose.position.z,
                  scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false",
+                 compose_matches_record ? "true" : "false",
                  scam->is_affine_projection() ? "true" : "false",
                  scam->projection_w_row_scale(),
                  scam->fov_y_radians().has_value() ? "true" : "false",
@@ -3406,6 +3433,60 @@ std::string build_shader_params_json() {
     const bool rejects_zero_span =
         !sdk::SceneCamera::make_affine_projection(kProbeHalfX, kProbeHalfY, 4.3f, 4.3f).has_value();
 
+    // THE COMPOSE, exercised on cases whose answers are known independently of the code under
+    // test. Identity must leave a matrix alone; a pure translation in the affine operand must land
+    // in column 3 scaled by the projection's own row -- out[0][3] == m00*tx, which follows from the
+    // convention rather than from running this function.
+    bool compose_identity_ok = false;
+    bool compose_translation_ok = false;
+    bool compose_keeps_perspective = false;
+    if (probe_matrix.has_value()) {
+        const auto ident = sdk::SceneCamera::multiply_by_affine(*probe_matrix,
+                                                               sdk::SceneCamera::affine_identity());
+        compose_identity_ok = true;
+        for (size_t i = 0; i < 16; ++i) {
+            if (fabsf(ident[i] - (*probe_matrix)[i]) > 1e-5f) {
+                compose_identity_ok = false;
+            }
+        }
+        std::array<float, 12> translate = sdk::SceneCamera::affine_identity();
+        constexpr float kTx = 11.0f, kTy = -3.0f, kTz = 7.0f;
+        translate[3] = kTx;
+        translate[7] = kTy;
+        translate[11] = kTz;
+        const auto moved = sdk::SceneCamera::multiply_by_affine(*probe_matrix, translate);
+        const float m00 = (*probe_matrix)[0];
+        const float m11 = (*probe_matrix)[5];
+        constexpr float kNear = 4.3f;
+
+        // ALL SIXTEEN COEFFICIENTS, from the closed form of P * T rather than from running the
+        // function. Checking only columns 0 and 1 of column 3 would miss the HOMOGENEOUS ROW, which
+        // is the part of the convention actually being mapped: a bug in row 3 passes both the
+        // identity case and a translation checked only at [3] and [7].
+        //
+        //   row 2 of P is (0, 0, 1, -near)  ->  out[2][3] = tz - near
+        //   row 3 of P is (0, 0, 1,  0)     ->  out[3][3] = tz, out[3][2] = 1
+        const std::array<float, 16> want = {
+            m00,  0.0f, 0.0f, m00 * kTx,
+            0.0f, m11,  0.0f, m11 * kTy,
+            0.0f, 0.0f, 1.0f, kTz - kNear,
+            0.0f, 0.0f, 1.0f, kTz,
+        };
+        compose_translation_ok = true;
+        for (size_t i = 0; i < 16; ++i) {
+            const float allow = fabsf(want[i]) * 1e-4f + 1e-5f;
+            if (!(fabsf(moved[i] - want[i]) <= allow)) {
+                compose_translation_ok = false;
+            }
+        }
+
+        sdk::SceneCameraSnapshot composed{};
+        composed.projection = moved;
+        composed.half_view_plane_x = kProbeHalfX;
+        composed.half_view_plane_y = kProbeHalfY;
+        compose_keeps_perspective = composed.is_perspective_projection();
+    }
+
     // The value a correct implementation must recover, computed here from the input rather than
     // hard-coded, so the expectation cannot drift away from the probe.
     const float want_fov_y = 2.0f * atanf(kProbeHalfY);
@@ -3417,7 +3498,9 @@ std::string build_shader_params_json() {
              "\"probe_scaled_fov_y\":%.6f,\"probe_affine_is_affine\":%s,"
              "\"probe_affine_fov_present\":%s,\"probe_built\":%s,"
              "\"probe_rejects_zero_extent\":%s,\"probe_rejects_negative_extent\":%s,"
-             "\"probe_rejects_zero_span\":%s,\"probe_rejects_tiny_extent\":%s,",
+             "\"probe_rejects_zero_span\":%s,\"probe_rejects_tiny_extent\":%s,"
+             "\"compose_identity\":%s,\"compose_translation\":%s,"
+             "\"compose_keeps_perspective\":%s,",
              probe.is_perspective_projection() ? "true" : "false",
              probe.projection_agrees_with_half_view_plane() ? "true" : "false",
              probe_fov_y.value_or(-1.0f), want_fov_y,
@@ -3429,7 +3512,10 @@ std::string build_shader_params_json() {
              rejects_zero_extent ? "true" : "false",
              rejects_negative_extent ? "true" : "false",
              rejects_zero_span ? "true" : "false",
-             rejects_tiny_extent ? "true" : "false");
+             rejects_tiny_extent ? "true" : "false",
+             compose_identity_ok ? "true" : "false",
+             compose_translation_ok ? "true" : "false",
+             compose_keeps_perspective ? "true" : "false");
     if (pr_len < 0 || static_cast<size_t>(pr_len) >= sizeof(pr)) {
         return "{\"ok\":false,\"error\":\"probe fragment truncated\"}";
     }

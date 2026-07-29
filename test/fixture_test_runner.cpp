@@ -3798,6 +3798,20 @@ int main(int argc, char** argv) {
             check(json_bool(body, "probe_affine_fov_present", a_fov) && !a_fov,
                   "and yields no field of view");
 
+            // THE COMPOSE, on cases whose answers follow from the convention rather than from the
+            // function. Composing with the identity must change nothing; a translation in the
+            // affine operand must appear in column 3 scaled by the projection's own row. Both are
+            // what a consumer building a per-eye matrix depends on, and the transpose convention
+            // would fail the second while passing the first.
+            bool ci = false, ct = false, ck = false;
+            check(json_bool(body, "compose_identity", ci) && ci,
+                  "multiply_by_affine with the affine identity leaves the matrix unchanged");
+            check(json_bool(body, "compose_translation", ct) && ct,
+                  "P * translation matches its closed form in ALL SIXTEEN coefficients, including "
+                  "the homogeneous row (out[2][3] == tz-near, out[3][3] == tz)");
+            check(json_bool(body, "compose_keeps_perspective", ck) && ck,
+                  "composing preserves the perspective classification");
+
             // REJECTION, because a builder that quietly accepts a degenerate frustum hands back a
             // matrix that still looks usable -- a zero scale coefficient with m[3][2] intact.
             bool r0 = false, r1 = false, r2 = false;
@@ -3838,6 +3852,21 @@ int main(int argc, char** argv) {
         check(have_dims, "the camera's viewport extents are reported and parseable");
         if (configured) {
             check(sc_w > 0 && sc_h > 0, "a configured camera reports positive viewport extents");
+        }
+
+        // THE ONE PIECE OF REAL CORROBORATION IN THIS BLOCK. Every other matrix check here runs on
+        // a matrix we built. This one takes the engine's own projection and view out of the record,
+        // runs our transcription of LTMatrix_Mul4x4ByAffine over them, and requires the result to
+        // equal the view-projection THE ENGINE built and stored at +0xB8.
+        //
+        // Its strength is pass-dependent and the suite does not pretend otherwise: while the view
+        // matrix is identity -- which is the screen pass, i.e. almost every sample from outside a
+        // render hook -- the product cannot distinguish a transposed implementation. The synthetic
+        // translation case above is what covers the ordering; this covers the transcription.
+        if (configured) {
+            bool recomposed = false;
+            check(json_bool(body, "sc_compose_matches_record", recomposed) && recomposed,
+                  "our compose reproduces the engine's own stored view-projection");
         }
 
         // ---- PROJECTION CLASSIFICATION, AND THE CONTRACT AROUND FOV ------------------
@@ -3894,7 +3923,20 @@ int main(int argc, char** argv) {
         // two regions only -- a tear confined to the view, derived or trailing matrices would
         // still pass, so this is not an atomicity check on the whole record. Gated on the
         // projection actually being orthographic, since the identity does not apply otherwise.
-        if (configured && affine) {
+        //
+        // GATED ON THE NARROW PREDICATE, not on `affine`: the mode-1 builder is affine too, but its
+        // matrix is scaled by (far - near), so m[0][0] is k/half rather than 2/width and the
+        // identity legitimately does not hold. Gating on `affine` would have turned a rare mode-1
+        // snapshot into a flaky failure.
+        bool normalized_ortho = false;
+        const bool normalized_ok = json_bool(body, "sc_normalized_ortho", normalized_ortho);
+        if (configured) {
+            check(normalized_ok, "the normalized-orthographic predicate is reported");
+            if (normalized_ortho) {
+                check(affine, "a normalized orthographic projection is also classified affine");
+            }
+        }
+        if (configured && normalized_ortho) {
             check(json_has(body, "\"sc_ortho_matches_viewport\":true"),
                   "the orthographic projection matches its own viewport (2/w, -2/h) -- ties the "
                   "matrix to the rect");
