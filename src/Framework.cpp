@@ -1379,7 +1379,7 @@ std::string build_models_json() {
                 const auto back = skel->node_name(*idx);
                 const auto parent = skel->parent_of(*idx);
                 const auto chain = skel->path_to_root(*idx);
-                const auto pose = skel->pose_a(*idx);
+                const auto pose = skel->bind_pose(*idx);
                 char nb[512];
                 snprintf(nb, sizeof(nb),
                          "%s{\"asked\":\"%s\",\"index\":%zu,\"name\":\"%s\",\"round_trip\":%s,"

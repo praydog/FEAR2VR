@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **CHECK FOR AN INCUMBENT ACCESSOR BEFORE ADDING ONE. I built four duplicates in two passes.** The
+  header already had `pose_a`/`pose_b` reading the very fields I "added" `bind_pose()` and
+  `anim_fallback_position()` for, a `Pose` struct my `NodePose` duplicated, and `path_to_root()` --
+  SEH-guarded, bounded, returning `optional` -- which my `node_chain_to_root()` reimplemented with a
+  WEAKER contract that conflated malformed with empty.
+  
+  Two walks over one structure can drift, and two names for one field means a consumer picks one and
+  inherits whichever set of comments is stale.
+  
+  The fix was NOT to revert to the incumbent names. `pose_a`/`pose_b` existed precisely because the
+  fields' roles were unknown, and this session established them -- so the right move was to CUT OVER:
+  `pose_a` -> `bind_pose`, `pose_b` -> `anim_fallback_position` (position only), one `Pose` struct,
+  and `node_depth`/`node_has_ancestor` expressed in terms of `path_to_root()` so there is one guarded
+  walk with three views. Reverting would have kept an API that hides semantics I had just proven.
+  
+  The lesson is the grep, not the taste: an accessor for a field I have just mapped is exactly the
+  thing most likely to exist already under a non-committal name.
+
 - **RETRACTING A CLAIM MEANS SWEEPING EVERY PLACE IT LANDED.** Deleting the speculative helper was
   only the first step. The header still had, in the SAME comment block: "+0x24 is parent-relative"
   applied to the whole pair, the 268/2196 composition presented as evidence about coordinate spaces,

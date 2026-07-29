@@ -82,32 +82,23 @@ public:
 
     // How many steps to the root; 0 for the root itself. nullopt when the index is out of range or
     // the chain is malformed. Live the deepest skeleton is 11.
-    static constexpr size_t kMaxNodeDepth = 64;
-    std::optional<size_t> node_depth(size_t index) const;
-
-    // The chain from `index` up to and including the root, nearest first. Empty when the index is out
-    // of range or the chain is malformed -- which is distinguishable from a valid root, since a root
-    // yields exactly itself.
     //
-    // This is what "which limb is this bone on" needs: test whether a known node appears in the
-    // chain, without every caller re-walking parents by hand.
-    std::vector<size_t> node_chain_to_root(size_t index) const;
+    // Both of these are expressed in terms of path_to_root() below rather than walking parents
+    // again: one guarded walk, three views of it, so they cannot drift apart.
+    std::optional<size_t> node_depth(size_t index) const;
 
     // Is `ancestor` on `index`'s path to the root? False when either index is out of range, and false
     // for a node against itself -- an ancestor is strictly above.
     bool node_has_ancestor(size_t index, size_t ancestor) const;
 
-    // Each node stores TWO (position, rotation) pairs. Which is which is NOT
-    // established -- the obvious reading, that the second is the first's rigid
-    // inverse, was tested and fails on most nodes (see fear2.genny's LTModelNode).
-    // They are exposed raw and named non-committally so a caller can experiment
-    // without inheriting a guess dressed up as an API.
+    // Each node stores TWO (position, rotation) pairs. This header used to expose them as
+    // pose_a/pose_b because which was which was not established -- it now is, separately for each
+    // half and each by its own reader, so they are named for what they are. See bind_pose() and
+    // anim_fallback_position() further down for the evidence and for the one field left unexposed.
     struct Pose {
         regenny::LTVector position;
         regenny::LTRotation rotation;
     };
-    std::optional<Pose> pose_a(size_t index) const;
-    std::optional<Pose> pose_b(size_t index) const;
 
     // Indices from `index` up to and including the root, nearest first. Useful for
     // composing a world transform, since the array is in topological order and a
@@ -233,19 +224,12 @@ public:
     //          from g_AnimEval_NodeLocalRotations for every node, animated or not -- and the one
     //          function that does read it is ILTModel_GetAnimNodeTransform, copying the whole pair
     //          out. No accessor is offered for a field whose role cannot be described.
-    struct NodePose;
+    // (Declared above as Pose.)
 
     // The local position the evaluator substitutes for an unanimated node. Asset data, so no
     // staleness and no game thread. nullopt when the index is out of range or a read faulted.
-    std::optional<regenny::LTVector> anim_fallback_position(size_t node_index) const;
+    std::optional<regenny::LTVector> anim_fallback_position(size_t index) const;
 
-    // NEUTRALLY NAMED ON PURPOSE. Calling this BindPose would let a consumer infer from the C++ type
-    // that other node data IS bind data, which is the per-record confidence error this header exists
-    // to avoid.
-    struct NodePose {
-        regenny::LTVector position;
-        regenny::LTRotation rotation;
-    };
 
     // THE BIND POSE. nullopt when the index is out of range or the read faulted.
     //
@@ -271,7 +255,7 @@ public:
     //
     // (The composition arithmetic itself is NOT in doubt -- LTTransform_Compose was read directly and
     // the SDK's version agrees with the engine on every clean socket. Only these fields' meaning is.)
-    std::optional<NodePose> bind_pose(size_t node_index) const;
+    std::optional<Pose> bind_pose(size_t index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------
     //

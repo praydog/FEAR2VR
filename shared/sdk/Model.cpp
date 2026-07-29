@@ -428,21 +428,7 @@ std::optional<ModelSkeleton::Children> ModelSkeleton::children_of(size_t index) 
     return Children{first, count};
 }
 
-std::optional<ModelSkeleton::Pose> ModelSkeleton::pose_a(size_t index) const {
-    NodeRaw nd{};
-    if (!seh_read_node(m_records, static_cast<uint32_t>(m_count), index, &nd)) {
-        return std::nullopt;
-    }
-    return Pose{nd.pos_a, nd.rot_a};
-}
 
-std::optional<ModelSkeleton::Pose> ModelSkeleton::pose_b(size_t index) const {
-    NodeRaw nd{};
-    if (!seh_read_node(m_records, static_cast<uint32_t>(m_count), index, &nd)) {
-        return std::nullopt;
-    }
-    return Pose{nd.pos_b, nd.rot_b};
-}
 
 std::optional<std::vector<size_t>> ModelSkeleton::path_to_root(size_t index) const {
     if (index >= m_count) {
@@ -1265,128 +1251,56 @@ int64_t ModelSkeleton::engine_iface_gate_byte() {
 
 namespace {
 
-int64_t seh_read_bind_pose(const void* records, size_t index, float* out) {
-    int64_t ok = -1;
-    KANANLIB_SEH_TRY {
-        const auto* n = static_cast<const regenny::LTModelNode*>(records) + index;
-        out[0] = n->bind_position.x;
-        out[1] = n->bind_position.y;
-        out[2] = n->bind_position.z;
-        out[3] = n->bind_rotation.x;
-        out[4] = n->bind_rotation.y;
-        out[5] = n->bind_rotation.z;
-        out[6] = n->bind_rotation.w;
-        ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
-    return ok;
-}
 
 }  // namespace
 
 namespace {
 
-// POSITION ONLY, deliberately: the accessor does not expose the rotation half, so its success
-// should not depend on reading it either.
-int64_t seh_read_fallback_position(const void* records, size_t index, float* out) {
-    int64_t ok = -1;
-    KANANLIB_SEH_TRY {
-        const auto* n = static_cast<const regenny::LTModelNode*>(records) + index;
-        out[0] = n->anim_fallback_position.x;
-        out[1] = n->anim_fallback_position.y;
-        out[2] = n->anim_fallback_position.z;
-        ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
-    return ok;
-}
 
 }  // namespace
 
-std::vector<size_t> ModelSkeleton::node_chain_to_root(size_t index) const {
-    std::vector<size_t> out;
-    if (index >= m_count) {
-        return out;
-    }
-    size_t at = index;
-    for (size_t steps = 0; steps < kMaxNodeDepth; ++steps) {
-        out.push_back(at);
-        const auto par = parent_of(at);
-        if (!par.has_value()) {
-            return out;  // reached the root
-        }
-        // A chain must strictly descend. Anything else is malformed, and reporting that is better
-        // than silently returning a partial path.
-        if (*par >= at) {
-            return {};
-        }
-        at = *par;
-    }
-    return {};  // ran past the depth guard: malformed
-}
 
 std::optional<size_t> ModelSkeleton::node_depth(size_t index) const {
-    const auto chain = node_chain_to_root(index);
-    if (chain.empty()) {
+    const auto chain = path_to_root(index);
+    if (!chain.has_value() || chain->empty()) {
         return std::nullopt;
     }
-    return chain.size() - 1;
+    return chain->size() - 1;
 }
 
 bool ModelSkeleton::node_has_ancestor(size_t index, size_t ancestor) const {
     if (index == ancestor) {
         return false;  // strictly above
     }
-    const auto chain = node_chain_to_root(index);
-    for (size_t i = 1; i < chain.size(); ++i) {
-        if (chain[i] == ancestor) {
+    const auto chain = path_to_root(index);
+    if (!chain.has_value()) {
+        return false;
+    }
+    for (size_t i = 1; i < chain->size(); ++i) {
+        if ((*chain)[i] == ancestor) {
             return true;
         }
     }
     return false;
 }
 
-std::optional<regenny::LTVector>
-ModelSkeleton::anim_fallback_position(size_t node_index) const {
-    if (m_records == nullptr || node_index >= m_count) {
+std::optional<regenny::LTVector> ModelSkeleton::anim_fallback_position(size_t index) const {
+    NodeRaw nd{};
+    if (!seh_read_node(m_records, static_cast<uint32_t>(m_count), index, &nd)) {
         return std::nullopt;
     }
-    float v[3]{};
-    if (seh_read_fallback_position(m_records, node_index, v) < 0) {
-        return std::nullopt;
-    }
-    // POSITION ONLY. The rotation half of this record pair is read by exactly one secondary getter
-    // and never by the skeleton evaluator, so its role is undescribed -- and an accessor for a value
-    // nobody can characterise would only invite a consumer to assume one.
-    regenny::LTVector out{};
-    out.x = v[0];
-    out.y = v[1];
-    out.z = v[2];
-    return out;
+    // POSITION ONLY: the rotation half of this pair is read by one secondary getter and never by the
+    // skeleton evaluator, so its role is undescribed and it is not handed out.
+    return nd.pos_b;
 }
 
 
-std::optional<ModelSkeleton::NodePose> ModelSkeleton::bind_pose(size_t node_index) const {
-    if (m_records == nullptr || node_index >= m_count) {
+std::optional<ModelSkeleton::Pose> ModelSkeleton::bind_pose(size_t index) const {
+    NodeRaw nd{};
+    if (!seh_read_node(m_records, static_cast<uint32_t>(m_count), index, &nd)) {
         return std::nullopt;
     }
-    float v[7]{};
-    if (seh_read_bind_pose(m_records, node_index, v) < 0) {
-        return std::nullopt;
-    }
-    NodePose out{};
-    out.position.x = v[0];
-    out.position.y = v[1];
-    out.position.z = v[2];
-    out.rotation.x = v[3];
-    out.rotation.y = v[4];
-    out.rotation.z = v[5];
-    out.rotation.w = v[6];
-    return out;
+    return Pose{nd.pos_a, nd.rot_a};
 }
 
 std::optional<ModelSkeleton::EyeGeometry> ModelSkeleton::eye_geometry() const {
