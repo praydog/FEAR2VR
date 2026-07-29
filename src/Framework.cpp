@@ -469,6 +469,21 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // The animation-name lookup table. Ascending order is what the engine's own
+    // binary search requires, so it is an invariant with a quiet failure mode.
+    out += ",\"anim_tables\":";
+    if (const auto at = mgr->check_anim_tables(8192); at.has_value()) {
+        char tb[256];
+        snprintf(tb, sizeof(tb),
+                 "{\"assets\":%zu,\"table_sane\":%zu,\"hashes_ascending\":%zu,"
+                 "\"entries_total\":%zu,\"max_entries\":%zu}",
+                 at->assets, at->table_sane, at->hashes_ascending, at->entries_total,
+                 at->max_entries);
+        out += tb;
+    } else {
+        out += "null";
+    }
+
     // Bounding geometry across every type. Same self-check shape: these are
     // identities SetDims establishes, so a divergence means a moved offset in
     // the culling inputs (dims / radius / AABB).

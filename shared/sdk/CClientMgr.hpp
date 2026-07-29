@@ -397,6 +397,27 @@ public:
         size_t count_dup_ok;    // entry_count_dup == entry_count
     };
 
+    // ---- the animation-name lookup table (asset+0x6C) --------------------
+    //
+    // LTModelAsset::anim_names is a std::vector of {name_hash, value} pairs that
+    // LTModelAsset_FindAnimByName BINARY SEARCHES. That makes ascending order a
+    // FUNCTIONAL REQUIREMENT, not an incidental property of the data: if it ever
+    // stopped holding, the engine's own name lookups would start missing entries
+    // silently, and nothing else would complain. It is exactly the kind of
+    // invariant worth a test, because the failure mode is quiet.
+    //
+    // The element size is the engine's own: its size helper is
+    // `(last - first) >> 3` and its indexer `first + 8 * i`.
+    struct AnimTableCheck {
+        size_t assets;          // distinct assets examined
+        size_t table_sane;      // first/last present and a plausible count
+        size_t hashes_ascending;// entries sorted by hash, as the binary search needs
+        size_t entries_total;   // entries across all tables (reported)
+        size_t max_entries;     // largest table seen (reported)
+    };
+
+    std::optional<AnimTableCheck> check_anim_tables(size_t max) const;
+
     // ---- skeleton nodes (names + hashes on the shared asset) -------------
     //
     // LTModelAsset::node_names is an array of node_count char* into the asset's

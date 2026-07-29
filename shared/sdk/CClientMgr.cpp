@@ -8,6 +8,7 @@
 
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
+#include "regenny/regenny/LTAnimNameEntry.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -1233,6 +1234,87 @@ std::optional<CClientMgr::AssetCheck> CClientMgr::check_model_assets(size_t max)
                                       &out.refcount_ge, &out.refcount_exact, &out.blob_size_sane,
                                       &out.arrays_in_blob, &out.write_order_ok, &out.count_matches,
                                       &out.count_dup_ok, max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    out.assets = static_cast<size_t>(n);
+    return out;
+}
+
+// POD-only SEH helper for the animation-name tables. Returns distinct assets, or
+// -1 on fault / non-termination.
+static int64_t seh_check_anim_tables(const regenny::CClientMgrListLink* head, size_t max,
+                                    size_t* sane, size_t* ascending, size_t* entries_total,
+                                    size_t* max_entries, size_t cap) {
+    constexpr size_t kMaxAssets = 512;
+    constexpr size_t kMaxEntries = 65536;
+    const regenny::LTModelAsset* seen[kMaxAssets]{};
+    size_t n_assets = 0;
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* a = obj->record.asset;
+                bool fresh = a != nullptr;
+                for (size_t i = 0; i < n_assets && fresh; ++i) {
+                    if (seen[i] == a) {
+                        fresh = false;
+                    }
+                }
+                if (fresh && n_assets < kMaxAssets) {
+                    seen[n_assets++] = a;
+                    const auto* first = a->anim_names.first;
+                    const auto* last = a->anim_names.last;
+                    if (first != nullptr && last >= first) {
+                        const size_t count = static_cast<size_t>(last - first);
+                        if (count > 0 && count <= kMaxEntries) {
+                            ++*sane;
+                            *entries_total += count;
+                            if (count > *max_entries) {
+                                *max_entries = count;
+                            }
+                            bool asc = true;
+                            for (size_t k = 1; k < count; ++k) {
+                                if (first[k].name_hash < first[k - 1].name_hash) {
+                                    asc = false;
+                                    break;
+                                }
+                            }
+                            if (asc) {
+                                ++*ascending;
+                            }
+                        }
+                    }
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        if (cur != head) {
+            return -1;
+        }
+        result = static_cast<int64_t>(n_assets);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+std::optional<CClientMgr::AnimTableCheck> CClientMgr::check_anim_tables(size_t max) const {
+    constexpr size_t kModelType = 1;
+    if (regenny() == nullptr || kModelType >= object_list_count()) {
+        return std::nullopt;
+    }
+    AnimTableCheck out{};
+    const int64_t n = seh_check_anim_tables(&regenny()->object_lists[kModelType], max,
+                                           &out.table_sane, &out.hashes_ascending,
+                                           &out.entries_total, &out.max_entries, max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

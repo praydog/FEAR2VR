@@ -31,6 +31,8 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTCameraObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrCounterNode.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgr.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameEntry.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameTable.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelNode.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelAsset.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelRecord.hpp" \

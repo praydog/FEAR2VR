@@ -920,6 +920,38 @@ int main(int argc, char** argv) {
             }
         }
 
+        // THE ANIMATION-NAME TABLE. Ascending hash order is not a nicety here: the
+        // engine finds animations by BINARY SEARCHING this vector, so if the order
+        // broke, lookups would start missing entries and nothing else would
+        // complain. A quiet failure mode is the best argument for a test.
+        //
+        // max_entries > 1 is asserted for the same reason repeated_names is
+        // asserted for the hash check: sortedness over a single element is
+        // vacuously true, so without it a scene with only trivial tables would
+        // report a perfect pass having verified nothing.
+        {
+            const size_t tp = body.find("\"anim_tables\":");
+            check(tp != std::string::npos, "objects report includes the anim table check");
+            if (json_has(body, "\"anim_tables\":null")) {
+                check(false, "anim table walk completed");
+            } else if (tp != std::string::npos) {
+                const size_t end = body.find('}', tp);
+                const std::string tb = body.substr(tp, end - tp + 1);
+                int64_t tassets = -1, sane = -1, asc = -1, ents = -1, mx = -1;
+                json_int(tb, "assets", tassets);
+                json_int(tb, "table_sane", sane);
+                json_int(tb, "hashes_ascending", asc);
+                json_int(tb, "entries_total", ents);
+                json_int(tb, "max_entries", mx);
+
+                check(tassets > 0, "assets with animation tables exist");
+                check(sane == tassets, "every asset's anim table has a sane base and count");
+                check(asc == sane, "every anim table is sorted by hash (the binary search needs it)");
+                check(ents >= sane, "every table contributes at least one entry");
+                check(mx > 1, "at least one table has multiple entries, so sortedness is not vacuous");
+            }
+        }
+
         // Bounding geometry across every object type. These are identities the
         // engine's own SetDims establishes (aabb = position +/- dims, radius =
         // |dims| + 0.1), so every live object must satisfy them. They guard the

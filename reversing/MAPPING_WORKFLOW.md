@@ -468,6 +468,30 @@ TREE were checkable with nothing but the asset's own node_count: one root marked
 off-by-one in the stride or a mis-sized record breaks the sum long before any
 individual field looks wrong.
 
+**A vtable slot's IDENTITY comes from what its worker touches, never from the
+reference interface's method order.** FEAR 2's `ILTModel` has 80 slots and the
+reference SDK's `iltmodel.h` lists methods in a plausible-looking order, so
+matching them up is tempting. It goes wrong quickly.
+
+Slot 69 takes `(hObj, index, char* dest, size_t len)` — exactly the shape of the
+reference's `GetNodeName(HOBJECT, HMODELNODE, char*, uint32)`, and it sits among
+other node-ish entries. I had it pencilled in as GetNodeName. Its worker settled
+otherwise in one decompile: it reads `this[69]` and bounds-checks against
+`this[70]` — which are `+0x114` and `+0x118`, the MATERIAL path array, whose
+strings end in `.mat`. It is an indexed material-name getter. Two slots away,
+`(hObj, float)` calling into the model update path really is `UpdateMainTracker`,
+so the reference is a useful *source of candidate names* while being worthless as
+an ordering.
+
+The consolation is that a misread reader is still a reader. Chasing the wrong
+hypothesis produced independent corroboration of the material array: the
+destructor had given base, length and a 28-byte stride, and now a getter arrives
+at the same three by a completely different route — and calls
+`std::string::c_str` on the element, naming the type outright rather than leaving
+it inferred from a stride. Follow a slot to its worker even when you expect to
+confirm something; the cost is one decompile and the payoff is either a name you
+can defend or a field you can defend.
+
 **A float blob's GROUPING is a hypothesis too — test it against a field you
 already know, never against how the numbers look.** Reading a span of floats
 and recognising a shape is the single easiest way to invent structure, because
