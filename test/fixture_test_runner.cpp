@@ -4321,6 +4321,27 @@ int main(int argc, char** argv) {
             check(json_bool(body, "cvar_runtime_in_table", cv_rt_table) && !cv_rt_table,
                   "that same variable is absent from the built-in descriptor table");
 
+            // ---- THE QUATERNION PRODUCT, AND ITS ORDER ---------------------------------------------
+            //
+            // Transcribed from the game client's own multiply, which CPlayerCamera's load path uses. The
+            // order convention is the part a consumer can get wrong invisibly: composing a headset rotation
+            // the wrong way round yields a result that looks plausible and turns the wrong way.
+            //
+            // Two non-commuting rotations make it decidable -- R(a*b) can equal R(a)*R(b) or R(b)*R(a) but
+            // not both -- so BOTH are asserted, one true and one FALSE. Asserting only the true one would
+            // pass on a commutative bug (a symmetrised formula), which is exactly the mistake that produces
+            // a mirrored view.
+            bool q_ab = false, q_ba = true, q_il = false, q_ir = false, q_unit = false;
+            check(json_bool(body, "quat_order_ab", q_ab) && q_ab,
+                  "R(a*b) equals R(a)*R(b) -- so the product applies b first, then a");
+            check(json_bool(body, "quat_order_ba", q_ba) && !q_ba,
+                  "and it does NOT equal R(b)*R(a), so the order is genuinely pinned");
+            check(json_bool(body, "quat_identity_left", q_il) && q_il &&
+                      json_bool(body, "quat_identity_right", q_ir) && q_ir,
+                  "the identity quaternion is neutral on both sides");
+            check(json_bool(body, "quat_product_unit", q_unit) && q_unit,
+                  "the product of two unit quaternions is unit -- no term is transposed");
+
             // ---- THE CAMERA TUNABLES, AND A WRITE THAT ROUND-TRIPS ---------------------------------
             //
             // The catalogue records each variable's live value as well as its name, and BOTH are checked. The

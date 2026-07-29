@@ -4695,3 +4695,45 @@ class LTInputDeviceMouse 0x30 {
 // consumer changing the FOV changes the console variable and there is no struct field to patch instead.
 //
 // 990 checks, 0 failures.
+
+// ---- A SERIALIZER NAMES ITS OWN FIELD SIZES, AND +340 IS NOT A COPY --------------------------------
+//
+// CPlayerCamera's vtable is small -- dtor, Init, and two more -- and the two more are Save and Load. That pair
+// is worth more than a field sweep, because a serializer states each field's SIZE IN BITS and, by omission,
+// which fields are derived.
+//
+// CPlayerCamera_Save (slot 2) writes through a serializer whose slot 44 takes an address and a bit count:
+//
+//     this+324    128 bits -> a rotation
+//     this+568    128 bits -> a rotation
+//     this+584      1 bit  -> a bool          (slot 36)
+//     this+6332            -> a dword         (slot 84)
+//
+// 128 bits at +324 and +568 CONFIRMS those are quaternions without inferring it from a live unit-length
+// reading -- and this project has been fooled by unit-length readings before, since an identity quaternion
+// read at a wrong offset is still unit. What is ABSENT is equally informative: the applied pose at +232/+244
+// is NOT saved, so it is derived per frame.
+//
+// this+6332 also puts the class at 6336 bytes or more. The field sweep that produced the map above covered
+// ~700 bytes and had no way to know it was looking at a tenth of the object.
+//
+// CPlayerCamera_Load (slot 3) reads the same set back, initialising each local to the IDENTITY first so a
+// truncated save yields identity rather than garbage. AND IT DERIVES +340 INSTEAD OF LOADING IT: after reading
+// both rotations it calls the quaternion product with +324 as an operand and stores the result at +340.
+//
+// > A live read shows +324, +340 and +568 holding the same value, and "+340 is a copy of +324" was the obvious
+// > conclusion. The load path says product, not copy. Equal values are evidence of equal values; the code that
+// > writes them is evidence of what they are.
+//
+// THE QUATERNION PRODUCT ITSELF (gameclient 0x100016B0, now LTRotation_Multiply) is the standard Hamilton
+// product, read term by term off the arithmetic. Transcribed as sdk::multiply_rotations -- the SDK had no
+// quaternion composition until now, though Object.hpp's rotation_matrix note had already flagged that anyone
+// composing quaternions must normalise first.
+//
+// ITS ORDER WAS MEASURED, NOT ARGUED. Two non-commuting rotations make it decidable: R(a*b) equals R(a)*R(b)
+// and NOT R(b)*R(a), checked through the engine's own rotation-to-matrix converter. So multiply_rotations(a, b)
+// applies b FIRST, then a, under this engine's column-vector convention. The suite asserts BOTH -- the match
+// and the non-match -- because asserting only the match would pass on a symmetrised formula, which is exactly
+// the bug that yields a mirrored view.
+//
+// 994 checks, 0 failures.

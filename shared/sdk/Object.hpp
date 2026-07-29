@@ -345,6 +345,25 @@ struct Matrix34 {
 // quaternion, which is the only input that describes no rotation at all.
 std::optional<Matrix34> rotation_matrix(const regenny::LTRotation& q);
 
+// THE QUATERNION PRODUCT, transcribed from the game client's own (gameclient.dll 0x100016B0), which
+// CPlayerCamera's load path uses to derive one stored rotation from another.
+//
+// It is the standard Hamilton product, verified term by term against the decompiled arithmetic rather than
+// assumed: w = aw*bw - dot(av, bv), and the vector part aw*bv + bw*av + cross(av, bv).
+//
+// THE ORDER CONVENTION IS THE PART THAT MATTERS TO A CONSUMER, and it is established by measurement rather
+// than by convention-lawyering: the suite builds R(a*b) and compares it against R(a)*R(b) and R(b)*R(a), and
+// only one can match. It is R(a)*R(b) -- so with this engine's column-vector matrices, multiply_rotations(a, b)
+// means "apply b FIRST, then a". A VR consumer composing a headset rotation onto the game's camera rotation
+// needs that order right or the result is mirrored in a way that looks almost plausible while turning the
+// wrong way.
+//
+// NOT NORMALISED, deliberately. The product of two unit quaternions is unit to within float error, but the
+// product of non-unit ones carries |a||b| -- and sdk::rotation_matrix divides by |q|^2, so a matrix built
+// from the result is still correct while a chain of further products drifts. See the note on
+// SceneCamera::invert_transform, which makes the same point from the other direction.
+regenny::LTRotation multiply_rotations(const regenny::LTRotation& a, const regenny::LTRotation& b);
+
 // The world model's cached local->world transform, and the inverse the engine keeps
 // beside it. Same type gate as world_to_brush: WorldModel or Camera only, since the
 // fields live past LTObject's end.

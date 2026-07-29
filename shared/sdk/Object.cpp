@@ -500,6 +500,16 @@ bool is_finite_f(float v) {
 
 }  // namespace
 
+regenny::LTRotation multiply_rotations(const regenny::LTRotation& a, const regenny::LTRotation& b) {
+    // Term-for-term as the client computes it (0x100016B0), with `a` the ecx operand.
+    regenny::LTRotation out{};
+    out.x = b.x * a.w + a.x * b.w + b.z * a.y - b.y * a.z;
+    out.y = b.y * a.w - b.z * a.x + a.y * b.w + a.z * b.x;
+    out.z = b.z * a.w + b.y * a.x - a.y * b.x + a.z * b.w;
+    out.w = b.w * a.w - b.x * a.x - b.y * a.y - a.z * b.z;
+    return out;
+}
+
 std::optional<Matrix34> rotation_matrix(const regenny::LTRotation& q) {
     const float x = q.x, y = q.y, z = q.z, w = q.w;
     if (!is_finite_f(x) || !is_finite_f(y) || !is_finite_f(z) || !is_finite_f(w)) {

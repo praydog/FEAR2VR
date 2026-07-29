@@ -4307,6 +4307,65 @@ std::string build_shader_params_json() {
                      !sdk::PlayerMgr::slot(4).has_value() && !sdk::PlayerMgr::player(4).has_value() &&
                          !sdk::PlayerMgr::read_pose(0).has_value());
 
+    // ---- THE QUATERNION PRODUCT, AND WHICH ORDER IT MEANS ----------------------------------------
+    //
+    // Two non-commuting rotations, so R(a*b) can match R(a)*R(b) or R(b)*R(a) but not both. Whichever it is
+    // IS the convention a consumer must use, and getting it backwards produces a plausible-looking result
+    // that turns the wrong way.
+    {
+        regenny::LTRotation qa{};
+        qa.x = 0.2f; qa.y = 0.3f; qa.z = -0.1f; qa.w = 0.927362f;  // unit to ~1e-6
+        regenny::LTRotation qb{};
+        qb.x = -0.4f; qb.y = 0.1f; qb.z = 0.5f; qb.w = 0.761577f;
+        regenny::LTRotation qi{};
+        qi.w = 1.0f;
+
+        const auto prod = sdk::multiply_rotations(qa, qb);
+        const auto ident_r = sdk::multiply_rotations(qa, qi);
+        const auto ident_l = sdk::multiply_rotations(qi, qa);
+        const auto same = [](const regenny::LTRotation& p, const regenny::LTRotation& q) {
+            return std::fabs(p.x - q.x) < 1e-5f && std::fabs(p.y - q.y) < 1e-5f &&
+                   std::fabs(p.z - q.z) < 1e-5f && std::fabs(p.w - q.w) < 1e-5f;
+        };
+        json_append_bool(out, "quat_identity_right", same(ident_r, qa));
+        json_append_bool(out, "quat_identity_left", same(ident_l, qa));
+        // A product of units stays unit -- the cheapest check that no term is transposed.
+        const float n = prod.x * prod.x + prod.y * prod.y + prod.z * prod.z + prod.w * prod.w;
+        json_append_bool(out, "quat_product_unit", std::fabs(n - 1.0f) < 1e-4f);
+
+        // Now the order, through matrices. Compare R(a*b) against both 3x3 products.
+        const auto ma = sdk::rotation_matrix(qa);
+        const auto mb = sdk::rotation_matrix(qb);
+        const auto mp = sdk::rotation_matrix(prod);
+        if (ma.has_value() && mb.has_value() && mp.has_value()) {
+            const auto mul3 = [](const sdk::Matrix34& x, const sdk::Matrix34& y) {
+                sdk::Matrix34 r{};
+                for (int i = 0; i < 3; ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        float acc = 0.0f;
+                        for (int k = 0; k < 3; ++k) {
+                            acc += x.m[i * 4 + k] * y.m[k * 4 + j];
+                        }
+                        r.m[i * 4 + j] = acc;
+                    }
+                }
+                return r;
+            };
+            const auto close = [](const sdk::Matrix34& x, const sdk::Matrix34& y) {
+                for (int i = 0; i < 3; ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        if (std::fabs(x.m[i * 4 + j] - y.m[i * 4 + j]) > 1e-4f) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+            json_append_bool(out, "quat_order_ab", close(*mp, mul3(*ma, *mb)));
+            json_append_bool(out, "quat_order_ba", close(*mp, mul3(*mb, *ma)));
+        }
+    }
+
     // ---- THE CAMERA TUNABLES, AND THE WRITE PATH -------------------------------------------------
     //
     // Every catalogued name must still resolve AND still hold the value the catalogue records. That second
