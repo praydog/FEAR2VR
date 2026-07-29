@@ -4100,6 +4100,51 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE ENGINE'S PUBLIC CLASSIFIER, AGAINST THE LOCAL MIRROR -------------------------------
+    //
+    // classify_object() reimplements four lines of engine code. Slot 23 IS those four lines. Comparing
+    // them across the whole interesting id space is what makes the mirror trustworthy rather than merely
+    // plausible -- and it covers the fallthrough, where an id past the joystick range must resolve to the
+    // keyboard rather than being rejected.
+    size_t cls_checked = 0, cls_agrees = 0;
+    for (int id : {0, 1, 27, 65, 255, 256, 999, 1000, 1001, 1005, 1006, 1007, 1500, 1999,
+                   2000, 2010, 2021, 2022, 3000, 5000}) {
+        const auto engine_idx = sdk::Input::engine_object_device_index(id);
+        if (!engine_idx.has_value()) {
+            continue;
+        }
+        ++cls_checked;
+        // The engine returns a device INDEX; the mirror returns a class. Keyboard is index 0, mouse 1,
+        // and joystick ids resolve to kind+2 which for the inert kind -1 lands at 1 -- so those are
+        // compared only on the two the mirror can claim without knowing a set's kind.
+        const auto cls = sdk::Input::classify_object(id);
+        bool agree = false;
+        if (cls == sdk::Input::ObjectClass::Keyboard) {
+            agree = (*engine_idx == 0);
+        } else if (cls == sdk::Input::ObjectClass::Mouse) {
+            agree = (*engine_idx == 1);
+        } else {
+            agree = true;  // joystick: the index depends on a binding set's kind, not on the id alone
+        }
+        if (agree) {
+            ++cls_agrees;
+        }
+    }
+    json_append_double(out, "input_classify_checked", static_cast<double>(cls_checked), 0);
+    json_append_double(out, "input_classify_agrees", static_cast<double>(cls_agrees), 0);
+
+    // Key names come from the engine (GetKeyNameTextW underneath). Reported as a count of vks that name
+    // themselves rather than as specific strings, since the names are locale- and layout-dependent.
+    size_t named_keys = 0;
+    for (uint32_t vk = 1; vk < 256; ++vk) {
+        const auto nm = sdk::Input::key_name(static_cast<uint8_t>(vk));
+        if (nm.has_value() && !nm->empty()) {
+            ++named_keys;
+        }
+    }
+    json_append_double(out, "input_named_keys", static_cast<double>(named_keys), 0);
+    json_append_bool(out, "input_key_name_rejects_zero", !sdk::Input::key_name(0).has_value());
+
     // ---- THE ENGINE'S OWN VIEW OF ITS DEVICES ---------------------------------------------------
     //
     // Both answers come through the ILTInput vtable, so they are independent of the array walk above.
@@ -4204,6 +4249,42 @@ std::string build_shader_params_json() {
     json_append_double(out, "input_bind_with_modifier", static_cast<double>(bind_mods), 0);
     json_append_double(out, "input_bind_first_action", static_cast<double>(first_action), 0);
     json_append_double(out, "input_bind_first_primary", static_cast<double>(first_primary), 0);
+
+    // THE ENGINE'S OWN ACTIVITY JUDGEMENT versus one computed here from the same inputs. For an
+    // unmodified binding the engine asks whether the object's value is non-zero; this reproduces that
+    // through object_value(). Records with a modifier are skipped: those read a latch inside the set's
+    // modifier-state vector, and none are in use on this build, so including them would compare two
+    // paths that both answer "no" for the same trivial reason.
+    size_t active_checked = 0, active_agrees = 0, modifier_records = 0;
+    for (const auto& set : sets) {
+        for (const auto& rec : set.entries) {
+            if (rec.primary_modifier != -1 || rec.alternate_modifier != -1) {
+                ++modifier_records;
+                continue;
+            }
+            const auto engine_active = sdk::Input::engine_binding_is_active(rec.address);
+            if (!engine_active.has_value()) {
+                continue;
+            }
+            bool mine = false;
+            for (const int32_t id : {rec.primary, rec.alternate}) {
+                if (id == -1) {
+                    continue;
+                }
+                const auto v = sdk::Input::object_value(id);
+                if (v.has_value() && *v != 0.0f) {
+                    mine = true;
+                }
+            }
+            ++active_checked;
+            if (mine == *engine_active) {
+                ++active_agrees;
+            }
+        }
+    }
+    json_append_double(out, "input_active_checked", static_cast<double>(active_checked), 0);
+    json_append_double(out, "input_active_agrees", static_cast<double>(active_agrees), 0);
+    json_append_double(out, "input_modifier_records", static_cast<double>(modifier_records), 0);
 
     // ---- THE OBJECT NAMESPACE, CROSS-CHECKED AGAINST THE RAW BANKS ----------------------------
     //

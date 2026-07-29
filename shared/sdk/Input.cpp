@@ -1,6 +1,7 @@
 #include "Input.hpp"
 
 #include <cstring>
+#include <iterator>
 
 #include <windows.h>
 
@@ -438,6 +439,85 @@ std::optional<uint32_t> Input::engine_device_count() {
     return static_cast<uint32_t>(out);
 }
 
+namespace {
+
+// MSVC refuses __try in a function that also needs object unwinding, so the guarded call lives here with
+// nothing but PODs and the caller builds the string.
+bool call_get_key_name(uintptr_t fn, uintptr_t obj, uint32_t vk, wchar_t* buffer, int count) {
+    using Fn = uint8_t(__thiscall*)(void*, uint32_t, wchar_t*, int);
+    uint8_t ok = 0;
+    KANANLIB_SEH_TRY {
+        ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), vk, buffer, count);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok != 0;
+}
+
+}  // namespace
+
+std::optional<std::string> Input::key_name(uint8_t vk) {
+    if (vk == 0) {
+        return std::nullopt;  // the engine rejects vk outside 1..255
+    }
+    const uintptr_t fn = interface_slot(kSlotGetKeyName);
+    const uintptr_t obj = interface_address();
+    if (fn == 0 || obj == 0) {
+        return std::nullopt;
+    }
+    wchar_t buffer[64]{};
+    if (!call_get_key_name(fn, obj, vk, buffer, static_cast<int>(std::size(buffer)))) {
+        return std::nullopt;
+    }
+    std::string out;
+    for (const wchar_t* p = buffer; *p != L'\0' && out.size() < 63; ++p) {
+        out.push_back(static_cast<char>(*p < 128 ? *p : '?'));
+    }
+    return out;
+}
+
+std::optional<uint32_t> Input::engine_object_device_index(int object_id) {
+    const uintptr_t fn = interface_slot(kSlotGetObjectDeviceIndex);
+    const uintptr_t obj = interface_address();
+    if (fn == 0 || obj == 0) {
+        return std::nullopt;
+    }
+    using Fn = uint8_t(__thiscall*)(void*, int, uint32_t*);
+    uint32_t index = 0xFFFFFFFFu;
+    uint8_t ok = 0;
+    KANANLIB_SEH_TRY {
+        ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), object_id, &index);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    if (ok == 0) {
+        return std::nullopt;
+    }
+    return index;
+}
+
+std::optional<bool> Input::engine_binding_is_active(uintptr_t record_address) {
+    if (record_address == 0) {
+        return std::nullopt;
+    }
+    const uintptr_t fn = interface_slot(kSlotIsBindingActive);
+    const uintptr_t obj = interface_address();
+    if (fn == 0 || obj == 0) {
+        return std::nullopt;
+    }
+    using Fn = uint8_t(__thiscall*)(void*, uintptr_t);
+    uint8_t out = 0;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), record_address);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    return out != 0;
+}
+
 std::optional<bool> Input::device_is_present(size_t index) {
     if (index >= kDeviceSlots) {
         return false;  // the engine's own bound check is `index < 6`
@@ -494,6 +574,7 @@ std::vector<Input::BindingSet> Input::binding_sets() {
                 break;
             }
             BindingRecord rec{};
+            rec.address = records + r * kRecordStride;
             rec.action_code = raw[0];
             rec.handler = raw[1];
             rec.userdata = raw[2];

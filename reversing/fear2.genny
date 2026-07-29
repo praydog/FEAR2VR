@@ -3649,19 +3649,45 @@ class LTInputDeviceMouse 0x30 {
 // WHICH action codes map to which keys is NOT asserted -- that is the user's configuration, not a property
 // of the engine.
 //
-// ---- ILTInput's PUBLIC VTABLE, AND WHERE THE ACTION NAMES ARE NOT ------------------------------
+// ---- ILTInput's PUBLIC VTABLE: 28 SLOTS, AND WHERE THE ACTION NAMES ARE NOT --------------------
+//
+// AN EARLIER VERSION OF THIS SECTION LISTED 12 SLOTS AND CALLED IT THE INTERFACE. Twelve was simply where
+// my dump stopped, presented as a complete map -- less than half the API. THE REAL END IS BOUNDED BY DATA:
+// slot 27 is the last code pointer, and the string "CLTInput" begins immediately after it at 0x678010.
+//
+// THAT IS THE THIRD TIME IN THIS PROJECT A SCAN'S OWN EXTENT WAS MISTAKEN FOR THE THING'S EXTENT -- twice
+// on the engine variable table (22, then 106, actually 107) and now here. The pattern is identical every
+// time: a reading stops for a reason belonging to the reader, and the result looks complete because
+// nothing about it is visibly wrong. The fix is always the same: find what TERMINATES the structure.
 //
 // EVERY SLOT IS AN ADJUSTOR THUNK -- `add ecx, 4; jmp impl` -- shifting `this` from the CLTInput object to
 // its DEVICE ARRAY at +4. That is worth knowing before calling one: a caller passes the INTERFACE pointer
 // and lets the thunk adjust, and it also explains why IDA's pseudocode for these methods indexes fields
 // four bytes lower than the CLTInput layout would suggest.
 //
-//     0  ~CLTInput(bool deleting)              6  DisableInput()   -- writes 0 to +0x4C
-//     1  InterfaceImplementation() -> CLTInput 7  AllocBindingSet(recordCount)
-//     2  Init()                                8  DestroyBindingSet(set)
-//     3  Poll()                                9  SetBindingSetDeviceKind(set, kind)
-//     4  Term()                               10  GetDeviceCount() -> 6
-//     5  EnableInput()  -- writes 1 to +0x4C  11  IsDevicePresent(index) -> bool
+//     0  ~CLTInput(bool deleting)             14  ForEachRecord(set, ?)
+//     1  InterfaceImplementation() -> CLTInput 15  ApplyBindingSet(?, ?, set)
+//     2  Init()                               16  unmapped; reads object values, uses modifier state
+//     3  Poll()                               17  unmapped, 0xC9 bytes
+//     4  Term()                               18  SetActionHandler(record, fn, userdata)
+//     5  EnableInput()  -- writes 1 to +0x4C  19  GetActionHandler(record, &userdata) -> fn
+//     6  DisableInput() -- writes 0 to +0x4C  20  EnableRecord(record)
+//     7  AllocBindingSet(recordCount)         21  DisableRecord(record)
+//     8  DestroyBindingSet(set)               22  IsBindingActive(record) -> bool
+//     9  SetBindingSetDeviceKind(set, kind)   23  GetObjectDeviceIndex(objectId, &index) -> bool
+//    10  GetDeviceCount() -> 6                24  unmapped passthrough
+//    11  IsDevicePresent(index) -> bool       25  GetKeyName(vk, LPWSTR out, cchSize) -> bool
+//    12  SetInputCallback(fn, userdata)       26  unmapped passthrough
+//    13  SetObjectScale(set, objectId, float) 27  stub returning true
+//
+// SLOTS 18 AND 19 ARE THE CLEANEST INTERVENTION POINT IN THIS SUBSYSTEM: a mod can install its own handler
+// on an existing action instead of hooking the dispatcher, and read the original pair back first so it can
+// be restored.
+//
+// SLOT 25 PARTLY ANSWERS THE NAMING PROBLEM. The ACTION names are not in this binary, but the KEY names
+// are: GetKeyName formats through GetKeyNameTextW, so a consumer can at least show what a binding is bound
+// TO. 115 of the 255 virtual keys name themselves on this machine; the count is not pinned by the suite
+// because GetKeyNameTextW is locale- and layout-dependent.
 //
 // Slot 11's behaviour is fully determined even though the device method it forwards to is opaque: it tests
 // devices[index] and calls vtable slot 8, a stub that returns true unconditionally, so the answer is
@@ -3684,4 +3710,41 @@ class LTInputDeviceMouse 0x30 {
 // The device sizes are asserted at COMPILE time in Input.hpp, as the sums that must equal 0x304 and 0x30 --
 // so adjusting an offset without re-deriving it stops the build rather than passing a runtime check.
 //
-// 855 checks, 0 failures.
+// ---- THE MODIFIER STATE VECTOR, INSIDE THE SET HEADER ------------------------------------------
+//
+// LTInput_ModifierStateAt(base, index) returns `base[1] + 24 * index`, bounds-checked against
+// LTInput_ModifierStateCount which computes `(base[2] - base[1]) / 24`. Callers pass `setHeader + 8`, so
+// the states are a VECTOR LIVING IN THE SET HEADER:
+//     set +0x0C  begin        set +0x10  end        set +0x14  capacity end
+// Live all three agree on 2 records, exactly sized (end == capacity end).
+//
+// A STATE RECORD (24 bytes), live values from the one registered set:
+//     +0x00  0.005f     -- unestablished
+//     +0x04  0          -- unestablished
+//     +0x08  THRESHOLD  -- live 1.0f
+//     +0x0C  falling accumulator
+//     +0x10  rising accumulator
+//     +0x14  latch byte -- what IsBindingActive reads for a modified binding
+//
+// A QUIRK WORTH KNOWING: LTInput_EvaluateThresholdBinding subtracts 0.1 from the threshold the first time
+// it sees EXACTLY 1.0, and writes it back -- so a 1.0 threshold permanently becomes 0.9. It is a one-shot
+// mutation, not an epsilon comparison. Live both states still read 1.0, which means the evaluator has
+// never run on them.
+//
+// AND THE TWO SIDES MEET FROM DIFFERENT DIRECTIONS: exactly 2 of the 108 records carry a modifier id, and
+// the vector holds exactly 2 states. One number comes from a record field, the other from a begin/end
+// difference. Those 2 records are UNBOUND, which is why an earlier measurement of "bindings using a
+// modifier" read 0 -- it counted only bound records. Both numbers are right and they describe different
+// things.
+//
+// The 0.0f that IsBindingActive compares against is named g_LTVisPlaneRejectEpsilon in the IDB, and that
+// name is misleading here: it is a generic zero float merged by /OPT:ICF, which this binary does heavily.
+//
+// EXPOSED AS sdk::Input: key_name(), engine_object_device_index(), engine_binding_is_active(), and
+// BindingRecord::address so a consumer can drive slots 18/19/22 on a specific record. The suite compares
+// the engine against local reproductions in two more places -- the public classifier against
+// classify_object across the id space including the fallthrough, and IsBindingActive against a
+// value-derived answer on all 106 unmodified records -- and closes the record count arithmetically:
+// compared plus modifier-carrying equals every record walked.
+//
+// 862 checks, 0 failures.

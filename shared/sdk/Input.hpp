@@ -240,28 +240,41 @@ public:
     // why the engine routes those through a threshold accumulator instead.
     static std::optional<bool> object_changed(int object_id);
 
-    // ---- ILTInput's VTABLE, AND THE ADJUSTOR THUNKS ------------------------------------
+    // ---- ILTInput's VTABLE: 28 SLOTS -----------------------------------------------------
     //
-    // Every slot below is a thin adjustor thunk -- `add ecx, 4; jmp impl` -- shifting `this` from the
-    // CLTInput object to its DEVICE ARRAY at +4. A caller going through the vtable therefore passes the
-    // INTERFACE pointer and lets the thunk adjust; handing it the array directly would adjust twice.
+    // AN EARLIER VERSION OF THIS HEADER LISTED 12 SLOTS AND CALLED THAT THE INTERFACE. It was where a
+    // dump happened to stop, presented as a complete map -- less than half the API. The real end is
+    // bounded by DATA: slot 27 is the last code pointer, and the string "CLTInput" begins immediately
+    // after it. That is the difference between a boundary and a stopping point, and it is the third time
+    // in this project that a scan's own extent got mistaken for the thing's extent.
     //
-    //    0  ~CLTInput(bool deleting)
-    //    1  InterfaceImplementation() -> "CLTInput"
-    //    2  Init()      -- allocates the keyboard (0x304) and mouse (0x30), installs the subclass WndProc
-    //    3  Poll()      -- polls the six device slots, then dispatches every binding set
-    //    4  Term()      -- restores the WndProc, then destroys all six devices via their slot 0
-    //    5  EnableInput()   -- writes 1 to the enable flag at +0x4C
-    //    6  DisableInput()  -- writes 0 to it
-    //    7  AllocBindingSet(recordCount) -> set
-    //    8  DestroyBindingSet(set)
-    //    9  SetBindingSetDeviceKind(set, kind)  -- the byte at the set's +0x1C; -1 leaves it inert
-    //   10  GetDeviceCount() -> 6
-    //   11  IsDevicePresent(index) -> bool
+    // Many slots are thin adjustor thunks -- `add ecx, 4; jmp impl` -- shifting `this` from the CLTInput
+    // object to its DEVICE ARRAY at +4. A caller therefore passes the INTERFACE pointer and lets the
+    // thunk adjust; handing it the array directly would adjust twice.
+    //
+    //    0  ~CLTInput(bool deleting)          14  ForEachRecord(set, ?)
+    //    1  InterfaceImplementation()         15  ApplyBindingSet(?, ?, set)
+    //    2  Init()                            16  (unmapped; reads object values, uses modifier state)
+    //    3  Poll()                            17  (unmapped, 0xC9 bytes)
+    //    4  Term()                            18  SetActionHandler(record, fn, userdata)
+    //    5  EnableInput()   -- writes +0x4C=1 19  GetActionHandler(record, &userdata) -> fn
+    //    6  DisableInput()  -- writes +0x4C=0 20  EnableRecord(record)
+    //    7  AllocBindingSet(recordCount)      21  DisableRecord(record)
+    //    8  DestroyBindingSet(set)            22  IsBindingActive(record) -> bool
+    //    9  SetBindingSetDeviceKind(set,kind) 23  GetObjectDeviceIndex(objectId, &index) -> bool
+    //   10  GetDeviceCount() -> 6             24  (unmapped passthrough)
+    //   11  IsDevicePresent(index) -> bool    25  GetKeyName(vk, LPWSTR out, cchSize) -> bool
+    //   12  SetInputCallback(fn, userdata)    26  (unmapped passthrough)
+    //   13  SetObjectScale(set, objectId, f)  27  stub returning true
     //
     // SLOTS 5 AND 6 ARE WHY THE ENABLE FLAG IS WORTH KNOWING: the engine exposes an explicit switch for
     // input, entirely separate from the simulation gate, and a mod that wants input while the game thinks
     // it should be off can drive it deliberately rather than fighting the window messages that clear it.
+    //
+    // SLOTS 18 AND 19 ARE THE CLEANEST INTERVENTION POINT IN THIS SUBSYSTEM: a mod can install its own
+    // handler on an existing action instead of hooking the dispatcher, and read the original pair back
+    // first so it can be restored. Not driven by this SDK -- deciding when belongs to the consumer -- but
+    // the slot indices and signatures are here so it does not have to be rediscovered.
 
     static constexpr size_t kSlotPoll = 3;
     static constexpr size_t kSlotEnableInput = 5;
@@ -271,6 +284,12 @@ public:
     static constexpr size_t kSlotSetBindingSetKind = 9;
     static constexpr size_t kSlotGetDeviceCount = 10;
     static constexpr size_t kSlotIsDevicePresent = 11;
+    static constexpr size_t kSlotSetActionHandler = 18;
+    static constexpr size_t kSlotGetActionHandler = 19;
+    static constexpr size_t kSlotIsBindingActive = 22;
+    static constexpr size_t kSlotGetObjectDeviceIndex = 23;
+    static constexpr size_t kSlotGetKeyName = 25;
+    static constexpr size_t kInterfaceSlotCount = 28;
 
     // The ILTInput object, which is the CLTInput singleton. 0 when the exe is not mapped.
     static uintptr_t interface_address();
@@ -302,6 +321,7 @@ public:
     // MEASURED: one set, 108 records, kind 0.
 
     struct BindingRecord {
+        uintptr_t address{};     // this record's own address, so slot 22 and slot 18/19 can be driven
         uint32_t action_code{};  // +0x00 -- and it IS the action code, not a context word: the dispatcher
                                  // calls handler(action_code, userdata). Live values run 0, 1, 3, ...
         uintptr_t handler{};     // +0x04 -- 0 when no handler is installed
@@ -348,6 +368,22 @@ public:
 
     static std::optional<uint32_t> engine_device_count();
     static std::optional<bool> device_is_present(size_t index);
+
+    // THE ENGINE'S OWN NAME FOR A KEY, via slot 25 (GetKeyNameTextW under the hood). The ACTION names
+    // are not in this binary -- they belong to gameclient.dll -- but the KEY names are, which is enough
+    // to show a user what a binding is bound to. nullopt for vk outside 1..255, which the engine itself
+    // rejects, or when the call faulted.
+    static std::optional<std::string> key_name(uint8_t vk);
+
+    // The engine's public object-id classifier (slot 23), returning the device index it resolves to.
+    // classify_object() mirrors the same four lines locally; the suite compares them across the whole id
+    // space, which is what makes the mirror trustworthy rather than merely plausible.
+    static std::optional<uint32_t> engine_object_device_index(int object_id);
+
+    // Whether a binding is currently active, as the engine judges it (slot 22): the object's value is
+    // non-zero for an unmodified binding, or the modifier's latch is set for a thresholded one. Needs the
+    // record's ADDRESS, which BindingRecord carries for exactly this reason.
+    static std::optional<bool> engine_binding_is_active(uintptr_t record_address);
 
     // ---- THE WINDOW-MESSAGE KEY QUEUE -------------------------------------------------
     //

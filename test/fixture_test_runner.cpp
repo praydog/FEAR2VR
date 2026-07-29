@@ -4052,6 +4052,27 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE PUBLIC CLASSIFIER, AGAINST THE LOCAL MIRROR -------------------------------
+            //
+            // classify_object() reimplements four lines of engine code; ILTInput slot 23 IS those four
+            // lines. This is what makes the mirror trustworthy rather than plausible, and it covers the
+            // FALLTHROUGH: an id past the joystick range must resolve to the keyboard, not be rejected.
+            double cl_checked = -1.0, cl_agrees = -1.0;
+            check(json_double(body, "input_classify_checked", cl_checked) && cl_checked >= 20.0,
+                  "the engine's public classifier answers across the id space");
+            check(json_double(body, "input_classify_agrees", cl_agrees) && cl_agrees == cl_checked,
+                  "and the local mirror agrees with it on every id");
+
+            // Key names come from the engine, so the ACTION vocabulary being absent from this binary does
+            // not stop a consumer naming what a binding is bound to. Not pinned to specific strings:
+            // GetKeyNameTextW is locale- and layout-dependent.
+            double named = -1.0;
+            bool rej_zero = false;
+            check(json_double(body, "input_named_keys", named) && named > 0.0,
+                  "the engine names virtual keys through slot 25");
+            check(json_bool(body, "input_key_name_rejects_zero", rej_zero) && rej_zero,
+                  "and rejects vk 0, which is outside the 1..255 it accepts");
+
             // ---- THE ENGINE'S OWN VIEW OF ITS DEVICES ------------------------------------------
             //
             // Asked through the ILTInput vtable, so independent of the array walk. A wrong slot COUNT and
@@ -4128,6 +4149,28 @@ int main(int argc, char** argv) {
             // surfaces instead of passing quietly.
             check(cen && c_joy == 0.0,
                   "no record is bound to a joystick object the dispatch path cannot fire");
+
+            // THE ENGINE'S OWN ACTIVITY JUDGEMENT against one computed from the same inputs. Slot 22
+            // asks whether the object's value is non-zero; the comparison recomputes that through
+            // object_value(). Two paths into the same question, and neither can catch its own error.
+            double act_checked = -1.0, act_agrees = -1.0, mod_records = -1.0;
+            const bool act = json_double(body, "input_active_checked", act_checked) &&
+                             json_double(body, "input_active_agrees", act_agrees) &&
+                             json_double(body, "input_modifier_records", mod_records);
+            check(act && act_checked > 0.0 && act_agrees == act_checked,
+                  "the engine's IsBindingActive agrees with the value-derived answer on every record");
+
+            // ARITHMETIC CLOSURE instead of a hard-coded count: the records compared plus the records
+            // skipped for carrying a modifier must be every record walked. That holds whatever the
+            // binding configuration is.
+            check(act && (act_checked + mod_records) == bs_records,
+                  "compared and modifier-carrying records together account for all 108");
+
+            // AND THE TWO SIDES MEET: the modifier-carrying records are exactly as numerous as the
+            // modifier state records the set's own vector holds -- measured 2 and 2, from completely
+            // different places (a record field versus a vector's begin/end difference).
+            check(act && mod_records == 2.0,
+                  "two records carry a modifier, matching the two states in the set's vector");
 
             // Deliberately NOT asserted: which action codes are bound to which keys. That is the user's
             // key configuration, not a property of the engine.
