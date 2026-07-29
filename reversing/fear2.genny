@@ -4231,3 +4231,45 @@ class LTInputDeviceMouse 0x30 {
 // > A traversal that stops at its own cap is not a measurement. The cap being round is the tell.
 //
 // 929 checks, 0 failures.
+
+// ---- THE RESOURCE RECORD IS 32 BYTES, AND +0x1C IS NOT AN ID ------------------------------------
+//
+// Stride MEASURED, not assumed: four consecutive blocks from a bank-allocated run each carry a valid list
+// link, and the mirrored dwords a first reading took for more fields of one record are the NEXT record.
+// Records come from a bank (CClientMgr_AllocFromBank on dword_6F24D8), which is why they pack contiguously.
+//
+//     +0x00  prev  -- the BUCKET's address when the record is first in its chain (seen live: 0x6F251C)
+//     +0x04  next
+//     +0x08  a pointer, unmapped
+//     +0x0C  const char* name
+//     +0x10  refcount            (LTResource_GetRefCount; 0x43EB16 increments it)
+//     +0x14  u16, unmapped       (0x43EBBD ORs it with +0x10 and +0x18 as an "anything set" test)
+//     +0x16  flags byte          bit 0 read by 0x43EB2A, bit 1 = auto-prefetched
+//     +0x18  loaded data pointer (0x43EBA4 sets it; non-null MEANS loaded)
+//     +0x1C  NOT ESTABLISHED -- see below
+//
+// I READ +0x1C AS A MONOTONIC RESOURCE ID AND IT IS NOT ONE. Four adjacent records carried 81, 82, 83, 84,
+// which is exactly what an allocation-ordered id looks like, and along a hash chain the values scattered
+// (81, 72, 124, 55) exactly as such an id should. Both observations were consistent with the claim and both
+// came from a handful of samples.
+//
+// THE FULL POPULATION KILLED IT: across all 3458 records +0x1C holds only 131 DISTINCT values, its maximum
+// is 0xAAAAAAAA -- the debug fill pattern, so the field is uninitialised on some records -- and small values
+// recur EXACTLY 28 times each. Structured, but not an identity. Recorded as unmapped rather than guessed at
+// again.
+//
+// THE CHECK THAT CAUGHT IT WAS THE ONE I HAD BUILT TO VERIFY THE TRAVERSAL. It counted distinct ids to prove
+// the walk never visits a node twice, reported 127 against 3458, and so diagnosed its own key instead of the
+// traversal. Rekeyed on record ADDRESSES -- unique by construction, needing nothing in the record to
+// cooperate -- it now reports 3458 of 3458.
+//
+// > A field that looks like an identity on four samples is a hypothesis. Counting it over the whole
+// > population is the test, and the test costs nothing once the walk exists.
+//
+// OTHER ACCESSORS FOUND IN THE SAME CLUSTER (0x43EA00..0x43ED00), each a tiny field read, which is what made
+// the layout readable at all: 0x43EB16 ++refcount, 0x43EB1E tests +0x28, 0x43EB9F increments +0x28,
+// 0x43EB3C sets bit 1 of a second flags word at +0x2C, 0x43EBFF refcounts the loaded object and returns its
+// second dword, and 0x43EC15 -- the sentinel initialiser, which self-links BOTH dwords and is what confirms
+// the bucket layout the walk relies on.
+//
+// 930 checks, 0 failures.

@@ -58,10 +58,23 @@ namespace sdk {
 
 class Resources {
 public:
+    // A RECORD IS 32 BYTES, and the stride is measured rather than assumed: four consecutive blocks from a
+    // bank-allocated run each carry a valid list link and IDs 81, 82, 83, 84 in sequence. A first reading
+    // of the memory took the mirrored dwords at +0x20 for more fields of one record; they are the NEXT
+    // record.
+    static constexpr size_t kRecordSize = 0x20;
+
     struct Record {
         uintptr_t address{};
         std::string name;
         uint32_t refcount{};
+
+        // NOTE THERE IS NO ID FIELD, and the reason is worth carrying: +0x1C looked like a monotonic
+        // resource id on four adjacent records (81, 82, 83, 84) and is not one. Across all 3458 records it
+        // holds only 131 DISTINCT values, its maximum is 0xAAAAAAAA -- the debug fill pattern, so it is
+        // uninitialised on some records -- and small values recur exactly 28 times each. Structured, but
+        // not an identity. A consumer wanting a stable key should hold the ADDRESS or the path.
+
         uint8_t flags{};
         bool auto_prefetched{};  // flags bit 1
         bool loaded{};           // the +0x18 data pointer is non-null
@@ -92,6 +105,13 @@ public:
         size_t buckets_used{};
         size_t longest_chain{};
         bool hit_cap{};  // true means these are lower bounds, not counts
+
+        // DISTINCT RECORD ADDRESSES SEEN, which is the sharpest available check on the traversal: an
+        // address is unique by construction, so distinct_addresses < total means the walk visited a node
+        // twice. That is exactly what a wrong table base produces, and it needs no field in the record to
+        // cooperate -- the first version of this check used a supposed id field at +0x1C and that field
+        // turned out not to be unique, so the check was measuring the wrong thing.
+        size_t distinct_addresses{};
     };
 
     static std::optional<Stats> stats();

@@ -1,6 +1,8 @@
 #include "Resources.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 #include <utility/Seh.hpp>
 
@@ -150,9 +152,21 @@ uintptr_t Resources::table_address() {
 
 std::optional<Resources::Stats> Resources::stats() {
     Stats s{};
-    if (!walk([](const Record&) { return true; }, &s)) {
+    // Distinct ADDRESSES, sorted after the walk rather than hashed during it: an address is unique by
+    // construction, so this counts nodes without relying on any record field being an identity.
+    std::vector<uintptr_t> seen;
+    seen.reserve(4096);
+    if (!walk(
+            [&](const Record& rec) {
+                seen.push_back(rec.address);
+                return true;
+            },
+            &s)) {
         return std::nullopt;
     }
+    std::sort(seen.begin(), seen.end());
+    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+    s.distinct_addresses = seen.size();
     return s;
 }
 

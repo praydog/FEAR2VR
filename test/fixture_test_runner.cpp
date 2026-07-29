@@ -4109,6 +4109,19 @@ int main(int argc, char** argv) {
             check(rsn && rs_loaded > 0.0 && rs_loaded < rs_total,
                   "some resources are loaded and some are not");
 
+            // THE TRAVERSAL VISITS EACH NODE EXACTLY ONCE, checked against record ADDRESSES -- unique by
+            // construction, so nothing in the record has to cooperate. A wrong table base produces repeats
+            // immediately.
+            //
+            // THIS CHECK WAS FIRST WRITTEN AGAINST A SUPPOSED ID FIELD at +0x1C, which looked monotonic on
+            // four adjacent records (81, 82, 83, 84). Across all 3458 it holds only 131 distinct values, its
+            // maximum is 0xAAAAAAAA -- debug fill, so it is uninitialised on some records -- and small
+            // values recur exactly 28 times each. The check reported 127 distinct "ids" and thereby caught
+            // its own key rather than the traversal. Addresses cannot fail that way.
+            double rs_uniq = -1.0;
+            check(json_double(body, "resources_distinct_addresses", rs_uniq) && rs_uniq == rs_total,
+                  "every record is visited exactly once");
+
             double rs_hits = -1.0, rs_rt = -1.0;
             bool rs_absent = false;
             check(json_double(body, "resources_world_hits", rs_hits) && rs_hits > 0.0 &&

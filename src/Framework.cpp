@@ -4128,6 +4128,12 @@ std::string build_shader_params_json() {
         // THE FIGURES ARE ONLY COUNTS IF NO CAP WAS REACHED. This flag is how the wrong table base was
         // caught, so it is reported rather than swallowed.
         json_append_bool(out, "resources_hit_cap", res_stats->hit_cap);
+        // THE SHARPEST AVAILABLE CHECK ON THE TRAVERSAL: an address is unique by construction, so fewer
+        // distinct addresses than records means the walk visited a node twice -- which is what a wrong
+        // table base produces. Deliberately NOT keyed on a record field: the first version of this used a
+        // supposed id at +0x1C, and that field holds only 131 distinct values across 3458 records.
+        json_append_double(out, "resources_distinct_addresses",
+                           static_cast<double>(res_stats->distinct_addresses), 0);
     }
     // A query a mod would run, plus a ROUND TRIP: whatever search() returns must be findable by its exact
     // name, which tests the two query paths against each other rather than against a constant.
