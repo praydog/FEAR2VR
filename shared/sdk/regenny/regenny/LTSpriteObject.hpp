@@ -12,7 +12,7 @@ public:
     regenny::LTVector aabb_min; // 0x120
     regenny::LTVector aabb_max; // 0x12c
     float radius; // 0x138
-    private: char pad_13c[0x18]; public:
+    void* owned[6]; // 0x13c
 }; // Size: 0x154
 #pragma pack(pop)
 }

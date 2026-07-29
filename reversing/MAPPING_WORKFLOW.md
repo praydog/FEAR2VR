@@ -166,6 +166,31 @@ for the full evidence trail this recipe produced).
     that types 2 and 5 differ only in slots 0 and 1 and left it as a curiosity.
     Sharing slots is what inheritance looks like from the outside; go get the
     destructor and confirm the direction.
+  Also: sharing slots measures OVERRIDE DENSITY, not depth. OT_NORMAL and
+  OT_PARTICLESYSTEM share slots 1 and 3..15 and are SIBLINGS; OT_MODEL shares no
+  slot with anything and is also a direct child of LTObject. Only one real edge
+  existed in the whole family, and the slot table did not identify which.
+- **A MISSING switch case is proof of impossibility, and it upgrades an
+  observation into a theorem.** OT_LIGHT's object list reads 0 entries in every
+  live sample, which for a long time was only recorded as "consistent with it
+  being unused". Then `CClientMgr_CreateObjectOfType` turned up: it switches on
+  the requested type byte with cases for 0,1,2,3,5,6 and lets 4 fall through to
+  `default: return 0`. Nothing can construct one. An always-empty container is
+  weak evidence on its own -- it might just be empty in this level -- so when you
+  have one, go find the code that would fill it and check whether it CAN.
+  The same dispatcher was also the ground truth for the entire type table: each
+  case calls a per-type creator whose base constructor names the class, which is
+  a far better anchor than matching counts against a reference enum by eye.
+- **When a live total disagrees with one you recorded earlier, suspect YOUR
+  iteration bounds before you theorise about the game.** A walk of the object
+  lists came to 3305 against 3583 from a previous session. The tidy story wrote
+  itself immediately -- the missing 278 are particle systems, particles are
+  transient, so they must have been destroyed -- and it was wrong. The loop ran
+  `for i = 0, 5` over an array the schema declares as `object_lists[7]`; index 6
+  is the particle bucket and holds exactly 278. Arithmetic caught it (3305 + 278
+  lands exactly on 3583), not judgement. Two habits follow: take array bounds
+  from the schema rather than typing a literal, and when a difference is EXACTLY
+  one bucket's worth, look at the loop before inventing a mechanism.
 - **When you finally find a manager/container object, re-read its header against
   everything you already derived the hard way.** Inferences you paid for with
   scanning and climbing are very often plain fields in there, and finding them

@@ -314,6 +314,25 @@ normal and a distance, a transform and its inverse, an AABB and the centre it
 was derived from — assert the relation. Prefer it over any count, and prefer it
 strongly over anything you recorded from a previous run.
 
+**When the target stores a size, compare it to your `sizeof` — and be honest
+about the reach.** Each of FEAR 2's per-type object pools records the
+`element_size` the engine asks for, which is the concrete class's size as the
+*engine* understands it. Our generated headers declare a size for the class we
+mapped onto that type, from offsets we derived. Comparing the two pits one
+derivation against another with no recorded baseline anywhere:
+
+- six bank-allocated types, `element_size == sizeof(our class)` — 6/6
+- `OT_LIGHT` has no bank at all — absence as the assertion
+
+What makes it worth writing is that it is free and total. What makes it worth
+documenting is its LIMIT: it pins the class total, so a field past the end, a
+wrong array length or a mis-sized member fails instantly — but it says nothing
+about *which* class inside a hierarchy owns a field. A cached transform pair sat
+attributed to the derived class for several passes while every size involved was
+correct, because moving fields between a base and its child leaves both totals
+untouched. State that limit next to the check, or the next reader will trust it
+for something it cannot do.
+
 **When you expect a biconditional and the data gives an IMPLICATION, assert the
 implication and report the other side.** Symmetry is an aesthetic preference, not
 evidence, and forcing it is the same error as widening a tolerance: it replaces

@@ -553,6 +553,75 @@ int64_t seh_check_transforms(const regenny::CClientMgrListLink* head, size_t max
     return result;
 }
 
+// POD-only SEH helper for OT_MODEL's embedded list. Every offset comes from the
+// generated schema. Returns the number sampled, or -1 on fault / non-termination.
+int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t max,
+                              size_t* count_ok, size_t* embedded_ok, size_t* dup_ok,
+                              size_t* asset_ok, size_t* rot_ok, size_t* max_members,
+                              size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+
+                // Walk the object's own list, looking for its embedded node. The
+                // cap is the same guard used for the outer walk: a corrupt link
+                // must not spin here either.
+                const auto* lh = &obj->list_head;
+                const auto* want = &obj->embedded_link;
+                const regenny::CClientMgrListLink* e = lh->next;
+                size_t members = 0;
+                bool found = false, closed = false;
+                while (members < cap) {
+                    if (e == lh) {
+                        closed = true;
+                        break;
+                    }
+                    if (e == want) {
+                        found = true;
+                    }
+                    ++members;
+                    e = e->next;
+                }
+                if (closed) {
+                    if (obj->list_count == members) {
+                        ++*count_ok;
+                    }
+                    if (members > *max_members) {
+                        *max_members = members;
+                    }
+                }
+                if (found) {
+                    ++*embedded_ok;
+                }
+                if (obj->asset != nullptr) {
+                    ++*asset_ok;
+                }
+                if (obj->asset_dup == obj->asset) {
+                    ++*dup_ok;
+                }
+                const auto& q = obj->cached_rotation;
+                const float mag2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+                if (mag2 > 0.99f && mag2 < 1.01f) {
+                    ++*rot_ok;
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
 // Tolerance scaled with magnitude. NOT a tuned fudge factor: world coordinates
 // here reach five figures, where a fixed absolute epsilon sits below the float
 // spacing and would fail on correct data. Named `approx_eq`, not `near` --
@@ -638,6 +707,60 @@ std::optional<CClientMgr::TransformCheck> CClientMgr::check_transforms(size_t ty
     const int64_t n = seh_check_transforms(&regenny()->object_lists[type], max,
                                           &out.rotation_match, &out.inverse_ok, &out.det_ok,
                                           max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    out.sampled = static_cast<size_t>(n);
+    return out;
+}
+
+std::optional<CClientMgr::SchemaSizeCheck> CClientMgr::check_schema_sizes() const {
+    if (regenny() == nullptr) {
+        return std::nullopt;
+    }
+    // The engine's element_size for a type versus our schema's sizeof for the
+    // class we mapped onto it. Both sides are derived, neither is recorded.
+    struct Expect {
+        ObjectType type;
+        size_t size;
+    };
+    static constexpr Expect kExpect[] = {
+        {static_cast<ObjectType>(0), sizeof(regenny::LTObject)},
+        {static_cast<ObjectType>(1), sizeof(regenny::LTModelObject)},
+        {static_cast<ObjectType>(2), sizeof(regenny::LTWorldModelObject)},
+        {static_cast<ObjectType>(3), sizeof(regenny::LTSpriteObject)},
+        {static_cast<ObjectType>(5), sizeof(regenny::LTCameraObject)},
+        {static_cast<ObjectType>(6), sizeof(regenny::LTParticleSystemObject)},
+    };
+
+    SchemaSizeCheck out{};
+    for (const auto& e : kExpect) {
+        const auto bank = bank_for(e.type);
+        if (!bank.has_value()) {
+            continue;  // reported as a shortfall in types_checked
+        }
+        ++out.types_checked;
+        if (bank->element_size == e.size) {
+            ++out.size_matches;
+        }
+    }
+    // OT_LIGHT is uncreatable -- CClientMgr_CreateObjectOfType has no case 4 --
+    // so the engine allocates no bank for it. Absence is the assertion here.
+    out.light_has_no_bank = !bank_for(static_cast<ObjectType>(4)).has_value();
+    return out;
+}
+
+std::optional<CClientMgr::ModelListCheck> CClientMgr::check_model_lists(size_t max) const {
+    constexpr size_t kModelType = 1;
+    if (regenny() == nullptr || kModelType >= object_list_count()) {
+        return std::nullopt;
+    }
+    ModelListCheck out{};
+    const int64_t n = seh_check_model_lists(&regenny()->object_lists[kModelType], max,
+                                           &out.count_matches_walk, &out.embedded_linked,
+                                           &out.asset_dup_agrees, &out.asset_present,
+                                           &out.rotation_unit, &out.max_members,
+                                           max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

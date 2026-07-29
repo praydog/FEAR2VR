@@ -277,6 +277,55 @@ public:
     // diagnostics that want to enumerate the array as it actually is.
     std::optional<ObjectBankInfo> bank_at(size_t index) const;
 
+    // ---- schema size agreement (the engine's own allocation sizes) -------
+    //
+    // Each bank records the element_size the engine asks its pool for, i.e. the
+    // concrete class's size as the ENGINE understands it. Our schema declares a
+    // size for each of those classes independently. Comparing the two is a
+    // self-check with no host-recorded baseline on either side: one number comes
+    // from live memory, the other from the generated headers.
+    //
+    // What it does and does not catch is worth being precise about. It pins each
+    // class's TOTAL size, so a field added past the end, a wrong array length or
+    // a mis-sized member shows up immediately. It does NOT catch a field
+    // attributed to the wrong class within a correct total -- the transform pair
+    // sat on LTCameraObject for several passes while both sizes were right. Only
+    // the destructor chain caught that.
+    struct SchemaSizeCheck {
+        size_t types_checked;   // types the engine allocates from a bank
+        size_t size_matches;    // element_size == sizeof(our class for that type)
+        bool light_has_no_bank; // OT_LIGHT is uncreatable, so it must have none
+    };
+
+    // nullopt only when the manager is unreachable; a MISMATCH is reported in the
+    // counts rather than hidden as an error, so the caller can name which type.
+    std::optional<SchemaSizeCheck> check_schema_sizes() const;
+
+    // ---- OT_MODEL's embedded list (type 1) -------------------------------
+    //
+    // Every model owns a list whose head is at LTModelObject::list_head with its
+    // own count beside it, and the constructor links the object's own
+    // embedded_link into it before anything else can. So three things must hold
+    // for every live model, none of them recorded from a previous run:
+    //   * the stored list_count equals the number of members actually walked,
+    //   * the object's own embedded_link is one of those members, and
+    //   * asset_dup equals asset -- two independent routes to one pointer.
+    // The cached_rotation being unit-length is checked too: it is what proves
+    // those 16 bytes are a quaternion rather than trailing padding.
+    struct ModelListCheck {
+        size_t sampled;            // models examined
+        size_t count_matches_walk; // list_count == walked members
+        size_t embedded_linked;    // embedded_link is a member of its own list
+        size_t asset_dup_agrees;   // asset_dup == asset
+        size_t asset_present;      // asset is non-null (a mandatory resource)
+        size_t rotation_unit;      // cached_rotation is unit length
+        size_t max_members;        // largest list seen (one embedded + extras)
+    };
+
+    // Walks up to `max` type-1 objects. nullopt on fault or a walk that did not
+    // terminate.
+    std::optional<ModelListCheck> check_model_lists(size_t max) const;
+
     // ---- cached transforms (WorldModel state, inherited by Camera) -------
     //
     // The cached 3x4 world transform and its rigid inverse belong to the

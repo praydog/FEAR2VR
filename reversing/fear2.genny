@@ -910,9 +910,13 @@ class LTMatrix3x4 0x30 {
 //     Cameras show no such lag -- 474/474 on all three.
 class LTWorldModelObject 0x13C {
     LTObject base                  @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
-    void* unk_CC                   @0xCC    // CONFIRMED as WorldModel's FIRST own field: OT_WORLDMODEL_dtor_body branches on `this[51]` (+0xCC) and releases it via 0x43B85C. Live 1034 of 1473 are null and the rest are 439 distinct heap pointers. Pointee unmapped.
-    LTMatrix3x4 world_transform    @0xDC    // CONFIRMED rigid transform; 3x3 == R(base.rotation) on 1464/1473, det 1.0 on 1473/1473
-    LTMatrix3x4 inverse_transform  @0x10C   // CONFIRMED exact rigid inverse on 1450/1473. Ends at 0x13C == the class size.
+    void* unk_CC                   @0xCC    // CONFIRMED as WorldModel's FIRST own field: OT_WORLDMODEL_dtor_body branches on `this[51]` (+0xCC) and releases it via 0x43B85C, and OT_WORLDMODEL_ctor (0x4651D1) initialises it to null. Live 1034 of 1473 are null and the rest are 439 distinct heap pointers. Pointee unmapped.
+    uint16_t unk_D0                @0xD0    // ctor writes 0. Unmapped.
+    uint16_t unk_D2                @0xD2    // ctor writes 0xFFFF -- the same "none" sentinel idiom as LTObject.handle. Unmapped.
+    uint32_t unk_D4                @0xD4    // ctor writes 0. Unmapped.
+    uint32_t unk_D8                @0xD8    // ctor writes 0. Unmapped.
+    LTMatrix3x4 world_transform    @0xDC    // CONFIRMED rigid transform; 3x3 == R(base.rotation) on 1464/1473, det 1.0 on 1473/1473. CORROBORATED FROM THE CTOR: OT_WORLDMODEL_ctor calls LTMatrix3x4_SetIdentity (0x421010) on this offset AND on 0x10C -- the same function, on both, which is independent of the destructor/size argument that first established the pair.
+    LTMatrix3x4 inverse_transform  @0x10C   // CONFIRMED exact rigid inverse on 1450/1473; also identity-initialised by the ctor (see above). Ends at 0x13C == the class size.
 }
 
 // The concrete class behind object type 5. Derives from WorldModel (see above),
@@ -1155,8 +1159,14 @@ class CClientMgrCounterNode 0x40 {
 //   bank[3] -> type 3 OT_SPRITE         element_size 340  block 344
 //   bank[4] -> type 5 OT_CAMERA         element_size 320  block 328
 //   bank[5] -> type 6 OT_PARTICLESYSTEM element_size 264  block 272
-// That OT_LIGHT is skipped is consistent with its object_lists bucket being
-// empty in every live sample taken so far (0 entries, always).
+// That OT_LIGHT is skipped is no longer just "consistent with" an empty bucket --
+// it is PROVEN UNCREATABLE. CClientMgr_CreateObjectOfType (0x437E2E) switches on
+// the requested type byte and has cases for 0,1,2,3,5,6 only; type 4 falls to
+// `default: return 0`. So no code path can construct one, which is why its
+// object_lists bucket reads 0 entries in every sample and why it needs no bank.
+// The switch is also the ground truth for this whole table: each case calls one
+// per-type creator (CClientMgr_NewObject_OT_*) whose base ctor identifies the
+// class, and the case labels match the reference SDK's enum ordering exactly.
 //
 // HOW THE MAPPING WAS PROVEN -- three checks, because the obvious one is not
 // sufficient on its own:
@@ -1240,14 +1250,25 @@ class LTModelAsset 0x4 {
 }
 
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
-// element_size. Only the cull-volume fields are mapped; the rest of the derived
-// span is unexplored.
+// element_size, and the class is now CLOSED at that boundary: the cached
+// rotation below ends at exactly 0x198.
+//
+// OT_MODEL_ctor (0x42A4C8) is what opened the rest of this class up. It derives
+// DIRECTLY from LTObject -- OT_MODEL_dtor_body installs vtbl_OT_MODEL and calls
+// LTObject_dtor_body with nothing in between -- so despite having a vtable that
+// shares no slots with any sibling, there is no intermediate class here.
 class LTModelObject 0x198 {
     LTObject base            @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
-    LTModelAsset* asset      @0xEC    // CONFIRMED non-null on 215/215 and SHARED -- 34 distinct across 215 objects. Its radius is what branch A of OT_MODEL_GetCullVolume uses. SlotIndex_WantsSlot also requires this non-null for type 1, so it is a mandatory resource handle.
+    CClientMgrListLink embedded_link @0xCC   // CONFIRMED: a link pair that the ctor INSERTS INTO THIS OBJECT'S OWN list_head below, immediately after constructing a sub-object at the same offset (0x4297CF), and the insert is what takes list_count to 1. Live, this node is a member of its own object's list on 215/215. So every model owns at least one of whatever the list holds, always the embedded one.
+    LTModelAsset* asset      @0xEC    // CONFIRMED non-null on 215/215 and SHARED -- 34 distinct across 215 objects. Its radius is what branch A of OT_MODEL_GetCullVolume uses. SlotIndex_WantsSlot also requires this non-null for type 1, so it is a mandatory resource handle. A SECOND ROUTE reaches the same pointer: asset_dup at 0x130 equals it on 215/215.
+    CClientMgrListLink list_head @0x100   // CONFIRMED list head: the ctor self-points both halves (an empty list) and then links embedded_link in. Live it is never empty for that reason. Members are recovered as `link` addresses; the only member whose identity is proven is the object's own embedded_link.
+    uint32_t list_count      @0x108   // CONFIRMED the list's OWN stored count: it equals the walked member count on 215/215, and the ctor increments it to 1 as it links embedded_link. Live distribution 1 (x184), 2 (x6), 3 (x12), 4 (x9), 5 (x3), 6 (x1) -- so one embedded member plus up to five extras. WHAT the extra members are is unmapped; the shape (one built-in plus optional additions) is all that is proven.
+    void* owned_120          @0x120   // ctor constructs a sub-object here (0x4257CE) and the dtor destroys it (0x428CAC). Live this first dword is a heap pointer unique to each object and far from it, so it is an owned allocation rather than an embedded self-reference. Pointee unmapped.
+    LTModelAsset* asset_dup  @0x130   // CONFIRMED equal to `asset` on 215/215 -- two independent routes to one address, which is why this is worth recording rather than folding away. The ctor constructs a sub-object here (0x42CE7D) and the dtor destroys it (0x42DA6C), so this is the first field of that sub-object and the asset pointer is reachable through it.
     uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume. The two branches differ in MORE than where they read from, which is why both exist: non-zero takes the centre from sphere_center and the radius from asset->radius UNSCALED; zero takes the centre from LTObject.position and the radius from vis_radius * LTObject.scale. Since asset->radius == vis_radius on 215/215, the real distinction is explicit-centre-and-unscaled versus object-centre-and-scaled. Live: 22 non-zero / 193 zero of 215.
-    LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position)
+    LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position). PROVENANCE, from the ctor: it is initialised by copying base.position. That is why it is stale on most objects -- live it still equals base.position on only 12 of 215 -- and why the 193 objects with sphere_source == 0 can safely ignore it.
     float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give branch B's cull radius. Live > 0 on 215/215. It is a CACHE of the shared asset->radius -- the two are equal on 215/215 objects -- so a mod must not treat them as independent knobs. An earlier note said "the sampled models all read exactly 100.0", which was true only of the six models sampled then; across all 34 assets the values are 20/25/100/120/200/240 and more.
+    LTRotation cached_rotation @0x188   // CONFIRMED a real quaternion, not padding: the ctor writes (0,0,0,1) and live it is unit-length on 215/215. Ends at 0x198 == the class size, closing the class. It is NOT a live mirror of base.rotation (that would make it redundant); which of the two the renderer consumes is unmapped.
 }
 
 // The concrete class behind object type 6. 264 bytes (0x108) from its bank's
@@ -1278,5 +1299,6 @@ class LTSpriteObject 0x154 {
     LTVector aabb_min      @0x120   // CONFIRMED: passed to LTMath_WriteAABB as the min for AABB kinds. Live, min <= max componentwise on 9/9 AABB-kind sprites.
     LTVector aabb_max      @0x12C   // CONFIRMED: the max for AABB kinds
     float radius           @0x138   // CONFIRMED: the sphere radius for all other kinds, paired with LTObject.position as the centre. Live, finite and > 0 on 215/215 sphere-kind sprites.
+    void* owned[6]         @0x13C   // CONFIRMED OWNED: OT_SPRITE_dtor_body (0x4150B3) runs `do { LTMem_Free(*v2++) } while(--6)` starting at this+79 dwords == +0x13C, so all six are freed unconditionally. Ends at 0x154 == the class size, which is how the count 6 and this offset corroborate each other. Live they are sparsely used -- 168 of 1344 slots non-null, and only 3 of 224 sprites fill all six -- so they are optional per-slot allocations. WHAT they hold is unmapped.
 }
 }

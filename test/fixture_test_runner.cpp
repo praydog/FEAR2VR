@@ -660,6 +660,69 @@ int main(int argc, char** argv) {
             }
         }
 
+        // SCHEMA SIZES. The engine records, per bank, the element_size it asks
+        // its pool for -- the concrete class's size as the engine understands
+        // it. Our headers declare a size independently. Neither number is a
+        // baseline this test recorded, so this cannot drift into agreement.
+        //
+        // Its reach is narrower than it looks and the limit is worth stating:
+        // it pins each class's TOTAL, so a field past the end or a mis-sized
+        // member fails here. It does NOT catch a field attributed to the wrong
+        // class inside a correct total -- the transform pair sat on
+        // LTCameraObject for several passes with both sizes right.
+        {
+            const size_t sp = body.find("\"schema_sizes\":");
+            check(sp != std::string::npos, "objects report includes the schema size check");
+            if (json_has(body, "\"schema_sizes\":null")) {
+                check(false, "schema size check completed");
+            } else if (sp != std::string::npos) {
+                const size_t end = body.find('}', sp);
+                const std::string sb = body.substr(sp, end - sp + 1);
+                int64_t checked = -1, matches = -1;
+                json_int(sb, "types_checked", checked);
+                json_int(sb, "size_matches", matches);
+                // Six creatable types have banks; OT_LIGHT does not.
+                check(checked == 6, "all six bank-allocated types were found");
+                check(matches == checked,
+                      "every bank's element_size equals our schema's sizeof for that type");
+                check(json_has(sb, "\"light_has_no_bank\":true"),
+                      "OT_LIGHT has no bank (it is uncreatable: no case 4 in the dispatcher)");
+            }
+        }
+
+        // OT_MODEL's embedded list. The engine stores the list's count next to
+        // its head, so the walk is checked against the engine's own number.
+        // The constructor links each object's embedded_link in before anything
+        // else can touch it, so an unlinked one means the offset moved.
+        {
+            const size_t mp = body.find("\"model_lists\":");
+            check(mp != std::string::npos, "objects report includes the model list check");
+            if (json_has(body, "\"model_lists\":null")) {
+                check(false, "model list walk completed");
+            } else if (mp != std::string::npos) {
+                const size_t end = body.find('}', mp);
+                const std::string mb = body.substr(mp, end - mp + 1);
+                int64_t s = -1, cm = -1, el = -1, ad = -1, ap = -1, ru = -1, mm = -1;
+                json_int(mb, "sampled", s);
+                json_int(mb, "count_matches_walk", cm);
+                json_int(mb, "embedded_linked", el);
+                json_int(mb, "asset_dup_agrees", ad);
+                json_int(mb, "asset_present", ap);
+                json_int(mb, "rotation_unit", ru);
+                json_int(mb, "max_members", mm);
+
+                check(s > 0, "models present to check");
+                check(cm == s, "every model's stored list_count equals its walked member count");
+                check(el == s, "every model's embedded_link is a member of its own list");
+                check(ad == s, "asset_dup equals asset (two routes to one pointer)");
+                check(ap == s, "every model has a non-null asset (a mandatory resource)");
+                check(ru == s, "cached_rotation is unit length (so it is a quaternion, not padding)");
+                // One embedded member is guaranteed by the constructor; extras are
+                // scene-dependent, so only the floor is asserted.
+                check(mm >= 1, "at least the embedded member is present in every list");
+            }
+        }
+
         // Bounding geometry across every object type. These are identities the
         // engine's own SetDims establishes (aabb = position +/- dims, radius =
         // |dims| + 0.1), so every live object must satisfy them. They guard the

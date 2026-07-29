@@ -381,6 +381,36 @@ std::string build_objects_json() {
         }
     }
 
+    // Schema size agreement. The engine's per-type element_size against our
+    // sizeof for the class mapped onto that type -- both derived, neither a
+    // baseline. Also that OT_LIGHT still has no bank, since it is uncreatable.
+    out += ",\"schema_sizes\":";
+    if (const auto ss = mgr->check_schema_sizes(); ss.has_value()) {
+        char sb[160];
+        snprintf(sb, sizeof(sb),
+                 "{\"types_checked\":%zu,\"size_matches\":%zu,\"light_has_no_bank\":%s}",
+                 ss->types_checked, ss->size_matches, ss->light_has_no_bank ? "true" : "false");
+        out += sb;
+    } else {
+        out += "null";
+    }
+
+    // OT_MODEL's embedded list: a stored count against a walk, plus the two
+    // routes to the asset pointer agreeing.
+    out += ",\"model_lists\":";
+    if (const auto ml = mgr->check_model_lists(8192); ml.has_value()) {
+        char mb[288];
+        snprintf(mb, sizeof(mb),
+                 "{\"sampled\":%zu,\"count_matches_walk\":%zu,\"embedded_linked\":%zu,"
+                 "\"asset_dup_agrees\":%zu,\"asset_present\":%zu,\"rotation_unit\":%zu,"
+                 "\"max_members\":%zu}",
+                 ml->sampled, ml->count_matches_walk, ml->embedded_linked, ml->asset_dup_agrees,
+                 ml->asset_present, ml->rotation_unit, ml->max_members);
+        out += mb;
+    } else {
+        out += "null";
+    }
+
     // Bounding geometry across every type. Same self-check shape: these are
     // identities SetDims establishes, so a divergence means a moved offset in
     // the culling inputs (dims / radius / AABB).
