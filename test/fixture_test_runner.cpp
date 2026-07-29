@@ -1066,23 +1066,29 @@ int main(int argc, char** argv) {
         json_int(body, "wb_bounds_ok", wbbok);
         // ---- THE DEVICE VTABLE A STEREO PATH WOULD PATCH ------------------------------
         //
-        // Three facts a consumer needs before hooking, and all three are checkable: the vtable resolves, it
-        // is NOT inside d3d9.dll, and its containing region is writable. The middle one matters because the
-        // engine's own class vtables live in module .rdata, and this one does not -- so the protection
-        // question has a different answer here.
+        // WHAT IS ASSERTED IS OBTAINABILITY, NOT LAYOUT. A consumer needs to be able to find this table and
+        // query its protection; where D3D9 chooses to STORE it, and whether that storage is writable, is a
+        // property of the runtime and the machine. This project already treats D3D ownership that way --
+        // Render::interface_impl_owner() reports the owning module rather than hard-coding one, because the
+        // proxy layout differs per machine. A D3D9 that put its vtable in a read-only module table would be
+        // perfectly valid, so asserting "writable" would fail a legitimate environment instead of catching a
+        // regression.
         //
-        // NOT asserted: that the table belongs to this device alone, or that its address is stable. Only one
+        // Also not asserted: that the table belongs to this device alone, or that the address is stable. One
         // device exists to compare against, and a reset can replace it -- see Render.hpp.
         {
             uint32_t dvt = 0;
             int64_t writable = -1, outside = -1;
             const bool have = json_hex(body, "dev_vt", dvt);
-            check(json_int(body, "dev_vt_writable", writable), "dev_vt_writable is reported");
-            check(json_int(body, "dev_vt_outside_d3d9", outside), "dev_vt_outside_d3d9 is reported");
+            check(json_int(body, "dev_vt_writable", writable) &&
+                  json_int(body, "dev_vt_outside_d3d9", outside),
+                  "the device vtable's storage and protection are both queryable");
             if (have && dvt != 0) {
-                check(outside == 1, "the device vtable is NOT inside d3d9.dll -- it is module-unowned storage");
-                check(writable == 1, "the device vtable's region is writable, so a hook needs no VirtualProtect");
-                printf("[fixture] device vtable 0x%08X: outside d3d9.dll, region writable\n", dvt);
+                check(writable == 0 || writable == 1, "the protection query yields a definite answer");
+                printf("[fixture] device vtable 0x%08X: %s d3d9.dll, region %s -- a hook %s VirtualProtect\n",
+                       dvt, outside == 1 ? "outside" : "inside",
+                       writable == 1 ? "writable" : "not writable",
+                       writable == 1 ? "needs no" : "NEEDS");
             } else {
                 printf("[fixture] device vtable NOTE: no device in this state -- UNEXERCISED\n");
             }

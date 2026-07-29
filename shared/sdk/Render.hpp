@@ -129,9 +129,14 @@ public:
 
     // Is the device's vtable in writable memory? True when the containing region reports PAGE_*WRITE*.
     //
-    // Measured live: true -- the containing region is committed read/write, no execute. So a vtable hook
+    // Measured on this machine: true -- the containing region is committed read/write, no execute, so a hook
     // needs no VirtualProtect here, unlike a .rdata table. Established from page metadata via VirtualQuery
     // only; nothing writes to the live table to test it.
+    //
+    // THAT IS AN OBSERVATION, NOT AN INVARIANT. Where D3D9 stores a device vtable and how it protects it are
+    // properties of the runtime and the machine -- the same reason interface_impl_owner() reports an owning
+    // module instead of hard-coding one. A build that found this false would not be broken; it would need
+    // VirtualProtect. Query it, do not assume it.
     //
     // IT IS A REGION-LEVEL ANSWER. VirtualQuery reports the containing region's protection, and a caller
     // that writes should still be prepared for that to change between the check and the write; this reports

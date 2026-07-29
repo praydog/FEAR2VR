@@ -970,7 +970,12 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   
   The new fact is where the table LIVES: heap, outside d3d9.dll, in a committed read/write region. So hooking
   it needs no VirtualProtect, unlike the .rdata class vtables documented in Model.hpp. Now exposed as
-  Render::device_vtable() / device_vtable_writable() with the fixture asserting both.
+  Render::device_vtable() / device_vtable_writable() -- with the fixture asserting only that both are
+  QUERYABLE and then REPORTING the answers. Asserting "writable" would have been wrong: where a D3D9 runtime
+  stores a device vtable and how it protects it are machine properties, and this project already handles D3D
+  ownership that way, since interface_impl_owner() reports the owning module rather than hard-coding one. A
+  read-only module table is a valid implementation that would simply need VirtualProtect, and a suite failing
+  on it would be reporting the environment, not a regression.
   
   Two claims refused. Heap storage does not prove PER-DEVICE storage -- D3D9 may share one heap vtable across
   devices and there is only one device here to compare -- so an earlier draft saying a patch "affects THIS
