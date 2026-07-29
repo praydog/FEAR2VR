@@ -1180,11 +1180,10 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE ENGINE'S POLYMORPHIC CLASSES, FROM THEIR OWN SLOT 1 ----
 //
-// VERIFIED LIVE (2026-07): 15 of these tables were read in the running process and every one's slot 1
-// returned exactly the class name recorded here -- CLTClient, CLTServer, CLTModelClient, CLTModelServer,
-// CLTInput, CLTCursor, CLTRenderer, CSoundMgr, CLTFileMgr, CLTCommonClient, CLTUI, CLTTextureMgr,
-// ILTOnlineService, CLTGameUtil, CLTTextureString. So these are the tables the engine actually uses, not
-// merely pointer runs that look like vtables.
+// VERIFIED LIVE (2026-07), ALL 30 OF 30: every table in this index was read in the running process and each
+// one's slot 1 returned exactly the class name recorded here. So these are the tables the engine actually
+// uses, not merely pointer runs that look like vtables. (A first pass sampled 15; the remaining 15 were
+// checked rather than left implied, since "15/15" of a 30-entry index invites reading as full coverage.)
 //
 // NO RTTI ON ANY OF THEM, and that is now measured rather than inferred from one sample: the image holds 206
 // type descriptors, of which 5 are std::/CRT and the other 201 are ALL Havok (hk*, hkp*). So FEAR 2 ships

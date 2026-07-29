@@ -963,10 +963,14 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
-- **THE CLASS INDEX HOLDS UP AGAINST THE RUNNING GAME: 15 OF 15.** Reading each indexed vtable's slot 1 in
+- **THE CLASS INDEX HOLDS UP AGAINST THE RUNNING GAME: 30 OF 30.** Reading each indexed vtable's slot 1 in
   the live process returned exactly the class name recorded statically. Worth doing rather than assuming --
   the static side only shows a pointer run whose slot 1 has the right shape; the live read shows the engine
   is actually using that table.
+  
+  Reported as 15/15 first, from a sample of half the index. That phrasing reads as full validation, and the
+  fix was to check the other 15 rather than to reword the claim -- the denominator was a sentence away from
+  being real, which is the cheapest kind of gap to close.
   
 - **RTTI IN THIS BINARY IS HAVOK'S, NOT LITHTECH'S.** 206 type descriptors: 5 std::/CRT, 201 all hk*/hkp*.
   Earlier I concluded "this class has no RTTI" from one [vt-4] sample and noted the image did carry
