@@ -1451,6 +1451,44 @@ int main(int argc, char** argv) {
             }
         }
 
+        // THE PUBLIC OBJECT API vs THE INTERNAL WALK. sdk::is_renderable exists so a
+        // mod can ask "will this be drawn" without reimplementing the engine's gate.
+        // check_spatial_records already counts that same gate internally, and that
+        // count is the one proven against engine behaviour (gated_violations == 0
+        // above). Requiring the two to agree is what keeps the consumer-facing
+        // function honest: a wrong mask or a stale flags2 offset diverges HERE rather
+        // than returning a subtly wrong answer inside somebody's mod.
+        //
+        // Note this is a genuine second computation, not a restatement -- the API
+        // path snapshots each bucket and calls the public functions on each address,
+        // while the internal path walks the lists under its own SEH guard.
+        {
+            const size_t ap = body.find("\"object_api\":");
+            check(ap != std::string::npos, "objects report includes the public-API cross-check");
+            if (ap != std::string::npos) {
+                const size_t end = body.find('}', ap);
+                const std::string ab = body.substr(ap, end - ap + 1);
+                int64_t aobj = -1, ainfo = -1, arend = -1, acam = -1, abit = -1, gopen2 = -1;
+                json_int(ab, "objects", aobj);
+                json_int(ab, "info_ok", ainfo);
+                json_int(ab, "renderable", arend);
+                json_int(ab, "cameras", acam);
+                json_int(ab, "cameras_with_bit11", abit);
+                json_int(body, "gate_open", gopen2);
+
+                check(aobj > 0, "the API walked objects");
+                check(ainfo == aobj, "object_info answers for every live object");
+                check(arend == gopen2,
+                      "sdk::is_renderable agrees exactly with the engine gate counted internally");
+                check(acam > 0, "cameras were seen through the public API");
+                // REPORTED, not asserted equal: nothing in the engine reads bit 11, so
+                // "every camera has it" is a live regularity (474/474) rather than a
+                // mechanism. Asserting it would turn an observation into a tripwire.
+                check(abit >= 0 && abit <= acam,
+                      "the camera-only flag bit is a reported fraction of cameras");
+            }
+        }
+
         // The visibility tree, reached from IWorldClientBSP rather than through
         // the object lists -- so this validates the vis subsystem on its own.
         //

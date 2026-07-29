@@ -785,6 +785,37 @@ class LTObject 0xCC {
     // Of the mask's bits, the three that occur live (0x10 x1284, 0x20 x860,
     // 0x800 x474) are each 100% world-tree linked; 0x400 and 0x10000 occur on no
     // live object, so their contribution is unexercised.
+    //
+    // PER-TYPE BIT DISTRIBUTION, live (populations: 919 NORMAL / 215 MODEL /
+    // 1473 WORLDMODEL / 224 SPRITE / 0 LIGHT / 474 CAMERA / 278 PARTICLE). Every
+    // number here is a RATE, not an invariant, with two exceptions noted below:
+    //
+    //   bit        NORM  MODEL  WMODEL  SPRITE   CAM   PART
+    //   0x0001        2    204    1229     218     0    271   <- FLAG_VISIBLE
+    //   0x0002       38      0    1306       9     0      0
+    //   0x0004        0      0     114       0     0    256
+    //   0x0008        0     15       0       0     0      0
+    //   0x0010       27    167    1089       0     1      0
+    //   0x0020        0      7     853       0     0      0
+    //   0x0040        0      0      51       0     0      0
+    //   0x0080        0      1       0       0     0      0
+    //   0x0100        0     16       0       0     0      0
+    //   0x0200        0     27       0       0     0      0
+    //   0x0800        0      0       0       0   474      0   <- CAMERA-EXCLUSIVE
+    //   0x1000        0    155    1306       0     0      0
+    //   0x2000        0      0    1306       0     0      0
+    //   0x20000       0      1       0       0     0      0
+    //   0x80000       1      0       0       0     0      0
+    //
+    // Two things in that table are worth acting on. Bit 0x0800 is set on ALL 474
+    // cameras and on ZERO of the other 3109 objects -- the cleanest single-bit
+    // discriminator in the word, though nothing read so far TESTS it, so it stays
+    // an observation rather than an "is a camera" flag. And no camera carries bit 0,
+    // which is exactly why cameras hold no spatial associations despite being given
+    // AABB volumes (see LTSpatialRecord.entry_list).
+    // Also visible here: 0x0002 and 0x2000 both sit on exactly 1306 worldmodels and
+    // nothing else, so they co-occur on that population -- unexplained, but a pair
+    // worth remembering when either one gets a meaning.
     uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; LTObject_IsRenderable reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0) -- live it is the single most common bit (1924 objects across five types). ctor zeroes it. See the bit survey above for what else is known, and note that everything there is a rate, not an invariant.
     uint32_t user_flags   @0x40   // CONFIRMED as the engine's THIRD flag kind, and the naming comes from FEAR2's own indexing rather than from guesswork: LTObject_SetFlagsByType (0x44E53B) switches on a kind argument and routes 0 -> vtable slot 8 (SetFlags, +0x3C), 1 -> slot 9 (SetFlags2, +0x44), 2 -> here, 3 -> the byte at spatial_record+0x2F. The reference SDK's matching enum is OFT_Flags / OFT_Flags2 / OFT_User / OFT_Client, so kind 2 is the USER flags word. LTObject_SetUserFlags notifies with change code 8, the same code SetFlags uses. Live: 866 objects read 0, and the rest spread over 68 distinct values (0x4000 x506, 3 x471, 0x4001 x409, 0x21 x357). Bit meanings unverified. NOTE `flags3` at +0x46 is NOT part of this family -- the dispatcher never touches it.
     uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.

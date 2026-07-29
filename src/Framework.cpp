@@ -20,6 +20,7 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Model.hpp"
+#include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
@@ -782,6 +783,53 @@ std::string build_objects_json() {
         out += sb;
     } else {
         out += "null";
+    }
+
+    // THE PUBLIC OBJECT API, cross-checked against the internal walk above.
+    //
+    // sdk::is_renderable reproduces the engine's collection gate for consumers.
+    // check_spatial_records already counts that same gate internally, and that count
+    // is proven against engine behaviour (gated_violations == 0 across every bucket).
+    // So counting it a SECOND time through the public path and requiring the two to
+    // agree is what stops the consumer-facing function from quietly lying -- a
+    // wrong mask or a wrong flags2 offset would show up here as a divergence, not as
+    // a subtly wrong answer inside somebody's mod.
+    //
+    // Deliberately computed the long way: snapshot each bucket, then call the same
+    // public functions a mod would call, on the same object addresses.
+    {
+        size_t api_objects = 0, api_renderable = 0, api_info_ok = 0, api_camera_bit = 0,
+               api_cameras = 0;
+        std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
+        for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
+            const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
+                                                    snaps.size());
+            if (!taken.has_value()) {
+                continue;
+            }
+            for (size_t i = 0; i < *taken; ++i) {
+                const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
+                ++api_objects;
+                if (const auto info = sdk::object_info(obj); info.has_value()) {
+                    ++api_info_ok;
+                    if (info->kind == sdk::ObjectKind::Camera) {
+                        ++api_cameras;
+                        if ((info->flags & sdk::object_flags::kCameraOnly) != 0) {
+                            ++api_camera_bit;
+                        }
+                    }
+                }
+                if (const auto r = sdk::is_renderable(obj); r.value_or(false)) {
+                    ++api_renderable;
+                }
+            }
+        }
+        char ab[256];
+        snprintf(ab, sizeof(ab),
+                 ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
+                 "\"cameras\":%zu,\"cameras_with_bit11\":%zu}",
+                 api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit);
+        out += ab;
     }
 
     // Renderability vs world-tree membership. Asserts the mechanism-backed
