@@ -1,10 +1,14 @@
 #pragma once
 namespace regenny {
+class LTModelNode;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class LTModelAsset {
 public:
     float radius; // 0x0
-    private: char pad_4[0x1c]; public:
+    private: char pad_4[0x18]; public:
+    regenny::LTModelNode* node_records; // 0x1c
     uint32_t node_count; // 0x20
     char** node_names; // 0x24
     uint32_t* node_hashes; // 0x28

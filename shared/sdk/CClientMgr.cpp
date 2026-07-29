@@ -11,6 +11,7 @@
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
+#include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTObjectRef.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
 #include "regenny/regenny/LTSpatialEntry.hpp"
@@ -1018,11 +1019,13 @@ static bool name_equals_i(const char* a, const char* b, uint32_t cap) {
 
 // POD-only SEH helper for the node name/hash arrays. Reaches through the asset's
 // blob, so every pointer is range-checked against the asset's own recorded size
-// before it is read. Returns distinct assets visited, or -1 on fault.
 static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t max,
                               size_t* nodes_total, size_t* in_blob, size_t* printable,
                               size_t* distinct, size_t* repeated, size_t* consistent,
-                              size_t* collisions, size_t* count_dup_ok, size_t cap) {
+                              size_t* collisions, size_t* count_dup_ok, size_t* records_in_blob,
+                              size_t* root_255, size_t* index_self_ok, size_t* topological_ok,
+                              size_t* child_sum_ok, size_t* rot_a_unit, size_t* rot_b_unit,
+                              size_t* pos_finite, size_t cap) {
     constexpr size_t kMaxAssets = 512;
     constexpr size_t kMaxNames = 4096;
     constexpr uint32_t kMaxName = 128;
@@ -1054,6 +1057,70 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                     const uint32_t nc = a->node_count;
                     if (a->node_count_dup == nc) {
                         ++*count_dup_ok;
+                    }
+                    // Tree shape, per asset. Every one of these is the array
+                    // checked against the asset's own node_count -- no baseline.
+                    const auto* recs = a->node_records;
+                    const auto rp = reinterpret_cast<uintptr_t>(recs);
+                    if (recs != nullptr && nc > 0 && nc <= kMaxNodes && blob != 0 && bsz > 0 &&
+                        rp >= blob && rp + sizeof(regenny::LTModelNode) * nc <= blob + bsz) {
+                        ++*records_in_blob;
+                        if (recs[0].parent_index == 255) {
+                            ++*root_255;
+                        }
+                        bool idx_ok = true, topo_ok = true;
+                        uint32_t children = 0;
+                        for (uint32_t k = 0; k < nc; ++k) {
+                            const auto& nd = recs[k];
+                            if (nd.own_index != static_cast<uint8_t>(k)) {
+                                idx_ok = false;
+                            }
+                            if (k > 0 && nd.parent_index >= k) {
+                                topo_ok = false;
+                            }
+                            children += nd.child_count;
+                            const float ma = nd.rotation_a.x * nd.rotation_a.x +
+                                             nd.rotation_a.y * nd.rotation_a.y +
+                                             nd.rotation_a.z * nd.rotation_a.z +
+                                             nd.rotation_a.w * nd.rotation_a.w;
+                            const float mb = nd.rotation_b.x * nd.rotation_b.x +
+                                             nd.rotation_b.y * nd.rotation_b.y +
+                                             nd.rotation_b.z * nd.rotation_b.z +
+                                             nd.rotation_b.w * nd.rotation_b.w;
+                            if (ma > 0.99f && ma < 1.01f) {
+                                ++*rot_a_unit;
+                            }
+                            if (mb > 0.99f && mb < 1.01f) {
+                                ++*rot_b_unit;
+                            }
+                            const float* pv = &nd.position_a.x;
+                            bool fin = true;
+                            for (int c = 0; c < 3; ++c) {
+                                const float v = pv[c];
+                                if (!(v > -1.0e6f && v < 1.0e6f)) {
+                                    fin = false;
+                                }
+                            }
+                            const float* qv = &nd.position_b.x;
+                            for (int c = 0; c < 3; ++c) {
+                                const float v = qv[c];
+                                if (!(v > -1.0e6f && v < 1.0e6f)) {
+                                    fin = false;
+                                }
+                            }
+                            if (fin) {
+                                ++*pos_finite;
+                            }
+                        }
+                        if (idx_ok) {
+                            ++*index_self_ok;
+                        }
+                        if (topo_ok) {
+                            ++*topological_ok;
+                        }
+                        if (children + 1 == nc) {
+                            ++*child_sum_ok;
+                        }
                     }
                     if (blob != 0 && bsz > 0 && bsz < 0x400000 && nc > 0 && nc <= kMaxNodes &&
                         a->node_names != nullptr && a->node_hashes != nullptr) {
@@ -1144,7 +1211,10 @@ std::optional<CClientMgr::NodeCheck> CClientMgr::check_model_nodes(size_t max) c
     const int64_t n = seh_check_nodes(&regenny()->object_lists[kModelType], max, &out.nodes_total,
                                      &out.names_in_blob, &out.names_printable, &out.distinct_names,
                                      &out.repeated_names, &out.hash_consistent,
-                                     &out.hash_collisions, &out.count_dup_ok, max_object_walk);
+                                     &out.hash_collisions, &out.count_dup_ok, &out.records_in_blob,
+                                     &out.root_is_255, &out.index_self_ok, &out.topological_ok,
+                                     &out.child_sum_ok, &out.rot_a_unit, &out.rot_b_unit,
+                                     &out.pos_finite, max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

@@ -451,14 +451,19 @@ std::string build_objects_json() {
     // the same name always carries the same hash, which needs no engine data.
     out += ",\"model_nodes\":";
     if (const auto nc = mgr->check_model_nodes(8192); nc.has_value()) {
-        char nb[416];
+        char nb[704];
         snprintf(nb, sizeof(nb),
                  "{\"assets\":%zu,\"nodes_total\":%zu,\"names_in_blob\":%zu,"
                  "\"names_printable\":%zu,\"distinct_names\":%zu,\"repeated_names\":%zu,"
-                 "\"hash_consistent\":%zu,\"hash_collisions\":%zu,\"count_dup_ok\":%zu}",
+                 "\"hash_consistent\":%zu,\"hash_collisions\":%zu,\"count_dup_ok\":%zu,"
+                 "\"records_in_blob\":%zu,\"root_is_255\":%zu,\"index_self_ok\":%zu,"
+                 "\"topological_ok\":%zu,\"child_sum_ok\":%zu,\"rot_a_unit\":%zu,"
+                 "\"rot_b_unit\":%zu,\"pos_finite\":%zu}",
                  nc->assets, nc->nodes_total, nc->names_in_blob, nc->names_printable,
                  nc->distinct_names, nc->repeated_names, nc->hash_consistent,
-                 nc->hash_collisions, nc->count_dup_ok);
+                 nc->hash_collisions, nc->count_dup_ok, nc->records_in_blob, nc->root_is_255,
+                 nc->index_self_ok, nc->topological_ok, nc->child_sum_ok, nc->rot_a_unit,
+                 nc->rot_b_unit, nc->pos_finite);
         out += nb;
     } else {
         out += "null";

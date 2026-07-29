@@ -880,6 +880,43 @@ int main(int argc, char** argv) {
                 // guarantees -- a future level could collide without anything being
                 // wrong, and asserting 0 would make that look like a regression.
                 check(coll >= 0, "hash collisions among distinct names are reported (live: 0)");
+
+                // THE SKELETON IS A TREE, stored as an array in topological order.
+                // These four together are what "tree" means, and none of them
+                // consults anything but the asset's own node_count:
+                //   root_is_255      exactly one designated root
+                //   index_self_ok    each record knows its own slot
+                //   topological_ok   parents precede children, so no cycles and a
+                //                    single forward pass can compose world
+                //                    transforms without recursion
+                //   child_sum_ok     sum(child_count) == node_count - 1, which for
+                //                    a connected parent relation forces exactly one
+                //                    root and no node reachable twice
+                // The last one is the strongest: an off-by-one in the stride or a
+                // mis-sized record would break the sum long before the individual
+                // fields looked wrong.
+                int64_t rib = -1, r255 = -1, isok = -1, topo = -1, csum = -1, ra = -1, rb = -1,
+                        pf = -1;
+                json_int(nb, "records_in_blob", rib);
+                json_int(nb, "root_is_255", r255);
+                json_int(nb, "index_self_ok", isok);
+                json_int(nb, "topological_ok", topo);
+                json_int(nb, "child_sum_ok", csum);
+                json_int(nb, "rot_a_unit", ra);
+                json_int(nb, "rot_b_unit", rb);
+                json_int(nb, "pos_finite", pf);
+
+                check(rib == nassets, "every asset's node array lies wholly inside its string_blob");
+                check(r255 == nassets, "every skeleton's node[0] is the root (parent_index 255)");
+                check(isok == nassets, "every node's own_index equals its array index");
+                check(topo == nassets, "every node's parent precedes it (topological order)");
+                check(csum == nassets, "sum(child_count) == node_count - 1 on every skeleton");
+                // Both quaternions are unit on every node. That is what proves those
+                // 16-byte spans are rotations rather than arbitrary floats -- a
+                // wrong offset cannot keep producing magnitude 1 across 660 nodes.
+                check(ra == total, "every node's rotation_a is unit length");
+                check(rb == total, "every node's rotation_b is unit length");
+                check(pf == total, "every node's two position vectors are finite and in range");
             }
         }
 

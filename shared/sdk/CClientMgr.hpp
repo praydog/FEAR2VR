@@ -425,6 +425,17 @@ public:
         size_t hash_consistent;  // nodes whose hash matches the first seen for that name
         size_t hash_collisions;  // pairs of DIFFERENT names sharing one hash
         size_t count_dup_ok;     // node_count_dup == node_count
+        // The array is a TREE in topological order, which is the property that
+        // makes a single forward pass enough to accumulate world transforms. Each
+        // of these is checked per asset, against the asset's own numbers:
+        size_t records_in_blob;  // the whole node array lies inside string_blob
+        size_t root_is_255;      // node[0].parent_index == 255 (the reader's sentinel)
+        size_t index_self_ok;    // own_index == the array index, on every node
+        size_t topological_ok;   // every non-root parent_index < its own index
+        size_t child_sum_ok;     // sum(child_count) == node_count - 1: one root, no cycles
+        size_t rot_a_unit;       // rotation_a is unit length
+        size_t rot_b_unit;       // rotation_b is unit length
+        size_t pos_finite;       // both position vectors are finite and in range
     };
 
     // Walks up to `max` type-1 objects, visiting each distinct asset's nodes once.

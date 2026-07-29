@@ -444,6 +444,30 @@ moment the cheap enumeration fails, the writer is the only bounded path — and 
 gives you the table's address and the case behaviour as well, neither of which any
 amount of black-box matching would have produced.
 
+**To locate an array whose RECORD you already understand, search for a
+SELF-DESCRIBING field rather than for the array.** `LTModelAsset_ReadNodeTree`
+strides by 64 and stores each node's own index at byte +2. That is a fingerprint
+no unrelated data imitates: scan a blob for a base and stride where
+`byte[base + stride*i + 2] == i` for every `i` up to the count, and either nothing
+matches or the array is found. Across a 19 KB blob and six candidate strides it
+returned exactly one hit, and the asset field holding that base (`+0x1C`) fell out
+of a single comparison against every field of the struct.
+
+This is the same move as running the count arithmetic backwards, generalised: the
+writer told me the SHAPE (stride 64, index at +2, parent at +0), and the shape
+became the query. Prefer a field whose value is a function of its own position --
+an index, a self-pointer, a back-reference -- because the check has no false
+positives worth worrying about. Contrast searching for "an array of plausible
+pointers", which found three candidate runs in the same blob and needed the
+arithmetic to disambiguate.
+
+Then let the shape validate itself. Once the array was found, four properties of a
+TREE were checkable with nothing but the asset's own node_count: one root marked
+255, `own_index == array index`, every parent index below its child's, and
+`sum(child_count) == count - 1`. The last is the one to reach for first -- an
+off-by-one in the stride or a mis-sized record breaks the sum long before any
+individual field looks wrong.
+
 **A float blob's GROUPING is a hypothesis too — test it against a field you
 already know, never against how the numbers look.** Reading a span of floats
 and recognising a shape is the single easiest way to invent structure, because

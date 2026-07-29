@@ -1231,6 +1231,42 @@ class CClientMgr 0x1468 {
 // OT_WORLDMODEL's holds a real AABB -- so the single live exception to the
 // record mapping is explained by this gate rather than left as residue.
 
+// One skeleton node. 64 bytes, and the size is pinned from both ends: the reader
+// strides by 64 (`this + 64 * i`) and the two transform pairs below end at exactly
+// 0x40. Written by LTModelAsset_ReadNodeTree (0x4261B0), a recursive descent that
+// passes 255 as the root's parent.
+//
+// The tree is stored as an array in TOPOLOGICAL ORDER, which is worth stating
+// because it makes traversal trivial: a parent always precedes its children, so a
+// single forward pass can accumulate world transforms without recursion. Live,
+// across 34 assets and 660 nodes: node[0].parent is 255 on 34/34, own_index equals
+// the array index on 34/34, every non-root parent index is LESS than its own index
+// on 34/34, and sum(child_count) == node_count - 1 on 34/34 -- which is the
+// defining property of a tree with one root and no cycles.
+//
+// TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
+// its rigid inverse, the way LTWorldModelObject's pair is. If they were,
+// `pos_b == -(rot_a^-1 * pos_a)` and `rot_b == conjugate(rot_a)` would hold
+// everywhere; live they hold on 92 and 107 of 660, and the fits cluster on nodes
+// whose rot_a is near identity, where the relation degenerates into a plain
+// negation (78 of 660 satisfy even that). So the pairs are two DIFFERENT poses,
+// not one pose and its inverse, and what distinguishes them is unmapped. The
+// looking-alike was strong -- `attach` has a=(0,0,-10) against b=(0,0,10) -- which
+// is exactly why it needed testing rather than asserting.
+class LTModelNode 0x40 {
+    uint8_t parent_index   @0x00   // CONFIRMED: 255 on the root (the reader's sentinel), and always < own_index otherwise, on 34/34 assets
+    uint8_t unk_01         @0x01
+    uint8_t own_index      @0x02   // CONFIRMED == this node's index in the array, on all 660 live nodes
+    uint8_t unk_03         @0x03   // the reader writes a relative index here (counter - own index)
+    uint8_t child_count    @0x04   // CONFIRMED: the reader stores the low byte of a dword read from the file, and live the counts sum to node_count - 1 on 34/34 -- one root, no cycles
+    uint8_t unk_05         @0x05   // CONFIRMED read as a single byte straight from the file
+    uint16_t unk_06        @0x06
+    LTVector position_a    @0x08   // CONFIRMED finite and sane on 660/660
+    LTRotation rotation_a  @0x14   // CONFIRMED unit-length on 660/660, so a real quaternion
+    LTVector position_b    @0x24   // CONFIRMED finite and sane on 660/660. NOT the inverse of position_a -- see the class comment.
+    LTRotation rotation_b  @0x30   // CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride.
+}
+
 // A SHARED model asset record. Live, 215 OT_MODEL objects point at only 34
 // distinct instances of this, and never at null (215/215) -- so it is per-ASSET,
 // not per-instance, which is what makes the asset field a resource handle rather
@@ -1264,6 +1300,7 @@ class CClientMgr 0x1468 {
 // which is exactly why guessing from shape was not good enough.
 class LTModelAsset 0xA0 {
     float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0; the real value is read from the file into radius_from_file below.
+    LTModelNode* node_records @0x1C   // CONFIRMED the SKELETON NODE ARRAY: node_count records of 64 bytes, inside string_blob (34/34). Found by fingerprint rather than by a writer -- LTModelAsset_ReadNodeTree strides by 64 and stores each node's own index at byte +2, so searching the blob for a stride/base where byte[base + 64*i + 2] == i for every i landed on exactly one place, and the asset field holding that base is this one. The parent/child bytes then validated as a real tree (see LTModelNode).
     uint32_t node_count      @0x20   // CONFIRMED the SKELETON NODE COUNT. Found by arithmetic first -- the two arrays below sit end to end, so (b - a) / 4 is the count, and searching every field of all 34 assets for a match returned exactly this and 0x40, each 34/34 -- then PROVEN by reading what the arrays hold: node_names has exactly this many entries and they are bone names. Live 2..84: 2 for a shell casing, 61 and 84 for characters.
     char** node_names        @0x24   // CONFIRMED an array of node_count char* INSIDE string_blob, holding the model's SKELETON NODE NAMES. LTModelAsset_ReadNodeTree (0x4261B0) is a recursive tree reader that writes `names[index] = name_ptr` per node, with 255 passed as the root's parent sentinel. Live all 660 names across 34 assets are blob-internal and printable, e.g. Pelvis, Torso_Base, Upper_Torso, Neck, Head, L_Shoulder, L_Hand, L_Thumb0, L_Index0, Face_Jaw, aimer, attach. 11 of 34 assets have a "Head" node and 12 have a hand node. This is the field a mod uses to locate a bone by name.
     uint32_t* node_hashes    @0x28   // CONFIRMED a parallel array of node_count CASE-INSENSITIVE NAME HASHES, written by the same reader as `hashes[index] = String_HashI(name_ptr)`. The hash is `h = 0; while (*s) h = g_HashCharTable[*s++] + 919 * h;` (String_HashI, 0x4051C0; the 256-byte table is g_HashCharTable at 0x66E3D8 and is NOT identity or tolower but a custom alphabet remap that folds case). Reimplemented against live data it reproduces all 660 stored values exactly, and hash("Head") == hash("head") == hash("HEAD"). NO standard hash matched first -- FNV-1/1a, djb2, djb2-xor, sdbm and CRC32 over three case foldings scored 0 of 660 -- so this was settled by reading the writer, not by guessing.
