@@ -717,6 +717,34 @@ int main(int argc, char** argv) {
                        static_cast<long long>(psock), reach,
                        json_has(body, "\"hands_clean\":true") ? "bones CLEAN"
                                                              : "bones stale this frame");
+
+                // ---- THE ENGINE'S OWN ANSWER, AGAINST OURS -------------------------
+                //
+                // This is the strongest check in the file. The engine moves an attached
+                // object to its mount point using ITS arithmetic; we compose the same
+                // point from the asset's socket record and the bone cache using OURS. So
+                // the weapon object's position and our RightHand socket transform are two
+                // independent producers of one value, and they must agree. Live they agree
+                // EXACTLY (0.000), which is why the tolerance can be this tight: anything
+                // that broke the composition would move this by units, not by epsilon.
+                if (json_has(body, "\"muzzle_ok\":true")) {
+                    double wvh = -1.0, mfh = -1.0;
+                    json_double(body, "weapon_vs_hand", wvh);
+                    json_double(body, "muzzle_from_hand", mfh);
+                    check(wvh >= 0.0 && wvh < 0.05,
+                          "the ENGINE's placement of the weapon matches OUR socket "
+                          "composition for the hand holding it");
+                    // A muzzle is down a barrel from the grip: far enough to be a real
+                    // offset, near enough to still be part of the weapon.
+                    check(mfh > 5.0 && mfh < 150.0,
+                          "the muzzle sits a BARREL LENGTH from the hand, not at it and "
+                          "not across the level");
+                    printf("[fixture] muzzle: %.1f from the hand, engine agrees to %.3f\n",
+                           mfh, wvh);
+                } else {
+                    printf("[fixture] NOTE: nothing mounted on the player carries a "
+                           "'flash' socket -- the attachment chain was NOT exercised.\n");
+                }
             } else {
                 printf("[fixture] NOTE: the player's hand sockets did not resolve -- the "
                        "end-to-end chain was NOT exercised.\n");

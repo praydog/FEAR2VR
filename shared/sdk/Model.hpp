@@ -433,4 +433,49 @@ struct ModelMatch {
 // keep the handle.
 std::vector<ModelMatch> find_models(std::string_view needle, size_t max = 64);
 
+
+// ---- WHAT IS MOUNTED ON THIS OBJECT, BY THE SOCKET IT CARRIES -----------------
+//
+// The real question behind "where is the player's muzzle" is not "which attachment is
+// the weapon" -- that would be a heuristic about game logic -- but "which thing mounted
+// on me defines a socket called `flash`". That is mechanical, and it is what this does.
+//
+// LIVE, on the player, this resolves the shotgun: the player carries two attachments,
+// `weapons\shotgun_clip\shotgun_clip.mdl` (6 nodes, 5 sockets) and an `engine\default.mdl`
+// placeholder with none. Asking for "flash" finds the first and ignores the second
+// without needing to know that a shotgun is a weapon and a default is not.
+//
+// A WEAPON ASSET'S SOCKET SET, measured on that shotgun, since these are the names to
+// ask for -- and all five ride ONE bone (`offset`, node 1), so their offsets are the art:
+//
+//   flash      (0.16, 12.17, 38.29)   the muzzle: 38 units down the barrel
+//   physics    (0.16, 12.17, 38.29)   identical to flash -- where recoil/impulse applies
+//   laser      (0.00, 15.18, 34.63)   just above and behind the muzzle
+//   flashlight (5.95,  7.75, 36.48)   offset to the side
+//   breach     (2.00,  9.00,  5.00)   back near the receiver: the ejection port
+//
+// `flash` and `physics` being the SAME point is worth knowing before treating them as
+// two anchors: the art gives one muzzle with two names.
+struct AttachedSocket {
+    // The attached child carrying the socket. Valid only while it lives -- keep the
+    // handle if you need to remember it across frames.
+    const regenny::LTObject* object;
+    uint16_t child_handle;
+    // WHICH BONE of the PARENT the child is mounted on, when the parent is a model.
+    // nullopt when the record carries the engine's non-model sentinel.
+    std::optional<size_t> parent_node;
+    // The socket's pose in WORLD space, composed the same way socket_world_transform
+    // does it -- including the `stale` flag, which matters here too: a weapon's bones
+    // are recomputed on the same schedule as anything else.
+    ModelSkeleton::SocketTransform transform;
+};
+
+// The first object attached to `parent` that defines a socket named `socket_name`,
+// together with that socket's world transform. Case-insensitive, like find_socket().
+//
+// nullopt when nothing mounted on `parent` has such a socket -- which is the ordinary
+// answer for an unarmed character, not a fault.
+std::optional<AttachedSocket> attached_socket(const regenny::LTObject* parent,
+                                              const char* socket_name);
+
 }  // namespace sdk

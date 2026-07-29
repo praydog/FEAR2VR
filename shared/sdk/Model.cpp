@@ -5,6 +5,7 @@
 #include <utility/Seh.hpp>
 
 #include "CClientMgr.hpp"
+#include "Object.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTAnimNameEntry.hpp"
 #include "regenny/regenny/LTModelSocket.hpp"
@@ -1159,6 +1160,40 @@ ModelSkeleton::socket_world_transform(size_t socket_index) const {
     out.scale = r.s;
     out.stale = local->stale;
     return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+std::optional<AttachedSocket> attached_socket(const regenny::LTObject* parent,
+                                              const char* socket_name) {
+    if (parent == nullptr || socket_name == nullptr) {
+        return std::nullopt;
+    }
+    // Deliberately reuses the public attachment walk rather than re-reading the list:
+    // that walk already carries the cycle cap and the handle resolution, and duplicating
+    // it here would mean maintaining two versions of the same guard.
+    for (const auto& att : attachments(parent)) {
+        if (att.child == nullptr) {
+            continue;
+        }
+        const auto sk = ModelSkeleton::from_object(att.child);
+        if (!sk.has_value()) {
+            continue;
+        }
+        const auto xf = sk->socket_world_transform(socket_name);
+        if (!xf.has_value()) {
+            continue;
+        }
+        AttachedSocket out{};
+        out.object = att.child;
+        out.child_handle = att.child_handle;
+        out.parent_node = att.parent_node;
+        out.transform = *xf;
+        return out;
+    }
+    return std::nullopt;
 }
 
 }  // namespace sdk

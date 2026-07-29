@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **The best test for derived arithmetic is a place the ENGINE already wrote the answer.**
+  Our socket composition (asset socket record + bone cache + object transform) had been
+  checked only against plausibility bounds -- is the point near the body, is it finite.
+  Then the attachment system turned up an object the engine itself places at a socket, and
+  the weapon's own `position` matched our composed `RightHand` transform to **0.000**.
+
+  That is a different KIND of check from a bound. A bound says "not obviously wrong"; an
+  independently-produced identical value says "right". Look for these deliberately: any
+  place the engine caches, copies, or acts on a quantity you also compute is a free
+  oracle, and it costs one comparison.
+
+  The tolerance can then be tight on purpose (0.05 here, against a value that reads
+  0.000), because a composition error moves such a check by units, not by epsilon. A loose
+  tolerance on a strong oracle wastes the oracle.
+
+- **An exact agreement is not an explanation.** The same pass: the weapon record names
+  `parent_node` 0 (`Null`), while the weapon sits at the `RightHand` socket on node 38.
+  The placement agrees perfectly with our composition and does NOT come from the field the
+  record carries. It would have been easy -- and wrong -- to write "parent_node is where
+  the child goes, confirmed to 0.000". Both the agreement and the unexplained route are
+  recorded, and the SDK warns the consumer not to trust the field for position.
 - **A range measured on the interesting samples is not the range.** `socket_count` was
   documented as "live 1..15 per asset" from a pass that looked at characters and weapons.
   Re-walking all 34 live assets gave **0..19** -- wrong at both ends, and the wrong end

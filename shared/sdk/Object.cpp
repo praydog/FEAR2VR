@@ -134,7 +134,7 @@ namespace {
 struct AttachRaw {
     uint16_t child_handle;
     uint16_t parent_handle;
-    uint32_t socket;
+    uint32_t parent_node;
     const void* next;
     float pos[3];
     float rot[4];
@@ -147,7 +147,7 @@ AttachRaw seh_read_record(const void* rec) {
         const auto* a = static_cast<const regenny::LTAttachment*>(rec);
         r.child_handle = a->child_handle;
         r.parent_handle = a->parent_handle;
-        r.socket = a->socket;
+        r.parent_node = a->parent_node;
         r.next = a->next;
         r.pos[0] = a->offset_position.x;
         r.pos[1] = a->offset_position.y;
@@ -178,7 +178,7 @@ const void* seh_list_head(const regenny::LTObject* obj, bool* is_model) {
 
 // The engine's sentinel for "not mounted on a bone". 127, not -1 -- measured on
 // 335/335 non-model owners.
-constexpr uint32_t kNoSocket = 127;
+constexpr uint32_t kNoParentNode = 127;
 
 // Live lists are 1..16 long. This bound exists for a TORN list, not a long one.
 constexpr size_t kMaxRecords = 64;
@@ -213,13 +213,13 @@ std::vector<Attachment> attachments(const regenny::LTObject* obj) {
         Attachment a{};
         a.child_handle = r.child_handle;
         // Resolution needs the live manager; without it a caller still gets the
-        // handles and sockets, which is more useful than an empty answer.
+        // handles and node indices, which is more useful than an empty answer.
         a.child = mgr != nullptr ? mgr->object_from_handle(r.child_handle) : nullptr;
-        // The socket is only an index when the OWNER is a model -- the engine's own
-        // condition, not a value test, so a model that happened to store 127 would
-        // still be reported as "no socket" and a non-model never yields an index.
-        if (is_model && r.socket != kNoSocket) {
-            a.socket = static_cast<size_t>(r.socket);
+        // The node index is only meaningful when the OWNER is a model -- the engine's own
+        // condition, not a value test, so a model that happened to store 127 would still
+        // be reported as "not mounted on a bone" and a non-model never yields an index.
+        if (is_model && r.parent_node != kNoParentNode) {
+            a.parent_node = static_cast<size_t>(r.parent_node);
         }
         a.offset_position.x = r.pos[0];
         a.offset_position.y = r.pos[1];

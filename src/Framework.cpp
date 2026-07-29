@@ -242,7 +242,10 @@ std::string build_health_fragment() {
 }
 
 std::string build_targets_json() {
-    char buf[1280];
+    // Grown three times now, each time by one more field. The GUARD below is the part
+    // that matters: an overflow used to ship invalid JSON and break the caller's parser
+    // with a mystery offset, which cost more than the missing field would have.
+    char buf[3072];
     const auto* exe = sdk::Modules::get().exe();
     auto* client_mgr = sdk::CClientMgr::get();
     const auto engine_time = sdk::Engine::client_time();
@@ -323,6 +326,50 @@ std::string build_targets_json() {
             }
         }
     }
+
+    // THE MUZZLE, asked mechanically: not "which attachment is the weapon" but "what
+    // mounted on me carries a socket called flash". Live that resolves the shotgun and
+    // skips the engine\default.mdl placeholder beside it.
+    //
+    // AND THE CROSS-CHECK WORTH HAVING: the engine moves an attached object to its mount
+    // point itself, so the weapon OBJECT's own position should already equal the hand
+    // socket position this SDK composes independently. Two unrelated producers -- the
+    // engine's attachment updater and our own composition -- landing on the same point is
+    // real evidence the composition is right.
+    bool muzzle_ok = false, muzzle_clean = false;
+    float muzzle[3] = {0, 0, 0};
+    float weapon_vs_hand = -1.0f, muzzle_from_hand = -1.0f;
+    std::string muzzle_mdl;
+    if (player.has_value()) {
+        if (const auto m = sdk::attached_socket(player->object, "flash"); m.has_value()) {
+            muzzle_ok = true;
+            muzzle_clean = !m->transform.stale;
+            muzzle[0] = m->transform.position.x;
+            muzzle[1] = m->transform.position.y;
+            muzzle[2] = m->transform.position.z;
+            for (const char ch : sdk::model_filename(m->object).value_or(std::string{})) {
+                muzzle_mdl += (ch == '\\') ? "\\\\" : std::string(1, ch);
+            }
+            // And how far the muzzle sits from the hand holding it -- a barrel length,
+            // which is the sanity bound on the socket offset having been applied in the
+            // bone's frame rather than raw.
+            if (hands_ok) {
+                const float mx = muzzle[0] - rhand[0];
+                const float my = muzzle[1] - rhand[1];
+                const float mz = muzzle[2] - rhand[2];
+                muzzle_from_hand = std::sqrt(mx * mx + my * my + mz * mz);
+            }
+            // The weapon's own origin against the hand socket we composed above.
+            if (hands_ok) {
+                if (const auto wi = sdk::object_info(m->object); wi.has_value()) {
+                    const float ax = wi->position.x - rhand[0];
+                    const float ay = wi->position.y - rhand[1];
+                    const float az = wi->position.z - rhand[2];
+                    weapon_vs_hand = std::sqrt(ax * ax + ay * ay + az * az);
+                }
+            }
+        }
+    }
     // ROUND TRIP, and deliberately not against a hardcoded name: take variables the
     // table itself reported, upper-case them, and require the lookup to find each one
     // with the same value. That tests the case-insensitive path without assuming which
@@ -355,7 +402,7 @@ std::string build_targets_json() {
     const std::optional<size_t> shell_count =
         client_mgr != nullptr ? client_mgr->start_shell_list_count() : std::optional<size_t>{};
 
-    snprintf(buf, sizeof(buf),
+    const int written = snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"exe_base\":\"0x%08" PRIXPTR "\",\"exe_size\":\"0x%08" PRIXPTR "\","
              "\"client_mgr_update\":\"0x%08" PRIXPTR "\",\"client_shell_update\":\"0x%08" PRIXPTR "\","
              "\"get_engine_hook\":\"0x%08" PRIXPTR "\",\"g_pClientMgr_slot\":\"0x%08" PRIXPTR "\","
@@ -388,7 +435,10 @@ std::string build_targets_json() {
              // The VR chain's answer: the player's two hands, in world space.
              "\"player_sockets\":%d,\"hands_ok\":%s,\"hands_clean\":%s,"
              "\"hands_distinct\":%s,\"hands_reach\":%.2f,"
-             "\"lhand\":[%.2f,%.2f,%.2f],\"rhand\":[%.2f,%.2f,%.2f]}",
+             "\"lhand\":[%.2f,%.2f,%.2f],\"rhand\":[%.2f,%.2f,%.2f],"
+             // The muzzle, and the engine-vs-us agreement on where the weapon sits.
+             "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
+             "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -435,7 +485,17 @@ std::string build_targets_json() {
              hands_clean ? "true" : "false",
              hands_distinct ? "true" : "false", hands_reach,
              lhand[0], lhand[1], lhand[2],
-             rhand[0], rhand[1], rhand[2]);
+             rhand[0], rhand[1], rhand[2],
+             muzzle_ok ? "true" : "false",
+             muzzle_clean ? "true" : "false",
+             muzzle[0], muzzle[1], muzzle[2],
+             muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand);
+    // A truncated payload is not valid JSON, so say so in JSON the caller CAN parse
+    // rather than handing back a half-written object.
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(buf)) {
+        return "{\"ok\":false,\"error\":\"targets truncated\",\"needed\":" +
+               std::to_string(written) + "}";
+    }
     return buf;
 }
 
@@ -1220,10 +1280,10 @@ std::string build_objects_json() {
                             if (at.child != nullptr) {
                                 ++api_att_child_ok;
                             }
-                            if (at.socket.has_value()) {
+                            if (at.parent_node.has_value()) {
                                 ++api_att_socketed;
-                                if (skel.has_value() && *at.socket < skel->node_count() &&
-                                    skel->node_name(*at.socket).has_value()) {
+                                if (skel.has_value() && *at.parent_node < skel->node_count() &&
+                                    skel->node_name(*at.parent_node).has_value()) {
                                     ++api_att_socket_named;
                                 }
                             }

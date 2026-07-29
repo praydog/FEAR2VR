@@ -209,11 +209,26 @@ struct Attachment {
     // otherwise (335/335). Note the sentinel is 127 here and NOT -1, whatever the
     // reference SDK says.
     //
-    // To get the bone's NAME, compose with the model API rather than expecting it
-    // here:
-    //     if (auto skel = sdk::ModelSkeleton::from_object(parent); skel && a.socket)
-    //         auto name = skel->node_name(*a.socket);   // e.g. "L_Shoulder"
-    std::optional<size_t> socket;
+    // NAMED `parent_node` AND NOT `socket`, which is what both the engine's field and an
+    // earlier version of this struct called it. It indexes NODES. This project has two
+    // separate index spaces -- sockets and nodes -- and the engine itself unifies them in
+    // its socket-handle argument, where a handle addresses sockets FIRST and then nodes.
+    // Both are size_t and both are in range, so passing this to a socket accessor would
+    // return a plausible wrong answer rather than fail. Every consumer written against
+    // the old name immediately called node_name() on it, which is the tell.
+    //
+    // To get the bone's NAME, compose with the model API rather than expecting it here:
+    //     if (auto skel = sdk::ModelSkeleton::from_object(parent); skel && a.parent_node)
+    //         auto name = skel->node_name(*a.parent_node);   // e.g. "L_Shoulder"
+    std::optional<size_t> parent_node;
+
+    // A CAVEAT MEASURED, NOT GUESSED: this is the bone the RECORD names, and it is not
+    // reliably where the child ends up. The player's weapon record names node 0 (`Null`)
+    // while the weapon object actually sits at the `RightHand` socket's world position
+    // (node 38, `R_Hand`) -- confirmed to 0.000 against an independent composition. So
+    // the engine's placement of at least first-person weapons does not come from
+    // evaluating this field's bone. Use it to know what the record SAYS; read the child's
+    // own position, or attached_socket(), to know where the child IS.
 
     // The record's own offset transform. Live these are all zero and identity
     // respectively, so they are UNEXERCISED in the sampled state -- do not assume they
