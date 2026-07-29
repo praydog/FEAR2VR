@@ -3068,6 +3068,8 @@ std::string build_interfaces_json() {
     // class's own typed getter. That exercises all 36 public API paths, so a
     // miswired kName or a getter bound to the wrong instance shows up here
     // instead of being masked by a registry lookup with the right string.
+    size_t resolved_count = 0, slot1_shaped_count = 0;
+    std::string iltclient_slot1, iclientshell_slot1;
     const auto* entries = sdk::interfaces::all_interfaces();
     const size_t count = sdk::interfaces::all_interface_count();
     for (size_t i = 0; i < count; ++i) {
@@ -3077,18 +3079,43 @@ std::string build_interfaces_json() {
         const auto& e = entries[i];
         const auto a = e.agreement();
         void* via_getter = e.get();
-        char b[384];
+        // What slot 1's body actually is, per object, measured rather than assumed. The helper reads a
+        // constant-return shape without calling anything, so a mismatch is information ("this object's
+        // slot 1 is not that shape") and never a wrong invocation.
+        const auto slot1 = sdk::interfaces::slot1_constant_string(via_getter);
+        // Counted HERE, where the loop already visits every entry. A consumer of this endpoint should
+        // not have to re-derive these by splitting the array back apart.
+        if (via_getter != nullptr) {
+            ++resolved_count;
+            if (slot1.has_value()) {
+                ++slot1_shaped_count;
+            }
+        }
+        if (strcmp(e.name, "ILTClient.Default") == 0 && slot1.has_value()) {
+            iltclient_slot1 = *slot1;
+        }
+        if (strcmp(e.name, "IClientShell.Default") == 0 && slot1.has_value()) {
+            iclientshell_slot1 = *slot1;
+        }
+        char b[512];
         snprintf(b, sizeof(b),
                  "{\"name\":\"%s\",\"holders\":%zu,\"non_null\":%zu,\"all_agree\":%s,"
                  "\"value\":\"0x%08" PRIXPTR "\",\"getter\":\"0x%08" PRIXPTR "\","
-                 "\"getter_matches\":%s}",
+                 "\"getter_matches\":%s,\"slot1\":\"%s\"}",
                  e.name, a.total, a.non_null, a.all_agree ? "true" : "false",
                  reinterpret_cast<uintptr_t>(a.value),
                  reinterpret_cast<uintptr_t>(via_getter),
-                 (via_getter == a.value) ? "true" : "false");
+                 (via_getter == a.value) ? "true" : "false",
+                 slot1.has_value() ? slot1->c_str() : "");
         out += b;
     }
-    out += "]}";
+    out += "],";
+    char tail[256];
+    snprintf(tail, sizeof(tail),
+             "\"resolved\":%zu,\"slot1_constant_strings\":%zu,"
+             "\"iltclient_slot1\":\"%s\",\"iclientshell_slot1\":\"%s\"}",
+             resolved_count, slot1_shaped_count, iltclient_slot1.c_str(), iclientshell_slot1.c_str());
+    out += tail;
     return out;
 }
 

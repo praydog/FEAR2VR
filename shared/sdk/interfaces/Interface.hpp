@@ -1,5 +1,9 @@
 #pragma once
 
+#include <string>
+
+#include <optional>
+
 #include "Registry.hpp"
 
 namespace sdk::interfaces {
@@ -37,6 +41,37 @@ namespace sdk::interfaces {
 // Current pointer for `name`, or nullptr. Initializes the registry on first
 // use, and retries if an earlier attempt was too early to succeed.
 void* resolve_interface(const char* name);
+
+// NAMED FOR THE OBSERVATION, NOT THE MEANING. This reports a string found in a particular instruction
+// shape at vtable slot 1; it cannot prove what that slot MEANS. On the interfaces checked the shape sits
+// on IBase::_InterfaceImplementation, so the string is the implementing class's name for itself
+// ("CLTClient", "CLTModelClient", "CLTTextureMgr") -- but that is an observation about those objects,
+// not a property this function establishes.
+//
+// The literal named by `iface`'s vtable slot 1, when that slot's ENTRY SEQUENCE is
+//
+//     B8 <imm32>   mov eax, <string address>
+//     C3           retn
+//
+// and nullopt otherwise. Six bytes is an entry sequence, NOT the function's extent: unreachable bytes
+// or another label may follow, and nothing here measures where the body ends. A consumer can use the
+// string to confirm a resolved pointer really is the class expected.
+//
+// The address must lie on an EXECUTABLE, non-guard page before any byte is read, so a data pointer that
+// happens to begin with 0xB8 cannot be mistaken for a function body, and a guard page is never touched
+// (reading one would clear the guard -- a real side effect).
+//
+// IT DOES NOT CALL THE SLOT. The string address is read out of the instruction's immediate and
+// dereferenced directly, so safety does not rest on knowing the function's extent at all. Even taken as
+// a callable, an entry sequence that loads a constant and returns cannot reach whatever follows it; but
+// nothing here is invoked, so the question does not arise.
+//
+// IT CLAIMS NOTHING ABOUT LAYOUT. This is NOT an assertion that every interface carries
+// _InterfaceImplementation at slot 1; it was verified for a handful, not for all of them. The check is
+// per object and per call: either this object's slot 1 has the constant-return shape, in which case the
+// string is what that body returns, or it does not and you get nullopt. A differently laid-out
+// interface fails the shape test rather than being misread.
+std::optional<std::string> slot1_constant_string(void* iface);
 
 // Holder bookkeeping for `name`: how many holders requested it, how many slots
 // currently hold a pointer, and whether those agree.

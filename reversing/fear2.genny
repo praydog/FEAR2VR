@@ -1178,6 +1178,42 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- ILTClient's VTABLE: 147 SLOTS, EXTENT PROVEN ----
+//
+// Instance g_CLTClient_instance (FEAR2.exe 0x6E3138), vtable CLTClient_vftable (0x66F258). This is the
+// object gameclient.dll's g_pILTClient holds, so the game's 787 reads of that global all dispatch here.
+//
+// THE EXTENT IS PROVEN, NOT SCANNED. Reading forward until a pointer stops looking like code would be
+// unsound in both directions: a valid slot may target another module, and the next vtable's entries look
+// executable too. What settles it is a static xref -- the dword at 0x66F4A4 is referenced as
+// `offset aCltclient`, i.e. it IS the string literal "CLTClient". The pointer array therefore ends at
+// exactly 147 entries, and the string that follows is what proves it.
+//
+// SLOT 1 is IBase::_InterfaceImplementation, returning "CLTClient" -- the same anchor that fixed
+// CGameClientShell's +2 offset in gameclient.dll. Its body is `mov eax, <str>; retn`, an entry sequence
+// the SDK reads WITHOUT calling (sdk::interfaces::slot1_constant_string). Measured live: all 36 resolved
+// interfaces carry that same entry sequence at slot 1.
+//
+// 44 of the 147 implementations were already named from earlier passes, which the slot indices now
+// attach to the interface. A sample, and note these are the ENGINE's implementations in FEAR2.exe:
+//    16/17  GetObjectRotation / SetObjectRotation      18/19  GetObjectPos / SetObjectPos
+//    25/26  GetObjectScale / SetObjectScale            27..30 GetObjectColor / SetObjectRGB/Alpha/Color
+//    46..65 the light block (type, radius, texture, spot info, directional dims, detail settings)
+//    77/78  Register/UnregisterConsoleProgram          82/83  ClientTime_GetSeconds / GetMilliseconds
+//    87     RemoveObject                              111/112 IsKeyDown / TranslateKey
+//    118    GetLocalClientID                          120/121 GetSConValueFloat / GetSConValueString
+//    122    ClientShell_GetRealTime                   123    SendToServer
+//    140    cis_GetEngineHook                         143    IsServerObject
+//
+// SLOT 122 IS THE SHELL'S real_time CLOCK, already mapped as ClientShell_GetRealTime (0x406BDC) -- it
+// loads g_pClientMgr, follows +0x1434 and reads the double at shell+0x10. So the clock the CClientShell
+// class exposes and this interface method are the SAME accessor, and per that mapping it is ~2 Hz
+// quantised: accurate in aggregate, useless per frame. CGameClientShell_Update calls it and compares
+// against a stored double, which makes that a ~2 Hz periodic branch rather than a per-frame one.
+//
+// The other 103 slots are unnamed. NOT attempted: matching them against the reference iltclient.h
+// declaration order -- CGameClientShell's slot map already showed that order does not transfer.
+
 // ---- CAPIHolder IN gameclient.dll: HOW THE GAME DLL GETS ITS INTERFACES ----
 //
 // The SDK already scans FEAR2.exe for CAPIHolder call sites (shared/sdk/interfaces/Registry.cpp).

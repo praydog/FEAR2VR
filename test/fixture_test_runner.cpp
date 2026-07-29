@@ -1050,6 +1050,43 @@ int main(int argc, char** argv) {
         json_int(body, "wb_inside", wbin);
         json_int(body, "wb_bounds_probed", wbbp);
         json_int(body, "wb_bounds_ok", wbbok);
+        // ---- SLOT 1 ACROSS THE RESOLVED INTERFACES ------------------------------------
+        //
+        // interfaces::slot1_constant_string() reports a string only when slot 1's ENTRY SEQUENCE is
+        // `mov eax, <imm32>; retn` on an executable, non-guard page. It never CALLS the slot, so a
+        // mismatch is information rather than a misfire, and nothing here depends on where the body ends.
+        //
+        // COMPARED AGAINST THE RESOLVED COUNT, NOT THE TABLE SIZE. Interface.hpp documents that a null
+        // interface pointer is normal -- early startup, server absent, mid-unload -- so requiring every
+        // descriptor to yield a string would fail on AVAILABILITY and read as a shape regression.
+        //
+        // Both counts come from the endpoint, which already walks every entry; re-deriving them by
+        // splitting the JSON array apart here would duplicate that work in a format-fragile way.
+        {
+            std::string iresp;
+            check(http::get(port, "/sdk/interfaces", iresp), "/sdk/interfaces transport");
+            const std::string ibody = http::body_of(iresp);
+            int64_t itotal = -1, iresolved = -1, ishaped = -1;
+            // "expected_names" is the endpoint's name for the generated descriptor count.
+            check(json_int(ibody, "expected_names", itotal) && itotal > 0,
+                  "the interface descriptor table is not empty");
+            check(json_int(ibody, "resolved", iresolved) && iresolved > 0,
+                  "at least one interface is resolved in this state");
+            check(json_int(ibody, "slot1_constant_strings", ishaped), "the shape count is reported");
+            check(ishaped == iresolved,
+                  "every RESOLVED interface's slot 1 carries the constant-string entry sequence");
+            // Two stable semantic anchors, so a silent change of meaning cannot hide behind a
+            // still-passing count.
+            std::string s_lt, s_shell;
+            check(json_str(ibody, "iltclient_slot1", s_lt) && s_lt == "CLTClient",
+                  "ILTClient's slot 1 names CLTClient");
+            check(json_str(ibody, "iclientshell_slot1", s_shell) && s_shell == "CGameClientShell",
+                  "IClientShell's slot 1 names CGameClientShell");
+            printf("[fixture] slot1 entry sequence: %lld/%lld resolved of %lld descriptors; ILTClient=%s\n",
+                   static_cast<long long>(ishaped), static_cast<long long>(iresolved),
+                   static_cast<long long>(itotal), s_lt.c_str());
+        }
+
         // ---- THE GAME DLL'S PER-FRAME HOOK ANCHORS ------------------------------------
         //
         // CClientShell::Update dispatches IClientShell slots 2, 4, 3 every frame -- PreUpdate,

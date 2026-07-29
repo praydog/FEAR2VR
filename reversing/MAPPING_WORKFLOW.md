@@ -963,6 +963,39 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **IF THE PRODUCER ALREADY WALKS THE DATA, LET IT COUNT.** My first slot-1 fixture check re-parsed the
+  endpoint's JSON array with a bespoke `},{` splitter to count resolved entries -- fragile, and a
+  duplicate of a loop the producer was already running. Moved the counts into the endpoint
+  (`resolved`, `slot1_constant_strings`) plus two named fields for the semantic anchors, and the test
+  now uses the existing json_int/json_str helpers. Also cost a failed run to learn the descriptor count
+  was already published under a different key (`expected_names`): check the producer's field names
+  before inventing a reader.
+
+- **A VTABLE'S EXTENT NEEDS A BOUNDARY, NOT A SCAN.** I sized ILTClient's vtable by reading forward until
+  a pointer left FEAR2.exe: 147 slots. That is unsound both ways -- a valid slot can target another
+  module (truncating), and the next vtable's entries also look executable (overrunning). The proof came
+  from a static xref instead: the dword just past the table is referenced as `offset aCltclient`, so it
+  is the string "CLTClient" and the array demonstrably stops there. Same number, but now it is evidence.
+  
+- **READING A CONSTANT BEATS CALLING A GETTER.** Wanting each interface's implementation name, the
+  obvious move is to call slot 1. Better: require the entry sequence `B8 imm32 C3` and read the immediate.
+  No invocation, so no side effects to reason about, and a slot that does anything else simply fails the
+  test. Two bugs found in that helper during review, both of which would have made it worse than the
+  naive version: it accepted a 127-byte prefix when no NUL was in range (presenting arbitrary bytes as a
+  verified string), and it masked PAGE_GUARD off before testing protection -- reading a guard page CLEARS
+  the guard, the exact side effect the design existed to avoid.
+  
+- **"EXACTLY SIX BYTES" IS THE EXTENT MISTAKE AGAIN.** I described `B8 imm32 C3` as "the whole function"
+  in the new header, having recorded earlier this same session that `0xC3` proves an ENTRY returns, not
+  what a body contains. The safety argument never needed extent. Third recurrence of this shape of error;
+  the tell is any sentence where a fixed-size read licenses a claim about a whole object.
+  
+- **ASSERT AGAINST THE RIGHT DENOMINATOR.** The first version of the slot-1 fixture check compared the
+  shape count against the DESCRIPTOR TABLE size, while Interface.hpp documents that a null interface is
+  normal (early startup, server absent, mid-unload). That test would have failed for availability and
+  read as a shape regression. Compare against RESOLVED entries, and pin two known strings so a change of
+  meaning cannot hide behind a passing count.
+
 - **TWO SAMPLES DIFFERING IS NOT "EACH HAS ITS OWN".** I saw holder vtables 0x101D0434 and 0x101D0444
   differ and wrote that each holder has its own. Counting all 46 refuted it: 13 distinct vtables, one
   per interface NAME, with all 9 ILTInput holders sharing one and all 18 ILTOnlineService sharing

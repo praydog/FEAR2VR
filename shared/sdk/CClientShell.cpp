@@ -374,24 +374,11 @@ uintptr_t GameClientShell::vtable_entry_address(size_t slot) {
 uintptr_t GameClientShell::pre_update_vtable_entry() { return vtable_entry_address(kSlotPreUpdate); }
 
 std::optional<std::string> GameClientShell::implementation_name() {
-    auto* iface = interfaces::IClientShell::get();
-    if (iface == nullptr) {
-        return std::nullopt;
-    }
-    const auto fn = seh_vtable_slot(iface, kSlotImplementationName);
-    if (!in_game_client(fn)) {
-        return std::nullopt;
-    }
-    const char* raw = seh_call_impl_name(fn, iface);
-    if (raw == nullptr) {
-        return std::nullopt;
-    }
-    char buf[64]{};
-    const int64_t n = seh_copy_name(raw, buf, sizeof(buf));
-    if (n <= 0) {
-        return std::nullopt;
-    }
-    return std::string(buf, static_cast<size_t>(n));
+    // Delegates: interfaces::slot1_constant_string() reads slot 1's constant-return body without
+    // calling it, and is shared by every interface rather than reimplemented here. The semantic name
+    // stays HERE, where slot 1 was individually verified to be _InterfaceImplementation returning
+    // "CGameClientShell"; the generic helper only reports the shape it found.
+    return interfaces::slot1_constant_string(interfaces::IClientShell::get());
 }
 
 bool GameClientShell::available() {
