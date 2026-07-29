@@ -288,6 +288,19 @@ inject → test → uninject with the game never restarting.
     Test the API at its own level too: assert that `find_node(n)` then
     `node_name(i)` returns `n`, not that some offset is 660/660. The contract can
     break while every offset underneath stays correct.
+    Two more, added after `check_transforms` had to be taken apart:
+    - **A `check_*` aggregates a consumer primitive; it never CONTAINS one.** That
+      check built `R(q)`, read both cached matrices, compared them against each
+      other and computed a determinant, all inside one SEH walk -- then returned
+      three counters. Every ingredient a mod needed was in there and unreachable.
+      If a check computes something a caller would want, the computation belongs
+      in the header and the check calls it. Where the SEH guard lives is an
+      implementation detail of the primitive, not a reason to bury logic.
+    - **Delete the private path when you extract it.** The old walker was removed,
+      not left beside the new one: two copies of an offset or a formula is how one
+      of them goes stale. Refactoring measurement code is verifiable in a way most
+      refactors are not -- the counts must not move. They did not (1473/1464/1450/
+      1473 and 474/474/474/474, matching what the schema already recorded).
 
 ## Layout
 

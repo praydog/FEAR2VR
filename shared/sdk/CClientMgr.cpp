@@ -3,6 +3,11 @@
 #include <windows.h>
 
 #include <cmath>
+#include <vector>
+
+// check_transforms aggregates the public transform primitives rather than keeping its own
+// copy of the maths.
+#include "Object.hpp"
 
 #include <utility/Seh.hpp>
 
@@ -579,77 +584,6 @@ std::optional<CClientMgr::ObjectBankInfo> CClientMgr::bank_for(ObjectType type) 
 
 namespace {
 
-// POD-only SEH helper. Walks type-5 objects and checks the two relationships
-// the LTCameraObject mapping asserts. Every offset comes from the generated
-// schema -- no literal appears here.
-//
-// Returns the number sampled, or -1 on fault / non-termination.
-int64_t seh_check_transforms(const regenny::CClientMgrListLink* head, size_t max,
-                            size_t* rot_ok, size_t* inv_ok, size_t* det_ok, size_t cap) {
-    int64_t result = -1;
-    KANANLIB_SEH_TRY {
-        const regenny::CClientMgrListLink* cur = head->next;
-        size_t n = 0, sampled = 0;
-        while (cur != head && n < cap) {
-            if (sampled < max) {
-                // The transform pair is WorldModel state; LTWorldModelObject is
-                // therefore the right view for BOTH type 2 and type 5, since
-                // camera only appends a uint16 past it.
-                const auto* obj = reinterpret_cast<const regenny::LTWorldModelObject*>(
-                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
-                const float qx = obj->base.rotation.x, qy = obj->base.rotation.y;
-                const float qz = obj->base.rotation.z, qw = obj->base.rotation.w;
-                const float R[3][3] = {
-                    {1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)},
-                    {2 * (qx * qy + qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qw * qx)},
-                    {2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx * qx + qy * qy)},
-                };
-                const float* M = obj->world_transform.m;
-                const float* I = obj->inverse_transform.m;
-
-                float dr = 0.0f, di = 0.0f;
-                for (int r = 0; r < 3; ++r) {
-                    for (int c = 0; c < 3; ++c) {
-                        const float a = M[r * 4 + c] - R[r][c];
-                        dr = (a < 0 ? -a : a) > dr ? (a < 0 ? -a : a) : dr;
-                        const float b = I[r * 4 + c] - M[c * 4 + r];
-                        di = (b < 0 ? -b : b) > di ? (b < 0 ? -b : b) : di;
-                    }
-                }
-                // t2 == -R1^T * t1
-                float dt = 0.0f;
-                for (int r = 0; r < 3; ++r) {
-                    const float e = -(M[0 * 4 + r] * M[0 * 4 + 3] + M[1 * 4 + r] * M[1 * 4 + 3] +
-                                      M[2 * 4 + r] * M[2 * 4 + 3]);
-                    const float b = I[r * 4 + 3] - e;
-                    dt = (b < 0 ? -b : b) > dt ? (b < 0 ? -b : b) : dt;
-                }
-                const float det = M[0] * (M[5] * M[10] - M[6] * M[9]) -
-                                  M[1] * (M[4] * M[10] - M[6] * M[8]) +
-                                  M[2] * (M[4] * M[9] - M[5] * M[8]);
-                if (dr < 0.002f) {
-                    ++*rot_ok;
-                }
-                if (di < 0.002f && dt < 0.05f) {
-                    ++*inv_ok;
-                }
-                const float dd = det - 1.0f;
-                if ((dd < 0 ? -dd : dd) < 0.01f) {
-                    ++*det_ok;
-                }
-                ++sampled;
-            }
-            ++n;
-            cur = cur->next;
-        }
-        result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = -1;
-    }
-    return result;
-}
-
 // POD-only SEH helper for OT_MODEL's embedded list. Every offset comes from the
 // generated schema. Returns the number sampled, or -1 on fault / non-termination.
 int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t max,
@@ -890,14 +824,34 @@ std::optional<CClientMgr::TransformCheck> CClientMgr::check_transforms(size_t ty
     if (type >= object_list_count()) {
         return std::nullopt;
     }
-    TransformCheck out{};
-    const int64_t n = seh_check_transforms(&regenny()->object_lists[type], max,
-                                          &out.rotation_match, &out.inverse_ok, &out.det_ok,
-                                          max_object_walk);
-    if (n < 0) {
+    // AGGREGATES sdk::brush_transform_quality RATHER THAN REIMPLEMENTING IT. This used to
+    // hold its own copy of the quaternion-to-matrix conversion, the transpose comparison
+    // and the determinant, inside one SEH walk, and threw all of it away except these
+    // three counters. The maths now lives in Object.hpp where a consumer can reach it, and
+    // this function does what a check should: sample the population and count.
+    std::vector<ObjectSnapshot> snaps(max);
+    const auto taken = snapshot_objects(static_cast<ObjectType>(type), snaps.data(), max);
+    if (!taken.has_value()) {
         return std::nullopt;
     }
-    out.sampled = static_cast<size_t>(n);
+    TransformCheck out{};
+    for (size_t i = 0; i < *taken; ++i) {
+        const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
+        const auto q = brush_transform_quality(obj);
+        if (!q.has_value()) {
+            continue;
+        }
+        ++out.sampled;
+        if (q->rotation_matches) {
+            ++out.rotation_match;
+        }
+        if (q->inverse_exact) {
+            ++out.inverse_ok;
+        }
+        if (q->determinant_unit) {
+            ++out.det_ok;
+        }
+    }
     return out;
 }
 

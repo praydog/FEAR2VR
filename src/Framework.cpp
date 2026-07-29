@@ -1231,12 +1231,13 @@ std::string build_objects_json() {
                api_standing = 0, api_standing_sane = 0, api_standing_node = 0,
                api_color_ok = 0, api_color_packed_ok = 0, api_color_default = 0,
                api_color_translucent = 0, api_brush = 0, api_brush_roundtrip = 0,
-               api_brush_rt_exact = 0, api_brush_origin_ok = 0;
+               api_brush_rt_exact = 0, api_brush_origin_ok = 0, api_brush_quality = 0,
+               api_brush_trusted = 0, api_brush_matrix = 0, api_brush_origin_agrees = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
         float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
-              api_brush_worst_origin = 0.0f;
+              api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -1356,6 +1357,36 @@ std::string build_objects_json() {
                             }
                             if (d < 0.05f) {
                                 ++api_brush_origin_ok;
+                            }
+                        }
+                        // THE TRANSFORM PRIMITIVES, used the way a mod would: ask for the
+                        // matrix, and ask whether it can be trusted. Both were trapped
+                        // inside CClientMgr::check_transforms until this pass -- a mod
+                        // could learn the population-wide count and nothing about the
+                        // object in front of it.
+                        if (const auto q = sdk::brush_transform_quality(obj); q.has_value()) {
+                            ++api_brush_quality;
+                            if (q->trustworthy()) {
+                                ++api_brush_trusted;
+                            }
+                            if (q->rotation_error > api_brush_worst_rot) {
+                                api_brush_worst_rot = q->rotation_error;
+                            }
+                        }
+                        // And the matrix itself: its translation column must be the point
+                        // brush_to_world maps the local origin to. Two routes through the
+                        // same data -- one reading the column, one composing -- so a
+                        // row/column mix-up in either breaks the agreement.
+                        if (const auto m = sdk::brush_transform(obj); m.has_value()) {
+                            ++api_brush_matrix;
+                            const auto o = sdk::brush_to_world(obj, regenny::LTVector{});
+                            if (o.has_value()) {
+                                const float ex = o->x - m->m[3];
+                                const float ey = o->y - m->m[7];
+                                const float ez = o->z - m->m[11];
+                                if (std::sqrt(ex * ex + ey * ey + ez * ez) < 0.01f) {
+                                    ++api_brush_origin_agrees;
+                                }
                             }
                         }
                     }
@@ -1524,7 +1555,9 @@ std::string build_objects_json() {
                  "\"color_ok\":%zu,\"color_packed_ok\":%zu,\"color_default\":%zu,"
                  "\"color_translucent\":%zu,\"brush\":%zu,\"brush_roundtrip\":%zu,"
                  "\"brush_rt_exact\":%zu,\"brush_origin_ok\":%zu,"
-                 "\"brush_worst_rt\":%.5f,\"brush_worst_origin\":%.5f}",
+                 "\"brush_worst_rt\":%.5f,\"brush_worst_origin\":%.5f,"
+                 "\"brush_quality\":%zu,\"brush_trusted\":%zu,\"brush_matrix\":%zu,"
+                 "\"brush_origin_agrees\":%zu,\"brush_worst_rot\":%.5f}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1538,7 +1571,8 @@ std::string build_objects_json() {
                  api_standing_sane, api_standing_node, api_color_ok, api_color_packed_ok,
                  api_color_default, api_color_translucent, api_brush, api_brush_roundtrip,
                  api_brush_rt_exact, api_brush_origin_ok, api_brush_worst_rt,
-                 api_brush_worst_origin);
+                 api_brush_worst_origin, api_brush_quality, api_brush_trusted,
+                 api_brush_matrix, api_brush_origin_agrees, api_brush_worst_rot);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

@@ -281,8 +281,9 @@ std::vector<Attachment> attachments(const regenny::LTObject* obj);
 //  * ABOUT 12 BRUSHES CARRY A PAIR THAT IS NOT AN INVERSE, worst case 49.8 units of
 //    round-trip error. Both matrices are individually valid -- scale 1.0 and det exactly
 //    1.0 on every one of them -- so this is not a scaled or skewed brush; the two simply
-//    disagree. If a transform matters, round-trip a probe point and check it returns
-//    before trusting the result on that object.
+//    disagree. Ask brush_transform_quality(obj)->trustworthy() before relying on one; an
+//    earlier version of this note told the caller to round-trip a probe point by hand,
+//    which is what that function now does properly.
 //
 // Cameras are the clean case: the pair holds on 474/474.
 //
@@ -294,5 +295,71 @@ std::optional<regenny::LTVector> world_to_brush(const regenny::LTObject* obj,
 
 std::optional<regenny::LTVector> brush_to_world(const regenny::LTObject* obj,
                                                 const regenny::LTVector& brush_point);
+
+// ---- THE MATRICES THEMSELVES, and how much to trust them ----------------------
+//
+// world_to_brush/brush_to_world above cover the common case. These expose what they are
+// built on, because a mod doing its own maths -- feeding a matrix to a renderer, chaining
+// several transforms, uploading one as a shader constant -- needs the matrix, not a
+// point-at-a-time helper.
+//
+// THIS LOGIC USED TO BE TRAPPED INSIDE A TEST. CClientMgr::check_transforms computed all
+// of it and threw everything away except three counters, so a consumer could learn that
+// "1450 of 1473 pairs are exact" and nothing about the object in front of it. The check
+// now aggregates these functions instead of hiding its own copy.
+
+// A rigid transform in the engine's own layout: row-major 3x4, translation in column 3,
+// so row r is m[r*4 .. r*4+3].
+struct Matrix34 {
+    float m[12];
+};
+
+// R(q) as the top-left 3x3 with a zero translation. PURE MATH, no engine read and no
+// failure mode -- useful on any LTRotation, including ones you built yourself.
+Matrix34 rotation_matrix(const regenny::LTRotation& q);
+
+// The world model's cached local->world transform, and the inverse the engine keeps
+// beside it. Same type gate as world_to_brush: WorldModel or Camera only, since the
+// fields live past LTObject's end.
+std::optional<Matrix34> brush_transform(const regenny::LTObject* obj);
+std::optional<Matrix34> brush_inverse_transform(const regenny::LTObject* obj);
+
+// HOW TRUSTWORTHY THIS OBJECT'S PAIR IS, which is a real question and not a diagnostic:
+// live, 12 of 1947 brushes carry a forward/inverse pair that is NOT an inverse (worst
+// case 49.8 units of round-trip error) even though both matrices are individually valid
+// rigid transforms -- scale 1.0 and determinant exactly 1.0 on every one of them.
+//
+// A mod that cares about accuracy asks this before trusting a transform, rather than
+// round-tripping a probe point itself as the documentation used to suggest.
+struct TransformQuality {
+    // Worst absolute disagreement between the matrix's 3x3 and R(object rotation). The
+    // engine recomputes the matrix rather than deriving it, so these are two independent
+    // expressions of one orientation.
+    float rotation_error;
+    // Worst absolute disagreement between the inverse's 3x3 and the transform's transpose.
+    // For a rotation, transpose IS inverse, so this measures the pair against itself.
+    float inverse_error;
+    // Worst disagreement between the inverse's translation and -R^T * t, the translation a
+    // true inverse must carry.
+    float translation_error;
+    // det of the 3x3. Exactly 1.0 for a proper rigid transform; a reflection gives -1 and
+    // a scaled matrix something else.
+    float determinant;
+
+    // The three verdicts, with the tolerances that were measured rather than chosen --
+    // see MAPPING_WORKFLOW on picking a tolerance against the type and coordinate range.
+    bool rotation_matches;  // rotation_error < 0.002
+    bool inverse_exact;     // inverse_error < 0.002 && translation_error < 0.05
+    bool determinant_unit;  // |determinant - 1| < 0.01
+
+    // The one a caller usually wants: all three hold, so both matrices agree with the
+    // object's rotation and with each other.
+    bool trustworthy() const {
+        return rotation_matches && inverse_exact && determinant_unit;
+    }
+};
+
+// nullopt on the same conditions as brush_transform.
+std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject* obj);
 
 }  // namespace sdk

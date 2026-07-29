@@ -2021,6 +2021,37 @@ int main(int argc, char** argv) {
                 // turn a level property into a tripwire.
                 check(borg >= 0 && borg <= bt,
                       "brushes whose origin is the object position are a reported fraction");
+
+                // ---- THE EXTRACTED TRANSFORM PRIMITIVES ------------------------------
+                //
+                // brush_transform / brush_transform_quality were private to
+                // CClientMgr::check_transforms until this pass. These assert them as a
+                // CONSUMER API: every object the type gate admits must answer both, since
+                // a gap means the gate and the field offsets disagree.
+                int64_t bq = -1, btr = -1, bmx = -1, bagree = -1;
+                double bwrot = -1.0;
+                json_int(ab, "brush_quality", bq);
+                json_int(ab, "brush_trusted", btr);
+                json_int(ab, "brush_matrix", bmx);
+                json_int(ab, "brush_origin_agrees", bagree);
+                json_double(ab, "brush_worst_rot", bwrot);
+                check(bq == bt, "EVERY brush answers brush_transform_quality");
+                check(bmx == bt, "EVERY brush yields its transform matrix");
+                // THE LOAD-BEARING ONE, and it is about the ROW/COLUMN CONVENTION: the
+                // matrix's translation column must be the point brush_to_world maps the
+                // local origin to. Two independent routes through the same data -- one
+                // reading m[3]/m[7]/m[11] directly, one composing through the helper -- so
+                // a transposed read in either breaks the agreement. Live 1947/1947.
+                check(bagree == bmx,
+                      "the matrix's translation column agrees with brush_to_world(origin) "
+                      "on EVERY brush");
+                check(btr > 0 && btr <= bq,
+                      "trustworthy transforms are a non-empty subset of all of them");
+                // REPORTED: how many pairs disagree is the level's data, not a contract --
+                // the header documents that ~12 of 1947 genuinely are not inverses.
+                printf("[fixture] transform primitives: %lld/%lld trustworthy, worst "
+                       "rotation error %.4f\n",
+                       static_cast<long long>(btr), static_cast<long long>(bq), bwrot);
                 printf("[fixture] brush space: %lld brushes, %lld/%lld round-trip "
                        "(worst %.3f), %lld origin-aligned\n",
                        static_cast<long long>(bt), static_cast<long long>(bex),

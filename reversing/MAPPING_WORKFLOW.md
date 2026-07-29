@@ -963,6 +963,34 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A `check_*` function must AGGREGATE a consumer primitive, never contain one.** The rule
+  this project now follows: if logic lives inside a check, a mod cannot use it, and the
+  check is the only thing that ever benefits from the reversing that produced it.
+
+  `CClientMgr::check_transforms` was the worst offender. Inside one SEH walk it built the
+  quaternion-to-matrix conversion `R(q)`, read both cached matrices, compared the 3x3
+  against `R`, compared the inverse against the transpose, verified the translation against
+  `-R^T t`, and computed the determinant -- then threw all of it away and returned three
+  counters. A consumer could learn "1450 of 1473 pairs are exact" and NOTHING about the
+  object in front of it, despite the SDK having every ingredient in hand.
+
+  Extracted to `Object.hpp` as `rotation_matrix(q)`, `brush_transform(obj)`,
+  `brush_inverse_transform(obj)` and `brush_transform_quality(obj)` (with a `trustworthy()`
+  verdict). The check became a snapshot loop that calls the last one and counts. The old
+  private walker was DELETED rather than left beside the new path -- two copies of an
+  offset or a formula is exactly how one goes stale.
+
+  **Proof the extraction was faithful:** the refactored check reproduces the previous
+  counts exactly -- worldmodels 1473 sampled / 1464 rotation / 1450 inverse / 1473 det, and
+  cameras 474 on all three -- which are the numbers already written down in the schema from
+  the old implementation. A refactor of measurement code is verifiable in a way most
+  refactors are not: the measurement must not move.
+
+  It also paid immediately. Exposing the matrix made a NEW cross-check possible that the
+  aggregate could never express: the matrix's translation column must equal what
+  `brush_to_world(origin)` composes -- two independent routes, one reading `m[3]/m[7]/m[11]`
+  and one going through the helper, so a transposed read in either breaks it. 1947/1947.
+  And the "round-trip a probe point yourself" advice in the header became a function call.
 - **To prove a struct's EXTENT, read its far fields -- and prefer fields with a fixed
   encoding.** Having taken the real `D3DCAPS9` at renderer+0x0C, the obvious check was its
   first two fields (DeviceType 1, AdapterOrdinal 0). Those would read correctly for a base

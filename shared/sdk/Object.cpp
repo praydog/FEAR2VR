@@ -434,3 +434,127 @@ std::optional<regenny::LTVector> brush_to_world(const regenny::LTObject* obj,
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// The matrix offsets are NOT repeated here: seh_read_brush_matrix above already owns them,
+// and two copies of an offset is exactly how one of them goes stale.
+
+bool brush_capable(const regenny::LTObject* obj, ObjectInfo* info_out) {
+    if (obj == nullptr) {
+        return false;
+    }
+    const auto info = object_info(obj);
+    if (!info.has_value()) {
+        return false;
+    }
+    if (info->kind != ObjectKind::WorldModel && info->kind != ObjectKind::Camera) {
+        return false;
+    }
+    if (info_out != nullptr) {
+        *info_out = *info;
+    }
+    return true;
+}
+
+float abs_f(float v) {
+    return v < 0.0f ? -v : v;
+}
+
+}  // namespace
+
+Matrix34 rotation_matrix(const regenny::LTRotation& q) {
+    const float x = q.x, y = q.y, z = q.z, w = q.w;
+    Matrix34 out{};
+    out.m[0] = 1.0f - 2.0f * (y * y + z * z);
+    out.m[1] = 2.0f * (x * y - w * z);
+    out.m[2] = 2.0f * (x * z + w * y);
+    out.m[4] = 2.0f * (x * y + w * z);
+    out.m[5] = 1.0f - 2.0f * (x * x + z * z);
+    out.m[6] = 2.0f * (y * z - w * x);
+    out.m[8] = 2.0f * (x * z - w * y);
+    out.m[9] = 2.0f * (y * z + w * x);
+    out.m[10] = 1.0f - 2.0f * (x * x + y * y);
+    return out;
+}
+
+std::optional<Matrix34> brush_transform(const regenny::LTObject* obj) {
+    if (!brush_capable(obj, nullptr)) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_brush_matrix(obj, /*inverse=*/false);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    Matrix34 out{};
+    for (size_t i = 0; i < 12; ++i) {
+        out.m[i] = r.m[i];
+    }
+    return out;
+}
+
+std::optional<Matrix34> brush_inverse_transform(const regenny::LTObject* obj) {
+    if (!brush_capable(obj, nullptr)) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_brush_matrix(obj, /*inverse=*/true);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    Matrix34 out{};
+    for (size_t i = 0; i < 12; ++i) {
+        out.m[i] = r.m[i];
+    }
+    return out;
+}
+
+std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject* obj) {
+    ObjectInfo info{};
+    if (!brush_capable(obj, &info)) {
+        return std::nullopt;
+    }
+    const auto fwd = brush_transform(obj);
+    const auto inv = brush_inverse_transform(obj);
+    if (!fwd.has_value() || !inv.has_value()) {
+        return std::nullopt;
+    }
+    const Matrix34 R = rotation_matrix(info.rotation);
+    const float* M = fwd->m;
+    const float* I = inv->m;
+
+    TransformQuality q{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            const float dr = abs_f(M[r * 4 + c] - R.m[r * 4 + c]);
+            if (dr > q.rotation_error) {
+                q.rotation_error = dr;
+            }
+            // transpose IS inverse for a rotation, so compare the inverse against it
+            const float di = abs_f(I[r * 4 + c] - M[c * 4 + r]);
+            if (di > q.inverse_error) {
+                q.inverse_error = di;
+            }
+        }
+    }
+    // A true inverse's translation is -R^T * t.
+    for (int r = 0; r < 3; ++r) {
+        const float expect = -(M[0 * 4 + r] * M[0 * 4 + 3] + M[1 * 4 + r] * M[1 * 4 + 3] +
+                               M[2 * 4 + r] * M[2 * 4 + 3]);
+        const float dt = abs_f(I[r * 4 + 3] - expect);
+        if (dt > q.translation_error) {
+            q.translation_error = dt;
+        }
+    }
+    q.determinant = M[0] * (M[5] * M[10] - M[6] * M[9]) -
+                    M[1] * (M[4] * M[10] - M[6] * M[8]) +
+                    M[2] * (M[4] * M[9] - M[5] * M[8]);
+
+    q.rotation_matches = q.rotation_error < 0.002f;
+    q.inverse_exact = q.inverse_error < 0.002f && q.translation_error < 0.05f;
+    q.determinant_unit = abs_f(q.determinant - 1.0f) < 0.01f;
+    return q;
+}
+
+}  // namespace sdk
