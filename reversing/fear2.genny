@@ -1186,7 +1186,7 @@ class CClientMgrCounterNode 0x40 {
 //
 // The slots below belong to ICLIENTSHELL, the interface the GAME DLL implements. CClientShell::Update
 // (0x40CC5E) does NOT reach it through any field of the class below -- it dispatches through the
-// GLOBAL g_pIClientShell_Default_6ECD3C (0x6ECD3C), whose object is gameclient.dll's
+// GLOBAL g_pIClientShell (0x6ECD3C), whose object is gameclient.dll's
 // CGameClientShell. So "slot 2" here means IClientShell slot 2, never CClientShell slot 2.
 //
 // Update calls three of those slots every frame, at vtable offsets 8, 16 and 12 -- slots 2, 4, 3, in
