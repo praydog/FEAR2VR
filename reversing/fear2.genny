@@ -1070,8 +1070,12 @@ class LTWorldModelObject 0x13C {
 // -2196.0 / 2334.0, 1516.0, -2196.0 / 2059.0, 1586.0, -2196.0 -- note the shared z),
 // spread out to 16110 units. That is bulk static level furniture, 474 of it. No FOV
 // field exists anywhere on the class either, and FEAR2.exe contains no "fov" string at
-// all, so the view's projection is not an engine-side camera-object property. Look in
-// gameclient.dll for it, not here.
+// all, so the view's projection is not an engine-side camera-object property. Where it
+// IS: rendering is in FEAR2.exe after all -- the exe loads d3d9.dll and d3dx9_40.dll
+// directly and there is no render DLL -- so see g_Renderer (exe+0x32E118), whose
+// D3DPRESENT_PARAMETERS and D3DCAPS9 are the real render-side state. An earlier version of
+// this note sent the reader to gameclient.dll for it, which is where the FOV VALUE may be
+// chosen but not where the projection is built.
 class LTCameraObject 0x140 {
     LTWorldModelObject base @0x00    // CONFIRMED: type 5 derives from type 2, proven by the destructor chain AND by the bank sizes (316 -> 320)
     uint16_t unk_13C        @0x13C   // A CREATION PARAMETER, copied by OT_CAMERA_Init from the request's +0x02. The only field camera adds. Live 465/474 hold 10; 1, 6, 7 and 9 account for the rest. Meaning unverified -- no reader has been found yet.

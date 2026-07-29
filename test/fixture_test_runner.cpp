@@ -42,6 +42,9 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+// For the D3D enum names the present-parameter assertions compare against: asserting
+// against D3DFMT_A8R8G8B8 rather than 21 keeps the claim readable and self-documenting.
+#include <d3d9.h>
 
 #include "HttpClient.hpp"
 
@@ -482,51 +485,79 @@ int main(int argc, char** argv) {
 
         // ---- DIRECT3D 9 ---------------------------------------------------------------
         //
-        // The engine's IDirect3D9 factory, and the module that owns its vtable. A running
-        // game with a level loaded has D3D up, so a null factory is a real failure here.
-        uint32_t d3d9 = 0;
+        // Both interfaces the engine holds, and for each the module that IMPLEMENTS its
+        // methods. A running game with a level loaded has D3D up, so a null is a real
+        // failure here.
+        uint32_t d3d9 = 0, d3ddev = 0;
         check(json_hex(body, "d3d9", d3d9) && d3d9 != 0,
               "the engine's IDirect3D9 factory is non-null");
-        // THE MECHANICAL PART: the vtable of a genuine COM interface lands inside a LOADED
-        // MODULE. A stale or misidentified pointer would have a first word that belongs to
-        // no module at all, and this resolves it through the OS rather than through our own
-        // module list -- which is the point, since the answer is usually a module we do not
-        // track.
-        const size_t owp = body.find("\"d3d9_vtable_owner\":\"");
-        check(owp != std::string::npos,
-              "the factory's vtable owner is reported");
-        if (owp != std::string::npos) {
-            const size_t s = owp + 21;
+        check(json_hex(body, "device", d3ddev) && d3ddev != 0,
+              "the engine's IDirect3DDevice9 is non-null");
+        check(d3d9 != d3ddev, "the factory and the device are different objects");
+
+        // THE MECHANICAL PART: a genuine COM interface's METHODS live in some loaded
+        // module. Asking about a method rather than the vtable pointer is deliberate --
+        // the device's vtable is heap-allocated by d3d9.dll and belongs to no module image,
+        // so a vtable test reports nothing for it while a method test works for both.
+        const auto impl_of = [&](const char* key) {
+            const std::string needle = std::string{"\""} + key + "\":\"";
+            const size_t p = body.find(needle);
+            if (p == std::string::npos) return std::string{};
+            const size_t s = p + needle.size();
             const size_t e = body.find('"', s);
-            const std::string owner = e == std::string::npos ? std::string{} : body.substr(s, e - s);
-            check(!owner.empty() && owner != "(none)",
-                  "the factory's vtable belongs to a loaded module");
-            // REPORTED, not asserted: WHICH module depends on the machine. With the Steam
-            // overlay active it is gameoverlayrenderer.dll rather than d3d9.dll, and a mod
-            // that hard-codes either is wrong on the other kind of machine. Printing it
-            // means a future failure elsewhere can be correlated with what is in front of
-            // D3D.
-            printf("[fixture] D3D9 factory 0x%08X, vtable owned by %s%s\n", d3d9,
-                   owner.c_str(),
-                   owner == "d3d9.dll" ? "" : "  <- PROXIED, not the runtime");
-        }
-        // The display mode the engine recorded from GetAdapterDisplayMode. The bounds come
-        // from the ENGINE's own mode filter, not from our expectations: its enumeration
-        // rejects anything below 640x480 and only accepts formats 21/22 for a display, so
-        // a desktop outside those could not have got this far.
-        int64_t dw = -1, dh = -1, dhz = -1, dfmt = -1;
-        json_int(body, "display_w", dw);
-        json_int(body, "display_h", dh);
-        json_int(body, "display_hz", dhz);
-        json_int(body, "display_fmt", dfmt);
-        check(dw >= 640 && dh >= 480,
-              "the recorded display mode meets the engine's own minimum resolution");
-        check(dfmt == 21 || dfmt == 22,
-              "the display format is one the engine's mode filter accepts");
-        check(dhz > 0 && dhz < 1000, "the refresh rate is a sane value");
-        printf("[fixture] display mode: %lldx%lld @ %lldHz fmt %lld\n",
-               static_cast<long long>(dw), static_cast<long long>(dh),
-               static_cast<long long>(dhz), static_cast<long long>(dfmt));
+            return e == std::string::npos ? std::string{} : body.substr(s, e - s);
+        };
+        const std::string fimpl = impl_of("d3d9_impl");
+        const std::string dimpl = impl_of("device_impl");
+        check(!fimpl.empty() && fimpl != "(none)",
+              "the factory's methods belong to a loaded module");
+        check(!dimpl.empty() && dimpl != "(none)",
+              "the device's methods belong to a loaded module");
+        // REPORTED, not asserted: WHICH module depends on the machine. Live the factory is
+        // gameoverlayrenderer.dll (Steam's overlay proxies it to intercept CreateDevice)
+        // while the device is d3d9.dll (the genuine runtime). A mod hard-coding either
+        // answer is wrong on the other kind of machine, so this is printed rather than
+        // required -- and printing it lets a future failure be correlated with what is
+        // sitting in front of D3D.
+        printf("[fixture] D3D9 factory 0x%08X impl=%s%s\n", d3d9, fimpl.c_str(),
+               fimpl == "d3d9.dll" ? "" : "  <- PROXIED");
+        printf("[fixture] D3D9 device  0x%08X impl=%s%s\n", d3ddev, dimpl.c_str(),
+               dimpl == "d3d9.dll" ? "  <- the real runtime" : "  <- PROXIED");
+
+        // THE PRESENT PARAMETERS, and the assertion is stronger than it looks. CreateDevice
+        // SUCCEEDED with this exact struct -- that is what makes the device non-null above
+        // -- so every field in it must be a value D3D itself accepts. Anything here that is
+        // not a legal enum means we are not reading the struct the engine passed.
+        int64_t bw = -1, bh = -1, bfmt = -1, bcnt = -1, swap = -1, dsfmt = -1, dtype = -1;
+        json_int(body, "bb_w", bw);
+        json_int(body, "bb_h", bh);
+        json_int(body, "bb_fmt", bfmt);
+        json_int(body, "bb_count", bcnt);
+        json_int(body, "swap_effect", swap);
+        json_int(body, "depth_fmt", dsfmt);
+        json_int(body, "device_type", dtype);
+        check(bw >= 640 && bh >= 480,
+              "the back buffer meets the engine's own minimum resolution");
+        check(bfmt == D3DFMT_A8R8G8B8 || bfmt == D3DFMT_X8R8G8B8,
+              "the back buffer format is one the engine's mode filter accepts");
+        check(bcnt >= 1 && bcnt <= 3,
+              "the back buffer count is inside D3D's legal 1..3");
+        check(swap == D3DSWAPEFFECT_DISCARD || swap == D3DSWAPEFFECT_FLIP ||
+                  swap == D3DSWAPEFFECT_COPY,
+              "the swap effect is a legal D3DSWAPEFFECT");
+        check(dsfmt != 0, "an auto depth-stencil format was requested");
+        check(dtype == D3DDEVTYPE_HAL || dtype == D3DDEVTYPE_REF ||
+                  dtype == D3DDEVTYPE_SW,
+              "the cached caps report a legal D3DDEVTYPE");
+        // REPORTED: HAL vs REF is the machine's business, but a fallback to the reference
+        // rasteriser is worth seeing in the log -- the engine itself warns about it.
+        printf("[fixture] presenting %lldx%lld fmt %lld x%lld, swap %lld, depth %lld, "
+               "device type %lld%s\n",
+               static_cast<long long>(bw), static_cast<long long>(bh),
+               static_cast<long long>(bfmt), static_cast<long long>(bcnt),
+               static_cast<long long>(swap), static_cast<long long>(dsfmt),
+               static_cast<long long>(dtype),
+               dtype == D3DDEVTYPE_HAL ? "" : "  <- NOT hardware");
 
         // counter_node_registered: sdk::CClientMgr::counter_node_registered()
         // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely

@@ -963,6 +963,36 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **To ask "is this interface hooked", ask where its METHODS are -- never where its vtable
+  is.** I shipped `d3d9_vtable_owner()` reporting the module that owns an interface's vtable
+  POINTER, and it happened to work: the Steam overlay's proxy `IDirect3D9` has a static
+  vtable inside `gameoverlayrenderer.dll`'s image. Then the real device turned up with a
+  vtable at `0x0A3ECBFC` -- heap memory, owned by no module -- and the function returns
+  nothing for it. That is not an exotic case; it is how the D3D9 runtime allocates a device.
+
+  I first read the heap vtable as evidence the device was ALSO proxied. Checking where its
+  slots pointed refuted that in one measurement: all 61 sampled methods land in `d3d9.dll`,
+  so the heap vtable is just the runtime's own allocation. The factory's 17 all land in
+  `gameoverlayrenderer.dll`. The precise finding is that Steam wraps the FACTORY to
+  intercept CreateDevice and hands back the GENUINE device -- which a vtable-location test
+  could not have told apart from either alternative.
+
+  API changed to `interface_impl_owner(iface, slot = 2)`. A vtable's ADDRESS says where a
+  table was allocated; a method's address says who wrote the code.
+
+- **When the engine hands an address to a typed API, the whole struct is mapped -- take
+  it.** The renderer's fields were nearly published as three hand-rolled structs holding the
+  few leading values measured. But FEAR 2 passes those exact addresses to D3D9:
+  `GetAdapterDisplayMode(0, adapter+0x04)`, `GetDeviceCaps(renderer+0x0C)`, and
+  `CreateDevice(..., renderer+0x158, ...)`. The engine has already declared each one's type,
+  so returning a real `D3DDISPLAYMODE` / `D3DCAPS9` / `D3DPRESENT_PARAMETERS` is not
+  over-claiming -- it is reading the declaration instead of re-deriving a prefix of it.
+
+  The corroboration came free: every field is a canonical enum at its declared offset
+  (`D3DDEVTYPE_HAL` 1, `D3DSWAPEFFECT_DISCARD` 1, `D3DFMT_D24S8` 75, `D3DFMT_A8R8G8B8` 21).
+  And it makes the strongest assertion available: `CreateDevice` SUCCEEDED with that struct,
+  so every field in it MUST be a value D3D accepts -- anything illegal means we are not
+  reading the struct the engine passed.
 - **"Its vtable is in that DLL" identifies the LIBRARY, not the CLASS.** Hunting the D3D9
   device, I scanned live globals for pointers whose first word lands inside `d3d9.dll` and
   found two holding the same object -- "found the device". They were Scaleform GFx texture

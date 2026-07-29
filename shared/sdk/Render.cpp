@@ -1,7 +1,5 @@
 #include "Render.hpp"
 
-#include <windows.h>
-
 #include <utility/Seh.hpp>
 
 #include "Modules.hpp"
@@ -10,21 +8,25 @@ namespace sdk {
 
 namespace {
 
-// g_D3DAdapterInfo. Found from the ONE call to Direct3DCreate9 in the whole exe:
+// g_D3DAdapterInfo. Found from the ONE Direct3DCreate9 call in the whole exe:
 // D3DAdapterInfo_InitD3D9 takes an IDirect3D9** and every caller passes this address.
 constexpr uintptr_t kAdapterInfoOffset = 0x3304AC;
+constexpr size_t kFactory = 0x00;      // where Direct3DCreate9's result is stored
+constexpr size_t kDisplayMode = 0x04;  // passed to GetAdapterDisplayMode
 
-// Field offsets inside that record, both pinned by the init function's own use:
-// it stores the factory at +0x00 and passes +0x04 to GetAdapterDisplayMode.
-constexpr size_t kFactory = 0x00;
-constexpr size_t kDisplayMode = 0x04;
+// g_Renderer. Found from the only IDirect3D9::CreateDevice call in the exe
+// (Renderer_CreateDevice, 0x60E013): it takes the renderer as `this`.
+constexpr uintptr_t kRendererOffset = 0x32E118;
+constexpr size_t kDevice = 0x00;         // where CreateDevice's out-param is stored
+constexpr size_t kCaps = 0x0C;           // passed to GetDeviceCaps
+constexpr size_t kPresentParams = 0x158; // passed to CreateDevice
 
-uintptr_t record_address() {
+uintptr_t exe_at(uintptr_t offset) {
     const auto* exe = Modules::get().exe();
     if (exe == nullptr || exe->base == 0) {
         return 0;
     }
-    return exe->base + kAdapterInfoOffset;
+    return exe->base + offset;
 }
 
 struct PtrRead {
@@ -44,63 +46,32 @@ PtrRead seh_read_ptr(uintptr_t at) {
     return r;
 }
 
-struct ModeRead {
-    uint32_t v[4];
-    bool ok;
-};
-
-ModeRead seh_read_mode(uintptr_t at) {
-    ModeRead r{};
+// Byte-wise copy so the guard never shares a frame with a type that unwinds. The D3D
+// structs are POD, so a raw copy is exactly right for them.
+bool seh_copy(uintptr_t from, void* to, size_t bytes) {
+    bool ok = false;
     KANANLIB_SEH_TRY {
-        const auto* src = reinterpret_cast<const uint32_t*>(at);
-        for (size_t i = 0; i < 4; ++i) {
-            r.v[i] = src[i];
+        const auto* src = reinterpret_cast<const unsigned char*>(from);
+        auto* dst = static_cast<unsigned char*>(to);
+        for (size_t i = 0; i < bytes; ++i) {
+            dst[i] = src[i];
         }
-        r.ok = true;
+        ok = true;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
+        return false;
     }
-    return r;
+    return ok;
 }
 
-}  // namespace
-
-uintptr_t Render::adapter_info_address() {
-    return record_address();
-}
-
-void* Render::d3d9() {
-    const auto rec = record_address();
-    if (rec == 0) {
-        return nullptr;
-    }
-    const auto p = seh_read_ptr(rec + kFactory);
-    if (!p.ok) {
-        return nullptr;
-    }
-    return reinterpret_cast<void*>(p.value);
-}
-
-std::optional<std::string> Render::d3d9_vtable_owner() {
-    auto* factory = d3d9();
-    if (factory == nullptr) {
-        return std::nullopt;
-    }
-    // The vtable pointer is the object's first word. Read it under the guard: a
-    // half-initialised or already-released interface would fault here rather than
-    // hand back a plausible module name.
-    const auto vt = seh_read_ptr(reinterpret_cast<uintptr_t>(factory));
-    if (!vt.ok || vt.value == 0) {
-        return std::nullopt;
-    }
-    // Deliberately NOT matched against sdk::Modules: the answer we care about is a
-    // module that is not in our list at all (the Steam overlay), so ask the OS which
-    // module owns the address instead of testing our five known ranges.
+std::optional<std::string> module_owning(uintptr_t address) {
+    // Deliberately NOT matched against sdk::Modules: the answers that matter are modules
+    // we do not track (the Steam overlay, d3d9.dll), so ask the OS which one owns the
+    // address rather than testing our five known ranges.
     HMODULE owner = nullptr;
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(vt.value), &owner) == 0 ||
+                           reinterpret_cast<LPCSTR>(address), &owner) == 0 ||
         owner == nullptr) {
         return std::nullopt;
     }
@@ -113,27 +84,87 @@ std::optional<std::string> Render::d3d9_vtable_owner() {
     return slash == std::string::npos ? full : full.substr(slash + 1);
 }
 
-std::optional<Render::DisplayMode> Render::display_mode() {
-    const auto rec = record_address();
+}  // namespace
+
+uintptr_t Render::adapter_info_address() {
+    return exe_at(kAdapterInfoOffset);
+}
+
+uintptr_t Render::renderer_address() {
+    return exe_at(kRendererOffset);
+}
+
+IDirect3D9* Render::d3d9() {
+    const auto rec = exe_at(kAdapterInfoOffset);
     if (rec == 0) {
+        return nullptr;
+    }
+    const auto p = seh_read_ptr(rec + kFactory);
+    return p.ok ? reinterpret_cast<IDirect3D9*>(p.value) : nullptr;
+}
+
+IDirect3DDevice9* Render::device() {
+    const auto rec = exe_at(kRendererOffset);
+    if (rec == 0) {
+        return nullptr;
+    }
+    const auto p = seh_read_ptr(rec + kDevice);
+    return p.ok ? reinterpret_cast<IDirect3DDevice9*>(p.value) : nullptr;
+}
+
+std::optional<D3DDISPLAYMODE> Render::display_mode() {
+    const auto rec = exe_at(kAdapterInfoOffset);
+    // Gate on the factory: the record is static storage, so before Direct3DCreate9 has run
+    // it reads as zeros and a caller would take 0x0 for a real answer.
+    if (rec == 0 || d3d9() == nullptr) {
         return std::nullopt;
     }
-    // The mode is only meaningful once the factory exists -- the record is zeroed
-    // static storage before that, and a caller reading 0x0 would take it for a real
-    // answer rather than "not up yet".
-    if (d3d9() == nullptr) {
+    D3DDISPLAYMODE out{};
+    if (!seh_copy(rec + kDisplayMode, &out, sizeof(out))) {
         return std::nullopt;
     }
-    const auto m = seh_read_mode(rec + kDisplayMode);
-    if (!m.ok) {
-        return std::nullopt;
-    }
-    DisplayMode out{};
-    out.width = m.v[0];
-    out.height = m.v[1];
-    out.refresh_hz = m.v[2];
-    out.format = m.v[3];
     return out;
+}
+
+std::optional<D3DCAPS9> Render::device_caps() {
+    const auto rec = exe_at(kRendererOffset);
+    if (rec == 0 || device() == nullptr) {
+        return std::nullopt;
+    }
+    D3DCAPS9 out{};
+    if (!seh_copy(rec + kCaps, &out, sizeof(out))) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<D3DPRESENT_PARAMETERS> Render::present_params() {
+    const auto rec = exe_at(kRendererOffset);
+    if (rec == 0 || device() == nullptr) {
+        return std::nullopt;
+    }
+    D3DPRESENT_PARAMETERS out{};
+    if (!seh_copy(rec + kPresentParams, &out, sizeof(out))) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<std::string> Render::interface_impl_owner(void* iface, size_t method_slot) {
+    if (iface == nullptr) {
+        return std::nullopt;
+    }
+    // Two guarded reads: the vtable pointer, then the slot. A released or half-built
+    // interface faults here rather than yielding a plausible module name.
+    const auto vt = seh_read_ptr(reinterpret_cast<uintptr_t>(iface));
+    if (!vt.ok || vt.value == 0) {
+        return std::nullopt;
+    }
+    const auto fn = seh_read_ptr(vt.value + method_slot * sizeof(uintptr_t));
+    if (!fn.ok || fn.value == 0) {
+        return std::nullopt;
+    }
+    return module_owning(fn.value);
 }
 
 }  // namespace sdk
