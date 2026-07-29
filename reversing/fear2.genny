@@ -3760,7 +3760,7 @@ class LTInputDeviceMouse 0x30 {
 // 862 checks, 0 failures.
 
 // ==================================================================================================
-// THE VTABLE CATALOGUE: 54 ENGINE CLASSES WITH EXACT SLOT COUNTS
+// THE VTABLE CATALOGUE: 57 ENGINE CLASSES WITH EXACT SLOT COUNTS
 // ==================================================================================================
 //
 // Four times in this project a scan's stopping point has been recorded as a structure's end -- the engine
@@ -3791,6 +3791,42 @@ class LTInputDeviceMouse 0x30 {
 //     CLTPhysicsSimServer  97     ILTClientContentTransfer 42 CLTGameUtil         24
 //     CLTRenderer          92                                 CD3DDrawPrim        23
 //
+// ---- THE STARTS WERE WRONG, AND AN INDEPENDENT ROUTE FOUND IT ----------------------------------
+//
+// The sweep above establishes each table's END exactly -- the string position is not a guess. THE START
+// WAS A HEURISTIC, and 11 of 54 entries were wrong because of it. Walking backwards over "dwords that are
+// IDA-defined function starts" slips in BOTH directions:
+//
+//   * ADJACENT TABLES MERGE into one run, so the start lands too early and the count too high. The
+//     trailing string belongs to the LAST table in the run, and everything before it gets absorbed:
+//     ILTClientContentTransfer read 42 slots where it has 9, CLTUI 16 where it has 11, GameSpyPatch 25
+//     where it has 5.
+//   * A LEADING ADJUSTOR THUNK that IDA never defined as a function breaks the run early, so the start
+//     lands too late and the count too low: CLTPhysicsSimClient/Server read 97 where they have 98,
+//     CWorldServerBSP 12 where it has 13, CD3DDrawPrim 23 where it has 24.
+//
+// THE FIX USES DIFFERENT EVIDENCE: a constructor STORES its vtable address, so the true start carries a
+// data xref. Taking the largest xref'd address below the name string gives an exact start. Tested first
+// on six known-good tables (all have xrefs) against the two suspects (both have zero).
+//
+// AND THE TELL WAS ALREADY IN MY OWN DATA. Every merged entry had recorded its name at an implausible
+// slot -- 34 for ILTClientContentTransfer, 21 for GameSpyPatch, 6 for CLTUI -- and I had labelled that
+// "a weaker name pairing" instead of asking why a class would name itself from slot 34. The flag was
+// pointing at bad extents, not weak names.
+//
+// WHAT FOUND IT: the interface registry, which was built independently. Cross-checking every resolved
+// interface's vtable against the catalogue left 12 of 36 unidentified, and chasing those addresses landed
+// exactly on the wrong starts. After the correction, identification went 24/36 -> 34/36 and the two
+// remaining are implemented in gameclient.dll and gameserver.dll, outside this catalogue's scope. That is
+// now asserted as a COMPLETENESS CLAIM: an unidentified interface must be foreign, because an in-exe
+// vtable the catalogue cannot name means an extent is wrong.
+//
+// ONE CLASS DOES NOT PUBLISH ITS NAME AT ALL, and the completeness check is what surfaced it:
+// CLTPhysicsClient's 18-slot vtable is followed by g_LTOrthoXBias, a float constant. Its sibling
+// CLTPhysicsServer does publish, so this is per-class and not a rule. It is in the catalogue as a
+// deliberate hand-added entry with name_follows = false, verified by the other terminator this binary
+// offers: the dword after the table is not an exe-range address, so the extent cannot be extended.
+//
 // EXPOSED AS sdk::Vtables, whose resolve(name, slot) BOUNDS-CHECKS against the recorded extent -- asking
 // for slot 92 of CLTRenderer returns nothing instead of the first four bytes of the string "CLTRenderer"
 // reinterpreted as an address. The table is GENERATED from reversing/vtable_catalogue.txt, which the sweep
@@ -3802,7 +3838,8 @@ class LTInputDeviceMouse 0x30 {
 //     one slot too LONG  -> the extra dword is the head of the name string, not an in-image address
 //     one slot too SHORT -> the trailing-string read lands on a function pointer instead of text
 // A single-sided check would pass either error. 54/54 tables verify, 1578 slots in total, and that sum is
-// asserted as a one-number tripwire: it moves if any single extent changes.
+// asserted as a one-number tripwire: it moves if any single extent changes -- AND IT DID ITS JOB,
+// failing on 1578/54 the moment the 11 extents were corrected, before any of this was written down.
 //
 // A DISTINCTION THIS EXERCISE NEARLY LOST: the first version of the cross-check compared the catalogue's
 // CLTInput entry against sdk::Input::interface_address(), and it failed -- correctly. That accessor returns

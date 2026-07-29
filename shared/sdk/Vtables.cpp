@@ -14,60 +14,63 @@ namespace {
 // hand is exactly the sort of step that introduces an off-by-one into data whose whole purpose is to
 // prevent one, so the table is emitted from the sweep's own output.
 constexpr Vtables::Entry kCatalogue[] = {
-    {"Agent", 0x27F078, 14, 1},
-    {"CCompress", 0x26FC38, 11, 1},
-    {"CD3DDrawPrim", 0x290114, 23, 0},
-    {"CLTClient", 0x26F258, 147, 1},
-    {"CLTCommonClient", 0x26E600, 19, 1},
-    {"CLTCommonServer", 0x274BD8, 19, 1},
-    {"CLTCursor", 0x277E38, 11, 2},
-    {"CLTFileMgr", 0x272130, 18, 1},
-    {"CLTGameUtil", 0x2D3270, 24, 1},
-    {"CLTInput", 0x277FA0, 28, 1},
-    {"CLTLoadingProgress", 0x272184, 4, 1},
-    {"CLTModelClient", 0x26E7E8, 83, 1},
-    {"CLTModelServer", 0x274CD8, 81, 1},
-    {"CLTPhysicsServer", 0x274E90, 17, 1},
-    {"CLTPhysicsSimClient", 0x2723B4, 97, 0},
-    {"CLTPhysicsSimServer", 0x272554, 97, 0},
-    {"CLTRenderer", 0x28FD20, 92, 1},
-    {"CLTResourceMgr", 0x272708, 35, 1},
-    {"CLTServer", 0x275670, 138, 1},
-    {"CLTSoundMgrServer", 0x274F60, 15, 1},
-    {"CLTTextureMgr", 0x2900D4, 11, 1},
-    {"CLTTextureString", 0x272808, 22, 1},
-    {"CLTTimer", 0x272878, 22, 1},
-    {"CLTTimerClient", 0x2728E0, 22, 1},
-    {"CLTTimerServer", 0x272948, 22, 1},
-    {"CLTUI", 0x2781F8, 16, 6},
-    {"CLTVideoTexture", 0x290090, 13, 1},
-    {"CSoundMgr", 0x276520, 52, 1},
-    {"CWin32CustomRender", 0x28FEA0, 29, 1},
-    {"CWorldClientBSP", 0x2775F0, 19, 1},
-    {"CWorldParticleBlockerData", 0x27764C, 6, 1},
-    {"CWorldServerBSP", 0x277684, 12, 0},
-    {"GameSpyPatch", 0x2D3408, 25, 21},
-    {"ICommandLineArgsCommonImp", 0x271D68, 6, 0},
-    {"ILTClientContentTransfer", 0x272044, 42, 34},
-    {"ILTServerContentTransfer", 0x2727A4, 9, 1},
-    {"LtGskAgent", 0x27FE10, 14, 6},
-    {"StNarrow", 0x27EF20, 14, 6},
-    {"StSepNormal", 0x27FDB8, 14, 3},
-    {"StcheckBvShape", 0x27FA54, 14, 3},
-    {"TtCapsCaps", 0x27F630, 14, 4},
-    {"TtHeightField", 0x27F144, 14, 6},
-    {"TtSphereSphere", 0x27F808, 14, 4},
-    {"TtTransform", 0x27F908, 14, 6},
-    {"TtrcBox", 0x27E924, 16, 8},
-    {"TtrcCapsule", 0x27E4FC, 16, 8},
-    {"TtrcConvTransl", 0x27EE0C, 16, 8},
-    {"TtrcCylinder", 0x2D6D9C, 16, 8},
-    {"TtrcMopp", 0x27E784, 12, 4},
-    {"TtrcSphere", 0x27E98C, 16, 8},
-    {"TtrcTransform", 0x27E9F8, 9, 4},
-    {"available", 0x28BABC, 19, 3},
-    {"captureFocus", 0x28D09C, 19, 3},
-    {"gfxVersion", 0x286A38, 26, 3},
+    {"Agent", 0x27F078, 14, 1, true},
+    {"CCompress", 0x26FC38, 11, 1, true},
+    {"CD3DDrawPrim", 0x290110, 24, 1, true},
+    {"CLTClient", 0x26F258, 147, 1, true},
+    {"CLTCommonClient", 0x26E600, 19, 1, true},
+    {"CLTCommonServer", 0x274BD8, 19, 1, true},
+    {"CLTCursor", 0x277E3C, 10, 1, true},
+    {"CLTFileMgr", 0x272130, 18, 1, true},
+    {"CLTGameUtil", 0x2D3270, 24, 1, true},
+    {"CLTInput", 0x277FA0, 28, 1, true},
+    {"CLTLoadingProgress", 0x272184, 4, 1, true},
+    {"CLTModelClient", 0x26E7E8, 83, 1, true},
+    {"CLTModelServer", 0x274CD8, 81, 1, true},
+    {"CLTPhysicsClient", 0x26EA70, 18, 0, false},
+    {"CLTPhysicsServer", 0x274E90, 17, 1, true},
+    {"CLTPhysicsSimClient", 0x2723B0, 98, 1, true},
+    {"CLTPhysicsSimServer", 0x272550, 98, 1, true},
+    {"CLTRenderer", 0x28FD20, 92, 1, true},
+    {"CLTResourceMgr", 0x272708, 35, 1, true},
+    {"CLTServer", 0x275670, 138, 1, true},
+    {"CLTSoundMgrServer", 0x274F60, 15, 1, true},
+    {"CLTTextureMgr", 0x2900D4, 11, 1, true},
+    {"CLTTextureString", 0x272808, 22, 1, true},
+    {"CLTTimer", 0x272878, 22, 1, true},
+    {"CLTTimerClient", 0x2728E0, 22, 1, true},
+    {"CLTTimerServer", 0x272948, 22, 1, true},
+    {"CLTUI", 0x27820C, 11, 1, true},
+    {"CLTVideoTexture", 0x290090, 13, 1, true},
+    {"CServerConsoleState", 0x274A38, 3, 1, true},
+    {"CSoundMgr", 0x276520, 52, 1, true},
+    {"CWin32CustomRender", 0x28FEA0, 29, 1, true},
+    {"CWorldClientBSP", 0x2775F0, 19, 1, true},
+    {"CWorldParticleBlockerData", 0x27764C, 6, 1, true},
+    {"CWorldServerBSP", 0x277680, 13, 1, true},
+    {"GameSpyPatch", 0x2D3458, 5, 1, true},
+    {"ICommandLineArgsCommonImp", 0x271D64, 7, 1, true},
+    {"ILTClientContentTransfer", 0x2720C8, 9, 1, true},
+    {"ILTServerContentTransfer", 0x2727A4, 9, 1, true},
+    {"LtGskAgent", 0x27FE10, 14, 6, true},
+    {"StNarrow", 0x27EF20, 14, 6, true},
+    {"StSepNormal", 0x27FDB8, 14, 3, true},
+    {"StcheckBvShape", 0x27FA54, 14, 3, true},
+    {"TtCapsCaps", 0x27F630, 14, 4, true},
+    {"TtHeightField", 0x27F144, 14, 6, true},
+    {"TtPostCollideCB", 0x27D8CC, 15, 5, true},
+    {"TtSphereSphere", 0x27F808, 14, 4, true},
+    {"TtTransform", 0x27F908, 14, 6, true},
+    {"TtrcBox", 0x27E924, 16, 8, true},
+    {"TtrcBvShape", 0x27E4B4, 9, 4, true},
+    {"TtrcCapsule", 0x27E4FC, 16, 8, true},
+    {"TtrcConvTransl", 0x27EE0C, 16, 8, true},
+    {"TtrcCylinder", 0x2D6D9C, 16, 8, true},
+    {"TtrcMopp", 0x27E784, 12, 4, true},
+    {"TtrcSphere", 0x27E98C, 16, 8, true},
+    {"TtrcTransform", 0x27E9F8, 9, 4, true},
+    {"available", 0x28BAB8, 20, 4, true},
+    {"captureFocus", 0x28D098, 20, 4, true},
 };
 
 uintptr_t exe_base() {
@@ -136,6 +139,44 @@ std::optional<uintptr_t> Vtables::resolve(std::string_view name, size_t slot) {
     return static_cast<uintptr_t>(fn);
 }
 
+const Vtables::Entry* Vtables::find_by_vtable(uintptr_t vtable) {
+    const uintptr_t base = exe_base();
+    if (base == 0 || vtable == 0 || vtable < base) {
+        return nullptr;
+    }
+    const uintptr_t offset = vtable - base;
+    for (const auto& e : kCatalogue) {
+        if (e.offset == offset) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+std::optional<uintptr_t> Vtables::vtable_of(uintptr_t object) {
+    if (object == 0) {
+        return std::nullopt;
+    }
+    uint32_t vtable = 0;
+    if (!seh_copy(&vtable, object, sizeof(vtable)) || vtable == 0) {
+        return std::nullopt;
+    }
+    return static_cast<uintptr_t>(vtable);
+}
+
+std::optional<std::string> Vtables::class_name_of(uintptr_t object) {
+    const auto vt = vtable_of(object);
+    if (!vt.has_value()) {
+        return std::nullopt;
+    }
+    const uintptr_t vtable = *vt;
+    const auto* e = find_by_vtable(vtable);
+    if (e == nullptr) {
+        return std::nullopt;
+    }
+    return std::string{e->name};
+}
+
 std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {
     const uintptr_t base = exe_base();
     const auto* exe = Modules::get().exe();
@@ -155,17 +196,29 @@ std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {
             v.slots_in_image = false;  // an over-long extent lands on the name string and fails here
         }
     }
-    // And the string immediately after the table must be the catalogued name -- which is what fails when
-    // an extent is one slot short, since the read then lands on a function pointer instead of text.
-    char text[64]{};
-    const size_t want = std::strlen(entry.name);
-    if (want + 1 > sizeof(text)) {
-        return std::nullopt;
+    const uintptr_t after = at + static_cast<size_t>(entry.slot_count) * sizeof(uint32_t);
+    if (entry.name_follows) {
+        // The string immediately after must be the catalogued name -- which is what fails when an extent
+        // is one slot short, since the read then lands on a function pointer instead of text.
+        char text[64]{};
+        const size_t want = std::strlen(entry.name);
+        if (want + 1 > sizeof(text)) {
+            return std::nullopt;
+        }
+        if (!seh_copy(text, after, want + 1)) {
+            return std::nullopt;
+        }
+        v.name_matches = text[want] == '\0' && std::strncmp(text, entry.name, want) == 0;
+    } else {
+        // No name string to check, so the bound is that the table cannot continue: the dword after it is
+        // not an exe-range address. One slot too long would have consumed that dword and failed
+        // slots_in_image instead, so the two checks still close both directions.
+        uint32_t next = 0;
+        if (!seh_copy(&next, after, sizeof(next))) {
+            return std::nullopt;
+        }
+        v.name_matches = next < base || next >= base + exe->size;
     }
-    if (!seh_copy(text, at + static_cast<size_t>(entry.slot_count) * sizeof(uint32_t), want + 1)) {
-        return std::nullopt;
-    }
-    v.name_matches = text[want] == '\0' && std::strncmp(text, entry.name, want) == 0;
     return v;
 }
 

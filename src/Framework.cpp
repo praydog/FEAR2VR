@@ -4101,6 +4101,70 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE REGISTRY MET THE CATALOGUE ---------------------------------------------------------
+    //
+    // Two subsystems built independently: the registry discovers interface holders by scanning for
+    // CAPIHolder_ctor call sites, and the catalogue bounds vtables by their trailing name string. Neither
+    // knows about the other, so every resolved interface whose vtable the catalogue recognises is a point
+    // where two separate reversing routes agree on the same object.
+    //
+    // A resolved interface whose vtable is NOT catalogued is not an error: the catalogue covers classes
+    // that publish a name, and some interfaces are served by classes that do not.
+    auto& registry = sdk::interfaces::Registry::get();
+    size_t iface_resolved = 0, iface_named = 0, iface_unnamed = 0, iface_unnamed_foreign = 0;
+    uint32_t unnamed_vtables[4]{};
+    const uintptr_t iface_exe_lo = sdk::Modules::get().exe()->base;
+    const uintptr_t iface_exe_hi = iface_exe_lo + sdk::Modules::get().exe()->size;
+    bool input_identified = false, renderer_identified = false;
+    for (const auto& nm : registry.names()) {
+        void* p = registry.resolve(nm.c_str());
+        if (p == nullptr) {
+            continue;
+        }
+        ++iface_resolved;
+        const auto cls = sdk::Vtables::class_name_of(reinterpret_cast<uintptr_t>(p));
+        if (cls.has_value()) {
+            ++iface_named;
+            if (nm == "ILTInput.Default" && *cls == "CLTInput") {
+                input_identified = true;
+            }
+            if (nm == "ILTRenderer.Default" && *cls == "CLTRenderer") {
+                renderer_identified = true;
+            }
+        } else {
+            // AN UNIDENTIFIED INTERFACE SHOULD MEAN "IMPLEMENTED IN ANOTHER MODULE", not "the catalogue
+            // is short". Counting the two apart is what turns this from a report into a completeness
+            // claim about the exe -- and it is how the 11 wrong extents were caught: they showed up here
+            // as in-exe vtables the catalogue could not name.
+            const auto vt = sdk::Vtables::vtable_of(reinterpret_cast<uintptr_t>(p));
+            if (iface_unnamed < 4 && vt.has_value()) {
+                unnamed_vtables[iface_unnamed] = static_cast<uint32_t>(*vt);
+            }
+            if (vt.has_value() && (*vt < iface_exe_lo || *vt >= iface_exe_hi)) {
+                ++iface_unnamed_foreign;
+            }
+            ++iface_unnamed;
+        }
+    }
+    json_append_double(out, "iface_resolved", static_cast<double>(iface_resolved), 0);
+    json_append_double(out, "iface_class_named", static_cast<double>(iface_named), 0);
+    json_append_double(out, "iface_class_unnamed", static_cast<double>(iface_unnamed), 0);
+    json_append_double(out, "iface_unnamed_foreign", static_cast<double>(iface_unnamed_foreign), 0);
+    for (size_t i = 0; i < 4; ++i) {
+        char key[40];
+        snprintf(key, sizeof(key), "iface_unnamed_vtable_%zu", i);
+        json_append_double(out, key,
+                           static_cast<double>(unnamed_vtables[i] >= iface_exe_lo
+                                                   ? unnamed_vtables[i] - iface_exe_lo
+                                                   : 0),
+                           0);
+    }
+    json_append_bool(out, "iface_input_identified", input_identified);
+    json_append_bool(out, "iface_renderer_identified", renderer_identified);
+    // A pointer that is not an object at all must be refused rather than matched by accident.
+    json_append_bool(out, "vtable_class_of_nonobject_refused",
+                     !sdk::Vtables::class_name_of(sdk::Modules::get().exe()->base).has_value());
+
     // ---- THE VTABLE CATALOGUE, VERIFIED AGAINST LIVE MEMORY -------------------------------------
     //
     // Every entry's extent is checked in BOTH directions, which is what makes this worth running rather

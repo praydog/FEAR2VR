@@ -44,12 +44,21 @@ public:
     struct Entry {
         const char* name;
         uintptr_t offset;     // exe-relative address of slot 0
-        uint16_t slot_count;  // exact, bounded by the trailing name string
-        uint16_t name_slot;   // which slot references the name
+        uint16_t slot_count;  // exact; see name_follows for which terminator bounds it
+        uint16_t name_slot;   // which slot references the name; meaningless when !name_follows
+
+        // TWO KINDS OF TERMINATOR, both exact and both verifiable:
+        //   true  -- the class-name string sits immediately after the table, which is the boundary AND
+        //            the identification. Found by sweep.
+        //   false -- the class does NOT publish its name there. CLTPhysicsClient is the case that forced
+        //            this: 18 slots followed by g_LTOrthoXBias, a float constant. Its bound is that the
+        //            dword after the table is not an exe-range address, so the extent cannot be extended.
+        //            Such an entry is added deliberately, not swept, and its NAME comes from elsewhere.
+        bool name_follows;
 
         // Whether the name comes from slot 0, 1 or 2 -- the engine's InterfaceImplementation convention.
-        // False means the pairing rests on a weaker observation; see the header note.
-        bool follows_convention() const { return name_slot <= 2; }
+        // Only meaningful for swept entries.
+        bool follows_convention() const { return name_follows && name_slot <= 2; }
     };
 
     // The whole catalogue. Sorted by name, so a caller may binary-search if it matters.
@@ -66,10 +75,35 @@ public:
     // instead of the first dword of the string "CLTRenderer" reinterpreted as an address.
     static std::optional<uintptr_t> resolve(std::string_view name, size_t slot);
 
+    // ---- A SUBSTITUTE FOR RTTI ---------------------------------------------------------
+    //
+    // THIS BINARY CARRIES NO RTTI. Every class identification in this project so far was done by hand:
+    // read an object's vtable pointer, compare it against a table address recognised from somewhere else.
+    // That is what these two do, generally and for 54 classes at once.
+    //
+    // It is how the input devices were identified -- keyboard and mouse were told apart by vtable, not by
+    // slot order -- and a consumer handed an opaque engine pointer has the same question.
+
+    // The entry whose vtable is exactly this address, or nullptr.
+    static const Entry* find_by_vtable(uintptr_t vtable);
+
+    // An object's vtable pointer, read through a guard. nullopt when the read faults or it is null. The
+    // companion to class_name_of: this answers "which table", that answers "which class", and a consumer
+    // holding an unidentified pointer usually wants both.
+    static std::optional<uintptr_t> vtable_of(uintptr_t object);
+
+    // The class name of an OBJECT: reads its vtable pointer through a guard and looks it up. nullopt when
+    // the read faults or the vtable is not one of the 54 -- which is a legitimate answer, since the
+    // catalogue covers only classes that publish a name, not every class in the image.
+    static std::optional<std::string> class_name_of(uintptr_t object);
+
     struct Verification {
         size_t slots_checked{};
         bool slots_in_image{};  // every slot points inside the exe
-        bool name_matches{};    // the string right after the table is the catalogued name
+        // For a name_follows entry: the string right after the table is the catalogued name. For one
+        // without: the dword right after is NOT an exe-range address, which is what bounds it. Either way
+        // an extent one slot too long or too short fails.
+        bool name_matches{};
 
         bool ok() const { return slots_in_image && name_matches; }
     };

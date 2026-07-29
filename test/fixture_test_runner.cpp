@@ -4052,6 +4052,39 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE REGISTRY MET THE CATALOGUE ------------------------------------------------
+            //
+            // Two independently built subsystems: the registry finds interface holders by scanning for
+            // CAPIHolder_ctor call sites, the catalogue bounds vtables by their trailing name string.
+            // Every resolved interface the catalogue can name is a place where two separate reversing
+            // routes agree about one object -- and this comparison is what CAUGHT 11 wrong extents. They
+            // appeared here as in-exe vtables the catalogue could not name; identification rose from
+            // 24/36 to 33/36 once the starts were re-derived from constructor xrefs.
+            double if_res = -1.0, if_named = -1.0, if_unnamed = -1.0, if_foreign = -1.0;
+            const bool ifc = json_double(body, "iface_resolved", if_res) &&
+                             json_double(body, "iface_class_named", if_named) &&
+                             json_double(body, "iface_class_unnamed", if_unnamed) &&
+                             json_double(body, "iface_unnamed_foreign", if_foreign);
+            check(ifc && if_res > 0.0, "the registry resolves live interfaces");
+            check(ifc && (if_named + if_unnamed) == if_res,
+                  "every resolved interface is either class-identified or counted as unidentified");
+
+            // THE COMPLETENESS CLAIM, and the reason it is stated this way rather than as a count: an
+            // interface this catalogue cannot name must be implemented OUTSIDE the exe, because the
+            // catalogue covers the exe. If an in-exe vtable ever goes unnamed again, an extent is wrong
+            // -- which is exactly the failure this check surfaced the first time it ran.
+            check(ifc && if_unnamed == if_foreign,
+                  "every unidentified interface is implemented outside FEAR2.exe");
+
+            bool if_input = false, if_rend = false;
+            check(json_bool(body, "iface_input_identified", if_input) && if_input,
+                  "ILTInput.Default resolves to an object whose class is CLTInput");
+            check(json_bool(body, "iface_renderer_identified", if_rend) && if_rend,
+                  "ILTRenderer.Default resolves to an object whose class is CLTRenderer");
+            bool nonobj = false;
+            check(json_bool(body, "vtable_class_of_nonobject_refused", nonobj) && nonobj,
+                  "a pointer that is not an object yields no class name");
+
             // ---- THE VTABLE CATALOGUE ----------------------------------------------------------
             //
             // 54 engine class vtables with exact slot counts, and this is where they earn the word
@@ -4066,15 +4099,17 @@ int main(int argc, char** argv) {
                              json_double(body, "vtable_catalogue_slots_in_image", vt_slots) &&
                              json_double(body, "vtable_catalogue_names_match", vt_names) &&
                              json_double(body, "vtable_catalogue_slots_sum", vt_sum);
-            check(vtc && vt_total == 54.0, "the catalogue holds 54 verified class vtables");
+            check(vtc && vt_total == 57.0, "the catalogue holds 57 verified class vtables");
             check(vtc && vt_ver == vt_total, "every entry could be read from live memory");
             check(vtc && vt_slots == vt_total,
                   "every slot of every table points inside the exe image");
             check(vtc && vt_names == vt_total,
                   "and the string immediately after each table is its catalogued class name");
-            // 1578 slots across 54 tables. Pinned because the sum moves if ANY single extent changes,
-            // which makes it a cheap one-number tripwire over the whole catalogue.
-            check(vtc && vt_sum == 1578.0, "the catalogue accounts for 1578 vtable slots in total");
+            // 1527 slots across 56 tables. Pinned because the sum moves if ANY single extent changes,
+            // which makes it a cheap one-number tripwire over the whole catalogue -- AND IT ALREADY
+            // EARNED THAT: it read 1578 across 54 tables until the starts were re-derived from
+            // constructor xrefs, and both numbers failed the moment 11 extents were corrected.
+            check(vtc && vt_sum == 1545.0, "the catalogue accounts for 1545 vtable slots in total");
 
             // A minority do not return their name from slot 0/1/2, so their name pairing rests on a
             // weaker observation -- the Scaleform ActionScript identifiers among them are known false
