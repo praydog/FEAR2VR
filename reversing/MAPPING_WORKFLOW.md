@@ -969,11 +969,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   "any LTRotation". Before adding a second converter for the camera I unified on one engine-matching
   helper. Worth checking for a pre-existing copy every time a decompile hands you a formula.
   
-- **A TOLERANCE THAT DOES NOT SCALE MAKES A VALIDATOR RANGE-DEPENDENT.** The pose round-trip compared
-  column 3 against zero with one absolute epsilon. That column is a cancellation, so its residual grows
-  with |position|: fine for a probe at 137 units, spurious failure for the same pose at level
-  coordinates. Rotation stays absolute, translation scales with distance, and the suite now checks a
-  pose ~100k units out precisely so the near case cannot pass alone.
+- **SIZE A TOLERANCE FROM MEASUREMENT, THEN CHECK WHAT IT PERMITS.** The pose round-trip first compared
+  column 3 with one absolute epsilon, which is range-dependent since that column is a cancellation whose
+  residual can grow with |position|. So I scaled it -- by the ROTATION tolerance, which at 98000 units
+  permitted 196 units of translation error. Both versions passed the suite; neither was right. Exposing
+  the residuals (`view_inverse_round_trip_error`) showed the truth: 1.2e-07 rotation, exactly 0
+  translation at 98000. The allowance is now epsilon-sized, the suite bounds the residuals directly, and
+  the lesson is that "it scales" is not the same as "it is tight".
+  
+- **A NaN TOLERANCE ACCEPTS EVERYTHING.** Every `deviation > allow` comparison is false against NaN, so a
+  public predicate with unvalidated tolerance arguments will call any two matrices inverses. Validated,
+  and the suite passes NaN deliberately to prove the refusal.
   
 - **A GROWING DIAGNOSTIC FRAGMENT SHOULD NOT HAVE A HAND-MAINTAINED SIZE.** Two fixed snprintf buffers
   in the same reporter overflowed as recon fields accumulated, and a truncated fragment invalidates the

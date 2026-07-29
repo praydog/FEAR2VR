@@ -282,20 +282,40 @@ public:
     // shears as 3x4 but composes into 4x4, so a consumer doing its own composition needs this.
     static std::array<float, 16> promote_affine(const regenny::LTMatrix3x4& affine);
 
-    // DOES view_matrix_from_pose(pose) ACTUALLY INVERT pose? Composes the two and compares against
-    // the identity.
+    // ARE THESE TWO 3x4 MATRICES INVERSES? Composes them and compares against the identity.
     //
-    // This is the check to run before trusting a camera pose you built yourself: a wrong conjugate
-    // sign, a transposed rotation or a mis-signed translation all produce a view matrix that looks
-    // entirely plausible and renders wrongly. It is also the only way to validate the recipe at all
-    // while the engine's own pose is the identity, which it is in every pass observable from outside
-    // a render hook.
+    // The general form takes BOTH matrices, so a consumer can validate a view matrix it did not build
+    // here -- one read from the record, one from its own maths, or one it is about to install. A
+    // wrong conjugate sign, a transposed rotation or a mis-signed translation each yield a matrix
+    // that looks entirely plausible and renders wrongly; this is what catches them.
     //
-    // `tolerance` is applied absolutely to the rotation block and SCALED BY THE POSE'S DISTANCE FROM
-    // THE ORIGIN for the translation column, because that column is a cancellation back to zero and
-    // its float residual grows with |position|. A single absolute epsilon would make this reject
-    // valid poses at level coordinates.
-    static bool view_inverts_pose(const regenny::LTNodeTransform& pose, float tolerance = 2e-3f);
+    // TOLERANCES ARE SEPARATE AND SIZED FROM MEASUREMENT. The rotation block sits near absolute
+    // identity; the translation column is a cancellation back to zero whose residual can scale with
+    // distance from the origin. Measured on this build: rotation 1.2e-07, about one FLT_EPSILON, and
+    // translation exactly 0 for a pose 98000 units out. The defaults leave orders of margin over that
+    // without repeating the earlier mistake of scaling by the ROTATION tolerance, which permitted 196
+    // units of translation error at those coordinates.
+    // Returns false for a non-finite or negative tolerance, and for an allowance that overflows:
+    // a NaN tolerance would otherwise accept ANY pair, since every comparison against NaN is false.
+    static bool affines_are_inverse(const regenny::LTMatrix3x4& forward,
+                                    const regenny::LTMatrix3x4& inverse,
+                                    float rotation_tolerance = 1e-4f,
+                                    float translation_base = 1e-3f,
+                                    float translation_per_unit = 4e-7f);
+
+    // Convenience for the common case: does OUR view_matrix_from_pose(pose) invert pose? A self-check
+    // after building a custom pose. Use affines_are_inverse for a matrix from anywhere else.
+    static bool view_inverts_pose(const regenny::LTNodeTransform& pose);
+
+    // The worst absolute deviation from the identity in that composition, split so a caller sees
+    // WHICH part drifted. nullopt when either matrix could not be built. Exposed because sizing a
+    // tolerance from a guess is exactly how the first version allowed 196 units of error.
+    struct RoundTripError {
+        float rotation{};
+        float translation{};
+    };
+    static std::optional<RoundTripError> view_inverse_round_trip_error(
+        const regenny::LTNodeTransform& pose);
 
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();

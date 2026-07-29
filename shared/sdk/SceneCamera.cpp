@@ -415,34 +415,45 @@ std::array<float, 16> SceneCamera::promote_affine(const regenny::LTMatrix3x4& af
     return out;
 }
 
-bool SceneCamera::view_inverts_pose(const regenny::LTNodeTransform& pose, float tolerance) {
-    const auto view = view_matrix_from_pose(pose);
-    const auto forward = transform_to_matrix(pose);
-    if (!view.has_value() || !forward.has_value()) {
+bool SceneCamera::affines_are_inverse(const regenny::LTMatrix3x4& forward,
+                                      const regenny::LTMatrix3x4& inverse,
+                                      float rotation_tolerance, float translation_base,
+                                      float translation_per_unit) {
+    // VALIDATE THE TOLERANCES, because they are public arguments and a NaN one silently accepts
+    // everything: every `deviation > allow` comparison is false against NaN, so a matrix that is not
+    // an inverse would pass. A negative tolerance rejects everything, which is merely useless.
+    if (!std::isfinite(rotation_tolerance) || rotation_tolerance < 0.0f ||
+        !std::isfinite(translation_base) || translation_base < 0.0f ||
+        !std::isfinite(translation_per_unit) || translation_per_unit < 0.0f) {
         return false;
     }
     std::array<float, 12> rhs{};
     for (size_t i = 0; i < 12; ++i) {
-        rhs[i] = forward->m[i];
+        if (!std::isfinite(forward.m[i]) || !std::isfinite(inverse.m[i])) {
+            return false;
+        }
+        rhs[i] = forward.m[i];
     }
-    const auto product = multiply_by_affine(promote_affine(*view), rhs);
+    const auto product = multiply_by_affine(promote_affine(inverse), rhs);
 
-    // THE TRANSLATION ALLOWANCE SCALES WITH THE POSE'S DISTANCE FROM THE ORIGIN. Column 3 of the
-    // product is a cancellation -- R^T applied to -R^T p, back to zero -- so its residual grows with
-    // |p| in float, while the rotation block stays near absolute identity. One absolute epsilon for
-    // both would reject a perfectly good pose out at level coordinates, making this validator
-    // range-dependent, which is exactly what a consumer must not have to think about.
-    float distance = std::fabs(pose.position.x);
-    if (std::fabs(pose.position.y) > distance) {
-        distance = std::fabs(pose.position.y);
-    }
-    if (std::fabs(pose.position.z) > distance) {
-        distance = std::fabs(pose.position.z);
+    // Scaled by how far the FORWARD matrix translates, since that is the magnitude the cancellation
+    // works against. The coefficient is epsilon-sized, NOT the rotation tolerance: at 98000 units it
+    // permits about 0.04 against a measured residual of 0.
+    float distance = 0.0f;
+    const size_t translation_indices[3] = {3, 7, 11};
+    for (size_t i = 0; i < 3; ++i) {
+        const float magnitude = std::fabs(forward.m[translation_indices[i]]);
+        if (magnitude > distance) {
+            distance = magnitude;
+        }
     }
     if (!std::isfinite(distance)) {
         return false;
     }
-    const float translation_allowance = tolerance * (distance > 1.0f ? distance : 1.0f);
+    const float translation_allowance = translation_base + translation_per_unit * distance;
+    if (!std::isfinite(translation_allowance)) {
+        return false;  // a large per-unit against a distant pose can overflow to infinity
+    }
 
     for (size_t row = 0; row < 3; ++row) {
         for (size_t col = 0; col < 4; ++col) {
@@ -451,13 +462,51 @@ bool SceneCamera::view_inverts_pose(const regenny::LTNodeTransform& pose, float 
                 return false;
             }
             const float want = (col == row) ? 1.0f : 0.0f;
-            const float allow = (col == 3) ? translation_allowance : tolerance;
+            const float allow = (col == 3) ? translation_allowance : rotation_tolerance;
             if (std::fabs(got - want) > allow) {
                 return false;
             }
         }
     }
     return true;
+}
+
+bool SceneCamera::view_inverts_pose(const regenny::LTNodeTransform& pose) {
+    const auto view = view_matrix_from_pose(pose);
+    const auto forward = transform_to_matrix(pose);
+    if (!view.has_value() || !forward.has_value()) {
+        return false;
+    }
+    return affines_are_inverse(*forward, *view);
+}
+
+std::optional<SceneCamera::RoundTripError> SceneCamera::view_inverse_round_trip_error(
+    const regenny::LTNodeTransform& pose) {
+    const auto view = view_matrix_from_pose(pose);
+    const auto forward = transform_to_matrix(pose);
+    if (!view.has_value() || !forward.has_value()) {
+        return std::nullopt;
+    }
+    std::array<float, 12> rhs{};
+    for (size_t i = 0; i < 12; ++i) {
+        rhs[i] = forward->m[i];
+    }
+    const auto product = multiply_by_affine(promote_affine(*view), rhs);
+    RoundTripError out{};
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t col = 0; col < 4; ++col) {
+            const float got = product[row * 4 + col];
+            if (!std::isfinite(got)) {
+                return std::nullopt;
+            }
+            const float deviation = std::fabs(got - ((col == row) ? 1.0f : 0.0f));
+            float& worst = (col == 3) ? out.translation : out.rotation;
+            if (deviation > worst) {
+                worst = deviation;
+            }
+        }
+    }
+    return out;
 }
 
 std::array<float, 12> SceneCamera::affine_identity() {

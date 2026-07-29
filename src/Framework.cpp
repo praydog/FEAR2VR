@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <cinttypes>
 #include <cstdio>
 #include <iterator>
@@ -3528,6 +3529,21 @@ std::string build_shader_params_json() {
     distant_pose.position.y = -75500.0f;
     distant_pose.position.z = 43000.0f;
     const bool distant_round_trips = sdk::SceneCamera::view_inverts_pose(distant_pose);
+    // A NaN tolerance must be REFUSED, not silently accepted: every comparison against NaN is
+    // false, so an unvalidated predicate would call any pair of matrices inverses.
+    bool rejects_nan_tolerance = true;
+    {
+        const auto fwd = sdk::SceneCamera::transform_to_matrix(probe_pose);
+        const auto inv = sdk::SceneCamera::view_matrix_from_pose(probe_pose);
+        if (fwd.has_value() && inv.has_value()) {
+            const float nan_value = std::numeric_limits<float>::quiet_NaN();
+            rejects_nan_tolerance =
+                !sdk::SceneCamera::affines_are_inverse(*fwd, *inv, nan_value) &&
+                !sdk::SceneCamera::affines_are_inverse(*fwd, *inv, 1e-4f, nan_value);
+        }
+    }
+    const auto near_err = sdk::SceneCamera::view_inverse_round_trip_error(probe_pose);
+    const auto far_err = sdk::SceneCamera::view_inverse_round_trip_error(distant_pose);
     const bool view_from_pose_built =
         sdk::SceneCamera::view_matrix_from_pose(probe_pose).has_value();
 
@@ -3555,6 +3571,11 @@ std::string build_shader_params_json() {
     json_append_bool(out, "inverse_round_trips", inverse_round_trips);
     json_append_bool(out, "view_from_pose_built", view_from_pose_built);
     json_append_bool(out, "distant_round_trips", distant_round_trips);
+    json_append_double(out, "near_rot_err", near_err.has_value() ? near_err->rotation : -1.0, 8);
+    json_append_double(out, "near_trans_err", near_err.has_value() ? near_err->translation : -1.0, 8);
+    json_append_double(out, "far_rot_err", far_err.has_value() ? far_err->rotation : -1.0, 8);
+    json_append_double(out, "far_trans_err", far_err.has_value() ? far_err->translation : -1.0, 8);
+    json_append_bool(out, "rejects_nan_tolerance", rejects_nan_tolerance);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

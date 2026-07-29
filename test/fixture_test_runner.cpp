@@ -3828,6 +3828,31 @@ int main(int argc, char** argv) {
             check(json_bool(body, "distant_round_trips", drt) && drt,
                   "and still round-trips for a pose ~100k units from the origin");
 
+            // THE RESIDUALS THEMSELVES, bounded tightly. Reporting them is what let the tolerance be
+            // sized from data instead of a guess -- the first version scaled the translation
+            // allowance by the ROTATION tolerance and so permitted 196 units of error at 98000. The
+            // bounds below are far under that and far over what was measured (1.2e-07 and 0).
+            double nre = -1.0, nte = -1.0, fre = -1.0, fte = -1.0;
+            const bool errs = json_double(body, "near_rot_err", nre) &&
+                              json_double(body, "near_trans_err", nte) &&
+                              json_double(body, "far_rot_err", fre) &&
+                              json_double(body, "far_trans_err", fte);
+            check(errs, "the round-trip residuals are reported");
+            if (errs) {
+                check(nre >= 0.0 && nre < 1e-5, "near rotation residual is epsilon-scale");
+                check(nte >= 0.0 && nte < 1e-3, "near translation residual is negligible");
+                check(fre >= 0.0 && fre < 1e-5, "distant rotation residual is epsilon-scale");
+                // At 98000 units this bound is ~5e-7 relative, i.e. genuinely tight rather than the
+                // 196-unit allowance the earlier scaling produced.
+                check(fte >= 0.0 && fte < 0.05,
+                      "distant translation residual stays well under the scaled allowance");
+            }
+
+            // A NaN tolerance must be refused. Unvalidated, it accepts anything.
+            bool nan_ok = false;
+            check(json_bool(body, "rejects_nan_tolerance", nan_ok) && nan_ok,
+                  "affines_are_inverse refuses a NaN tolerance instead of accepting every pair");
+
             // REJECTION, because a builder that quietly accepts a degenerate frustum hands back a
             // matrix that still looks usable -- a zero scale coefficient with m[3][2] intact.
             bool r0 = false, r1 = false, r2 = false;
