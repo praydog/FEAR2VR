@@ -3736,14 +3736,25 @@ int main(int argc, char** argv) {
         // pass and a field-by-field read can splice two passes together without faulting. The
         // checks below are the snapshot's own predicates, so they exercise what a consumer
         // would call, not a reimplementation.
+        // ONLY THIS IS UNCONDITIONAL: the record is static exe data, so a snapshot must succeed
+        // whenever the module is mapped, level or no level.
         check(json_has(body, "\"scene_camera\":true"), "the scene camera record snapshots");
-        check(json_has(body, "\"sc_viewport_valid\":true"),
-              "the camera's viewport rect is non-degenerate");
+
+        // EVERYTHING BELOW IS GATED ON THE RECORD BEING CONFIGURED, and the gate is not
+        // decoration. Before the first render pass touches it this structure is all zeroes, so a
+        // degenerate viewport, a zero projection and a zero-magnitude quaternion are all correct
+        // readings of a legitimate state. An earlier version of this block asserted the viewport
+        // valid unconditionally while gating the pose checks on that same validity -- a
+        // contradiction that would have failed on a menu run by design.
+        const bool configured = json_has(body, "\"sc_viewport_valid\":true");
 
         int64_t sc_mode = -1, sc_w = -1, sc_h = -1;
         (void)json_int(body, "sc_mode", sc_mode);
         const bool have_dims = json_int(body, "sc_vp_w", sc_w) && json_int(body, "sc_vp_h", sc_h);
-        check(have_dims && sc_w > 0 && sc_h > 0, "the camera reports positive viewport extents");
+        check(have_dims, "the camera's viewport extents are reported and parseable");
+        if (configured) {
+            check(sc_w > 0 && sc_h > 0, "a configured camera reports positive viewport extents");
+        }
 
         // THE INVARIANT THAT EARNS ITS KEEP. For an orthographic pass the projection must
         // satisfy [0][0] == 2/width and [1][1] == -2/height. Those floats and the viewport ints
@@ -3762,12 +3773,11 @@ int main(int argc, char** argv) {
         // normalise, so this is what defends the +0x14 pose location. LTTransform_Copy is what
         // established that layout -- three floats, then LTRotation_Copy at +0x0C.
         //
-        // GATED ON A CONFIGURED RECORD, not on the mode, and the gate is load-bearing: this is
-        // static data, so before any pass has run it is all zeroes, and a zero quaternion has
-        // magnitude 0 rather than 1. Asserting unconditionally would fail in the no-world state
-        // this suite can legitimately run in. A valid viewport rect is the builder's own signal
-        // that it has configured the record.
-        if (json_has(body, "\"sc_viewport_valid\":true")) {
+        // GATED ON THE RECORD BEING CONFIGURED, not on the pass mode, and the gate is
+        // load-bearing: this is static data, so before any pass has run it is all zeroes, and a
+        // zero quaternion has magnitude 0 rather than 1. A valid viewport rect is the builder's
+        // own evidence that it ran.
+        if (configured) {
             check(json_has(body, "\"sc_pose_rot_unit\":true"),
                   "the camera pose's rotation is a unit quaternion (proves the +0x14 offset)");
             check(json_has(body, "\"sc_pose_pos_finite\":true"),
@@ -3778,7 +3788,7 @@ int main(int argc, char** argv) {
         // extents that are literally half the viewport in PIXELS. That second identity is what
         // established the units of k_vHalfViewPlane, so it is worth defending. Gated on the mode
         // because a 3D pass legitimately leaves other values here.
-        if (sc_mode == 2) {
+        if (configured && sc_mode == 2) {
             check(json_has(body, "\"sc_view_identity\":true"),
                   "the screen pass's view matrix is identity");
             // The screen pass zeroes the pose entirely. Asserted through the snapshot's own

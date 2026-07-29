@@ -963,6 +963,14 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **IF A CHECK NEEDS A STATE GATE, EVERY CHECK IN THAT BLOCK NEEDS THE SAME ONE.** I gated the scene
+  camera's pose invariants on the record being configured -- correctly, since it is zeroes before the
+  first render pass -- while two checks above still asserted the viewport valid and its extents positive
+  unconditionally. Same block, same state, opposite assumptions: a menu-state run would have failed by
+  design. The rule that falls out: decide once whether the structure can legitimately be unconfigured,
+  name that condition, and gate the whole block on it. Only "the snapshot succeeded" is unconditional
+  here, because the record is static data.
+
 - **A CHECK THAT MATCHES JSON TEXT IS TESTING printf.** I asserted `"sc_pose_qw":1.0000` to mean "the
   pose is identity". That check would break on a format-precision change, would pass on a pose whose
   position was garbage, and put the predicate in the test instead of the header where a consumer can
