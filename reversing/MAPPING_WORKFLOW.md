@@ -963,6 +963,30 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A METRIC THAT IS ONLY INTERPRETABLE UNDER ONE HYPOTHESIS CANNOT CHOOSE BETWEEN HYPOTHESES.**
+  Trying to settle whether `LTModelNode`'s bind pose is parent-relative or model-space, I measured
+  mean `|pos(child) - pos(parent)|` and read 38.6 against positions of 57.2 -- "too large to be a
+  bone length, so not model-space". The subtraction only MEANS anything if the vectors share a
+  frame, which is exactly what was in question: under the local hypothesis they sit in different
+  parent frames and the difference is geometric noise. Question-begging, not evidence.
+  
+  The other measurement -- magnitude growing 12.9 -> 57.2 with depth -- was confounded a different
+  way: the sample mixes assets of different scale, and the depth bands are not drawn from the same
+  models, so scale alone reproduces the pattern.
+  
+  Both were cheap and both were worth running; what mattered was not adopting the flattering
+  reading. Before believing an aggregate, ask what it would look like if the OTHER hypothesis held.
+  If the answer is "the same" or "undefined", it is not a discriminator.
+  
+  BEHAVIOUR OF A SIBLING FIELD IS NOT EVIDENCE EITHER. +0x24 is provably parent-relative because
+  ILTModel_GetAnimNodeTransform accumulates it up the chain -- and I briefly wrote that this
+  "confirms both pairs are parent-relative". It confirms one. Two fields in one record are two
+  facts.
+  
+  Recorded as OPEN. What would settle it: compose +0x08 down the hierarchy and compare against an
+  engine-produced transform, or find a caller of the bind getter that combines it with parent
+  transforms.
+
 - **IDENTICAL VALUES ACROSS INSTANCES DO NOT ESTABLISH OWNERSHIP OR IMMUTABILITY.** I asserted that
   the bind pose is asset-owned because 171 objects sharing an asset reported bit-identical poses,
   and reasoned that a per-object field "would have diverged". It would not: a per-object field

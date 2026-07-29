@@ -2114,7 +2114,8 @@ std::string build_objects_json() {
                api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
                api_eye_geom = 0, api_eye_level = 0, api_eye_left_neg = 0, api_eye_vs_camera = 0,
                api_bind_nodes = 0, api_bind_unit = 0, api_bind_finite = 0, api_bind_shared = 0,
-               api_bind_shared_ok = 0,
+               api_bind_shared_ok = 0, api_bind_same_array = 0, api_bind_n_shallow = 0,
+               api_bind_n_deep = 0, api_bind_max_depth = 0, api_bind_n_edge = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2136,10 +2137,13 @@ std::string build_objects_json() {
                api_rad_unsized = 0, api_rad_sane = 0;
         // Per-asset bind poses, keyed by the shared asset pointer: the first object of an
         // asset records them, every later one must match.
-        std::unordered_map<uintptr_t, std::vector<std::array<float, 7>>> bind_seen;
+        std::unordered_map<uintptr_t,
+                           std::pair<std::vector<std::array<float, 7>>, sdk::ModelSkeleton>>
+            bind_seen;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
+        double api_bind_mag_shallow = 0.0, api_bind_mag_deep = 0.0, api_bind_edge = 0.0;
         float api_eye_sep_min = -1.0f, api_eye_sep_max = 0.0f, api_eye_asym_max = 0.0f;
         float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
               api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
@@ -2590,6 +2594,50 @@ std::string build_objects_json() {
                                                 bp->rotation.x, bp->rotation.y, bp->rotation.z,
                                                 bp->rotation.w});
                                             ++api_bind_nodes;
+                                            // DEPTH vs MAGNITUDE, to discriminate the coordinate
+                                            // space without a reader: parent-relative offsets are
+                                            // bone lengths and should not grow with depth, while
+                                            // model-space positions must. Accumulated separately
+                                            // for shallow and deep nodes.
+                                            size_t depth = 0;
+                                            for (size_t up = ni; depth < 32;) {
+                                                const auto par = sk->parent_of(up);
+                                                if (!par.has_value()) {
+                                                    break;
+                                                }
+                                                up = *par;
+                                                ++depth;
+                                            }
+                                            const float mag = std::sqrt(
+                                                bp->position.x * bp->position.x +
+                                                bp->position.y * bp->position.y +
+                                                bp->position.z * bp->position.z);
+                                            if (depth > api_bind_max_depth) {
+                                                api_bind_max_depth = depth;
+                                            }
+                                            // THE DECISIVE ONE: if these are model-space, the
+                                            // DIFFERENCE from the parent is the bone length -- small
+                                            // and depth-independent -- while the position itself
+                                            // grows. If they are parent-relative, the position IS
+                                            // the bone length and the difference is meaningless.
+                                            if (const auto par = sk->parent_of(ni); par.has_value()) {
+                                                if (const auto pp = sk->bind_pose(*par);
+                                                    pp.has_value()) {
+                                                    const float ex = bp->position.x - pp->position.x;
+                                                    const float ey = bp->position.y - pp->position.y;
+                                                    const float ez = bp->position.z - pp->position.z;
+                                                    api_bind_edge += std::sqrt(ex * ex + ey * ey +
+                                                                               ez * ez);
+                                                    ++api_bind_n_edge;
+                                                }
+                                            }
+                                            if (depth <= 1) {
+                                                api_bind_mag_shallow += mag;
+                                                ++api_bind_n_shallow;
+                                            } else if (depth >= 4) {
+                                                api_bind_mag_deep += mag;
+                                                ++api_bind_n_deep;
+                                            }
                                             const float qn =
                                                 bp->rotation.x * bp->rotation.x +
                                                 bp->rotation.y * bp->rotation.y +
@@ -2605,18 +2653,25 @@ std::string build_objects_json() {
                                             }
                                         }
                                     }
-                                    bind_seen.emplace(asset, std::move(poses));
+                                    bind_seen.emplace(asset,
+                                                      std::make_pair(std::move(poses), *sk));
                                 } else {
-                                    // Seen this asset before: the poses must match exactly.
+                                    // Seen this asset before. TWO SEPARATE CHECKS, because they
+                                    // establish different things: the pointer comparison shows the
+                                    // two views read the SAME storage, while the value comparison
+                                    // only shows the bytes agree -- which separate copies would too.
                                     ++api_bind_shared;
+                                    if (sk->shares_node_data(it->second.second)) {
+                                        ++api_bind_same_array;
+                                    }
                                     bool same = true;
                                     for (size_t ni = 0; ni < sk->node_count(); ++ni) {
                                         const auto bp = sk->bind_pose(ni);
-                                        if (!bp.has_value() || ni >= it->second.size()) {
+                                        if (!bp.has_value() || ni >= it->second.first.size()) {
                                             same = false;
                                             break;
                                         }
-                                        const auto& r = it->second[ni];
+                                        const auto& r = it->second.first[ni];
                                         // EXACT equality: two reads of one immutable array, not two
                                         // computations, so any difference at all is meaningful.
                                         if (bp->position.x != r[0] || bp->position.y != r[1] ||
@@ -2710,6 +2765,14 @@ std::string build_objects_json() {
         .u("bind_finite", api_bind_finite)
         .u("bind_shared", api_bind_shared)
         .u("bind_shared_ok", api_bind_shared_ok)
+        .u("bind_same_array", api_bind_same_array)
+        .u("bind_max_depth", api_bind_max_depth)
+        .u("bind_n_shallow", api_bind_n_shallow)
+        .u("bind_n_deep", api_bind_n_deep)
+        .f("bind_mag_shallow", api_bind_n_shallow ? api_bind_mag_shallow / api_bind_n_shallow : 0.0, 3)
+        .f("bind_mag_deep", api_bind_n_deep ? api_bind_mag_deep / api_bind_n_deep : 0.0, 3)
+        .u("bind_n_edge", api_bind_n_edge)
+        .f("bind_edge_mean", api_bind_n_edge ? api_bind_edge / api_bind_n_edge : 0.0, 3)
         .u("socket_eyes", api_socket_eyes)
         .u("eye_geom", api_eye_geom)
         .u("eye_level", api_eye_level)

@@ -124,6 +124,17 @@ public:
     // indices; comparing it is how a caller can cache per-asset work.
     uintptr_t asset_id() const { return reinterpret_cast<uintptr_t>(m_asset); }
 
+    // CAN PER-NODE WORK BE REUSED between these two skeletons? True when both read the same node
+    // record storage, so anything derived purely from node data -- bind poses, the hierarchy, socket
+    // offsets -- is valid for both and need only be computed once.
+    //
+    // Stronger than comparing asset_id(), and stronger than finding that their node data agrees:
+    // agreement would also hold for two separate copies, whereas this is storage identity. The
+    // address itself stays private, because a consumer needs the answer and not the pointer.
+    bool shares_node_data(const ModelSkeleton& other) const {
+        return m_records != nullptr && m_records == other.m_records;
+    }
+
     // ---- SOCKETS ---------------------------------------------------------------
     //
     // A socket is a NAMED, oriented point hanging off a node -- the art department's
@@ -184,9 +195,34 @@ public:
         regenny::LTRotation rotation;
     };
 
-    // nullopt when the index is out of range or the read faulted. Note the pose is relative to the
-    // node's PARENT, as a rest pose is -- compose up the chain with parent_of() for a model-space
-    // position.
+    // nullopt when the index is out of range or the read faulted.
+    //
+    // THE COORDINATE SPACE IS UNRESOLVED. An earlier version of this comment asserted the pose is
+    // parent-relative "as a rest pose is", which was an assumption dressed as documentation:
+    // ILTModel_GetBindPoseNodeTransform reads ONE node's pair and composes nothing, so it evidences
+    // no space at all. The sibling pair at +0x24 IS parent-relative -- ILTModel_GetAnimNodeTransform
+    // walks the parent chain accumulating it -- but the behaviour of one field does not establish
+    // the semantics of another in the same record.
+    //
+    // TWO MEASUREMENTS WERE TRIED AND NEITHER SETTLED IT, which is why the space is still open
+    // rather than quietly decided:
+    //
+    //   depth vs magnitude   mean |position| is 12.9 at depth <= 1 and 57.2 at depth >= 4. That
+    //                        looks like accumulated model-space, but it is confounded: the sample
+    //                        mixes assets of different scale, and deeper nodes are not drawn from
+    //                        the same models as shallow ones.
+    //   parent difference    mean |pos(child) - pos(parent)| is 38.6 over 623 edges, against 57.2
+    //                        for the positions themselves. Under the model-space hypothesis that
+    //                        difference should be a BONE LENGTH and is not -- but the metric CANNOT
+    //                        ADJUDICATE, because under the local-space hypothesis the two vectors
+    //                        live in different parent frames and subtracting them means nothing at
+    //                        all. A number that is only interpretable if one hypothesis is already
+    //                        true cannot choose between them.
+    //
+    // So one measurement is confounded and the other is question-begging. What would settle it is
+    // composing +0x08 down the recorded hierarchy and comparing against an engine-produced
+    // transform, or finding a caller of the bind getter that combines its output with parent
+    // transforms. Until then: do not compose these, and do not assume they are already composed.
     std::optional<BindPose> bind_pose(size_t node_index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------

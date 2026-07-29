@@ -1557,8 +1557,26 @@ class LTAnimRecordTable 0x10 {
 // on 34/34, and sum(child_count) == node_count - 1 on 34/34 -- which is the
 // defining property of a tree with one root and no cycles.
 //
-// ONE OF THE TWO POSES IS NOW NAMED: +0x08 is the BIND POSE, because that is where
-// ILTModel_GetBindPoseNodeTransform reads from. The other is still unidentified.
+// BOTH POSES ARE NOW NAMED, each by its own reader: +0x08 is the BIND POSE
+// (ILTModel_GetBindPoseNodeTransform) and +0x24 is the ANIMATION FALLBACK that
+// ILTModel_GetAnimNodeTransform substitutes for a node with no animation key. Two
+// getters, two offsets, no inference.
+//
+// THE BIND POSE'S COORDINATE SPACE IS STILL OPEN. +0x24 is parent-relative because its
+// reader accumulates it up the chain; nothing observed so far pins +0x08 either way, and
+// an earlier draft of this file assumed parent-relative because that is what a rest pose
+// usually is. Assumption, not evidence.
+//
+// TWO HEURISTICS TRIED, BOTH INCONCLUSIVE. Mean |bind_position| is 12.9 at depth <= 1 and
+// 57.2 at depth >= 4, which suggests accumulated model-space -- but the sample mixes assets
+// of different scale and the depth bands are not the same models, so scale alone can produce
+// that. Against it: mean |pos(child) - pos(parent)| is 38.6 across 623 edges, and a
+// model-space pair would differ by a BONE LENGTH, i.e. far less than 57.2. But that second
+// metric cannot adjudicate either: if the pairs ARE local, the two vectors sit in different
+// parent frames and their difference is geometrically meaningless, so it is only interpretable
+// once the answer is already known. One confounded measurement and one question-begging one. What would settle it is composing +0x08
+// down the hierarchy and comparing against an engine-produced transform, or finding a caller
+// of the bind getter that composes its output.
 //
 // TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
 // its rigid inverse, the way LTWorldModelObject's pair is. If they were,
@@ -1579,8 +1597,8 @@ class LTModelNode 0x40 {
     uint16_t unk_06        @0x06
     LTVector bind_position @0x08   // CONFIRMED THE BIND POSE, by its own reader: ILTModel_GetBindPoseNodeTransform (0x42C958) computes `(node_index << 6) + asset->node_records + 8` and copies from there -- stride 0x40, offset +0x08, i.e. exactly this pair. That settles which of this record's two poses is the bind pose, which an earlier pass could only record as unmapped. Being ASSET data it is staleness-free and identical on every instance of the model, unlike the per-object node caches. CONFIRMED finite and sane on 660/660
     LTRotation bind_rotation @0x14 // CONFIRMED the bind pose's rotation, the second half of the pair ILTModel_GetBindPoseNodeTransform reads. CONFIRMED unit-length on 660/660, so a real quaternion
-    LTVector position_b    @0x24   // CONFIRMED finite and sane on 660/660. NOT the inverse of the bind pose -- see the class comment -- and NOT the bind pose itself, since its reader takes +0x08. What this second pose is remains unmapped; no reader has been found.
-    LTRotation rotation_b  @0x30   // CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride.
+    LTVector anim_fallback_position @0x24 // CONFIRMED THE LOCAL TRANSFORM ANIMATION SUBSTITUTES WHEN A NODE HAS NO KEY, found by its reader: ILTModel_GetAnimNodeTransform (0x42C9CF) walks the parent chain and for each node takes `node_records + (index << 6) + 36` -- exactly this pair -- whenever that node has no animation mapping (its anim node index is 0xFF) or there is no animation state at all; otherwise it evaluates the animation instead. So +0x08 is what the bind-pose getter hands out and +0x24 is what animation composition falls back to. That the same function composes UP the parent chain establishes THIS pair is PARENT-RELATIVE -- and only this one: the bind-pose getter reads a single node and composes nothing, so it evidences nothing about +0x08's space. CONFIRMED finite and sane on 660/660, and NOT the inverse of the bind pose -- see the class comment.
+    LTRotation anim_fallback_rotation @0x30 // CONFIRMED the rotation half of the animation fallback pair read by ILTModel_GetAnimNodeTransform. CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride.
 }
 
 // A SHARED model asset record. Live, 215 OT_MODEL objects point at only 34

@@ -2958,12 +2958,11 @@ int main(int argc, char** argv) {
                 // The engine's reader indexes `asset->node_records`, and so does this SDK's
                 // accessor, so the storage is the asset's array by construction.
                 //
-                // The cross-instance check below is therefore WEAKER than it looks and is not
-                // claimed as proof of immutability: identical values would also hold for a
-                // per-object field initialised from the same asset, and here the two reads land on
-                // the SAME memory, so agreement is close to tautological. What it does verify is
-                // that two independently built views of two different objects resolve to the same
-                // asset array -- a check of the resolution path, which has broken before.
+                // So the checks below are deliberately split. Comparing the resolved ARRAY POINTERS
+                // is a storage-identity test and is the one that means something. Comparing the
+                // VALUES proves neither ownership nor immutability -- separate copies would agree,
+                // and here both reads land on the same memory anyway -- so it is kept only as a
+                // regression guard on the read path and labelled as such.
                 //
                 // Proving immutability would need a mutation-isolation test, which is out of scope:
                 // writing to engine data to see whether a sibling changes is not something this
@@ -2979,11 +2978,41 @@ int main(int argc, char** argv) {
                 check(bfin == bnodes, "EVERY bind position is finite");
                 check(bshared > 0,
                       "models sharing an asset exist, so the invariance check has something to do");
+                // STORAGE IDENTITY, which is the claim that was being made badly before: the two
+                // views read the SAME array, established by comparing the resolved pointers rather
+                // than the bytes they contain.
+                int64_t bsamearr = -1;
+                json_int(ab, "bind_same_array", bsamearr);
+                check(bsamearr == bshared,
+                      "objects sharing an asset read the SAME node-record array (pointer identity)");
+                // And the weaker one, kept only as a regression guard on the read path. It shows
+                // cross-instance value consistency and NOTHING about ownership -- separate copies
+                // would satisfy it just as well.
                 check(bsharedok == bshared,
-                      "objects sharing an asset resolve to the same bind pose data (resolution path)");
-                printf("[fixture] bind pose: %lld nodes across distinct assets, all unit and "
-                       "finite; %lld shared instances all identical\n",
+                      "cross-instance bind pose values are consistent");
+                // THE COORDINATE SPACE IS REPORTED, NOT ASSERTED, and neither figure below can
+                // decide it. The depth-magnitude growth suggests accumulated model-space but mixes
+                // assets of different scale. The parent-child delta looks like it argues the other
+                // way, yet it is question-begging: if the pairs are LOCAL then those two vectors are
+                // in different parent frames and their difference has no geometric meaning. So the
+                // numbers are printed as a record of what was tried, and nothing is concluded.
+                int64_t bdepth = -1, bedge = -1;
+                double bmshal = -1.0, bmdeep = -1.0, bedgemean = -1.0;
+                json_int(ab, "bind_max_depth", bdepth);
+                json_int(ab, "bind_n_edge", bedge);
+                json_double(ab, "bind_mag_shallow", bmshal);
+                json_double(ab, "bind_mag_deep", bmdeep);
+                json_double(ab, "bind_edge_mean", bedgemean);
+                check(bdepth > 0 && bedge > 0, "the node hierarchy has depth and edges to measure");
+                check(bmshal >= 0.0 && bmdeep >= 0.0 && bedgemean >= 0.0,
+                      "the bind pose magnitude figures are well-formed");
+                printf("[fixture] bind pose: %lld nodes, all unit and finite; %lld shared instances "
+                       "on one array\n",
                        static_cast<long long>(bnodes), static_cast<long long>(bshared));
+                printf("[fixture] bind space UNRESOLVED: |pos| %.1f shallow vs %.1f deep (max depth "
+                       "%lld), parent delta %.1f over %lld edges\n",
+                       bmshal, bmdeep, static_cast<long long>(bdepth), bedgemean,
+                       static_cast<long long>(bedge));
 
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
 

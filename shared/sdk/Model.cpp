@@ -223,8 +223,8 @@ bool seh_read_node(const void* records, uint32_t count, size_t index, NodeRaw* o
             out->child_count = nd->child_count;
             out->pos_a = nd->bind_position;
             out->rot_a = nd->bind_rotation;
-            out->pos_b = nd->position_b;
-            out->rot_b = nd->rotation_b;
+            out->pos_b = nd->anim_fallback_position;
+            out->rot_b = nd->anim_fallback_rotation;
             ok = true;
         }
     }

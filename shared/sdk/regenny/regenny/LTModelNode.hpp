@@ -14,8 +14,8 @@ public:
     uint16_t unk_06; // 0x6
     regenny::LTVector bind_position; // 0x8
     regenny::LTRotation bind_rotation; // 0x14
-    regenny::LTVector position_b; // 0x24
-    regenny::LTRotation rotation_b; // 0x30
+    regenny::LTVector anim_fallback_position; // 0x24
+    regenny::LTRotation anim_fallback_rotation; // 0x30
 }; // Size: 0x40
 #pragma pack(pop)
 }
