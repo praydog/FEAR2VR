@@ -1043,7 +1043,9 @@ std::string build_objects_json() {
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
-               api_standing = 0, api_standing_sane = 0, api_standing_node = 0;
+               api_standing = 0, api_standing_sane = 0, api_standing_node = 0,
+               api_color_ok = 0, api_color_packed_ok = 0, api_color_default = 0,
+               api_color_translucent = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -1102,6 +1104,23 @@ std::string build_objects_json() {
                         }
                         if (s->has_node) {
                             ++api_standing_node;
+                        }
+                    }
+                    // COLOUR AND ALPHA. The assertable part is the PACKING: alpha must
+                    // be the high byte of the value the engine hands out, which is what
+                    // SetObjectAlpha's single-byte write at +0x07 claims. Counting
+                    // translucent objects is scene-dependent and only reported.
+                    if (const auto c = sdk::object_color(obj); c.has_value()) {
+                        ++api_color_ok;
+                        if ((c->packed >> 24) == c->a && ((c->packed >> 16) & 0xFF) == c->r &&
+                            ((c->packed >> 8) & 0xFF) == c->g && (c->packed & 0xFF) == c->b) {
+                            ++api_color_packed_ok;
+                        }
+                        if (c->packed == 0xFFFFFFFFu) {
+                            ++api_color_default;
+                        }
+                        if (c->a != 255) {
+                            ++api_color_translucent;
                         }
                     }
                     // ATTACHMENTS, walked the way a mod would: for every object, ask
@@ -1217,7 +1236,9 @@ std::string build_objects_json() {
                  "\"node_xform_ok\":%zu,\"node_xform_stale\":%zu,\"node_xform_clean\":%zu,"
                  "\"node_xform_clean_sane\":%zu,\"camera_node_clean\":%zu,"
                  "\"dims_ok\":%zu,\"dims_nonneg\":%zu,\"dims_zero\":%zu,"
-                 "\"standing\":%zu,\"standing_sane\":%zu,\"standing_node\":%zu}",
+                 "\"standing\":%zu,\"standing_sane\":%zu,\"standing_node\":%zu,"
+                 "\"color_ok\":%zu,\"color_packed_ok\":%zu,\"color_default\":%zu,"
+                 "\"color_translucent\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1226,7 +1247,8 @@ std::string build_objects_json() {
                  api_socket_eyes, api_node_xform_ok, api_node_xform_stale,
                  api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean,
                  api_dims_ok, api_dims_nonneg, api_dims_zero, api_standing,
-                 api_standing_sane, api_standing_node);
+                 api_standing_sane, api_standing_node, api_color_ok, api_color_packed_ok,
+                 api_color_default, api_color_translucent);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

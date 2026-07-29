@@ -1,9 +1,9 @@
 #pragma once
 namespace regenny {
-class LTModelAsset;
+class LTNodeTransform;
 }
 namespace regenny {
-class LTNodeTransform;
+class LTModelAsset;
 }
 namespace regenny {
 #pragma pack(push, 1)

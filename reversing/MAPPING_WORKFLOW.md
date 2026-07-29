@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Once you have a named API surface, AUDIT YOUR UNKNOWNS AGAINST IT.** The previous
+  entry's lesson (a writer gives shape, a reader gives meaning) turns into a concrete
+  procedure once the error-string pass has named a few hundred functions: take each field
+  whose only evidence is a constructor or a setter, and go looking for a NAMED getter
+  that touches its offset.
+
+  First application resolved a field on the first try. LTObject+0x04 had sat for many
+  passes as "ctor writes all four bytes as 0xFF, live 0xFFFFFFFF on 3265/3583, a -1
+  none default, meaning unmapped". CLTClient_GetObjectColor hands out that exact dword;
+  CLTClient_SetObjectRGB writes `obj[6]=r, obj[5]=g, obj[4]=b`; CLTClient_SetObjectAlpha
+  writes only `obj[7]`. It is RGBA, and 0xFFFFFFFF is not a sentinel at all -- it is
+  white, fully opaque, exactly what a constructor should write.
+
+  Note how the old note's own evidence became the confirmation once the meaning arrived:
+  "3265 objects at 0xFFFFFFFF and 318 with other values" reads as nonsense for a
+  sentinel and as obvious for a default colour. The measurement was right; only the
+  frame was missing. Which is the argument for recording raw distributions even when
+  they explain nothing yet -- a later reader turns them into evidence for free.
 - **You can map a MECHANISM perfectly and still name the CONCEPT wrong. Only a consumer
   settles it.** LTObject+0x74/0x7C/0x88/0x8C were mapped several passes ago as
   `child_list` / `parent_link` / `parent` / `attach_extra`, all marked CONFIRMED, and

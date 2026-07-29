@@ -19,7 +19,10 @@ class LTObject {
 public:
     // Metadata: code
     void* vtable; // 0x0
-    uint32_t unk_04; // 0x4
+    uint8_t color_b; // 0x4
+    uint8_t color_g; // 0x5
+    uint8_t color_r; // 0x6
+    uint8_t color_a; // 0x7
     regenny::LTObjectRef* shared_ref; // 0x8
     private: char pad_c[0x4]; public:
     regenny::LTObjectType type; // 0x10

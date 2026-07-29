@@ -308,3 +308,53 @@ std::optional<StandingOn> standing_on(const regenny::LTObject* obj) {
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+struct ColorRaw {
+    uint8_t b, g, r, a;
+    bool ok;
+};
+
+// All four bytes in ONE guarded read. Reading them separately would let a fade advance
+// between components and hand back a colour the object never had.
+ColorRaw seh_color(const regenny::LTObject* obj) {
+    ColorRaw c{};
+    KANANLIB_SEH_TRY {
+        c.b = obj->color_b;
+        c.g = obj->color_g;
+        c.r = obj->color_r;
+        c.a = obj->color_a;
+        c.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        c.ok = false;
+    }
+    return c;
+}
+
+}  // namespace
+
+std::optional<ObjectColor> object_color(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const ColorRaw c = seh_color(obj);
+    if (!c.ok) {
+        return std::nullopt;
+    }
+    ObjectColor out{};
+    out.r = c.r;
+    out.g = c.g;
+    out.b = c.b;
+    out.a = c.a;
+    // Repacked in the engine's own layout so a caller can hand it straight back to
+    // anything that expects what GetObjectColor returns.
+    out.packed = (static_cast<uint32_t>(c.a) << 24) | (static_cast<uint32_t>(c.r) << 16) |
+                 (static_cast<uint32_t>(c.g) << 8) | static_cast<uint32_t>(c.b);
+    return out;
+}
+
+}  // namespace sdk

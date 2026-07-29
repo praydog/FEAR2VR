@@ -117,6 +117,37 @@ std::optional<bool> is_renderable(const regenny::LTObject* obj);
 // caller need not check both.
 std::optional<bool> is_server_object(const regenny::LTObject* obj);
 
+// The object's COLOUR AND ALPHA -- the engine's per-object tint and transparency.
+//
+// Read straight out of the field CLTClient::GetObjectColor hands out. The byte order is
+// the engine's: B, G, R, A ascending, so the packed dword reads 0xAARRGGBB. That order
+// is NOT what the reference SDK declares (it lists red first), which is why `packed` is
+// exposed alongside the components -- a caller passing the dword to something else
+// should know what layout it is in.
+//
+// WHY A VR MOD CARES: alpha is how the engine already hides and fades things, so it is
+// the least invasive way to make the player's own body or a blocking prop disappear --
+// no geometry edits, no render hooks. Live 121 objects are genuinely translucent and 9
+// worldmodels sit at alpha 0, so the mechanism is in active use rather than theoretical.
+//
+// The default is 0xFFFFFFFF: white, fully opaque. 3265 of 3583 objects are exactly that.
+struct ObjectColor {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+    // The whole field as the engine stores and returns it, 0xAARRGGBB.
+    uint32_t packed;
+};
+
+// nullopt when `obj` is null or the read faulted.
+//
+// NOT PAIRED WITH A SETTER YET, deliberately. The write path is mapped -- SetObjectColor
+// and SetObjectAlpha write the field and then notify the owner through its vtable, while
+// SetObjectRGB writes and does NOT notify -- but this SDK is read-only so far, and
+// adding the first mutator is a decision worth making on purpose rather than in passing.
+std::optional<ObjectColor> object_color(const regenny::LTObject* obj);
+
 // The object's COLLISION HALF-EXTENTS, as the engine reports them.
 //
 // ILTPhysics::GetObjectDims hands out exactly this field, and the engine derives an

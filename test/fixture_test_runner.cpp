@@ -1794,6 +1794,28 @@ int main(int argc, char** argv) {
                 // run SetDims), and how many there are is a property of the level.
                 check(dz >= 0 && dz <= dok, "all-zero dims are a reported fraction");
 
+                // COLOUR AND ALPHA. The assertion is the BYTE ORDER, which is the one
+                // claim that could silently be wrong: alpha must be the high byte of the
+                // packed value, red next, then green, then blue. That is what
+                // SetObjectAlpha's lone write to +0x07 and SetObjectRGB's b/g/r stores
+                // together say, and a swapped pair would still produce plausible-looking
+                // colours -- so it is checked on every object rather than sampled.
+                int64_t cok = -1, cpk = -1, cdf = -1, ctr = -1;
+                json_int(ab, "color_ok", cok);
+                json_int(ab, "color_packed_ok", cpk);
+                json_int(ab, "color_default", cdf);
+                json_int(ab, "color_translucent", ctr);
+                check(cok == aobj, "object_color answers for every live object");
+                check(cpk == cok,
+                      "EVERY object's packed colour matches its components (0xAARRGGBB)");
+                // REPORTED: how much of a level is tinted or fading is the level's
+                // business. Live 3265 objects are the default white and 121 translucent.
+                check(cdf >= 0 && cdf <= cok, "default-white objects are a reported count");
+                check(ctr >= 0 && ctr <= cok, "translucent objects are a reported count");
+                printf("[fixture] colour: %lld answered, %lld default white, %lld translucent\n",
+                       static_cast<long long>(cok), static_cast<long long>(cdf),
+                       static_cast<long long>(ctr));
+
                 // GROUND CONTACT. How many objects stand on something is entirely
                 // scene-dependent -- live exactly one does -- so the count is reported
                 // and only its INTERNAL CONSISTENCY is required: whenever the API
