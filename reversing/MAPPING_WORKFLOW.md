@@ -963,6 +963,56 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **`retn N` AND THE FIRST INSTRUCTION SETTLE A CALLING CONVENTION. The decompiler does not.**
+  Hex-Rays typed `ILTModel_GetSocketTransform` as `__stdcall(a1, a2, a3, a4)` and passed only three
+  of them onward, which is not a signature you can call. Two reads fixed it exactly: `retn 10h`
+  gives four dword arguments, and `mov ecx, [esp+arg_0]` shows the FIRST STACK ARGUMENT is loaded
+  into ECX as `this` -- so the entry takes the OBJECT and the interface pointer is never touched.
+
+  Before calling anything, get the argument COUNT from `retn N` and the argument ROLES from the
+  first few instructions. A `__stdcall` callee pops its own arguments, so a wrong count is a
+  corrupted stack, not a wrong answer.
+
+- **THE ENGINE'S ERROR PATH IS A FREE ORACLE FOR ITS OWN SIGNATURE.** I passed the interface as
+  argument one. The gate read `iface+0x10`, found 252 instead of 1, and returned exactly 60 --
+  `LT_INVALIDPARAMS`, the constant sitting in the decompile. No crash, no garbage, and the return
+  code named the reason.
+
+  So report the engine's RAW RETURN CODE from a failed call rather than collapsing it to nullopt.
+  "The call failed" cost a rebuild; "it returned 60 and the gate byte is 252" identified the bug
+  outright. And a documented error constant is worth reading BEFORE the first call, because it
+  tells you what a rejection will look like.
+
+- **CALL THE ENGINE TO VALIDATE A REIMPLEMENTATION, and let ITS parameter tell you the convention.**
+  `socket_world_transform()` had never been checked against anything but itself. The engine's own
+  `GetSocketTransform` agrees on EVERY clean socket -- 181 of 181 -- which covers the branch the
+  composition deliberately skips (models whose bone cache is already world-space) and which no
+  internal check could reach.
+
+  The trailing argument's meaning was measured, not guessed, by comparing against BOTH candidate
+  answers at once: flag 1 matched the world pose 181/181, flag 0 matched the model pose on 131.
+  The gap is the story rather than a discrepancy -- the other 50 keep their cache in world space,
+  so both spaces coincide for them, and 131 + 50 = 181 exactly. Asserting that the two populations
+  ADD UP is what shows the split is structural instead of a tolerance artefact.
+
+- **GUARD A VTABLE SLOT INDEX; do not trust it.** A slot number is a claim, and a wrong one calls
+  an arbitrary function instead of failing. `engine_socket_transform_available()` compares the
+  entry against the function's known module offset before any call, so the SDK refuses rather than
+  dispatching into the unknown -- and the fixture asserts it, so the claim cannot rot silently.
+
+  Corroboration first, though: the client and server ILTModel tables independently place
+  `GetSocket` at 2 and `GetSocketTransform` at 3. Two parallel implementations agreeing is what
+  made the index worth verifying live at all.
+
+- **KNOW WHICH ENGINE CALLS MUTATE.** `LTModelObject_GetNodeTransform` EVALUATES the skeleton when
+  the node is dirty and clears the flag -- so `GetSocketTransform` is a pure read on a clean node
+  and a state change on a dirty one. Restricting the comparison to clean sockets was not caution
+  for its own sake: it kept an off-thread call read-only, and it happens to be exactly the
+  population worth comparing.
+
+  This also reframes the staleness finding. The engine NEVER reads a dirty cache raw: it recomputes,
+  and if that fails it zeroes the output and returns false. Only a direct cache reader -- this SDK
+  -- can hand back the garbage, which is why `stale` has to be exposed rather than smoothed over.
 - **AN OVER-STRONG ASSERTION IS A LATENT FAILURE, and only a state change finds it.** "EVERY
   composed socket position is finite" passed for many runs and failed the moment the game was
   restarted. Nothing had changed in the code. 7 of 702 live socket transforms now had non-finite

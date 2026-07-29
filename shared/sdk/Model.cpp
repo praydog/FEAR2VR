@@ -7,6 +7,8 @@
 #include <utility/Seh.hpp>
 
 #include "CClientMgr.hpp"
+#include "Modules.hpp"
+#include "interfaces/ILTModel.hpp"
 #include "Object.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTAnimNameEntry.hpp"
@@ -1181,6 +1183,120 @@ ModelSkeleton::socket_world_transform_is_usable(size_t socket_index) const {
                     wt->rotation.z * wt->rotation.z + wt->rotation.w * wt->rotation.w;
     // A tolerance, not an equality: the product of two unit quaternions accumulates rounding.
     return n > 0.98f && n < 1.02f;
+}
+
+namespace {
+
+// ILTModel vtable slot 3 == ILTModel_GetSocketTransform, and its module offset, used ONLY to
+// verify the slot before calling -- never to call. Both the client and server ILTModel tables
+// place GetSocket at 2 and GetSocketTransform at 3.
+constexpr size_t kSlotGetSocketTransform = 3;
+constexpr uintptr_t kGetSocketTransformRva = 0x42B775 - 0x400000;
+
+// THE FIRST STACK ARGUMENT IS THE OBJECT, and `this` is ignored. The disassembly is explicit:
+// `mov ecx, [esp+arg_0]` loads arg 0 into ECX and then `cmp byte ptr [ecx+10h], 1` tests the
+// OBJECT's type for OT_MODEL before re-dispatching as a thiscall on it. So this vtable entry is a
+// __stdcall wrapper over the object, not a member function of the interface.
+//
+// A first attempt passed the interface here, and the engine did exactly the right thing: the gate
+// read iface+0x10 (252, not 1) and returned LT_INVALIDPARAMS (60) without touching anything. The
+// wrong signature produced a clean refusal rather than a crash -- but only by luck of argument
+// count, which `retn 10h` had already pinned at four dwords.
+using GetSocketTransformFn = int(__stdcall*)(const void*, uint32_t, float*, int);
+
+// Verifies the slot and returns the entry, or nullptr.
+GetSocketTransformFn resolve_get_socket_transform() {
+    auto* iface = interfaces::ILTModel::get_client();
+    const auto* exe = Modules::get().exe();
+    if (iface == nullptr || exe == nullptr) {
+        return nullptr;
+    }
+    GetSocketTransformFn fn = nullptr;
+    KANANLIB_SEH_TRY {
+        const auto* vt = *reinterpret_cast<void* const* const*>(iface);
+        if (vt == nullptr) {
+            return nullptr;
+        }
+        const auto entry = reinterpret_cast<uintptr_t>(vt[kSlotGetSocketTransform]);
+        if (entry - exe->base == kGetSocketTransformRva) {
+            fn = reinterpret_cast<GetSocketTransformFn>(entry);
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        fn = nullptr;
+    }
+    return fn;
+}
+
+int64_t seh_call_get_socket_transform(GetSocketTransformFn fn, const void* obj,
+                                      uint32_t handle, float* out, int world_space) {
+    int64_t r = -1;
+    KANANLIB_SEH_TRY {
+        r = fn(obj, handle, out, world_space);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r = -1;
+    }
+    return r;
+}
+
+}  // namespace
+
+// DIAGNOSTIC: the engine's own return code from the last call, and the byte its wrapper gates
+// on. "The call failed" is not actionable; the code it returned names the reason.
+int64_t g_last_engine_rc = -999;
+
+int64_t ModelSkeleton::last_engine_rc() { return g_last_engine_rc; }
+
+int64_t ModelSkeleton::engine_iface_gate_byte() {
+    auto* iface = interfaces::ILTModel::get_client();
+    if (iface == nullptr) {
+        return -1;
+    }
+    int64_t v = -1;
+    KANANLIB_SEH_TRY {
+        v = *(reinterpret_cast<const uint8_t*>(iface) + 16);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        v = -1;
+    }
+    return v;
+}
+
+bool ModelSkeleton::engine_socket_transform_available() {
+    return resolve_get_socket_transform() != nullptr;
+}
+
+std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::engine_socket_transform(size_t handle, int world_space) const {
+    if (m_object == nullptr) {
+        return std::nullopt;
+    }
+    auto* fn = resolve_get_socket_transform();
+    if (fn == nullptr) {
+        return std::nullopt;
+    }
+    // Eight floats is the documented extent; the extra room costs nothing and means a wrong
+    // guess about the layout cannot write past the buffer.
+    float out[16]{};
+    const int64_t rc = seh_call_get_socket_transform(fn, m_object,
+                                                     static_cast<uint32_t>(handle), out, world_space);
+    g_last_engine_rc = rc;
+    if (rc != 0) {
+        return std::nullopt;  // non-zero is the engine's own failure code
+    }
+    SocketTransform t{};
+    t.position.x = out[0];
+    t.position.y = out[1];
+    t.position.z = out[2];
+    t.rotation.x = out[3];
+    t.rotation.y = out[4];
+    t.rotation.z = out[5];
+    t.rotation.w = out[6];
+    t.scale = out[7];
+    // The engine composed it, so there is no cache staleness to inherit.
+    t.stale = false;
+    return t;
 }
 
 std::optional<ModelSkeleton::ResolvedHandle>

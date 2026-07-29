@@ -1621,6 +1621,54 @@ int main(int argc, char** argv) {
         printf("[fixture] sockets: %lld composed, %lld usable; %lld non-finite and ALL stale\n",
                static_cast<long long>(sxo), static_cast<long long>(usable),
                static_cast<long long>(nfs));
+
+        // ---- THE ENGINE'S OWN SOCKET TRANSFORM ----------------------------------------
+        //
+        // ILTModel::GetSocketTransform, called through vtable slot 3, is the game's own answer --
+        // the strongest available check on this SDK's composition, because nothing of ours stands
+        // between the question and the reply.
+        //
+        // The slot is GUARDED, not assumed: engine_socket_transform_available() compares the entry
+        // against the function's known module offset, so a wrong index refuses instead of calling
+        // something arbitrary. Getting there needed the disassembly rather than the decompiler --
+        // `retn 10h` pinned four arguments, and `mov ecx, [esp+arg_0]` showed the first is the
+        // OBJECT, with the interface `this` never touched.
+        //
+        // ONLY CLEAN SOCKETS ARE ASKED. On a dirty node the engine EVALUATES the skeleton and
+        // clears the flag, which is a mutation belonging on the game thread; on a clean one the
+        // dirty check short-circuits and the call is a pure read.
+        int64_t slot_ok = -1, erc = -999, eok = -1, ew = -1, el = -1, f1ok = -1, f1w = -1, f1l = -1;
+        json_int(body, "ilt_slot_ok", slot_ok);
+        json_int(body, "engine_rc", erc);
+        json_int(body, "engine_xf_probed", ew);
+        json_int(body, "engine_xf_ok", eok);
+        json_int(body, "engine_xf_agree_local", el);
+        json_int(body, "engine_f1_ok", f1ok);
+        json_int(body, "engine_f1_world", f1w);
+        json_int(body, "engine_f1_local", f1l);
+        check(slot_ok == 1, "ILTModel vtable slot 3 still holds GetSocketTransform");
+        check(erc == 0, "the engine's last GetSocketTransform call returned LT_OK");
+        check(ew == sxc, "the engine was asked about every CLEAN socket");
+        check(eok == ew, "the engine answered every one");
+
+        // THE LOAD-BEARING ONE: with world space requested, the engine agrees with this SDK's
+        // composed transform on EVERY clean socket. That covers the branch composition skips --
+        // the models whose bone cache is already world-space -- which no internal check could.
+        check(f1ok == ew, "the world-space form answered for every clean socket");
+        check(f1w == ew,
+              "the ENGINE agrees with socket_world_transform() on EVERY clean socket");
+
+        // And the model-space form pins the same fact from the other side. It matches the raw
+        // bone-cache pose on the models that need composing, and matches it on the rest too --
+        // because for those, model and world coincide. The two populations must ADD UP, which is
+        // what shows the split is structural and not a tolerance artefact.
+        check(el + f1l == ew,
+              "model-space agreement plus the already-world-space models account for all of them");
+        printf("[fixture] engine sockets: %lld/%lld agree in world space, %lld+%lld=%lld in "
+               "model space\n",
+               static_cast<long long>(f1w), static_cast<long long>(ew),
+               static_cast<long long>(el), static_cast<long long>(f1l),
+               static_cast<long long>(ew));
         // THE REGRESSION GUARD, and it caught a real bug. A socket must land within
         // model scale of its object. The first implementation composed the object's
         // transform onto bones that were ALREADY in world space -- true on the 22 models

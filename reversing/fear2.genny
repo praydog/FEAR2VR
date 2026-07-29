@@ -1819,6 +1819,31 @@ class LTModelBlock130 0x24 {
     float unk_20          @0x20   // ctor writes 1.0 and live it is STILL exactly 1.0 on 215/215 -- unexercised in this scene, so its role is unmapped
 }
 
+// ---- ILTModel VTABLE (client 0x66E7E8, server 0x674CD8) ----
+// The two tables are parallel implementations of one interface; the client's is 83 entries.
+//   slot 2  ILTModel_GetSocket            (object, name, out_index)
+//   slot 3  ILTModel_GetSocketTransform   (object, handle, out[8], world_space)
+//
+// THE ENTRIES TAKE THE OBJECT, NOT THE INTERFACE. `mov ecx, [esp+arg_0]` loads the FIRST STACK
+// ARGUMENT into ECX and then `cmp byte ptr [ecx+10h], 1` tests the OBJECT's type for OT_MODEL
+// before re-dispatching as a thiscall on it -- so the interface `this` is never read, and these are
+// __stdcall wrappers over an object. `retn 10h` fixes the count at four dwords; passing the
+// interface first instead makes the gate read iface+0x10 and return LT_INVALIDPARAMS (60) without
+// touching anything, which is how that mistake surfaced -- a clean refusal, not a crash.
+//
+// out[8] is position(3), quaternion xyz(3), quaternion w, scale -- read off the engine's own
+// failure path, which zeroes all eight and writes 1.0 into the last two (identity quat, unit scale).
+//
+// world_space: 1 -> world, 0 -> model. Measured against sdk::ModelSkeleton on the 181 clean live
+// sockets: flag 1 matches socket_world_transform() 181/181, and flag 0 matches socket_transform()
+// on the 131 whose bone cache is model-space while coinciding with it on the other 50 whose cache
+// is already world-space. 131 + 50 = 181.
+//
+// CALLING SLOT 3 ON A DIRTY NODE MUTATES: LTModelObject_GetNodeTransform evaluates the skeleton and
+// clears the dirty flag, so it belongs on the game thread. On a clean node the check
+// short-circuits and the call is a pure read.
+
+
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
 // element_size, and the class is now CLOSED at that boundary: the cached
 // rotation below ends at exactly 0x198.

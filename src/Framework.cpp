@@ -25,6 +25,7 @@
 #include "sdk/Render.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
+#include "sdk/interfaces/ILTModel.hpp"
 
 std::unique_ptr<Framework> g_framework;
 
@@ -1436,6 +1437,11 @@ std::string build_models_json() {
     size_t sock_xform_finite = 0, sock_xform_clean = 0;
     size_t sock_xform_nonfinite_stale = 0, sock_xform_nonfinite_clean = 0;
     size_t sock_usable = 0, sock_usable_probed = 0;
+    int ilt_slot_ok = -1;
+    size_t engine_xf_probed = 0, engine_xf_ok = 0, engine_xf_agree = 0;
+    float engine_xf_worst = 0.0f, engine_xf_worst_local = 0.0f;
+    size_t engine_xf_agree_local = 0;
+    size_t engine_f1_ok = 0, engine_f1_agree_world = 0, engine_f1_agree_local = 0;
     size_t sock_camera_measured = 0, sock_camera_above = 0;
     float sock_xform_max_dist = 0.0f, sock_camera_max_height = 0.0f;
     for (size_t si = 0; si < *taken; ++si) {
@@ -1514,7 +1520,13 @@ std::string build_models_json() {
                     }
                 }
             }
-            // SOCKET WORLD TRANSFORMS. The interesting validation is not that the
+            // THE SLOT GUARD, asked through the SDK rather than reimplemented here -- the whole point
+    // of putting it in the header is that a consumer checks it once instead of open-coding a
+    // vtable read at each site.
+    if (ilt_slot_ok < 0) {
+        ilt_slot_ok = sdk::ModelSkeleton::engine_socket_transform_available() ? 1 : 0;
+    }
+    // SOCKET WORLD TRANSFORMS. The interesting validation is not that the
             // numbers are finite -- it is that they point the right WAY. A wrong
             // quaternion sign convention preserves length (any Hamilton-shaped product
             // does), so a norm check cannot catch it; putting the head below the feet
@@ -1537,6 +1549,63 @@ std::string build_models_json() {
                                      wt->rotation.w * wt->rotation.w;
                     if (qn > 0.98f && qn < 1.02f) {
                         ++sock_xform_unit;
+                    }
+                    // THE ENGINE'S OWN ANSWER vs the composition, on CLEAN sockets only. That
+                    // restriction is not caution for its own sake: on a stale node the engine
+                    // EVALUATES the skeleton and clears the flag, which is a mutation and belongs
+                    // on the game thread. On a clean one the dirty check short-circuits and the
+                    // call is a pure read, which is exactly the population worth comparing.
+                    if (!wt->stale) {
+                        ++engine_xf_probed;
+                        if (const auto ex = sk2->engine_socket_transform(si, 0); ex.has_value()) {
+                            ++engine_xf_ok;
+                            // WHICH SPACE did the engine hand back? Compare against BOTH of this
+                            // SDK's answers rather than assuming: the local (bone-cache) pose and
+                            // the world pose. Whichever matches names the convention, and a
+                            // mismatch against both would mean something else is wrong.
+                            const auto lc = sk2->socket_transform(si);
+                            // AND THE OTHER FLAG VALUE, to see whether it selects world space.
+                            if (const auto ex1 = sk2->engine_socket_transform(si, 1);
+                                ex1.has_value()) {
+                                ++engine_f1_ok;
+                                const float ax = ex1->position.x - wt->position.x;
+                                const float ay = ex1->position.y - wt->position.y;
+                                const float az = ex1->position.z - wt->position.z;
+                                if (std::sqrt(ax * ax + ay * ay + az * az) < 0.05f) {
+                                    ++engine_f1_agree_world;
+                                }
+                                if (lc.has_value()) {
+                                    const float bx = ex1->position.x - lc->position.x;
+                                    const float by = ex1->position.y - lc->position.y;
+                                    const float bz = ex1->position.z - lc->position.z;
+                                    if (std::sqrt(bx * bx + by * by + bz * bz) < 0.05f) {
+                                        ++engine_f1_agree_local;
+                                    }
+                                }
+                            }
+                            const float dxw = ex->position.x - wt->position.x;
+                            const float dyw = ex->position.y - wt->position.y;
+                            const float dzw = ex->position.z - wt->position.z;
+                            const float dw = std::sqrt(dxw * dxw + dyw * dyw + dzw * dzw);
+                            if (dw > engine_xf_worst) {
+                                engine_xf_worst = dw;
+                            }
+                            if (dw < 0.05f) {
+                                ++engine_xf_agree;
+                            }
+                            if (lc.has_value()) {
+                                const float dxl = ex->position.x - lc->position.x;
+                                const float dyl = ex->position.y - lc->position.y;
+                                const float dzl = ex->position.z - lc->position.z;
+                                const float dl = std::sqrt(dxl * dxl + dyl * dyl + dzl * dzl);
+                                if (dl > engine_xf_worst_local) {
+                                    engine_xf_worst_local = dl;
+                                }
+                                if (dl < 0.05f) {
+                                    ++engine_xf_agree_local;
+                                }
+                            }
+                        }
                     }
                     // THE CONSUMER PATH: one call that answers "can I apply this pose?".
                     if (sdk::ModelSkeleton::from_object(obj).has_value()) {
@@ -1655,6 +1724,11 @@ std::string build_models_json() {
              "\"sock_xform_finite\":%zu,\"sock_xform_clean\":%zu,"
              "\"sock_nf_stale\":%zu,\"sock_nf_clean\":%zu,"
              "\"sock_usable\":%zu,\"sock_usable_probed\":%zu,"
+             "\"ilt_slot_ok\":%d,\"engine_gate\":%lld,\"engine_rc\":%lld,"
+             "\"engine_xf_probed\":%zu,\"engine_xf_ok\":%zu,"
+             "\"engine_xf_agree\":%zu,\"engine_xf_worst\":%.4f,"
+             "\"engine_xf_agree_local\":%zu,\"engine_xf_worst_local\":%.4f,"
+             "\"engine_f1_ok\":%zu,\"engine_f1_world\":%zu,\"engine_f1_local\":%zu,"
              "\"sock_xform_max_dist\":%.2f,\"sock_camera_measured\":%zu,"
              "\"sock_camera_above\":%zu,\"sock_camera_max_height\":%.2f}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
@@ -1665,7 +1739,13 @@ std::string build_models_json() {
              piece_counts, piece_named, piece_roundtrip, sock_xform_ok, sock_xform_stale,
              sock_xform_unit, sock_xform_finite, sock_xform_clean,
              sock_xform_nonfinite_stale, sock_xform_nonfinite_clean, sock_usable,
-             sock_usable_probed,
+             sock_usable_probed, ilt_slot_ok,
+             static_cast<long long>(sdk::ModelSkeleton::engine_iface_gate_byte()),
+             static_cast<long long>(sdk::ModelSkeleton::last_engine_rc()),
+             engine_xf_probed, engine_xf_ok,
+             engine_xf_agree, static_cast<double>(engine_xf_worst), engine_xf_agree_local,
+             static_cast<double>(engine_xf_worst_local), engine_f1_ok,
+             engine_f1_agree_world, engine_f1_agree_local,
              static_cast<double>(sock_xform_max_dist), sock_camera_measured,
              sock_camera_above, static_cast<double>(sock_camera_max_height));
     if (want < 0 || static_cast<size_t>(want) >= sizeof(sum)) {

@@ -267,6 +267,63 @@ public:
     // something unusable.
     std::optional<bool> socket_world_transform_is_usable(size_t socket_index) const;
 
+    // ---- ASK THE ENGINE INSTEAD -------------------------------------------------------
+    //
+    // Everything above reads the bone cache and composes. THIS calls the engine's own
+    // ILTModel::GetSocketTransform (vtable slot 3) and returns what the game itself would use --
+    // the strongest available check on the composition, and the honest answer for a consumer that
+    // does not want to depend on this SDK's arithmetic at all.
+    //
+    // THE SIGNATURE IS PINNED BY THE DISASSEMBLY, not guessed: `retn 10h` gives four dword
+    // arguments, and `mov ecx, [esp+arg_0]` shows the FIRST is the OBJECT -- the entry loads it
+    // into ECX, tests `[ecx+0x10] == 1` for OT_MODEL, and re-dispatches as a thiscall on it. The
+    // interface `this` is never touched. So it is `(object, handle, out, flag)`, returning 0 on
+    // success and 60 (LT_INVALIDPARAMS) when the gate rejects the object. The out buffer is eight floats
+    // -- position, quaternion xyz, quaternion w, scale -- which the engine's own failure path
+    // reveals by zeroing all eight and writing 1.0 into the last two.
+    //
+    // `handle` follows the engine's combined numbering: sockets below socket_count, nodes above
+    // it -- the same rule socket_handle_transform() implements.
+    //
+    // CALLING THIS CAN MUTATE ENGINE STATE. LTModelObject_GetNodeTransform evaluates the skeleton
+    // when the node is dirty and clears the flag, so on a STALE socket this is not a read: it asks
+    // the engine to pose the model, which belongs on the game thread. On a CLEAN socket the dirty
+    // check short-circuits and the call is pure. Callers off the game thread should restrict
+    // themselves to sockets socket_world_transform_is_usable() already accepts.
+    //
+    // nullopt when the interface is unresolved, the slot guard fails, the object is absent, or the
+    // engine reports failure.
+    // `world_space` is the engine's own trailing argument, forwarded to
+    // LTModelObject_GetNodeTransform, and MEASUREMENT settled what it selects:
+    //
+    //   1 -> WORLD space. Matches socket_world_transform() on 181 of 181 clean sockets.
+    //   0 -> MODEL space. Matches socket_transform() on 131 of 181.
+    //
+    // The 131-versus-181 split is not noise, it is the whole story: the other 50 models keep
+    // their bone cache ALREADY in world space, so for them model and world coincide and flag 0
+    // matches both. 131 + 50 = 181, exactly.
+    //
+    // That is what makes this the strongest check in the SDK on socket_world_transform(): the
+    // engine agrees on every clean socket, including the world-space branch that composition
+    // deliberately skips.
+    //
+    // Defaults to world space, because that is what an attachment wants and what the primary
+    // accessor returns.
+    std::optional<SocketTransform> engine_socket_transform(size_t handle,
+                                                           int world_space = 1) const;
+
+    // DOES ILTModel VTABLE SLOT 3 STILL HOLD GetSocketTransform? A slot index is a claim like any
+    // other, and getting it wrong calls an arbitrary function rather than failing. This compares
+    // the slot against the function's known module offset, so the call above can refuse rather
+    // than guess. Exposed so a consumer can check once at startup instead of per call.
+    static bool engine_socket_transform_available();
+
+    // Diagnostics for the call above: the engine's own return code from the most recent attempt,
+    // and the byte ILTModel_GetSocketTransform gates on before doing any work (it requires 1).
+    // Exposed because "the engine refused" is not actionable without the reason.
+    static int64_t last_engine_rc();
+    static int64_t engine_iface_gate_byte();
+
     // The same, BY NAME -- which is how a consumer actually asks. Every caller of the
     // index form was going to write find_socket() immediately above it, so this saves the
     // dance and the chance of pairing an index with the wrong skeleton.
