@@ -959,6 +959,52 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The visibility tree, reached from IWorldClientBSP rather than through
+        // the object lists -- so this validates the vis subsystem on its own.
+        //
+        // What makes it a strong check: the engine stores BOTH counts itself, so
+        // the walk is compared against the engine's numbers instead of against
+        // anything recorded host-side. `split_axis` doubles as the leaf marker,
+        // so a wrong offset there truncates the walk or runs it into garbage --
+        // either way node_count stops matching.
+        {
+            const size_t vp = body.find("\"vis_tree\":");
+            check(vp != std::string::npos, "objects report includes the vis-tree check");
+            if (vp != std::string::npos) {
+                if (json_has(body, "\"vis_tree\":null")) {
+                    // Legitimate before a world loads: no root, no sectors. At the
+                    // main menu a world IS loaded, so treat it as a failure here
+                    // rather than passing by absence.
+                    check(false, "vis tree resolved (null == unresolved interface or no world)");
+                } else {
+                    const size_t end = body.find('}', vp);
+                    const std::string tb = body.substr(vp, end - vp + 1);
+                    int64_t scount = -1, ncount = -1, walked = -1, eseen = -1, ein = -1,
+                            reached = -1, leaves = -1, depth = -1;
+                    json_int(tb, "sector_count", scount);
+                    json_int(tb, "node_count", ncount);
+                    json_int(tb, "nodes_walked", walked);
+                    json_int(tb, "elements_seen", eseen);
+                    json_int(tb, "elements_in_arr", ein);
+                    json_int(tb, "sectors_reached", reached);
+                    json_int(tb, "leaves", leaves);
+                    json_int(tb, "max_depth", depth);
+
+                    check(scount > 0, "vis tree reports a sector count");
+                    check(ncount > 0, "vis tree reports a node count");
+                    check(walked == ncount,
+                          "walking the vis tree reaches exactly node_count nodes");
+                    check(eseen > 0, "vis tree nodes hold sector elements");
+                    check(ein == eseen,
+                          "every vis-tree element is an aligned entry of the sector array");
+                    check(reached == scount,
+                          "the vis tree covers every sector in the array");
+                    check(leaves > 0, "vis tree has leaves (split_axis > 2 branch exercised)");
+                    check(depth > 0, "vis tree is deeper than a single node");
+                }
+            }
+        }
+
         // Renderability vs world-tree membership.
         //
         // This block is deliberately ASYMMETRIC, and the asymmetry is the point.

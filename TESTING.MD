@@ -266,6 +266,30 @@ referenced from something you already reach, you can check it now, and the
 reachability path doubles as evidence for the field you traversed. Reserve the
 global hunt for roots that genuinely nothing points at.
 
+**A structure that stores its OWN counts is the best verification target you will
+find — check the walk against the engine's numbers, not against yours.** Most
+in-process checks compare a traversal to a value a previous session recorded,
+which decays the moment the scene changes. When the structure carries the count
+itself, the comparison is self-contained and stays valid in any world.
+
+`LTVisTree` stores both `node_count` and `sector_count`. So the vis-tree check
+asserts `nodes_walked == node_count` and `sectors_reached == sector_count` with no
+baseline of ours involved at all — live 111 and 263, and both would be equally
+valid numbers in a different level.
+
+It also localises failure well, because the fields fail differently:
+
+- `split_axis` doubles as the leaf marker (`> 2` means leaf), so a wrong offset
+  there either truncates the walk or runs it into garbage — `node_count` stops
+  matching either way.
+- `elements`/`element_count` wrong makes elements fall outside the sector array,
+  which is a separate counter.
+- A wrong `sectors` base makes every element look out-of-range at once.
+
+When mapping a container, look for a stored count before writing any assertion.
+If one exists, prefer it over every recorded constant; if one does not, say so in
+the check's comment so the next reader knows why a baseline was unavoidable.
+
 **When you expect a biconditional and the data gives an IMPLICATION, assert the
 implication and report the other side.** Symmetry is an aesthetic preference, not
 evidence, and forcing it is the same error as widening a tolerance: it replaces

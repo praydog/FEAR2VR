@@ -559,6 +559,62 @@ class LTVisSector 0x30 {
     void* unk_2C        @0x2C   // unmapped; on the sampled record it held the same value as planes
 }
 
+// A node of the visibility KD-tree. Layout from LTVisTree_QuerySphere (0x4458D2)
+// and LTVisTree_QueryAABB (0x445825), which are the same walk over a sphere or
+// an AABB.
+//
+// split_axis doubles as the LEAF MARKER: the walk treats any value > 2 as "no
+// split here, pop the stack", so a leaf is encoded by putting an out-of-range
+// axis in the field rather than by a separate flag.
+//
+// CONFIRMED live by walking from LTVisTree.root: 111 nodes reached, depth 7,
+// yielding 263 distinct elements -- every one of them a correctly-aligned entry
+// of LTVisTree.sectors, with none outside it. The node count matched
+// LTVisTree.node_count exactly.
+class LTVisTreeNode 0x18 {
+    LTVisSector** elements @0x00   // CONFIRMED: array of sector pointers held at this node
+    uint32_t element_count @0x04   // CONFIRMED: its length; the walk tests each element against the query volume
+    LTVisTreeNode* child_a @0x08   // CONFIRMED: taken when the query lies on one side of the split
+    LTVisTreeNode* child_b @0x0C   // CONFIRMED
+    uint32_t split_axis    @0x10   // CONFIRMED: 0/1/2 index the query volume's components; > 2 means LEAF
+    float split_value      @0x14   // CONFIRMED: compared against the query volume's component on split_axis
+}
+
+// The visibility tree manager -- the root of the whole vis subsystem, and the
+// reason it can be reached without a pattern scan of its own.
+//
+// IT IS AN EMBEDDED SUB-OBJECT of the IWorldClientBSP instance, at +0x24:
+// that interface's vtable slot 14 is literally `return this + 36`. So
+// `interfaces::IWorldClientBSP::get() + 0x24` is the manager, and
+// LTObjectOwner_UpdateSpatialRecord obtains it exactly that way before calling
+// LTSpatialRecord_CollectSphere / _CollectAABB.
+//
+// CONFIRMED live, and this is what closed the loop on the sector array: reading
+// the header gave the SAME array base (sectors) that an earlier pass had found
+// only by scanning outwards from a known slot, plus the count as a field instead
+// of an inference.
+//   * sectors == the scanned base, sector_count == 263 == the scanned record count.
+//   * walking root reached 111 nodes -- equal to node_count -- and 263 distinct
+//     elements, all of them aligned entries of sectors, none outside.
+//   * LTVisTree_Root is `if (this[6]) return this[5]; else return 0`, i.e. it
+//     gates the root on node_count being non-zero. An earlier note called +0x18
+//     a "validity flag"; it is the node count, used as a truthiness test.
+//
+// Size is the mapped extent. unk_00/unk_0C hold the same pointer live and
+// unk_10 reads 344, which looks like a second array/count pair, but nothing
+// read so far touches them so no claim is made.
+class LTVisTree 0x24 {
+    void* unk_00            @0x00   // unmapped; live equals unk_0C
+    LTVisSector* sectors    @0x04   // CONFIRMED: base of the sector array (stride 0x30)
+    uint32_t sector_count   @0x08   // CONFIRMED == 263 live, matching the array's extent
+    void* unk_0C            @0x0C   // unmapped; live equals unk_00
+    uint32_t unk_10         @0x10   // unmapped; live 344
+    LTVisTreeNode* root     @0x14   // CONFIRMED: LTVisTree_Root returns this when node_count is non-zero
+    uint32_t node_count     @0x18   // CONFIRMED == 111 live, exactly the nodes reached by walking root
+    void* traversal_stack   @0x1C   // CONFIRMED: the queries push deferred children here (`v4[7]`)
+    void* unk_20            @0x20   // unmapped
+}
+
 // ---- The base virtual interface (from the six object vtables) --------------
 //
 // Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's

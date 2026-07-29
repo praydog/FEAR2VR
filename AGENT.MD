@@ -235,6 +235,17 @@ inject → test → uninject with the game never restarting.
     `build.bat` clears it — beware when invoking cmake by hand. cmkr expands
     `**.cpp` globs at configure time: after adding/removing source files you
     must re-run configure (`env -u CI cmake -B build -G "Visual Studio 18 2026" -A Win32`).
+    **The failure mode is a GREEN build that never compiled your file**, which is
+    why this bites: `cmake --build` on a stale cache reports no errors because the
+    new `.cpp` is not in the project at all. It bit in 2026-07 with
+    `shared/sdk/VisTree.cpp` — two clean builds in a row, zero diagnostics, zero
+    object files. Worse, a hand-run `cmake -S . -B build` did NOT fix it, because
+    `CI` was set in that shell and cmkr skipped regeneration silently while CMake
+    still printed "Generating done".
+    Verify, do not assume: `grep -c "<NewFile>" CMakeLists.txt` (or the
+    `.vcxproj`) must be non-zero after configuring. Simplest reliable route is
+    `build.bat`, which clears `CI` itself. Treat "it built and my new code did
+    nothing" as this bug before debugging the code.
 10a. **Generator is pinned to Visual Studio, NOT Ninja.** `.vscode/settings.json`
     sets `cmake.generator: "Visual Studio 18 2026"` + `cmake.platform: "Win32"`
     so VSCode's CMake Tools and manual `cmake -B build -G "Visual Studio 18

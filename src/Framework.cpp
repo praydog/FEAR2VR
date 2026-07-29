@@ -20,6 +20,7 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Engine.hpp"
+#include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
 
 std::unique_ptr<Framework> g_framework;
@@ -494,6 +495,25 @@ std::string build_objects_json() {
                  rf->objects, rf->renderable, rf->linked, rf->renderable_not_linked,
                  rf->linked_not_renderable, rf->suppressed, rf->suppressed_linked);
         out += fb;
+    } else {
+        out += "null";
+    }
+
+    // The visibility tree, reached from IWorldClientBSP (resolved by engine-side
+    // NAME) plus the schema-confirmed +0x24. Unlike every other check here this
+    // one does not go through the object lists at all, so it validates the vis
+    // subsystem independently -- and the engine stores its own node and sector
+    // counts, so the walk is checked against the engine's numbers.
+    out += ",\"vis_tree\":";
+    if (const auto vt = sdk::VisTree::check(); vt.has_value()) {
+        char tb[320];
+        snprintf(tb, sizeof(tb),
+                 "{\"sector_count\":%zu,\"node_count\":%zu,\"nodes_walked\":%zu,"
+                 "\"elements_seen\":%zu,\"elements_in_arr\":%zu,\"sectors_reached\":%zu,"
+                 "\"leaves\":%zu,\"max_depth\":%zu}",
+                 vt->sector_count, vt->node_count, vt->nodes_walked, vt->elements_seen,
+                 vt->elements_in_arr, vt->sectors_reached, vt->leaves, vt->max_depth);
+        out += tb;
     } else {
         out += "null";
     }
