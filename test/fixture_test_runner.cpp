@@ -1063,15 +1063,17 @@ int main(int argc, char** argv) {
         {
             int64_t edges = -1, rt_ok = -1, rt_n = -1, calls = -1, rc_ok = -1, match = -1, oor = -1;
             double worst = -1.0;
-            json_int(body, "bp_edges", edges);
-            json_int(body, "bp_rt_ok", rt_ok);
-            json_int(body, "bp_rt_n", rt_n);
-            json_int(body, "bp_eng_calls", calls);
-            json_int(body, "bp_eng_rc_ok", rc_ok);
-            json_int(body, "bp_eng_match", match);
-            json_int(body, "bp_reject_oor", oor);
-            json_double(body, "bp_eng_worst", worst);
-            if (edges > 0) {
+            // PARSE FIRST, AND FAIL IF A FIELD IS MISSING. Without this a dropped field leaves the count
+            // at -1 and the block below reports "no world loaded" -- an endpoint regression would read as
+            // an environment state. Absence and zero are different answers.
+            const bool bp_fields = json_int(body, "bp_edges", edges) && json_int(body, "bp_rt_ok", rt_ok) &&
+                                   json_int(body, "bp_rt_n", rt_n) && json_int(body, "bp_eng_calls", calls) &&
+                                   json_int(body, "bp_eng_rc_ok", rc_ok) &&
+                                   json_int(body, "bp_eng_match", match) &&
+                                   json_int(body, "bp_reject_oor", oor) &&
+                                   json_double(body, "bp_eng_worst", worst);
+            check(bp_fields, "every bp_* diagnostic field is present and parseable");
+            if (bp_fields && edges > 0) {
                 check(oor == 1, "an out-of-range node index is refused by both pose accessors");
                 check(rt_n > 0 && rt_ok * 100 >= rt_n * 99,
                       "invert_rigid round-trips on essentially every node (it is its own inverse)");
@@ -1085,9 +1087,9 @@ int main(int argc, char** argv) {
                        static_cast<long long>(match), static_cast<long long>(calls), worst,
                        static_cast<long long>(rt_ok), static_cast<long long>(rt_n),
                        static_cast<long long>(edges));
-            } else {
-                printf("[fixture] bind pose NOTE: no model objects in this state (no world loaded) -- the "
-                       "engine comparison is UNEXERCISED, not passing\n");
+            } else if (bp_fields) {
+                printf("[fixture] bind pose NOTE: fields present but 0 model objects (no world loaded) -- "
+                       "the engine comparison is UNEXERCISED, not passing\n");
             }
         }
 

@@ -963,6 +963,13 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A DIAGNOSTIC FIELD'S ABSENCE MUST NOT READ AS ITS ZERO.** My new bind-pose fixture block parsed seven
+  `bp_*` fields and ignored every parse result, then branched on `edges > 0`. If the endpoint ever stopped
+  emitting them, `edges` would stay at its -1 sentinel and the block would print "no world loaded" -- an
+  ENDPOINT REGRESSION reported as an ENVIRONMENT STATE, which is the same absence-versus-zero confusion this
+  log keeps recording about the engine's data. Presence is now a check() of its own, and the no-world branch
+  requires the fields to have parsed.
+
 - **A VARARGS MISMATCH IN THE PROBE LOOKS EXACTLY LIKE AN UNSAFE ENGINE CALL.** Adding two probe fields, I
   updated the snprintf ARGUMENT list but the format-string edit silently matched nothing, so two doubles
   were passed with no conversions. Every later argument shifted, and that format has `%s` conversions
