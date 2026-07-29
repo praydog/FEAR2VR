@@ -146,6 +146,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 11, "/sdk/models") == 0) {
+        if (!g_handlers.models) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no models handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.models());
+        return;
+    }
+
     if (path.compare(0, 13, "/sdk/database") == 0) {
         if (!g_handlers.database) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no database handler registered\"}");
@@ -184,7 +193,7 @@ void handle_client(SOCKET c) {
 
     send_response(c, 404,
                   "{\"ok\":false,\"error\":\"unknown endpoint; use GET /health, GET /sdk/targets, "
-                  "GET /sdk/database, GET /sdk/objects, GET /sdk/interfaces, "
+                  "GET /sdk/database, GET /sdk/objects, GET /sdk/models, GET /sdk/interfaces, "
                   "GET /engine-hook?name=, GET|POST /unload\"}");
 }
 

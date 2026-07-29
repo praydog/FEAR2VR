@@ -522,6 +522,56 @@ int main(int argc, char** argv) {
               "counter_elapsed_ms == counter_elapsed_time*1000 (two distinct mapped fields agree -- offset proof)");
     }
 
+    // 5b1. /sdk/models: the CONSUMER API, tested the way a mod uses it.
+    //
+    // Everything else in this file validates the mapping -- offsets, counts,
+    // invariants. This block validates the INTERFACE built on top of it, which is a
+    // different thing and can break independently: sdk::ModelSkeleton could stop
+    // resolving, or find_node could stop agreeing with node_name, while every
+    // offset underneath stayed perfectly correct.
+    //
+    // So the assertions here are contract-shaped, not offset-shaped:
+    //   * every OT_MODEL resolves a skeleton (a promise from_object makes),
+    //   * a name lookup ROUND-TRIPS -- find_node(n) then node_name(i) gives n back,
+    //     which is what proves the two agree rather than both being plausible,
+    //   * a node found by name has a real parent and a real depth, i.e. the view is
+    //     navigable and not just readable.
+    {
+        std::string resp;
+        check(http::get(port, "/sdk/models", resp), "/sdk/models transport");
+        const std::string body = http::body_of(resp);
+        check(json_has(body, "\"ok\":true"), "/sdk/models reports ok");
+
+        int64_t model_objects = -1, with_skeleton = -1, wanted = -1, listed = -1;
+        json_int(body, "model_objects", model_objects);
+        json_int(body, "with_skeleton", with_skeleton);
+        json_int(body, "wanted_resolved", wanted);
+        json_int(body, "listed", listed);
+
+        check(model_objects > 0, "live OT_MODEL objects exist to build views from");
+        check(with_skeleton == model_objects,
+              "ModelSkeleton::from_object resolves for EVERY model object, not just most");
+        // Without this the round-trip assertion below would be vacuous: no lookups
+        // succeeding means nothing was ever compared.
+        check(wanted > 0, "find_node resolved at least one of Head/L_Hand/R_Hand");
+        check(listed > 0, "at least one model was listed with its named nodes");
+
+        // A single false anywhere means find_node and node_name disagree, which
+        // would make every name-based lookup in a mod silently wrong.
+        check(body.find("\"round_trip\":false") == std::string::npos,
+              "every name lookup round-trips through node_name");
+        // -1 is the endpoint's encoding for "the view could not answer". A named
+        // node always has a parent (none of Head/L_Hand/R_Hand is a root) and a
+        // depth of at least two, so either appearing means path_to_root or
+        // parent_of failed on a node we had just successfully looked up.
+        check(body.find("\"parent\":-1") == std::string::npos,
+              "every node found by name has a resolvable parent");
+        check(body.find("\"depth\":-1") == std::string::npos,
+              "path_to_root terminates for every node found by name");
+        check(body.find("\"materials\":-1") == std::string::npos,
+              "model_materials answers for every listed model");
+    }
+
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised
     // IN-PROCESS. The DLL walks its own 7 type buckets via
     // sdk::CClientMgr::object_count()/snapshot_objects() and reports the

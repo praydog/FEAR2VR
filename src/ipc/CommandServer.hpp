@@ -40,6 +40,17 @@
 //                                   that CClientMgr.updating guards, so like
 //                                   client_mgr_updating it reads false here
 //                                   essentially always) (diagnostics).
+//   GET /sdk/models              -> JSON object: the CONSUMER-facing model API
+//                                   exercised through sdk::Model -- per model its
+//                                   .mdl path, node count, material count, and for
+//                                   each of Head/L_Hand/R_Hand that it has, the
+//                                   node index, the name read BACK from that index
+//                                   (round_trip), its parent, its depth from the
+//                                   root, and its first pose vector. Unlike
+//                                   /sdk/objects this touches no offsets and no
+//                                   schema types: it is what a mod would call, so
+//                                   it breaks when the API breaks rather than when
+//                                   a field moves.
 //   GET /sdk/objects             -> JSON object: per-type live object counts from
 //                                   CClientMgr's 7 type-bucketed lists, with
 //                                   bucket_names[] giving each index's
@@ -107,6 +118,7 @@ using HealthFn = std::function<std::string()>;                    // JSON object
 using TargetsFn = std::function<std::string()>;                   // full JSON object
 using DatabaseFn = std::function<std::string()>;                  // full JSON object
 using ObjectsFn = std::function<std::string()>;                   // full JSON object
+using ModelsFn = std::function<std::string()>;                    // full JSON object
 using InterfacesFn = std::function<std::string()>;                // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 
@@ -115,6 +127,7 @@ struct Handlers {
     TargetsFn targets{};         // optional; /sdk/targets 404s without it
     DatabaseFn database{};       // optional; /sdk/database 404s without it
     ObjectsFn objects{};         // optional; /sdk/objects 404s without it
+    ModelsFn models{};           // optional; /sdk/models 404s without it
     InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
 };

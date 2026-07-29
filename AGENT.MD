@@ -263,13 +263,39 @@ inject → test → uninject with the game never restarting.
 12. **Log everything decision-relevant in-DLL.** LOGX to fear2vr.log: pattern
     hits/misses, hook install/retire, lifecycle transitions. The log is the
     first stop when a fixture check goes red.
+13. **Map for CONSUMERS, not just for the test suite.** Every mapping pass must
+    ask what a mod would call, and leave that behind. This rule exists because
+    the SDK drifted the wrong way for several passes: it accumulated twelve
+    `check_*` diagnostics against barely a handful of usable methods, so the
+    skeleton work could report "660/660 node names printable" while offering no
+    way to answer "where is the head bone?". Both are needed and they are not the
+    same artefact:
+    - `check_*` methods prove the MAPPING still holds. They return counters, get
+      called by the fixture, and are diagnostics. Keep them.
+    - Consumer API (`sdk::ModelSkeleton`, `sdk::model_filename`, ...) answers a
+      question in the caller's terms: names not offsets, `std::string` not
+      `char*` into engine memory, `std::optional` not a sentinel. It is what the
+      mapping was FOR.
+    Two design rules for that surface, both learned the hard way here:
+    - **Never hand out a pointer into engine memory.** Node names live in an
+      allocation owned by a shared asset that is freed when its last model goes
+      away, so a returned `const char*` is a use-after-free waiting for a level
+      change. Copy out.
+    - **Don't encode an unresolved question in the API.** `LTModelNode` stores two
+      pose pairs and which is which is not established, so they are exposed as
+      `pose_a`/`pose_b` rather than a guessed `local`/`bind`. A wrong name in an
+      interface propagates into every caller and outlives the guess.
+    Test the API at its own level too: assert that `find_node(n)` then
+    `node_name(i)` returns `n`, not that some offset is 660/660. The contract can
+    break while every offset underneath stays correct.
 
 ## Layout
 
 ```
 cmake.toml / build.bat        -- cmkr build (Win32 enforced)
 shared/                       -- Log, HttpClient, sdk/ (fear2-sdk static lib)
-shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr
+shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr,
+                                 VisTree, Model (consumer-facing skeleton/material API)
 shared/sdk/regenny/           -- generated (sdk:generate) layout structs + Primitives.hpp shim
 reversing/                    -- fear2.genny (ground truth), MAPPING_WORKFLOW.md
                                  (the mapping recipe), DatabaseMgrDump.lua, dump artifacts

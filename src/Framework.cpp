@@ -19,6 +19,7 @@
 #include "sdk/CClientShell.hpp"
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Modules.hpp"
+#include "sdk/Model.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
@@ -281,6 +282,117 @@ std::string build_targets_json() {
              client_mgr != nullptr ? client_mgr->last_sample_time_ms() : 0u,
              (client_mgr != nullptr && client_mgr->has_pending_shell_release()) ? "true" : "false");
     return buf;
+}
+
+// /sdk/models -- written the way a MOD would use the SDK, not the way the test
+// suite does. Everything here goes through the public sdk::Model API: no offsets,
+// no schema types, no engine pointers. It is the smallest thing that answers the
+// questions a VR mod starts with -- what is this object, and where is its head?
+//
+// It also serves as the API's own smoke test: if sdk::ModelSkeleton stops
+// resolving, or find_node stops matching, this endpoint says so in plain text
+// rather than a count going from 34 to 33.
+std::string build_models_json() {
+    auto* mgr = sdk::CClientMgr::get();
+    if (mgr == nullptr) {
+        return "{\"ok\":false,\"error\":\"CClientMgr::get() returned null\"}";
+    }
+
+    // Names a mod would plausibly look for. "Head" is the camera attachment point;
+    // the hand nodes are where a motion controller would go. Which of these a given
+    // model has is scene-dependent, so they are reported, not required.
+    static constexpr const char* kWanted[] = {"Head", "L_Hand", "R_Hand"};
+
+    std::string out = "{\"ok\":true,\"models\":[";
+    size_t emitted = 0, with_skeleton = 0, resolved_wanted = 0;
+
+    // Snapshot first, then work from the copies -- the same discipline the object
+    // report uses. Note what this does NOT buy: the addresses are still live
+    // pointers, so an object destroyed between the snapshot and the read would be
+    // dereferenced here. That is precisely why every sdk::Model read is SEH-guarded
+    // and returns nullopt rather than trusting the caller to be lucky.
+    std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(2048);
+    const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(1), snaps.data(),
+                                             snaps.size());
+    if (!taken.has_value()) {
+        return "{\"ok\":false,\"error\":\"snapshot_objects failed for OT_MODEL\"}";
+    }
+
+    for (size_t si = 0; si < *taken; ++si) {
+        const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
+        const auto skel = sdk::ModelSkeleton::from_object(obj);
+        if (skel.has_value()) {
+            ++with_skeleton;
+        }
+        // Cap the emitted list: a mod does not need 215 entries to identify itself,
+        // and the interesting ones are those carrying the nodes we asked about.
+        bool interesting = false;
+        std::string nodes_json = "[";
+        if (skel.has_value()) {
+            for (const char* want : kWanted) {
+                const auto idx = skel->find_node(want);
+                if (!idx.has_value()) {
+                    continue;
+                }
+                interesting = true;
+                ++resolved_wanted;
+                // Round-trip the lookup: the name we searched for must come back out
+                // of the index we were handed. That is what proves find_node agrees
+                // with node_name rather than both being independently plausible.
+                const auto back = skel->node_name(*idx);
+                const auto parent = skel->parent_of(*idx);
+                const auto chain = skel->path_to_root(*idx);
+                const auto pose = skel->pose_a(*idx);
+                char nb[512];
+                snprintf(nb, sizeof(nb),
+                         "%s{\"asked\":\"%s\",\"index\":%zu,\"name\":\"%s\",\"round_trip\":%s,"
+                         "\"parent\":%d,\"depth\":%d,\"pos_a\":[%.3f,%.3f,%.3f]}",
+                         nodes_json.size() > 1 ? "," : "", want, *idx,
+                         back.has_value() ? back->c_str() : "",
+                         (back.has_value() && *back == want) ? "true" : "false",
+                         parent.has_value() ? static_cast<int>(*parent) : -1,
+                         chain.has_value() ? static_cast<int>(chain->size()) : -1,
+                         pose.has_value() ? pose->position.x : 0.0f,
+                         pose.has_value() ? pose->position.y : 0.0f,
+                         pose.has_value() ? pose->position.z : 0.0f);
+                nodes_json += nb;
+            }
+        }
+        nodes_json += "]";
+        if (!interesting || emitted >= 12) {
+            continue;
+        }
+
+        const auto file = sdk::model_filename(obj);
+        const auto mats = sdk::model_materials(obj);
+        std::string entry = emitted == 0 ? "" : ",";
+        entry += "{\"file\":\"";
+        // Backslashes in a .mdl path have to be escaped to keep the JSON valid.
+        if (file.has_value()) {
+            for (const char ch : *file) {
+                if (ch == '\\') {
+                    entry += "\\\\";
+                } else {
+                    entry += ch;
+                }
+            }
+        }
+        char tail[128];
+        snprintf(tail, sizeof(tail), "\",\"nodes\":%zu,\"materials\":%d,\"found\":",
+                 skel->node_count(), mats.has_value() ? static_cast<int>(mats->size()) : -1);
+        entry += tail;
+        entry += nodes_json;
+        entry += "}";
+        out += entry;
+        ++emitted;
+    }
+
+    char sum[224];
+    snprintf(sum, sizeof(sum),
+             "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu}",
+             *taken, with_skeleton, resolved_wanted, emitted);
+    out += sum;
+    return out;
 }
 
 // Diagnostics only -- goes entirely through sdk::CClientMgr's own
@@ -854,7 +966,6 @@ std::string build_database_json() {
             json_escape_append(entry0_json, path_a);
             entry0_json += ",\"record_b_path\":";
             json_escape_append(entry0_json, path_b);
-
             entry0_json += ",\"record_a_category_count\":" + std::to_string(sdk::DatabaseMgr::category_count(e->record_a));
             entry0_json += ",\"categories\":";
             entry0_json += build_category_list_json(e->record_a, 0, 5);
@@ -953,6 +1064,7 @@ bool Framework::initialize() {
     handlers.targets = build_targets_json;
     handlers.database = build_database_json;
     handlers.objects = build_objects_json;
+    handlers.models = build_models_json;
     handlers.interfaces = build_interfaces_json;
     handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
