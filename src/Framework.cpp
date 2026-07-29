@@ -405,6 +405,13 @@ std::string build_targets_json() {
     // with planes at all. If this is zero the array access is wrong and any containment
     // result built on it is vacuous rather than negative.
     int sec_read_ok = 0, sec_with_planes = 0, sec_plane_total = 0;
+    // AND THE TEST THAT ACTUALLY EXERCISES THE PLANE SIGN, which the player-location query
+    // does not: only 19 of 263 sectors carry planes and the player's is not among them. A
+    // convex cell's own box centre must satisfy its own planes, so an inverted sign collapses
+    // this to zero. That is how the sign was wrong for several passes without any test
+    // noticing -- the brute-force oracle called the same predicate.
+    int sec_planed = 0, sec_centre_in = 0;
+    int sec_plane_probed = 0, sec_plane_pos = 0, sec_plane_neg = 0;
     {
         const int n = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
         for (int i = 0; i < n; ++i) {
@@ -415,6 +422,31 @@ std::string build_targets_json() {
                 }
                 sec_plane_total += static_cast<int>(sdk::VisTree::sector_planes(
                     static_cast<size_t>(i)).size());
+            }
+            // The centre test, on the sectors that actually have planes.
+            if (const auto sc = sdk::VisTree::sector(static_cast<size_t>(i));
+                sc.has_value() && sc->plane_count != 0) {
+                ++sec_planed;
+                const regenny::LTVector mid{(sc->min.x + sc->max.x) * 0.5f,
+                                            (sc->min.y + sc->max.y) * 0.5f,
+                                            (sc->min.z + sc->max.z) * 0.5f};
+                if (sdk::VisTree::sector_contains(static_cast<size_t>(i), mid)
+                        .value_or(false)) {
+                    ++sec_centre_in;
+                }
+                // The signs themselves, so the counterfactual is DATA rather than an
+                // inference: under the old `reject when d > 0` rule a sector would have been
+                // rejected iff any plane gave d > 0 at its centre.
+                for (const auto& pl : sdk::VisTree::sector_planes(static_cast<size_t>(i))) {
+                    const float dd = pl.normal.x * mid.x + pl.normal.y * mid.y +
+                                     pl.normal.z * mid.z - pl.distance;
+                    ++sec_plane_probed;
+                    if (dd > 0.0f) {
+                        ++sec_plane_pos;
+                    } else if (dd < 0.0f) {
+                        ++sec_plane_neg;
+                    }
+                }
             }
         }
     }
@@ -620,6 +652,8 @@ std::string build_targets_json() {
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
              // Where the player is in the world's own spatial terms.
              "\"sector_total\":%d,\"sector_candidates\":%d,\"sector_brute\":%d,\"sec_read_ok\":%d,\"sec_with_planes\":%d,\"sec_plane_total\":%d,"
+             "\"sec_planed\":%d,\"sec_centre_in\":%d,"
+             "\"sec_plane_probed\":%d,\"sec_plane_pos\":%d,\"sec_plane_neg\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -690,7 +724,9 @@ std::string build_targets_json() {
              muzzle[0], muzzle[1], muzzle[2],
              muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
              sector_total, sector_candidates, sector_brute,
-             sec_read_ok, sec_with_planes, sec_plane_total, player_sector,
+             sec_read_ok, sec_with_planes, sec_plane_total, sec_planed, sec_centre_in,
+             sec_plane_probed, sec_plane_pos, sec_plane_neg,
+             player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,
              player_neighbours,

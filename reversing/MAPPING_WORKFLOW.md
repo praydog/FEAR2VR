@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A brute-force oracle that CALLS the code under test is blind to a shared error.** Point
+  location was validated by scanning all 263 sectors and requiring the KD descent to name the
+  same one. That caught two real bugs. It could never have caught a third: the plane
+  containment sign was INVERTED, and both the descent path and the scan went through the same
+  `sector_contains()`, so both were wrong together and agreed perfectly.
+
+  `LTVisSector_TestSphere` settled it -- the engine tests the AABB first, then rejects when
+  `dot(n, c) - d < -radius`, so POSITIVE IS INSIDE. My version rejected on `d > slop`.
+
+  The blast radius was total, not marginal, and the counterfactual is now data rather than
+  argument: all 125 planes across the 19 plane-bearing sectors read d > 0 at their own sector's
+  centre, so the old rule rejected EVERY plane-bearing sector. It went unnoticed for several
+  passes because the one query that exercised planes -- locating the player -- lands in a
+  box-only sector, which 244 of 263 are.
+
+  Two rules follow. First, an oracle must be INDEPENDENT of the implementation, not merely a
+  slower path through it; scanning everything is independence in the SEARCH, not in the
+  PREDICATE. Second, when a predicate is only exercised by a minority of the population, add a
+  test that targets that minority directly -- here "every plane-bearing sector contains its own
+  box centre", which is an invariant about the CONVENTION and fails loudly the moment a sign
+  flips.
 - **A weak check HIDES the error that would justify strengthening it.** The cull-volume rule
   was validated by comparing against the volume the engine had stored, and it matched
   3583/3583. But the sphere comparison deliberately omitted the RADIUS, because the radius

@@ -509,10 +509,20 @@ std::optional<bool> VisTree::sector_contains(size_t index, const regenny::LTVect
         return false;
     }
     // Then any planes, which refine the box where the art provided them.
+    //
+    // POSITIVE IS INSIDE. That is the engine's convention, taken from
+    // LTVisSector_TestSphere: it rejects a sphere when `dot(n, c) - d < -radius`, i.e. when
+    // the volume lies entirely on the NEGATIVE side of a plane. An earlier version of this
+    // function had the sign inverted -- it rejected on `d > slop` -- and no test could see it,
+    // because the brute-force oracle it was checked against CALLS THIS SAME FUNCTION. A
+    // shared-implementation oracle cannot catch a shared error; only the engine's own code
+    // could settle the sign.
+    //
+    // For a point, `radius` is zero, so the test is simply `d >= -slop`.
     for (const auto& pl : sector_planes(index)) {
         const float d = pl.normal.x * point.x + pl.normal.y * point.y +
                         pl.normal.z * point.z - pl.distance;
-        if (d > slop) {
+        if (d < -slop) {
             return false;
         }
     }

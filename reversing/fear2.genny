@@ -571,7 +571,7 @@ class LTSpatialRecord 0x40 {
 // scattered around arbitrary values.
 class LTVisPlane 0x14 {
     LTVector normal   @0x00   // CONFIRMED unit length on every plane of every sector that has any
-    float distance    @0x0C   // CONFIRMED: the test compares a point-distance against this
+    float distance    @0x0C   // CONFIRMED: the test compares a point-distance against this. // THE SIGN CONVENTION IS THE ENGINE'S AND POSITIVE IS INSIDE: LTVisSector_TestSphere checks the sector's AABB first, then rejects a sphere when `dot(normal, center) - distance < -radius`, i.e. when the volume lies wholly on the NEGATIVE side. Corroborated live from the other direction: all 125 planes across the 19 plane-bearing sectors read POSITIVE at their own sector's box centre (125/125, none negative), so an implementation treating negative as inside rejects every plane-bearing sector outright. This project had the sign inverted for several passes and nothing caught it -- the only query that exercised planes lands in a box-only sector (244 of 263 are), and the brute-force oracle called the same predicate.
     uint32_t unk_10   @0x10   // unmapped; part of the 20-byte stride
 }
 

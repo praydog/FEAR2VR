@@ -624,6 +624,36 @@ int main(int argc, char** argv) {
                static_cast<long long>(swith), static_cast<long long>(stot),
                static_cast<long long>(splanes));
 
+        // THE PLANE SIGN, and the assertion that would have caught it inverted. A convex
+        // cell's own box centre must satisfy its own planes, so this is an invariant about the
+        // CONVENTION rather than about the scene.
+        //
+        // It is here because nothing else could see the bug. The sign was inverted for
+        // several passes: the player-location query never exercised it (only 19 of 263 sectors
+        // carry planes and the player's is not one), and the brute-force oracle that validated
+        // point location CALLS THE SAME PREDICATE -- a shared-implementation oracle cannot
+        // catch a shared error. Only LTVisSector_TestSphere settled it: the engine rejects
+        // when `dot(n, c) - d < -radius`, so POSITIVE is inside.
+        //
+        // The measurement makes the counterfactual concrete rather than argued: all 125 planes
+        // across those 19 sectors give d > 0 at their own centre, so the previous
+        // `reject when d > 0` rule rejected EVERY plane-bearing sector -- total, not marginal.
+        int64_t splaned = -1, scin = -1, sprobed = -1, spos = -1, sneg = -1;
+        json_int(body, "sec_planed", splaned);
+        json_int(body, "sec_centre_in", scin);
+        json_int(body, "sec_plane_probed", sprobed);
+        json_int(body, "sec_plane_pos", spos);
+        json_int(body, "sec_plane_neg", sneg);
+        check(splaned > 0, "some sectors carry planes, so the sign is exercised");
+        check(scin == splaned,
+              "EVERY plane-bearing sector contains its own box centre (plane sign correct)");
+        check(sprobed > 0 && spos == sprobed && sneg == 0,
+              "every plane reads POSITIVE at its sector's centre -- the engine's inside sign");
+        printf("[fixture] plane sign: %lld/%lld sectors contain their own centre, %lld/%lld "
+               "planes positive there\n",
+               static_cast<long long>(scin), static_cast<long long>(splaned),
+               static_cast<long long>(spos), static_cast<long long>(sprobed));
+
         // ---- PORTALS AND CONNECTIVITY ------------------------------------------------
         //
         // The load-bearing property is SYMMETRY. Both directions of an edge come from ONE
