@@ -1186,13 +1186,21 @@ class CClientMgrCounterNode 0x40 {
 //
 // HOLDER LAYOUT, 12 bytes -- proven by the ctor's stores, the dtor's reads, AND the 0xC stride across
 // the seven consecutive holders at 0x101FC180..0x101FC1C8:
-//   +0x00 void*  vftable        each holder has its own
+//   +0x00 void*  vftable        ONE PER INTERFACE NAME, shared by that interface's holders. Measured:
+//                                 46 holders, 13 distinct vtables -- all 9 ILTInput holders share
+//                                 0x101C1F24, all 18 ILTOnlineService share 0x101C1F34. (Two adjacent
+//                                 vtables differing is NOT evidence each holder has its own: those two
+//                                 belonged to two different interfaces.)
 //   +0x04 char*  name           "ILTClient.Default" etc -- read live to confirm
 //   +0x08 void** ppInterface    address of the pointer variable; zeroed at ctor, filled at runtime
 //
 // IDENTITY COMES FROM +8. The holder that names an interface stores the ADDRESS OF that interface's
 // pointer variable, so name -> global is a decoded relationship, not a guess from adjacency. Verified
 // live for all seven (holder+8 == &g_pXxx, and holder+4 reads back the expected name).
+//
+// AND THE VTABLE IS A SECOND, INDEPENDENT ROUTE: since one vtable serves one interface name, two
+// holders sharing a vtable are holders for the same interface. Useful when a name string is not to
+// hand -- e.g. grouping the 18 ILTOnlineService holders without reading 18 strings.
 //
 // WHY ADJACENCY IS A TRAP HERE: the seven pointers sit consecutively at 0x101FC160..0x101FC178, which
 // makes them LOOK like one table with an obvious order. They are seven separate variables, and an

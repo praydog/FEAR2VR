@@ -963,6 +963,16 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **TWO SAMPLES DIFFERING IS NOT "EACH HAS ITS OWN".** I saw holder vtables 0x101D0434 and 0x101D0444
+  differ and wrote that each holder has its own. Counting all 46 refuted it: 13 distinct vtables, one
+  per interface NAME, with all 9 ILTInput holders sharing one and all 18 ILTOnlineService sharing
+  another. The two I sampled differed because they belonged to two different interfaces -- the sample
+  could not distinguish "per holder" from "per interface", which is exactly the question.
+  
+  Counting was cheaper than hedging, and it paid: one vtable per name means the vtable is a SECOND
+  identity route independent of the +4 name string, so holders can be grouped by interface without
+  reading any strings.
+
 - **DECODE THE RELATIONSHIP, DO NOT READ THE ADDRESSES.** Seven interface pointers sit consecutively at
   0x101FC160..0x101FC178 in gameclient.dll, so which global belongs to which interface looked obvious.
   It was not: identity lives in the CAPIHolder at +8, which stores the ADDRESS OF the pointer variable
