@@ -210,6 +210,23 @@ std::optional<CClientShell::LocalPlayer> CClientShell::local_player(unsigned ind
     if (!r.ok || r.handle == 0xFFFF || r.object == nullptr) {
         return std::nullopt;
     }
+    // KEEP THE PROMISE THIS FUNCTION MAKES. Its contract says the handle and the pointer are the
+    // same object, so verify it rather than assuming: resolve the handle through the manager's table
+    // and refuse the pair if it disagrees with the stored pointer.
+    //
+    // That matters because the shell re-resolves the pointer once per frame inside Update, so a
+    // caller on another thread can land mid-refresh. Failing closed is the only safe default -- a
+    // torn pair is exactly what a consumer cannot do anything sensible with, and an optional checker
+    // callers must remember is not a contract.
+    //
+    // Use local_player_raw_pair_agrees() if you specifically want to OBSERVE the disagreement.
+    // The manager is REQUIRED, not optional. Equality is part of this function's contract, so a
+    // state where it cannot be verified is not a state where the pair may be handed out -- treating
+    // "unverifiable" as "valid" would leave exactly the hole the check exists to close.
+    auto* mgr = CClientMgr::get();
+    if (mgr == nullptr || mgr->object_from_handle(r.handle) != r.object) {
+        return std::nullopt;
+    }
     LocalPlayer out{};
     out.object = static_cast<const regenny::LTObject*>(r.object);
     out.handle = r.handle;
@@ -227,6 +244,26 @@ std::optional<unsigned> CClientShell::local_player_count() {
         }
     }
     return n;
+}
+
+std::optional<bool> CClientShell::local_player_raw_pair_agrees(unsigned index) {
+    // Deliberately does NOT go through local_player(), which now refuses a disagreeing pair -- this
+    // has to read the raw slot to be able to report one.
+    if (index >= 4) {
+        return std::nullopt;
+    }
+    CClientShell* shell = get();
+    auto* mgr = CClientMgr::get();
+    if (shell == nullptr || mgr == nullptr) {
+        return std::nullopt;
+    }
+    const LocalPlayerRaw r = seh_local_player(shell, index);
+    // 0xFFFF is the resolver's own empty sentinel, not zero -- see the schema note on
+    // local_player_handles.
+    if (!r.ok || r.handle == 0xFFFF || r.object == nullptr) {
+        return std::nullopt;
+    }
+    return mgr->object_from_handle(r.handle) == r.object;
 }
 
 } // namespace sdk

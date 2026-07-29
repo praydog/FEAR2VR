@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **IF A DOC COMMENT PROMISES AN INVARIANT, THE FUNCTION MUST ENFORCE IT.** `local_player()` said the
+  handle and the pointer "are the same object" while only checking both were non-empty. The obvious
+  fix was to add a checker beside it -- but an optional check a caller must remember is not a
+  contract, and the accessor was still free to hand out a torn pair. It now resolves the handle and
+  refuses on disagreement, with the diagnostic kept separately for observing what the accessor hides.
+  
+  Two follow-on holes, both worth the pattern:
+  
+  * The verification was skipped when CClientMgr was absent -- so the one state where the invariant
+    could NOT be checked was the state where the pair was returned unchecked. "Unverifiable" must fail
+    the same way as "wrong".
+  * The diagnostic initially went THROUGH the accessor, which now fails closed, so it could never have
+    observed a disagreement. A checker for a condition its own input already excludes measures nothing.
+  
+- **AND DO NOT UPGRADE A CONSISTENCY CHECK INTO A FRESHNESS GUARANTEE.** With the check in place I
+  wrote that the pointer "carries no staleness caveat". It does: the two reads are not atomic and the
+  object can be unregistered the instant after they agree, so the pointer has the same lifetime caveat
+  as every other LTObject*. What the check buys is refusing an ALREADY-torn pair -- not one that stays
+  valid. The handle is the durable identity; the pointer is a per-frame resolution of it.
+
 - **CHECK FOR AN INCUMBENT ACCESSOR BEFORE ADDING ONE. I built four duplicates in two passes.** The
   header already had `pose_a`/`pose_b` reading the very fields I "added" `bind_pose()` and
   `anim_fallback_position()` for, a `Pose` struct my `NodePose` duplicated, and `path_to_root()` --

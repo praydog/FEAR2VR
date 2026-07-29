@@ -879,6 +879,25 @@ std::string build_targets_json() {
     int wb_bounds_ok = 0, wb_bounds_probed = 0;
     float wb_inst[6]{}, wb_glob[6]{};
     int wb_loaded = -1, wb_srv_probed = 0, wb_srv_expanded = -1;
+    // THE LOCAL PLAYER'S TWO FORMS, read RAW. local_player() now fails closed on a disagreeing
+    // pair, so measuring through it could never show one; this goes at the slot directly. The handle
+    // and pointer are independent routes to one object and the shell re-resolves the pointer once
+    // per frame inside Update, so agreement is a real check on that refresh.
+    // Also confirm the safe accessor still ACCEPTS the slots -- failing closed must not over-reject.
+    int lp_slots = 0, lp_consistent = 0, lp_accepted = 0;
+    for (unsigned li = 0; li < 4; ++li) {
+        const auto ok = sdk::CClientShell::local_player_raw_pair_agrees(li);
+        if (!ok.has_value()) {
+            continue;  // empty slot
+        }
+        ++lp_slots;
+        if (*ok) {
+            ++lp_consistent;
+        }
+        if (sdk::CClientShell::local_player(li).has_value()) {
+            ++lp_accepted;
+        }
+    }
     int wb_obj_gap = -1, wb_class_size = -1;
     {
         // DIAGNOSTIC: the actual numbers each path sees, because "they disagree" is not
@@ -1198,6 +1217,7 @@ std::string build_targets_json() {
              "\"wb_bounds_probed\":%d,\"wb_bounds_ok\":%d,"
              "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
+             "\"lp_slots\":%d,\"lp_consistent\":%d,\"lp_accepted\":%d,"
              "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
@@ -1287,6 +1307,7 @@ std::string build_targets_json() {
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
              wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
+             lp_slots, lp_consistent, lp_accepted,
              wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],

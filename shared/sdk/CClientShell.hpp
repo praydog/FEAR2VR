@@ -110,14 +110,40 @@ public:
     // WHICH FORM TO USE: the handle for anything that goes through an ILT* entry point
     // (those take an HOBJECT), the pointer for a direct read through this SDK. They are
     // the same object; the pair exists so a caller does not have to convert.
+    //
+    // THE POINTER IS REFRESHED EVERY FRAME and this function VERIFIES the pair before handing it
+    // back -- it resolves the handle through the manager and returns nullopt if that disagrees with
+    // the stored pointer, or if the manager is absent and the check cannot be made at all.
+    //
+    // THAT IS A BEST-EFFORT CONSISTENCY CHECK, NOT A FRESHNESS GUARANTEE. The two reads are not
+    // atomic, and nothing stops the object being unregistered or freed the instant after they agree
+    // -- so the returned pointer carries the same lifetime caveat as every other LTObject* in this
+    // SDK. What the check buys is refusing a pair that is ALREADY torn; it cannot promise one that
+    // stays valid. Use it on the engine thread, or use it immediately and do not store it across a
+    // frame; the HANDLE is the durable identity. CClientShell::Update ends by looping the four slots and
+    // calling CClientShell_ResolveLocalPlayerObject on each, which resolves the HANDLE through the
+    // manager and stores the result. So the handle is the durable identity and the pointer is a
+    // per-frame resolution of it.
+    //
+    // An empty slot is handle 0xFFFF, which is the resolver's own sentinel -- not zero.
     struct LocalPlayer {
         const regenny::LTObject* object;
         uint16_t handle;
     };
 
-    // nullopt for an out-of-range index, a missing shell, or an empty slot. The three
-    // are not distinguished because a caller can do nothing different about them.
+    // nullopt for an out-of-range index, a missing shell, an empty slot, a handle that does not
+    // resolve to the stored pointer, or an absent CClientMgr -- which is the case where the pair
+    // CANNOT be verified, and is therefore refused rather than trusted. None of them are
+    // distinguished, because a caller can do nothing different about any of them.
     static std::optional<LocalPlayer> local_player(unsigned index);
+
+    // A DIAGNOSTIC, not the path a consumer needs: reports whether the raw slot's handle and pointer
+    // agree. local_player() already REFUSES a disagreeing pair, so a normal caller never has to ask
+    // -- this exists to observe how often the shell's per-frame refresh is caught mid-flight, which
+    // local_player() deliberately hides by failing closed.
+    //
+    // nullopt when the slot is empty or either side cannot be read; false means they disagree.
+    static std::optional<bool> local_player_raw_pair_agrees(unsigned index);
 
     // How many local player slots are filled (0..4). Single-player reports 1.
     static std::optional<unsigned> local_player_count();

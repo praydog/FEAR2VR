@@ -1050,6 +1050,26 @@ int main(int argc, char** argv) {
         json_int(body, "wb_inside", wbin);
         json_int(body, "wb_bounds_probed", wbbp);
         json_int(body, "wb_bounds_ok", wbbok);
+        // ---- THE LOCAL PLAYER'S TWO FORMS ---------------------------------------------
+        //
+        // The shell keeps the player as a HANDLE and as a resolved POINTER, and re-resolves the
+        // pointer once per frame inside CClientShell::Update. Those are independent routes to one
+        // object, so agreement is a check on that refresh rather than a restatement of one read.
+        //
+        // Measured RAW, because local_player() now fails closed on a disagreeing pair and so could
+        // never surface one. The second count confirms failing closed does not OVER-reject: the safe
+        // accessor must still accept every slot the raw read finds consistent.
+        int64_t lps = -1, lpc = -1, lpa = -1;
+        json_int(body, "lp_slots", lps);
+        json_int(body, "lp_consistent", lpc);
+        json_int(body, "lp_accepted", lpa);
+        check(lps > 0, "at least one local player slot is filled");
+        check(lpc == lps, "EVERY filled slot's handle resolves to its stored pointer");
+        check(lpa == lps, "and local_player() accepts every one -- failing closed over-rejects none");
+        printf("[fixture] local player pair: %lld slot(s), handle and pointer agree on all, "
+               "accessor accepts all\n",
+               static_cast<long long>(lps));
+
         check(wbbp == 1, "the world bounds were readable by both routes");
         check(wbbok == wbbp, "the instance bounds and the engine's globals hold the SAME extent");
 
@@ -2975,8 +2995,8 @@ int main(int argc, char** argv) {
                 json_int(ab, "bind_shared_ok", bsharedok);
                 // ---- DERIVED HIERARCHY QUERIES --------------------------------------------
                 //
-                // node_depth / node_chain_to_root / node_has_ancestor put the guarded walk in the
-                // SDK once instead of at every call site. The checks are consequences of ONE walk
+                // node_depth / node_has_ancestor are views of path_to_root(), so the guarded walk
+                // lives in the SDK once instead of at every call site. The checks are consequences of ONE walk
                 // seen from different angles, and they PARTITION the population, which is what makes
                 // the agreement mean something rather than being a restatement.
                 int64_t hp = -1, hdok = -1, hmax = -1, hroots = -1, hrz = -1, hstep = -1, hanc = -1,
