@@ -1481,7 +1481,43 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- WHAT THE PERSPECTIVE PASS ENTRY TAKES, AND THE TWO SURPRISES IN IT ----
+// // ---- THE COMPLETE PUBLIC RENDER SEQUENCE ----
+//
+// NINE VTABLE SLOTS, and the `cmp [reg], N` comparisons scattered through the render code turn out to be
+// one nested state machine:
+//
+//     state 1  slot 8   CLTRenderer_BeginFrame(time)        -> 2   publishes k_fTime
+//     state 2  slot 11  CLTRenderer_BeginRenderTarget(...)  -> 3
+//     state 3  slot 15  CLTRenderer_SetupPassPerspective    -> 4   camera, FOV angles, fractional rect
+//              slot 16  CLTRenderer_SetupPassAffine         -> 4
+//              slot 17  CLTRenderer_SetupPassStored         -> 4
+//     state 4  slot 20  CLTRenderer_DrawScene                     requires 4, refuses mode 2
+//              slot 21  CLTRenderer_DrawObjectList                list + count, validated
+//              slot 18  CLTRenderer_EndPass                 -> 3
+//     state 3  slot 12  CLTRenderer_EndRenderTarget         -> 2
+//     state 2  slot 9   frame end (sub_60B471 -> sub_6106E0) -> 1
+//
+// PASSES NEST INSIDE A TARGET, TARGETS NEST INSIDE A FRAME. Rendering a second view means repeating the
+// slot 15 / 20 / 18 group without leaving the target -- exactly what Renderer_MakeCubicEnvMap does six
+// times per cube map, and what a stereo path would do twice.
+//
+// SceneRenderer_BeginFrame IS ALSO WHERE THE SHADER CLOCK COMES FROM, which links the named-parameter
+// registry to this lifecycle: it sets g_ShaderVal_k_fTime = fmod(time, K) and flushes k_fTime once per
+// frame from the caller's own time value.
+//
+// STATE 0 IS OBSERVED AND UNEXPLAINED. Those six functions write only 1..4, and sub_6106E0 closes the
+// loop at 2 -> 1, so the parked value between frames should be 1. A running game with a loaded level
+// reads 0, while the camera record those same functions maintain is correct and current -- so the state
+// MUST have passed through 3 and 4. Something outside the lifecycle writes 0 and it has not been
+// located: a scan for immediate stores of 0..4 through a register across the renderer's whole range
+// found nothing targeting this field. Recorded as a gap; a consumer should treat 0 as "outside the
+// documented cycle" rather than as a synonym for idle.
+//
+// The suite asserts the state READS and prints it, and deliberately does not assert its value -- the
+// first version required 1..4 and failed against the running game, which would have meant asserting the
+// model over the observation.
+//
+// ---- WHAT THE PERSPECTIVE PASS ENTRY TAKES, AND THE TWO SURPRISES IN IT ----
 //
 // SLOT 15'S FULL SIGNATURE, read out of the wrapper (retn 14h = 20 bytes, matching five arguments):
 //

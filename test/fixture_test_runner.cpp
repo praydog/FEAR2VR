@@ -3874,6 +3874,31 @@ int main(int argc, char** argv) {
             check(json_double(body, "pass_drawlist_off", dlo) && dlo == 0x20AF32,
                   "renderer_fn(DrawObjectList) resolves to exe+0x20AF32 (slot 21)");
 
+            // The outer lifecycle. These are what a consumer must respect BEFORE a pass exists at all:
+            // passes nest inside a target, targets nest inside a frame.
+            double bfo = -1.0, bto = -1.0, eto = -1.0;
+            check(json_double(body, "pass_beginframe_off", bfo) && bfo == 0x20B41F,
+                  "renderer_fn(BeginFrame) resolves to exe+0x20B41F (slot 8)");
+            check(json_double(body, "pass_begintarget_off", bto) && bto == 0x20B9E3,
+                  "renderer_fn(BeginRenderTarget) resolves to exe+0x20B9E3 (slot 11)");
+            check(json_double(body, "pass_endtarget_off", eto) && eto == 0x20B4A6,
+                  "renderer_fn(EndRenderTarget) resolves to exe+0x20B4A6 (slot 12)");
+
+            // THE STATE ITSELF. Every entry point above is gated on it, so a consumer that cannot read it
+            // cannot know which call is legal.
+            //
+            // ASSERTED: that it reads at all. NOT asserted: which value, and deliberately -- the first
+            // version of this check required 1..4, the documented cycle, and FAILED because a running
+            // game reads 0. That 0 is real and unexplained: the six lifecycle functions only write 1..4,
+            // EndFrame closes the loop at 2 -> 1, and yet the parked value is 0 while the record those
+            // functions maintain is correct. Asserting the range would have meant asserting my model
+            // over the observation.
+            double rst = -1.0;
+            check(json_double(body, "renderer_state", rst) && rst >= 0.0,
+                  "the scene renderer's state reads");
+            printf("[fixture] scene renderer state: %.0f (1 idle, 2 frame, 3 target, 4 pass; "
+                   "0 observed but unexplained)\n", rst);
+
             // THE REGRESSION TEST FOR A BUG THE LIVE CHECKS CANNOT SEE. rotation_matrix() hardcoded a
             // factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit,
             // so the two formulas agree everywhere the suite looks and the bug survived until a

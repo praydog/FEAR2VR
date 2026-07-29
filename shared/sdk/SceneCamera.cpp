@@ -16,6 +16,9 @@ namespace {
 // compared throughout the render code); the camera record follows it.
 constexpr uintptr_t kRecordOffset = 0x32E790;
 
+// g_SceneRenderer itself: the record is at +8, and the object's first dword is the state.
+constexpr uintptr_t kStateOffset = 0x32E788;
+
 // Field offsets within the record, all from sub_610BA1's and sub_610DA2's own accesses.
 constexpr size_t kMode = 0x00;
 constexpr size_t kPose = 0x14;  // LTNodeTransform: position 0x00, rotation 0x0C
@@ -918,8 +921,26 @@ std::optional<std::array<int32_t, 4>> SceneCamera::predicted_viewport_pixels(
     return out;
 }
 
+std::optional<uint32_t> SceneCamera::state() {
+    const auto at = exe_at(kStateOffset);
+    if (at == 0) {
+        return std::nullopt;
+    }
+    uint32_t value = 0;
+    if (!seh_copy(&value, at, sizeof(value))) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 size_t SceneCamera::renderer_slot_index(RendererSlot slot) {
     switch (slot) {
+    case RendererSlot::BeginFrame:
+        return 8;
+    case RendererSlot::BeginRenderTarget:
+        return 11;
+    case RendererSlot::EndRenderTarget:
+        return 12;
     case RendererSlot::SetupPassPerspective:
         return 15;
     case RendererSlot::SetupPassAffine:

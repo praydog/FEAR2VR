@@ -963,6 +963,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHEN A NEW ASSERTION FAILS, SUSPECT THE MODEL BEFORE THE GAME.** I derived the renderer's states from six
+  functions that write only 1..4, documented that as the range, and asserted it. It failed immediately: a
+  running game reads 0. The six functions are right and the cycle is right -- something outside them writes 0
+  and I have not found it. Loosening the assertion to "it reads" and recording the anomaly is the honest
+  outcome; asserting 1..4 would have encoded my model as ground truth over a direct observation.
+  
+- **A STATE MACHINE READ FROM `cmp` GATES IS ONLY AS COMPLETE AS THE WRITES YOU FIND.** Reading which value
+  each function REQUIRES and SETS built the whole 1..4 cycle and the nesting (passes in targets in frames)
+  without any guessing. What it cannot tell you is whether some other code writes the same field -- and here
+  something does. Enumerate the writers as well as the gates before calling a state machine complete.
+
 - **READ THE ENTRY POINT'S ARGUMENTS BEFORE BUILDING ANYTHING TO FEED IT.** I mapped the projection
   builders, both matrix multiplies, the quaternion conversions and a look-at before reading what slot 15
   actually takes. It takes the field of view as an ANGLE and the viewport as a FRACTION of the render

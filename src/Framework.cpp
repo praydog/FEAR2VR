@@ -3363,6 +3363,10 @@ std::string build_shader_params_json() {
     const auto persp_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassPerspective);
     const auto affine_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassAffine);
     const auto stored_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassStored);
+    const auto begin_frame_fn = sdk::SceneCamera::renderer_fn(Slot::BeginFrame);
+    const auto begin_target_fn = sdk::SceneCamera::renderer_fn(Slot::BeginRenderTarget);
+    const auto end_target_fn = sdk::SceneCamera::renderer_fn(Slot::EndRenderTarget);
+    const auto renderer_state = sdk::SceneCamera::state();
     const auto end_fn = sdk::SceneCamera::renderer_fn(Slot::EndPass);
     const auto draw_fn = sdk::SceneCamera::renderer_fn(Slot::DrawScene);
     const auto draw_list_fn = sdk::SceneCamera::renderer_fn(Slot::DrawObjectList);
@@ -3931,6 +3935,13 @@ std::string build_shader_params_json() {
     json_append_double(out, "pass_end_off", static_cast<double>(anchor_offset(end_fn)), 0);
     json_append_double(out, "pass_draw_off", static_cast<double>(anchor_offset(draw_fn)), 0);
     json_append_double(out, "pass_drawlist_off", static_cast<double>(anchor_offset(draw_list_fn)), 0);
+    json_append_double(out, "pass_beginframe_off", static_cast<double>(anchor_offset(begin_frame_fn)), 0);
+    json_append_double(out, "pass_begintarget_off", static_cast<double>(anchor_offset(begin_target_fn)), 0);
+    json_append_double(out, "pass_endtarget_off", static_cast<double>(anchor_offset(end_target_fn)), 0);
+    json_append_double(out, "renderer_state",
+                       static_cast<double>(renderer_state.has_value()
+                                               ? static_cast<long long>(*renderer_state) : -1),
+                       0);
     json_append_double(out, "near_rot_err", near_err.has_value() ? near_err->rotation : -1.0, 8);
     json_append_double(out, "near_trans_err", near_err.has_value() ? near_err->translation : -1.0, 8);
     json_append_double(out, "far_rot_err", far_err.has_value() ? far_err->rotation : -1.0, 8);

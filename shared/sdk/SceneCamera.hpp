@@ -482,14 +482,49 @@ public:
     // repeated per face. A stereo path is that run twice. Having all six anchors means a consumer can
     // hook the setup to substitute a transform, or drive the sequence itself, without rediscovering
     // which slot does what.
-    enum class RendererSlot {
-        SetupPassPerspective,  // 15, mode 0, takes the camera transform as its first argument
-        SetupPassAffine,       // 16, mode 1
-        SetupPassStored,       // 17, one argument; which pass it configures is NOT established
-        EndPass,               // 18, no arguments; requires state 4 and returns it to 3
-        DrawScene,             // 20, the whole scene
-        DrawObjectList,        // 21, an object list and count
+    // THE SCENE RENDERER'S STATES, which every entry point below is gated on. Reading them was what
+    // turned a pile of `cmp [reg], 3` comparisons into a usable API.
+    enum class RendererState : uint32_t {
+        Idle = 1,        // between frames; BeginFrame moves 1 -> 2
+        FrameBegun = 2,  // a frame is open; BeginRenderTarget moves 2 -> 3
+        TargetReady = 3, // a target is bound; a pass setup moves 3 -> 4
+        PassSetup = 4,   // a pass is configured; DrawScene requires this, EndPass returns to 3
     };
+    //
+    // ZERO IS OBSERVED LIVE AND NOT EXPLAINED BY THAT CYCLE, which is worth stating rather than
+    // rounding to "idle". The six lifecycle functions only ever write 1, 2, 3 and 4 -- EndFrame
+    // (0x6106E0) closes the loop with 2 -> 1 -- yet sampling a running game with a loaded level reads 0,
+    // while the camera record it guards is being updated correctly. So something outside those six
+    // writes 0, and the write has NOT been located: a scan for immediate stores of 0..4 across the
+    // renderer's range found none against this field. Treat a 0 as "not in the documented cycle", not as
+    // a synonym for Idle.
+
+    // The live state, read from g_SceneRenderer's first dword. nullopt when the exe is not mapped or the
+    // read faulted; the raw value is returned even when it is not one of the four above, because an
+    // unexpected value is information rather than something to hide.
+    static std::optional<uint32_t> state();
+
+    enum class RendererSlot {
+        BeginFrame,            // 8,  takes the frame time; state 1 -> 2, and publishes k_fTime
+        BeginRenderTarget,     // 11, state 2 -> 3; the target's dimensions become the viewport scale
+        EndRenderTarget,       // 12, state 3 -> 2
+        SetupPassPerspective,  // 15, state 3 -> 4, mode 0; camera, FOV angles, fractional viewport
+        SetupPassAffine,       // 16, state 3 -> 4, mode 1
+        SetupPassStored,       // 17, one argument; which pass it configures is NOT established
+        EndPass,               // 18, state 4 -> 3
+        DrawScene,             // 20, the whole scene; requires state 4 and a mode other than 2
+        DrawObjectList,        // 21, an object list and count, both validated by the wrapper
+    };
+
+    // NESTING, which is the part a consumer has to respect: passes nest inside a target, targets nest
+    // inside a frame. Rendering a second view means repeating the setup / draw / end-pass group without
+    // leaving the target -- exactly what Renderer_MakeCubicEnvMap does six times per cube map.
+    //
+    //     1  BeginFrame(time)          -> 2
+    //     2  BeginRenderTarget(target) -> 3
+    //     3  SetupPass*(camera, ...)   -> 4
+    //     4  DrawScene(...) ; EndPass() -> 3      <- repeat this group per view
+    //     3  EndRenderTarget(...)      -> 2
     static uintptr_t renderer_fn(RendererSlot slot);
 
     // ---- WHAT THE PERSPECTIVE PASS ENTRY ACTUALLY TAKES ------------------------------
