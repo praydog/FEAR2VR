@@ -963,6 +963,20 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **FIFTH BOUNDARY ERROR, AND ITS OWN OUTPUT REFUTED IT.** Having just written the boundary pattern into
+  this log, I sized off_678C80 by scanning forward 151 entries and quoted statistics over them: "137
+  distinct, a single _purecall, so a fully implemented class". The scan crossed multiple adjacent vtables.
+  
+  The disproof was already printed: the histogram showed the DESTRUCTOR thirteen times. A class has one
+  destructor, so thirteen occurrences is thirteen tables whose folded slot 0 is shared -- which is also
+  precisely why the run never "looked" like it ended. Every count from that scan is withdrawn.
+  
+  What survives is the part that never needed an extent: the atexit evidence. Segment, xref count, and the
+  registering push are all facts about ONE address, and they are what resolve the live/teardown timing.
+  The pattern to internalise: when a claim needs an extent, no statistic computed over the guessed range
+  can support it -- and check whether the sample contains something that CANNOT repeat (a destructor, a
+  vptr, a type name), because that is the cheapest boundary detector available.
+
 - **THE BOUNDARY MISTAKE, FOURTH TIME THIS SESSION -- NAME THE PATTERN.** Its shapes so far: `0xC3`
   proving a body is one byte; "exactly six bytes" for an entry sequence; a vtable sized by scanning until
   the pointers stopped looking like code; and now a "block of direct method pointers" read off consecutive
@@ -978,11 +992,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   block attractive. Missing-from-vtable has a boring explanation -- non-virtual members are not in one --
   and an attractive story is exactly when to demand the initializer.
   
-- **RECORD CONTRADICTIONS, DO NOT SMOOTH THEM.** sub_66B35F stores a different 151-entry vtable into the
-  ILTClient object's first dword, while the live field reads the 147-entry one. Both observations are
-  solid and they do not fit together yet. Written down as an open question with the evidence, because the
-  alternative -- quietly trusting the live read because it agrees with the rest of the mapping -- is how a
-  wrong model survives.
+- **RECORD CONTRADICTIONS -- THEN CLASSIFY THE CODE BEFORE TRUSTING EITHER SIDE.** sub_66B35F appeared to
+  store a different 151-entry vtable into the ILTClient object's first dword while the live field read the
+  147-entry one. Recording it beat smoothing it over, but "both observations are solid" was still one step
+  short: I had not checked whether the WRITER was code at all.
+  
+  Three cheap checks settled it. Segment: .text, perm R+X -- so not data misread as code, which was the
+  live worry given .rdata sits at 0x66D79C. Reachability: ZERO code xrefs, ONE data xref, and that
+  reference is `push offset sub_66B35F; call sub_6527B9` -- an atexit registration, identical to the pair
+  one line above. So it runs at static destruction, never during play. Mechanism: off_678C80's commonest
+  entry is a destructor whose body writes off_678C80 into [this], and that function is CLTClient_vftable's
+  slot 0 -- the ordinary MSVC vptr reset.
+  
+  No contradiction: the two facts describe different lifecycle phases. The lesson is the ORDER -- for any
+  "X writes Y", establish that X executes, and when, before weighing it against a live read. `sub_` in the
+  name means IDA made a function, not that anything calls it.
 
 - **IF THE PRODUCER ALREADY WALKS THE DATA, LET IT COUNT.** My first slot-1 fixture check re-parsed the
   endpoint's JSON array with a bespoke `},{` splitter to count resolved entries -- fragile, and a

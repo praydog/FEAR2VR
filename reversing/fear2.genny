@@ -1207,12 +1207,26 @@ class CClientMgrCounterNode 0x40 {
 // Methods missing from a vtable need no exotic explanation anyway -- non-virtual members do not appear
 // there. Nothing past +0x00 is modelled until an initializer or an indexed access proves the extent.
 //
-// AN UNEXPLAINED STORE, recorded rather than resolved: sub_66B35F does
-// `mov [0x6E3138], offset off_678C80`, i.e. writes a DIFFERENT vtable (151 consecutive entries, and its
-// slot 1 does NOT have the constant-string shape, so it is another class) into the same first dword. Live
-// the field reads 0x66F258, so that store either runs earlier and is overwritten, or does not run in this
-// state. Its neighbours in that region are CAPIHolder_dtor tails, which hints at teardown, and that is a
-// hint, not a finding.
+// A STORE THAT LOOKED LIKE A CONTRADICTION, AND IS NOT: sub_66B35F does
+// `mov [0x6E3138], offset off_678C80`, writing a different 151-entry vtable into that same first dword,
+// while the live field reads CLTClient_vftable. Both are true, of different lifecycle phases:
+//   * sub_66B35F is in .text (perm R+X, and .rdata does not start until 0x66D79C, so this is not data
+//     being disassembled as code) but has ZERO code xrefs and one DATA xref: `push offset sub_66B35F;
+//     call sub_6527B9` at 0x6668DB -- an atexit registration, matching the identical pair one line above.
+//     So it runs at STATIC DESTRUCTION, never during play, which is exactly why the live read differs.
+//   * the mechanism is recognisable: off_678C80's first entry is sub_475455, whose body is
+//     `mov dword ptr [esi], offset off_678C80` -- a destructor setting the vptr, the ordinary MSVC
+//     pattern -- and that same function is CLTClient_vftable's slot 0.
+//
+// NOTHING ELSE ABOUT off_678C80 IS ESTABLISHED, and a first attempt here got it wrong in the way this
+// file keeps warning about. I scanned forward 151 entries and quoted a histogram of them; that scan
+// self-refutes, because it found the destructor THIRTEEN times, and a class has one destructor. Thirteen
+// dtor occurrences is thirteen adjacent tables sharing a folded slot 0, so the scan crossed boundaries
+// and every count derived from it -- "151 entries", "137 distinct", "one _purecall", "a fully implemented
+// class" -- is withdrawn. Its real extent needs the boundary treatment CLTClient_vftable got.
+//
+// Also NOT established: how off_678C80's class relates to CLTClient. Sharing slot 0 fits base/derived and
+// fits destructor folding equally, and this binary folds heavily.
 //
 // 44 of the 147 implementations were already named from earlier passes, which the slot indices now
 // attach to the interface. A sample, and note these are the ENGINE's implementations in FEAR2.exe:
