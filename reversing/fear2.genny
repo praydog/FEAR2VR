@@ -1180,6 +1180,26 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE DEVICE VTABLE, READ FROM THE LIVE PROCESS ----
 //
+// A SECOND INSTRUMENT, WITH A DIFFERENT BLIND SPOT, AGREES ABOUT Present.
+//
+// The first tracker keyed on the VTABLE register, so a cached vtable defeated it -- which is why the earlier
+// absence claim was retracted. A second one keys on the DEVICE PUSH instead: COM stdcall passes `this` on the
+// stack, so `mov R, g_Renderer` ... `push R` ... `call [Rv+off]` identifies the call however the vtable was
+// obtained. That instrument does NOT share the first one's weakness.
+//
+// It finds 151 call sites across 31 distinct offsets, and the top of the distribution matches the first
+// tracker closely (SetRenderState 64, SetSamplerState 7, Clear 6, SetRenderTarget 4, SetViewport 4). And it
+// still finds NO Present, BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF.
+//
+// Two instruments with different blind spots agreeing is worth more than either alone, but it is still not
+// absence: both are linear scans with a fixed window that stop at an intervening call, so a call whose
+// argument setup is long enough would escape both.
+//
+// THE HYPOTHESIS THIS POINTS AT, untested: the engine may present through IDirect3DSwapChain9 rather than the
+// device -- a separate interface with its own vtable, where Present is at index 3 (offset 0xC). That would
+// explain zero device-Present calls without any of them being missed. Testing it means finding where a swap
+// chain is obtained and stored, which is the same shape of work as the Present trace already recorded above.
+//
 // WHERE THE DEVICE POINTER IS CACHED: NOWHERE ELSE IN .data. Scanning FEAR2.exe's writable data range
 // (IDB 0x6E3000..0x733000) for copies of the live device value found exactly ONE -- g_Renderer itself. So no
 // second exe-global holds a copy, which eliminates the tidiest explanation for the calls the static tracker
@@ -1292,7 +1312,7 @@ class CClientMgrCounterNode 0x40 {
 // A CAUTION THAT COST A WHOLE SCAN: searching for `call dword ptr [reg+OFFSET]` finds mostly NOISE, because
 // small displacements like 0x44 or 0xB0 are ordinary member-call offsets for any LithTech object. The first
 // scan "found" Present being called from CClientMgr_StartShell. Validation has to tie the receiver to the
-// device -- intersecting call sites with functions that read g_Renderer is what produced the real list.
+// intersecting call sites with functions that read g_Renderer is what produced a narrower CANDIDATE list.
 //
 // NOT ESTABLISHED: where the view/projection reaches the shaders. There are ZERO `call [reg+0x178]` sites,
 // i.e. no direct memory-indirect call of SetVertexShaderConstantF anywhere -- but that rules out one

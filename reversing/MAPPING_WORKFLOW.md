@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHEN AN INSTRUMENT HAS A KNOWN BLIND SPOT, BUILD A SECOND ONE THAT DOES NOT SHARE IT.** The vtable-register
+  tracker missed cached-vtable calls, which is what invalidated an absence claim about Present. Rather than
+  patch it, the fix was a different key: COM stdcall pushes `this`, so `mov R, g_Renderer` ... `push R` ...
+  `call [Rv+off]` finds the call regardless of where the vtable came from.
+  
+  The second instrument reproduces the first one's distribution closely (SetRenderState 64 against 66, and the
+  same leaders below it) and still finds no Present, BeginScene, EndScene, SetTransform or shader-constant
+  calls. Two instruments with different weaknesses agreeing is much better evidence than one -- and still not
+  absence, because both are linear scans with a fixed window that stop at an intervening call.
+  
+  It also produced a null result worth having: of 152 sites where the device value is read, ALL push it as an
+  argument and NONE store it. So the exe does not stash the device in any object field reachable that way,
+  which is the second independent strike against the cached-copy explanation.
+  
+  Next hypothesis, recorded not tested: the engine may present through IDirect3DSwapChain9, a separate
+  interface whose Present is at index 3, which would explain zero device-Present calls without anything being
+  missed.
+
 - **A DATA SCAN ELIMINATES A HYPOTHESIS; IT DOES NOT ANSWER THE QUESTION.** Looking for where Present gets its
   device, I scanned FEAR2.exe's writable data for copies of the live device pointer and found exactly one --
   g_Renderer itself. That is worth having: no second exe-global caches it, which was the tidiest explanation
