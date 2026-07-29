@@ -217,6 +217,18 @@ public:
     //   (CLTModelClient_vftable 0x66E7E8; the reference declares it on the BASE ILTModel, which fits an
     //   early slot). It has no callers inside FEAR2.exe, so anything composing its output lives in
     //   gameclient.dll and reaches it as vt[22].
+    //
+    //   IF YOU CALL IT, THE CONVENTION IS FROM ITS OWN DISASSEMBLY, not inherited from the sibling slots
+    //   the genny documents. 0x42C958 opens `mov eax, [esp+object]` -- the FIRST STACK ARGUMENT, so the
+    //   interface `this` is never read -- gates on `cmp byte ptr [eax+10h], 1` (OT_MODEL), and ends
+    //   `retn 0Ch`: __stdcall, THREE dwords, (object, node_index, float* out).
+    //
+    //   Three, not four. The genny's slots 2/3 finding is the same shape but `retn 10h`, and assuming it
+    //   carried would have got the arity wrong -- GetSocketTransform takes a world_space flag this does not.
+    //   Its failure path is shared though: `push 3Ch; pop eax` returns LT_INVALIDPARAMS (60), so passing the
+    //   interface first is a clean refusal rather than a crash.
+    //
+    //   reversing/fear2.genny's ILTModel VTABLE section owns this table's documentation.
     //   +0x08  THE BIND POSE. ILTModel_GetBindPoseNodeTransform computes
     //          `(node << 6) + asset->node_records + 8` and copies from there. Its COORDINATE SPACE is
     //          unresolved -- see below.

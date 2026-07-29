@@ -963,6 +963,38 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A CONVENTION ESTABLISHED ON ONE SLOT DOES NOT CARRY TO ANOTHER.** Merging my slot map into the incumbent
+  ILTModel section, I attached its calling-convention finding -- __stdcall, object first, `retn 10h`, four
+  dwords -- to slot 22. That finding was made on slots 2 and 3.
+  
+  Disassembling 0x42C958 shows the shape does transfer but the ARITY does not: `mov eax, [esp+object]`, gate
+  on `[eax+10h] == 1`, and `retn 0Ch` -- THREE dwords, because GetSocketTransform's fourth argument is a
+  world_space flag the bind-pose getter has no use for. Documenting "four dwords" would have handed a
+  consumer a stack-corrupting call.
+  
+  The useful generalisation is narrower than the tempting one: what these wrappers SHARE is object-first
+  dispatch, the OT_MODEL gate, and the LT_INVALIDPARAMS refusal path. Arity is per function, and `ret N` is
+  one instruction to check.
+
+- **GREP THE GENNY FOR THE ADDRESS BEFORE MAPPING A TABLE.** I walked CLTModelClient_vftable and wrote it up
+  as a new section -- and the file already had "ILTModel VTABLE (client 0x66E7E8, server 0x674CD8)",
+  documenting the same table, the same 83 count, AND things I had not established: the parallel server table,
+  and the calling convention (these entries are __stdcall wrappers taking the OBJECT first, `retn 10h`, the
+  interface `this` never read). Only spotted it because a heading grep for an unrelated fix happened to list
+  it.
+  
+  Merged the one thing mine added -- the slot map for the 60 already-named implementations -- into the
+  incumbent section, and deleted my duplicate. The incumbent had the better contract, exactly as with
+  `pose_a`/`pose_b` earlier: the duplicate arrives wearing better documentation of a narrower fact.
+  
+  The check costs one grep of the ADDRESS, not the name. I searched for concepts, and the section was titled
+  ILTModel while I was thinking ILTModelClient.
+  
+- **A HEADING IS THE CLAIM MOST PEOPLE READ.** My section title said "83 SLOTS, EXTENT PROVEN" while its own
+  body explained why 83 is short of proof. Same failure as naming a function pre_update_is_empty() after
+  narrowing the prose to "the entry returns immediately": when a claim gets qualified, the label is where the
+  old version survives. Both headings now describe runs, not proofs.
+
 - **"NO SIGNAL DETECTED" IS NOT "NO SIGNAL PRESENT", INCLUDING FROM MY OWN TOOL.** The boundary analyzer
   reported CLTModelClient_vftable as 83 entries with the strongest evidence class, and I wrote "extent
   proven". But its interior-boundary check matches ONE instruction shape (`mov [reg], offset X`), so a table
