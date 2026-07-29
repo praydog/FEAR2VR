@@ -3970,6 +3970,24 @@ int main(int argc, char** argv) {
             check(json_bool(body, "sc_w2s_coherent", w2s) && w2s,
                   "world_to_screen == viewport_transform * view_projection (four regions agree)");
 
+            // THE OTHER DIRECTION: screen_to_clip, built from the viewport's own half-extents. The
+            // viewport centre must land on clip (0, 0) -- a round trip through a matrix the engine
+            // built, not one we did.
+            bool cto = false;
+            check(json_bool(body, "sc_centre_to_origin", cto) && cto,
+                  "the viewport centre maps to clip (0,0) through the engine's screen_to_clip");
+
+            // Whether that matrix and the viewport transform are actually inverses is INFORMATIVE, not
+            // guaranteed: the engine writes -1 and +1 into column 3 where the true inverse wants
+            // -centreX/halfW and centreY/halfH, and those agree only for a viewport anchored at the
+            // origin. Reported rather than asserted, since a sub-rect viewport is a legitimate state
+            // in which the engine's own two matrices are not inverses.
+            bool s2c = false;
+            if (json_bool(body, "sc_s2c_inverts_viewport", s2c)) {
+                printf("[fixture] screen_to_clip inverts the viewport transform: %s\n",
+                       s2c ? "yes (origin-anchored viewport)" : "no (sub-rect viewport)");
+            }
+
             // Projecting a point through it. In the screen pass the matrix is the identity, so a
             // point must project to ITSELF -- not a tautology, since that identity is the product of
             // the screen ortho and the viewport transform and any error in either breaks it.

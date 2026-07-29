@@ -1447,7 +1447,7 @@ class CClientMgrCounterNode 0x40 {
 //     +0x78   projection = proj(depth) * shear
 //     +0xB8   VIEW-PROJECTION = projection * view
 //     +0xF8   WORLD -> SCREEN PIXELS = viewportTransform * viewProjection
-//     +0x138  12 trailing floats from sub_610658
+//     +0x138  SCREEN PIXELS -> CLIP, from the VIEWPORT's half-extents
 //
 // THE CENTRE OFFSET IS APPLIED AS A SHEAR, straight out of the builder:
 //
@@ -1521,6 +1521,35 @@ class CClientMgrCounterNode 0x40 {
 // Its translation allowance scales with distance from the origin, because column 3 of the product is
 // a cancellation back to zero whose float residual grows with |p| -- an absolute epsilon passes a
 // pose at 137 units and fails the same pose at 98000.
+//
+// ---- THE LAST TWO FIELDS, AND THE RECORD IS COMPLETE ----
+//
+// +0x138 IS SCREEN PIXELS -> CLIP, built by LTMatrix_BuildScreenOrthoProjection from the VIEWPORT's
+// own half-extents at ebp-8/ebp-4 -- not from the half view-plane pair the other two builders take:
+//
+//     [ 1/halfW      0        0   -1 ]
+//     [ 0        -1/halfH     0    1 ]
+//     [ 0            0        1    0 ]
+//
+// Read live at 0.00039063 and -0.00138889 for the 5120x1440 viewport, matching the prediction to
+// eight decimals.
+//
+// IT IS THE VIEWPORT TRANSFORM'S INVERSE ONLY FOR AN ORIGIN-ANCHORED VIEWPORT, which is worth
+// stating rather than rounding off. The viewport matrix is
+// [halfW,0,0,centreX; 0,-halfH,0,centreY; 0,0,1,0], whose true inverse carries -centreX/halfW and
+// centreY/halfH in column 3. This builder writes -1 and +1 there, and those agree exactly when
+// centreX == halfW and centreY == halfH, i.e. left == top == 0. True for the full-screen viewport
+// measured here; a sub-rect viewport would make the engine's own two matrices NOT inverses. The suite
+// REPORTS that rather than asserting it, since a sub-rect viewport is a legitimate state.
+//
+// AND sub_60C2FE IS THE PROMOTION, now LTMatrix_PromoteAffineTo4x4: it copies twelve floats and
+// appends (0,0,0,1). Worth having explicitly, because until now that row was only IMPLIED by
+// LTMatrix_Mul4x4ByAffine's arithmetic. Here the engine writes it out, so
+// sdk::SceneCamera::promote_affine matches an observed convention instead of an inferred one.
+//
+// THE RECORD IS NOW FULLY ACCOUNTED FOR -- mode, viewport rect, pose, half view-plane, projection
+// centre offset, depth range, view, projection, view-projection, world-to-screen and screen-to-clip.
+// Nothing in its 360 bytes is unexplained.
 //
 // ---- HOW THE ENGINE MULTIPLIES MATRICES ----
 //

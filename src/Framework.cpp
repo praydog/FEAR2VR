@@ -3349,6 +3349,21 @@ std::string build_shader_params_json() {
     // at different moments.
     const bool compose_matches_record = scam.has_value() && scam->view_projection_is_coherent();
 
+    // screen_to_clip against the viewport transform the rect implies, and a pixel round trip: the
+    // viewport centre must map to clip (0,0) whenever the two really are inverses.
+    const bool s2c_inverts_viewport =
+        scam.has_value() && scam->screen_to_clip_inverts_viewport();
+    bool centre_maps_to_origin = false;
+    if (scam.has_value() && scam->viewport_valid()) {
+        const float cx = static_cast<float>(scam->viewport_left) +
+                         static_cast<float>(scam->viewport_width()) * 0.5f;
+        const float cy = static_cast<float>(scam->viewport_top) +
+                         static_cast<float>(scam->viewport_height()) * 0.5f;
+        const auto clip = scam->pixel_to_clip(cx, cy);
+        centre_maps_to_origin =
+            clip.has_value() && fabsf(clip->x) < 1e-3f && fabsf(clip->y) < 1e-3f;
+    }
+
     // The world-to-screen matrix against the viewport transform the record's own rect implies. Ties
     // four separately-written regions, and holds in whatever pass is live.
     const bool world_to_screen_coherent =
@@ -3388,6 +3403,7 @@ std::string build_shader_params_json() {
                  "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,"
                  "\"sc_compose_matches_record\":%s,\"sc_view_matches_pose\":%s,"
                  "\"sc_w2s_coherent\":%s,\"sc_projects_identity\":%s,"
+                 "\"sc_s2c_inverts_viewport\":%s,\"sc_centre_to_origin\":%s,"
                  "\"sc_rejects_behind\":%s,"
                  "\"sc_affine\":%s,\"sc_w_row_scale\":%.6f,\"sc_fov_present\":%s,"
                  "\"sc_fov_y_deg\":%.3f,\"sc_proj_agrees_hvp\":%s,",
@@ -3409,6 +3425,8 @@ std::string build_shader_params_json() {
                  scam->view_matches_pose() ? "true" : "false",
                  world_to_screen_coherent ? "true" : "false",
                  projects_identity ? "true" : "false",
+                 s2c_inverts_viewport ? "true" : "false",
+                 centre_maps_to_origin ? "true" : "false",
                  rejects_behind_camera ? "true" : "false",
                  scam->is_affine_projection() ? "true" : "false",
                  scam->projection_w_row_scale(),

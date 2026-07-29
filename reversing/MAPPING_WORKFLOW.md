@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **TWO MATRICES CAN BE "INVERSES" ONLY IN THE STATE YOU MEASURED.** The engine's screen_to_clip writes -1
+  and +1 into column 3 where a true inverse of its own viewport transform wants -centreX/halfW and
+  centreY/halfH. Those coincide exactly when the viewport is anchored at the origin -- which the measured
+  full-screen viewport is. Asserting "they are inverses" would have baked a full-screen assumption into the
+  suite. Reported instead, with the condition named, so a sub-rect viewport shows up as information rather
+  than a failure.
+  
+- **A CONVENTION THAT IS ONLY IMPLIED IS WORTH FINDING WRITTEN DOWN.** The (0,0,0,1) row of a promoted 3x4
+  was inferred from how the multiply consumed its operands. LTMatrix_PromoteAffineTo4x4 writes it out
+  literally, which upgrades promote_affine() from matching an inference to matching an observation. Cheap to
+  confirm, and it removes a standing assumption from everything built on top.
+
 - **A PREDICATE MUST CLASSIFY THE MATRIX ITS SIBLING ACTUALLY USES.** `w_is_view_space_depth()` was written
   as `return is_perspective_projection()`, which reads the `projection` field -- but `project_point()`
   transforms through `world_to_screen`. Two different matrices, one question. A synthetic snapshot carrying

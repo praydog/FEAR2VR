@@ -76,7 +76,9 @@ struct SceneCameraSnapshot {
     // WORLD -> SCREEN PIXELS: viewport_transform * view_projection. Use project_point() rather than
     // multiplying by hand.
     std::array<float, 16> world_to_screen{};
-    std::array<float, 12> trailing{};
+    // SCREEN PIXELS -> CLIP, built from the VIEWPORT's half-extents. The counterpart of
+    // viewport_transform(), and what pixel_to_clip() uses.
+    regenny::LTMatrix3x4 screen_to_clip{};
 
     // int64 ON PURPOSE: these are differences of two ints read from a record the render thread
     // rewrites, so a torn read can put values at opposite ends of the range and the subtraction
@@ -208,6 +210,28 @@ struct SceneCameraSnapshot {
     // Those are different matrices and asking the wrong one was a real bug: a snapshot holding only a
     // world_to_screen reported "no depth" while project_point produced depth-bearing w from it.
     bool w_is_view_space_depth() const;
+
+    // A pixel mapped to CLIP space through the record's own screen_to_clip matrix. The inverse
+    // direction from project_point, and the piece a consumer needs to turn a cursor or a screen
+    // coordinate into something it can compare against clip-space geometry.
+    //
+    // Stops at clip deliberately: going on to a world ray needs an inverse view-projection, which
+    // this record does not carry and which would have to be computed rather than read. Better to
+    // expose exactly what the engine publishes than to bundle in maths it never did.
+    struct ClipPoint {
+        float x{};
+        float y{};
+    };
+    std::optional<ClipPoint> pixel_to_clip(float pixel_x, float pixel_y) const;
+
+    // Does screen_to_clip actually invert viewport_transform?
+    //
+    // Ties two more separately-written regions, and the answer is INFORMATIVE rather than always
+    // true: the engine builds screen_to_clip with -1 and +1 in column 3, whereas the true inverse of
+    // the viewport matrix has -centreX/halfW and centreY/halfH. Those agree only for a viewport
+    // anchored at the origin. So a false answer here means the engine is running a sub-rect viewport
+    // and its own two matrices are NOT inverses -- worth knowing before relying on either.
+    bool screen_to_clip_inverts_viewport(float tolerance = 1e-3f) const;
 
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the

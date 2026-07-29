@@ -26,7 +26,7 @@ constexpr size_t kView = 0x48;               // 72, 3 rows of 4
 constexpr size_t kProjection = 0x78;         // 120
 constexpr size_t kViewProjection = 0xB8;     // 184
 constexpr size_t kWorldToScreen = 0xF8;      // 248, viewport * view_projection
-constexpr size_t kTrailing = 0x138;          // 312, 12 floats
+constexpr size_t kScreenToClip = 0x138;      // 312, pixels -> clip, from the viewport
 constexpr size_t kRecordSize = 0x168;        // 360 -- through the trailing floats
 
 // The snapshot memcpy's correctness rests on these generated types staying packed at the sizes
@@ -270,6 +270,44 @@ std::optional<SceneCameraSnapshot::ScreenPoint> SceneCameraSnapshot::project_poi
         return std::nullopt;
     }
     return out;
+}
+
+std::optional<SceneCameraSnapshot::ClipPoint> SceneCameraSnapshot::pixel_to_clip(
+    float pixel_x, float pixel_y) const {
+    if (!std::isfinite(pixel_x) || !std::isfinite(pixel_y)) {
+        return std::nullopt;
+    }
+    const auto& m = screen_to_clip.m;
+    for (size_t i = 0; i < 12; ++i) {
+        if (!std::isfinite(m[i])) {
+            return std::nullopt;
+        }
+    }
+    // Row-major, point as a column vector, z taken as 0 since this maps a screen position.
+    ClipPoint out{};
+    out.x = m[0] * pixel_x + m[1] * pixel_y + m[3];
+    out.y = m[4] * pixel_x + m[5] * pixel_y + m[7];
+    if (!std::isfinite(out.x) || !std::isfinite(out.y)) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+bool SceneCameraSnapshot::screen_to_clip_inverts_viewport(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
+    const auto viewport = viewport_transform();
+    if (!viewport.has_value()) {
+        return false;
+    }
+    std::array<float, 12> affine{};
+    for (size_t i = 0; i < 12; ++i) {
+        affine[i] = viewport->m[i];
+    }
+    return SceneCamera::affines_are_inverse(*viewport, screen_to_clip, tolerance, tolerance,
+                                            4e-7f) ||
+           SceneCamera::affines_are_inverse(screen_to_clip, *viewport, tolerance, tolerance, 4e-7f);
 }
 
 bool SceneCameraSnapshot::w_is_view_space_depth() const {
@@ -749,7 +787,7 @@ std::optional<SceneCameraSnapshot> SceneCamera::snapshot() {
     out.projection = floats_at<16>(raw, kProjection);
     out.view_projection = floats_at<16>(raw, kViewProjection);
     out.world_to_screen = floats_at<16>(raw, kWorldToScreen);
-    out.trailing = floats_at<12>(raw, kTrailing);
+    std::memcpy(&out.screen_to_clip, raw + kScreenToClip, sizeof(out.screen_to_clip));
     return out;
 }
 
