@@ -1340,10 +1340,14 @@ class CClientMgrCounterNode 0x40 {
 //     ID3DXEffect::SetValue, but g_pLTShaderSystem is NULL at the main menu, so it could not be
 //     identified live. NOT confirmed as D3DX.
 //   - WHY NOTHING IS EVER SEEN BOUND. With a level loaded and the suite fully green, all 60
-//     records still read binding 0xFFFF while 33 carry pending byte counts. So every Flush
-//     observed takes the mark-pending branch, and a binding index must be assigned only
-//     transiently inside shader binding, not held in these records. That is the next thing to
-//     watch, and it is what makes writing a value here futile today.
+//     records still read binding 0xFFFF while 33 carry pending byte counts. That is TWO
+//     SAMPLES, both taken from an HTTP handler thread between frames, so what it establishes
+//     is narrow: at those instants nothing was bound. Transient draw-time binding is the
+//     obvious explanation but NOT a measurement -- equally live: this build never assigns
+//     these records a handle at all, or the handles live in a structure elsewhere. Settling
+//     it needs a breakpoint or hook inside LTShaderParam_Flush observing the other branch
+//     being taken. Until then "nothing is bound when we look" is the whole finding, and it is
+//     already enough to make writing a value here futile.
 //
 // EXPOSED AS sdk::ShaderParams, read-only on purpose: k_mObjectToClip is the COMPOSED
 // object-to-clip transform, set per draw, so a write would be overwritten before a shader saw
