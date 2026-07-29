@@ -120,6 +120,7 @@ using DatabaseFn = std::function<std::string()>;                  // full JSON o
 using ObjectsFn = std::function<std::string()>;                   // full JSON object
 using ModelsFn = std::function<std::string()>;                    // full JSON object
 using InterfacesFn = std::function<std::string()>;                // full JSON object
+using ShaderParamsFn = std::function<std::string()>;              // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 
 struct Handlers {
@@ -129,6 +130,7 @@ struct Handlers {
     ObjectsFn objects{};         // optional; /sdk/objects 404s without it
     ModelsFn models{};           // optional; /sdk/models 404s without it
     InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
+    ShaderParamsFn shader_params{};  // optional; /sdk/shader-params 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
 };
 

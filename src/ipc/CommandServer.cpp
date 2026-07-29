@@ -137,6 +137,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 18, "/sdk/shader-params") == 0) {
+        if (!g_handlers.shader_params) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no shader-params handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.shader_params());
+        return;
+    }
+
     if (path.compare(0, 12, "/sdk/objects") == 0) {
         if (!g_handlers.objects) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no objects handler registered\"}");

@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE PRODUCTIVE DIRECTION WAS THE ONE I ALMOST DISCARDED.** A raw `call [reg+0x44]` hit was a
+  displacement collision, and the honest conclusion was "static scanning cannot find Present". But the
+  colliding call was `IDirect3DTexture9::GetLevelDesc`, and following THAT -- not the failure -- led to
+  the engine's 60 named shader parameters, which is where the shader constants live. The dead end and
+  the find were the same instruction.
+  
+- **A REPORT KEY THAT COLLIDES WITH A PER-ENTRY KEY PARSES AS THE WRONG THING.** `/sdk/shader-params`
+  emitted a summary `"bound":N` while every entry in its own `"params"` array carried `"bound":true`.
+  The fixture's first-match `json_int` found the boolean and yielded -1. Renamed to `bound_count` /
+  `pending_count`. Worth remembering for every future endpoint: summary keys must not shadow entry
+  keys, and a `-1` in a passing suite is a parse failure wearing a plausible value.
+
 - **A WORKED EXAMPLE OF THE DISPLACEMENT TRAP, WORTH MORE THAN THE WARNING.** Restricting a raw
   `call [reg+0x44]` scan to the 90 g_Renderer readers gave exactly one Present candidate -- inside sub_615CC1,
   which genuinely calls the device elsewhere, so it looked like the real thing. It is not: the receiver is

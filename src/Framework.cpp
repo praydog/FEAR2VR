@@ -25,6 +25,7 @@
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/Render.hpp"
+#include "sdk/ShaderParams.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
 #include "sdk/interfaces/ILTModel.hpp"
@@ -3252,6 +3253,80 @@ std::string build_interfaces_json() {
     return out;
 }
 
+// The engine's named shader parameters, entirely through sdk::ShaderParams -- no raw
+// pointer arithmetic here, which is the point of the class holding the fault-guarded
+// reads rather than this reporter.
+//
+// Available at the MAIN MENU, unlike most of what this server reports: the parameter list
+// is static exe data, so it does not wait on a level. What DOES wait is binding -- every
+// record reads kUnboundBinding until the engine assigns handles.
+std::string build_shader_params_json() {
+    const auto head = sdk::ShaderParams::list_head_address();
+    if (head == 0) {
+        return "{\"ok\":false,\"error\":\"exe not mapped\"}";
+    }
+    const auto params = sdk::ShaderParams::all();
+
+    std::string out = "{\"ok\":true,\"list_head\":";
+    char num[64];
+    snprintf(num, sizeof(num), "\"0x%08zX\",\"count\":%zu,", static_cast<size_t>(head),
+             params.size());
+    out += num;
+
+    size_t bound = 0, pending = 0, size_disagrees = 0;
+    out += "\"params\":[";
+    for (size_t i = 0; i < params.size(); ++i) {
+        const auto& p = params[i];
+        if (p.bound()) {
+            ++bound;
+        }
+        if (p.has_pending_upload()) {
+            ++pending;
+        }
+        if (!p.size_agrees_with_type()) {
+            ++size_disagrees;
+        }
+        char b[320];
+        snprintf(b, sizeof(b),
+                 "%s{\"name\":\"%s\",\"type\":\"%s\",\"type_id\":%u,\"size\":%u,"
+                 "\"elements\":%zu,\"binding\":%u,\"bound\":%s,\"pending\":%u,"
+                 "\"address\":\"0x%08zX\"}",
+                 i == 0 ? "" : ",", p.name.c_str(),
+                 sdk::ShaderParams::type_name(p.type), static_cast<unsigned>(p.type),
+                 static_cast<unsigned>(p.size), p.element_count(),
+                 static_cast<unsigned>(p.binding_index), p.bound() ? "true" : "false",
+                 static_cast<unsigned>(p.pending), static_cast<size_t>(p.address));
+        out += b;
+    }
+    out += "],";
+
+    // A few reads a VR mod actually wants, exercised through the typed accessors so the
+    // report proves the accessors work and not merely that the list walks.
+    const auto res = sdk::ShaderParams::screen_resolution();
+    const auto obj_to_clip = sdk::ShaderParams::matrix4x4("k_mObjectToClip");
+    const auto nodes = sdk::ShaderParams::matrix4x3_array("k_mModelObjectNodes");
+    // Must be refused: same type as k_mObjectToWorld but an array, so the fixed-size
+    // accessor has to decline rather than hand back the first of many.
+    const auto array_via_fixed = sdk::ShaderParams::matrix4x3("k_mModelObjectNodes");
+
+    char tail[512];
+    snprintf(tail, sizeof(tail),
+             "\"screen_res\":%s,\"screen_res_w\":%.1f,\"screen_res_h\":%.1f,"
+             "\"object_to_clip_readable\":%s,\"model_nodes_elements\":%zu,"
+             "\"array_refused_by_fixed_accessor\":%s,"
+             // Distinct names ON PURPOSE: every entry in "params" already carries "bound"
+             // and "pending", and a naive JSON reader that finds the first match would
+             // parse a per-param boolean as this summary count. The fixture did exactly
+             // that and reported -1.
+             "\"bound_count\":%zu,\"pending_count\":%zu,\"size_disagrees\":%zu}",
+             res.has_value() ? "true" : "false", res.has_value() ? (*res)[0] : 0.0f,
+             res.has_value() ? (*res)[1] : 0.0f,
+             obj_to_clip.has_value() ? "true" : "false", nodes.size(),
+             array_via_fixed.has_value() ? "false" : "true", bound, pending, size_disagrees);
+    out += tail;
+    return out;
+}
+
 // Diagnostics only -- goes entirely through sdk::DatabaseMgr's own methods
 // (category_count/category/record_count/record/*_name), never raw
 // pointer/offset arithmetic here. Builds a small JSON array of up to
@@ -3434,6 +3509,7 @@ bool Framework::initialize() {
     handlers.objects = build_objects_json;
     handlers.models = build_models_json;
     handlers.interfaces = build_interfaces_json;
+    handlers.shader_params = build_shader_params_json;
     handlers.engine_hook = build_engine_hook_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);

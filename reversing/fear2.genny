@@ -1277,6 +1277,78 @@ class CClientMgrCounterNode 0x40 {
 // returns is genuine d3d9.dll. Live vtable ownership shows what implements a method now, not where FEAR2
 // calls it from.
 
+// ---- THE ENGINE'S NAMED SHADER PARAMETERS ----
+//
+// SIXTY NAMED PARAMETERS IN A STATIC DOUBLY-LINKED LIST, which is where the shader constants
+// this pass spent so long failing to find statically actually live. FEAR 2 does not sprinkle
+// SetVertexShaderConstantF through its render code: it keeps records holding a NAME, a type, a
+// binding index, a byte size and the value inline, and uploads them through one function.
+//
+// FOUND BY FOLLOWING CODE, NOT BY SCANNING FOR A SHAPE. Render_ClearRenderTargetTexture
+// (0x615CC1) calls RenderTarget_GetD3DTexture; a neighbour (sub_61312E) passes three such
+// textures plus a float2 to what an earlier pass had misnamed Renderer_UploadBoneMatrices. The
+// float2 was k_vScene_ScreenRes, and its inline value read 5120.0f x 1440.0f -- the resolution
+// the machine is actually running. A record whose value matches the live display is not a
+// guessed layout.
+//
+// THE RECORD, every offset taken from LTShaderParam_Flush's own field accesses:
+//
+//     +0x00  vtable            g_LTShaderParam_vftable, shared by all 60
+//     +0x04  const char* name
+//     +0x08  u16 type          see the table below
+//     +0x0A  u16 binding index 0xFFFF = unbound
+//     +0x0C  void* value       always node + 0x1C
+//     +0x10  u16 size          bytes
+//     +0x12  u16 pending       byte count recorded when set while unbound; cleared on upload
+//     +0x14  prev, +0x18 next
+//     +0x1C  value storage, inline
+//
+// THE TYPE TAG IS CONFIRMED TWICE, which is why it is written as a type and not a guess: the
+// u16 at +0x08, and the engine's own Hungarian prefix on the name. All 60 agree.
+//
+//     tag  size            type       prefix   n
+//     01   4               texture    t        23
+//     02   12              float3     k_v       7
+//     03   16 (96 = cube)  float4     k_v      13
+//     05   4               float      k_f       3
+//     08   64              float4x4   k_m       5
+//     09   48 (1152 = 24)  float4x3   k_m       6
+//     0A   8               float2     k_v       3
+//
+// WHAT A VR MOD WOULD WANT, named: k_mObjectToClip and k_mObjectToClip_Previous (64),
+// k_mObjectToWorld, k_mCustomTransform, k_mDrawPrimToClip, k_vScene_ScreenRes,
+// k_vScene_ZRange, k_vHalfViewPlane, k_vWorldSpaceCameraDir, k_vObjectSpaceEyePos, and
+// k_mModelObjectNodes -- 1152 bytes = 24 float4x3 node transforms, which independently
+// corroborates what the old Renderer_UploadBoneMatrices name was reaching for even though that
+// function is generic.
+//
+// THE UPLOAD PATH, renamed from evidence:
+//
+//     LTShaderParam_SetValue  0x60C5B9   value = *src; then Flush(param, bytes)
+//     LTShaderParam_Flush     0x60C20A   binding == 0xFFFF ? record pending : upload, clear
+//     LTShader_SetConstantByRegister 0x618D4E
+//                                        method 20 on *(g_pLTShaderSystem+0x10), passing
+//                                        table[binding].+0x08 as a handle, plus value + size
+//
+// THE BINDING INDEX IS NOT A D3D CONSTANT REGISTER, though it sits exactly where one would and
+// an earlier draft of the SDK called it that. Flush uses it to index a 12-byte-stride table at
+// g_pLTShaderSystem+0xBC and hands the entry's +0x08 field to the upload method, so it selects
+// an ENGINE handle. A consumer treating it as a c# register number would write wrong tooling.
+//
+// WHAT IS STILL OPEN:
+//   - The interface behind the upload. (handle, void*, byteCount) at method index 20 resembles
+//     ID3DXEffect::SetValue, but g_pLTShaderSystem is NULL at the main menu, so it could not be
+//     identified live. NOT confirmed as D3DX.
+//   - WHY NOTHING IS EVER SEEN BOUND. With a level loaded and the suite fully green, all 60
+//     records still read binding 0xFFFF while 33 carry pending byte counts. So every Flush
+//     observed takes the mark-pending branch, and a binding index must be assigned only
+//     transiently inside shader binding, not held in these records. That is the next thing to
+//     watch, and it is what makes writing a value here futile today.
+//
+// EXPOSED AS sdk::ShaderParams, read-only on purpose: k_mObjectToClip is the COMPOSED
+// object-to-clip transform, set per draw, so a write would be overwritten before a shader saw
+// it. Reading is genuinely useful now; a setter would be a lie about what it achieves.
+//
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
 // WHICH DEVICE METHODS THE ENGINE IS SEEN TO CALL -- CANDIDATES, NOT A CENSUS. Extracted by tracking

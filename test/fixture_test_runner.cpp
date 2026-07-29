@@ -3621,6 +3621,73 @@ int main(int argc, char** argv) {
         printf("[fixture] interfaces: %zu/%zu resolved\n", resolved, entries);
     }
 
+    // 5b4. /sdk/shader-params: the engine's named shader parameters.
+    //
+    // Another CROSS-CHECK against static reversing, and the same discipline as the
+    // interface block above: IDA walked the doubly-linked list at g_ShaderParamList_Head
+    // and recorded 60 records with a specific type distribution. The DLL walks the same
+    // list in-process through sdk::ShaderParams, sharing no code with that extraction, so
+    // agreement is evidence rather than self-agreement.
+    //
+    // This section runs AT THE MAIN MENU, unlike most engine state here: the list is
+    // static exe data. That makes it one of the few real checks available with no level
+    // loaded.
+    //
+    // Deliberately NOT asserted: that any parameter is BOUND, or the resolution's actual
+    // numbers. Binding happens when the engine assigns handles, so zero bound is a state,
+    // not a defect; and asserting 5120x1440 would fail on every other machine -- the same
+    // environment-dependence this suite already corrected for the device vtable.
+    {
+        std::string resp;
+        check(http::get(port, "/sdk/shader-params", resp), "/sdk/shader-params transport");
+        const std::string body = http::body_of(resp);
+        check(json_has(body, "\"ok\":true"), "the shader parameter list is reachable");
+
+        int64_t count = -1, disagrees = -1, nodes = -1, bound = -1, pending = -1;
+        check(json_int(body, "count", count) && count == 60,
+              "60 shader parameter records walked (matches static IDA extraction)");
+        check(json_int(body, "size_disagrees", disagrees) && disagrees == 0,
+              "every record's byte size is a whole multiple of its declared type's element size");
+
+        // The structural fact behind the bone array: 1152 bytes of float4x3 is 24 of them.
+        check(json_int(body, "model_nodes_elements", nodes) && nodes == 24,
+              "k_mModelObjectNodes holds 24 node transforms (1152 bytes / 48)");
+
+        // Typed accessors actually reading, not merely the walk succeeding.
+        check(json_has(body, "\"screen_res\":true"),
+              "k_vScene_ScreenRes reads through the typed float2 accessor");
+        check(json_has(body, "\"object_to_clip_readable\":true"),
+              "k_mObjectToClip reads through the typed float4x4 accessor");
+
+        // Resolution values are machine-dependent, so only their SHAPE is a defect signal:
+        // a zero or negative extent would mean the read landed somewhere wrong.
+        double res_w = 0.0, res_h = 0.0;
+        check(json_double(body, "screen_res_w", res_w) && res_w > 0.0,
+              "the reported screen width is positive");
+        check(json_double(body, "screen_res_h", res_h) && res_h > 0.0,
+              "the reported screen height is positive");
+
+        // THE API CONTRACT THAT MATTERS: an array parameter has the same TYPE as a single
+        // matrix, so a tag-only check would hand back the first of 24 and call it the
+        // whole value. The fixed-size accessor must refuse it.
+        check(json_has(body, "\"array_refused_by_fixed_accessor\":true"),
+              "the fixed-size matrix4x3 accessor refuses the 24-element array parameter");
+
+        // These read as COUNTS, which is only true because the report names them distinctly
+        // from the per-entry "bound"/"pending" booleans. A first-match JSON reader parsed a
+        // boolean here and yielded -1 until the endpoint was fixed, so the parse itself is
+        // the regression guard. Their VALUES stay unasserted: nothing is bound at the menu
+        // and plenty is bound in a level, both legitimate.
+        check(json_int(body, "bound_count", bound) && bound >= 0 && bound <= count,
+              "the bound count parses as a count within the record total");
+        check(json_int(body, "pending_count", pending) && pending >= 0 && pending <= count,
+              "the pending-upload count parses as a count within the record total");
+        printf("[fixture] shader params: %lld records, %lld bound, %lld pending upload, "
+               "screen %.0fx%.0f\n",
+               static_cast<long long>(count), static_cast<long long>(bound),
+               static_cast<long long>(pending), res_w, res_h);
+    }
+
     // 5c. /engine-hook positive + negative.
     {
         std::string resp;
