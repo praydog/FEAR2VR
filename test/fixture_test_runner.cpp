@@ -3857,11 +3857,22 @@ int main(int argc, char** argv) {
             // transform, and is the address a stereo path would hook.
             double po = -1.0, ao = -1.0, so = -1.0;
             check(json_double(body, "pass_persp_off", po) && po == 0x20B520,
-                  "pass_setup_fn(Perspective) resolves to exe+0x20B520 (CLTRenderer vtable slot 15)");
+                  "renderer_fn(SetupPassPerspective) resolves to exe+0x20B520 (vtable slot 15)");
             check(json_double(body, "pass_affine_off", ao) && ao == 0x20B560,
-                  "pass_setup_fn(Affine) resolves to exe+0x20B560 (slot 16)");
+                  "renderer_fn(SetupPassAffine) resolves to exe+0x20B560 (slot 16)");
             check(json_double(body, "pass_stored_off", so) && so == 0x20B5A0,
-                  "pass_setup_fn(Stored) resolves to exe+0x20B5A0 (slot 17)");
+                  "renderer_fn(SetupPassStored) resolves to exe+0x20B5A0 (slot 17)");
+
+            // The rest of the lifecycle. Having all of these matters because the engine's own
+            // multi-view code (MakeCubicEnvMap) drives exactly this sequence six times, so a stereo
+            // path is the same sequence twice rather than anything new.
+            double eo = -1.0, dso = -1.0, dlo = -1.0;
+            check(json_double(body, "pass_end_off", eo) && eo == 0x20B5C3,
+                  "renderer_fn(EndPass) resolves to exe+0x20B5C3 (slot 18)");
+            check(json_double(body, "pass_draw_off", dso) && dso == 0x20AF1B,
+                  "renderer_fn(DrawScene) resolves to exe+0x20AF1B (slot 20)");
+            check(json_double(body, "pass_drawlist_off", dlo) && dlo == 0x20AF32,
+                  "renderer_fn(DrawObjectList) resolves to exe+0x20AF32 (slot 21)");
 
             // THE REGRESSION TEST FOR A BUG THE LIVE CHECKS CANNOT SEE. rotation_matrix() hardcoded a
             // factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit,

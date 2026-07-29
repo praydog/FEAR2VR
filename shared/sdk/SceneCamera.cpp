@@ -755,21 +755,27 @@ std::array<float, 16> SceneCamera::compose_view_projection(const std::array<floa
     return multiply_by_affine(projection, affine);
 }
 
-size_t SceneCamera::pass_setup_slot(PassKind kind) {
-    switch (kind) {
-    case PassKind::Perspective:
+size_t SceneCamera::renderer_slot_index(RendererSlot slot) {
+    switch (slot) {
+    case RendererSlot::SetupPassPerspective:
         return 15;
-    case PassKind::Affine:
+    case RendererSlot::SetupPassAffine:
         return 16;
-    case PassKind::Stored:
+    case RendererSlot::SetupPassStored:
         return 17;
+    case RendererSlot::EndPass:
+        return 18;
+    case RendererSlot::DrawScene:
+        return 20;
+    case RendererSlot::DrawObjectList:
+        return 21;
     default:
         return 0;
     }
 }
 
-uintptr_t SceneCamera::pass_setup_fn(PassKind kind) {
-    const auto slot = pass_setup_slot(kind);
+uintptr_t SceneCamera::renderer_fn(RendererSlot which) {
+    const auto slot = renderer_slot_index(which);
     if (slot == 0) {
         return 0;
     }

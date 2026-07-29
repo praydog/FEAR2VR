@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A GATE CAN ANSWER A SAMPLING MYSTERY.** I spent two passes noting that 4000 consecutive reads of the
+  camera record never caught a perspective pass, and treating it as a limitation of sampling.
+  SceneRenderer_DrawScene's second gate explains it outright: it refuses to run when the pass mode is 2, so
+  the screen pass cannot draw the 3D scene, and mode 2 is simply the state the engine PARKS in between
+  frames. The answer was in a conditional, not in more samples.
+  
+- **LOOK FOR THE ENGINE ALREADY DOING WHAT YOU WANT.** Before designing a stereo render path, MakeCubicEnvMap
+  turned out to render the same scene six times from six camera transforms through the public pass API. That
+  is a worked reference for multi-view rendering sitting in the binary -- setup, draw, end, repeated -- and
+  it is far better evidence about what the engine tolerates than any amount of reasoning about what it
+  might. Self-naming error strings found it in one query.
+
 - **THE USEFUL HOOK IS AT THE SINGLE COMMON INPUT, NOT THE DERIVED VALUES.** The camera pose, view matrix,
   view-projection and world-to-screen matrix are four fields, but three of them are computed from the first,
   and the first is a function ARGUMENT at CLTRenderer vtable slot 15. Tracing the argument forward

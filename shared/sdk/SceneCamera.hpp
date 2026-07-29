@@ -423,15 +423,26 @@ public:
     //
     // Resolved from the LIVE vtable rather than a fixed address, and bounds-checked against the exe,
     // so a null interface or an unexpected table yields 0 instead of a wild pointer to hook.
-    enum class PassKind {
-        Perspective,  // slot 15, mode 0, LTMatrix_BuildPerspectiveProjection
-        Affine,       // slot 16, mode 1, LTMatrix_BuildAffineProjection
-        Stored,       // slot 17, one argument; which pass it configures is NOT established
+    // THE WHOLE PASS LIFECYCLE, not just the setup, because the engine already demonstrates the
+    // sequence: Renderer_MakeCubicEnvMap renders the same scene SIX times from six transforms as
+    //
+    //     SetupPassPerspective(transform)  ->  DrawScene(...)  ->  EndPass()
+    //
+    // repeated per face. A stereo path is that run twice. Having all six anchors means a consumer can
+    // hook the setup to substitute a transform, or drive the sequence itself, without rediscovering
+    // which slot does what.
+    enum class RendererSlot {
+        SetupPassPerspective,  // 15, mode 0, takes the camera transform as its first argument
+        SetupPassAffine,       // 16, mode 1
+        SetupPassStored,       // 17, one argument; which pass it configures is NOT established
+        EndPass,               // 18, no arguments; requires state 4 and returns it to 3
+        DrawScene,             // 20, the whole scene
+        DrawObjectList,        // 21, an object list and count
     };
-    static uintptr_t pass_setup_fn(PassKind kind);
+    static uintptr_t renderer_fn(RendererSlot slot);
 
-    // The vtable slot index each kind occupies, for logging and for a consumer resolving its own way.
-    static size_t pass_setup_slot(PassKind kind);
+    // The vtable index each entry occupies, for logging and for a consumer resolving its own way.
+    static size_t renderer_slot_index(RendererSlot slot);
 
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();

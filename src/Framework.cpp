@@ -3359,9 +3359,13 @@ std::string build_shader_params_json() {
         }
         return static_cast<long long>(address - exe_base);
     };
-    const auto persp_fn = sdk::SceneCamera::pass_setup_fn(sdk::SceneCamera::PassKind::Perspective);
-    const auto affine_fn = sdk::SceneCamera::pass_setup_fn(sdk::SceneCamera::PassKind::Affine);
-    const auto stored_fn = sdk::SceneCamera::pass_setup_fn(sdk::SceneCamera::PassKind::Stored);
+    using Slot = sdk::SceneCamera::RendererSlot;
+    const auto persp_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassPerspective);
+    const auto affine_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassAffine);
+    const auto stored_fn = sdk::SceneCamera::renderer_fn(Slot::SetupPassStored);
+    const auto end_fn = sdk::SceneCamera::renderer_fn(Slot::EndPass);
+    const auto draw_fn = sdk::SceneCamera::renderer_fn(Slot::DrawScene);
+    const auto draw_list_fn = sdk::SceneCamera::renderer_fn(Slot::DrawObjectList);
 
     // screen_to_clip against the viewport transform the rect implies, and a pixel round trip: the
     // viewport centre must map to clip (0,0) whenever the two really are inverses.
@@ -3774,6 +3778,9 @@ std::string build_shader_params_json() {
     json_append_double(out, "pass_persp_off", static_cast<double>(anchor_offset(persp_fn)), 0);
     json_append_double(out, "pass_affine_off", static_cast<double>(anchor_offset(affine_fn)), 0);
     json_append_double(out, "pass_stored_off", static_cast<double>(anchor_offset(stored_fn)), 0);
+    json_append_double(out, "pass_end_off", static_cast<double>(anchor_offset(end_fn)), 0);
+    json_append_double(out, "pass_draw_off", static_cast<double>(anchor_offset(draw_fn)), 0);
+    json_append_double(out, "pass_drawlist_off", static_cast<double>(anchor_offset(draw_list_fn)), 0);
     json_append_double(out, "near_rot_err", near_err.has_value() ? near_err->rotation : -1.0, 8);
     json_append_double(out, "near_trans_err", near_err.has_value() ? near_err->translation : -1.0, 8);
     json_append_double(out, "far_rot_err", far_err.has_value() ? far_err->rotation : -1.0, 8);

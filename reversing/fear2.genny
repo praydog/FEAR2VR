@@ -1490,6 +1490,30 @@ class CClientMgrCounterNode 0x40 {
 //     slot 15  CLTRenderer_SetupPassPerspective  0x60B520  mode 0 -> perspective projection
 //     slot 16  CLTRenderer_SetupPassAffine       0x60B560  mode 1 -> affine projection
 //     slot 17  CLTRenderer_SetupPassStored       0x60B5A0  mode not an immediate; NOT established
+//     slot 18  CLTRenderer_EndPass               0x60B5C3  no args; state 4 -> 3
+//     slot 20  CLTRenderer_DrawScene             0x60AF1B  the whole scene
+//     slot 21  CLTRenderer_DrawObjectList        0x60AF32  object list + count, both validated
+//
+// THE STATE MACHINE IS NOW CLOSED. The 1..4 comparisons scattered through the render code resolve to:
+// 3 = ready for a pass, 4 = a pass is configured. SetupCameraShaderParams does 3 -> 4,
+// SceneRenderer_EndPass does 4 -> 3, and SceneRenderer_DrawScene refuses to run outside state 4.
+//
+// AND DrawScene ALSO REFUSES MODE 2, which answers a question this project kept circling: the screen
+// pass cannot draw the 3D scene at all. That is why the camera record sits in mode 2 between frames
+// and why 4000 consecutive samples never caught a perspective pass -- mode 2 is the state the engine
+// PARKS in, and every 3D pass exists only between a setup and an end.
+//
+// A WORKED EXAMPLE ALREADY EXISTS IN THE BINARY. Renderer_MakeCubicEnvMap (0x6128C3, self-named in six
+// of its own error strings) renders the same scene SIX times from six transforms:
+//
+//     Renderer_BuildCubeFaceTransform(face)          build the transform
+//     SceneRenderer_SetupPassPerspective(transform)   3 -> 4, mode 0
+//     SceneRenderer_DrawScene(...)                    requires 4, refuses mode 2
+//     SceneRenderer_EndPass()                         4 -> 3
+//
+// per face. Renderer_PlatformCaptureOrthoProjection (0x612660) does the same through the affine setup.
+// So multiple views per frame are something this engine ALREADY DOES through its public pass API -- a
+// stereo path is that sequence run twice with two eye transforms, not a new mechanism.
 //
 // All three gate on g_SceneRenderer == 3 and return 0 without doing anything otherwise, so a caller
 // cannot assume a pass was configured. The mode is what distinguishes them: the wrappers pass 0 and 1
@@ -1510,7 +1534,7 @@ class CClientMgrCounterNode 0x40 {
 // world-to-screen matrix together and consistently. Patching those matrices individually would mean
 // keeping three derived values in agreement by hand; this changes their single common input.
 //
-// EXPOSED AS sdk::SceneCamera::pass_setup_fn(PassKind), resolved from the LIVE vtable through the
+// EXPOSED AS sdk::SceneCamera::renderer_fn(RendererSlot), resolved from the LIVE vtable through the
 // interface registry rather than a fixed address, and bounds-checked against the exe -- the whole
 // point of this address is that something will WRITE to it, so a plausible pointer from an unexpected
 // table is worse than none. The suite checks all three resolve to the offsets static reversing
