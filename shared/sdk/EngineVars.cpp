@@ -10,8 +10,13 @@ namespace sdk {
 
 namespace {
 
-// g_LTEngineVarTable, 22 entries of {const char* name, void* storage, u32 type}.
-constexpr uintptr_t kTableOffset = 0x2E3734;
+// g_LTEngineVarTable, 106 entries of {const char* name, void* storage, u32 typeAndFlags}.
+//
+// AN EARLIER VERSION OF THIS FILE USED 0x2E3734 AND FOUND 22 ENTRIES. That address is 24 entries into
+// the table, and the walk stopped 60 entries early: it rejected any type tag above 8, and 6 of the
+// entries carry 0x00010002 -- flags in the HIGH half with the type in the low. Both ends of the slice
+// were artefacts of that, and nothing about the 22 looked wrong.
+constexpr uintptr_t kTableOffset = 0x2E350C;
 constexpr size_t kEntryStride = 12;
 
 // A cap well above the known 22, so a corrupt table cannot spin. The walk also stops on the first
@@ -109,7 +114,9 @@ std::vector<EngineVars::Entry> EngineVars::all() {
         // THE TERMINATOR IS VALIDATION, NOT A COUNT: both pointers must land in the exe and the tag
         // must be one this build understands. That is what makes a schema change shorten the result
         // instead of walking into unrelated data.
-        if (!inside_exe(name_ptr) || !inside_exe(storage) || type > 2) {
+        // The tag is TWO u16 fields: the value type in the low half, flags in the high. Masking is
+        // what makes the walk reach all 106 entries instead of stopping at the first flagged one.
+        if (!inside_exe(name_ptr) || !inside_exe(storage) || (type & 0xFFFFu) > 2) {
             break;
         }
         Entry entry{};
@@ -117,7 +124,8 @@ std::vector<EngineVars::Entry> EngineVars::all() {
             break;
         }
         entry.address = storage;
-        entry.type = type;
+        entry.type = type & 0xFFFFu;
+        entry.flags = static_cast<uint16_t>(type >> 16);
         out.push_back(std::move(entry));
     }
     return out;

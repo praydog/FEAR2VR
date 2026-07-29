@@ -963,6 +963,22 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A FILTER'S REJECTIONS BOUND YOUR TABLE, AND THE RESULT LOOKS FINE.** I reported the engine variable table
+  as 22 entries. It has 106. My scan started 24 entries in (I began from the entry I had chased there, not from
+  the table's start) and stopped 60 short because it rejected any type tag above 8 -- and 6 entries carry
+  0x00010002, flags in the high half. Both bounds were artefacts of my own predicate, and the slice was
+  entirely convincing: plausible names, sane addresses, correct types, passing tests. When a scan defines a
+  table's extent, walk OUTWARD from a known entry to both ends and ask what stopped it.
+  
+- **A TAG THAT BREAKS YOUR RANGE CHECK MAY BE TWO FIELDS.** 0x00010002 is not an out-of-range type; it is
+  type 2 with flag bit 0 set. The tell was that the value looked like two halves rather than a large number.
+  Mask before comparing, and surface the other half rather than discarding it.
+  
+- **TWO ADJACENT TABLES CAN LOOK LIKE ONE, AND THE DISCRIMINATOR IS WHAT THE POINTER POINTS AT.** The command
+  table (34 entries) and the variable table (106) are the same {name, ptr, u32} shape, 0x28C apart. What
+  separates them is that a command's second dword is a FUNCTION START and a variable's is a .data address --
+  which is also why the variable-shaped scan silently skipped the command table entirely.
+
 - **A GLOBAL THAT IS READ BUT NEVER WRITTEN, WITH ONE POINTER TO IT, IS A SETTINGS SLOT.** Chasing the flag
   that gates CClientMgr__Update's physics block turned up `dword_6EE978` with two readers, zero writers
   anywhere in the exe, and a single data reference. That reference was a slot in a static

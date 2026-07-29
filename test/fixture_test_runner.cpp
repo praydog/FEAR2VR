@@ -3904,8 +3904,8 @@ int main(int argc, char** argv) {
             // Structure is asserted, VALUES are not: these are user settings, and what a machine has
             // MaxFPS set to is not this suite's business.
             double var_count = -1.0, var_ok = -1.0, pp_off = -1.0;
-            check(json_double(body, "engine_var_count", var_count) && var_count == 22.0,
-                  "the engine variable table walks to 22 entries");
+            check(json_double(body, "engine_var_count", var_count) && var_count == 106.0,
+                  "the engine variable table walks to all 106 entries");
             check(json_double(body, "engine_var_wellformed", var_ok) && var_ok == var_count,
                   "every entry has an in-exe storage address and a known type tag");
 

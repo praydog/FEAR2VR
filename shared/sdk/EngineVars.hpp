@@ -28,6 +28,16 @@
 //
 // The type-1 case is the decisive one: a value that is nonsense as an integer and exact as a float is
 // a float. Type 0 is left explicitly unresolved rather than folded into one of the others.
+//
+// THE TAG IS TWO FIELDS. Low 16 bits are the type above; the high 16 carry flags, and 6 of the 106
+// entries set bit 0. What that bit means is NOT established. It is surfaced on Entry rather than masked
+// away, because an unexplained field a caller can see beats one a library silently discards.
+//
+// THERE IS A SECOND TABLE BESIDE THIS ONE: g_LTEngineCommandTable at exe+0x2E3280, 34 entries of
+// {name, handler, 0} -- quit, ListCommands, RestartRender, RebindTextures, Exec, ForceCrash and so on.
+// Console COMMANDS with function pointers rather than storage. Not exposed here: reading a variable is
+// a load, whereas invoking a command is a call into the engine on whatever thread the caller happens to
+// be, and that deserves its own deliberate design rather than a getter.
 namespace sdk {
 
 class EngineVars {
@@ -41,7 +51,9 @@ public:
     struct Entry {
         std::string name;
         uintptr_t address{};  // the engine's own storage, directly readable and writable
-        uint32_t type{};      // compare against Type; kept raw so an unexpected tag is visible
+        uint32_t type{};      // the tag's LOW 16 bits; compare against Type
+        uint16_t flags{};     // its HIGH 16 bits. Values 0 and 1 occur (6 entries carry 1); what the
+                              // bit MEANS is not established, so it is surfaced rather than dropped.
 
         bool is_int() const;
         bool is_float() const;
@@ -50,7 +62,12 @@ public:
     // Number of entries the table is known to hold. Asserted rather than trusted: the walk below stops
     // on the first entry that does not look like a triplet, so a schema change shortens the result
     // instead of running off the end.
-    static constexpr size_t kKnownEntryCount = 22;
+    //
+    // THIS WAS 22 AND THAT WAS WRONG TWICE OVER: the offset used started 24 entries into the table, and
+    // the walk rejected any tag above 8 while 6 entries carry 0x00010002 -- flags in the high half. The
+    // slice looked entirely plausible, which is why the count is asserted by the suite rather than
+    // trusted here.
+    static constexpr size_t kKnownEntryCount = 106;
 
     // Address of the table, or 0 when the exe is not mapped.
     static uintptr_t table_address();

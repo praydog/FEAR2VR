@@ -1483,9 +1483,36 @@ class CClientMgrCounterNode 0x40 {
 //
 // // ---- THE ENGINE'S BUILT-IN SETTINGS TABLE ----
 //
-// g_LTEngineVarTable at 0x6E3734: 22 entries of {const char* name, void* storage, u32 type}, 12 bytes
-// each. The engine's own knobs, each with a DIRECT storage address -- no console-variable API, no hash
-// lookup. Whatever reads a setting reads that address.
+// g_LTEngineVarTable at 0x6E350C: 106 entries of {const char* name, void* storage, u32 typeAndFlags},
+// 12 bytes each. The engine's own knobs, each with a DIRECT storage address -- no console-variable API,
+// no hash lookup. Whatever reads a setting reads that address.
+//
+// I FIRST RECORDED THIS AS 22 ENTRIES AT 0x6E3734 AND BOTH NUMBERS WERE WRONG. That address is 24
+// entries into the table, and the walk stopped 60 short because it rejected any tag above 8 -- while 6
+// entries carry 0x00010002, which is FLAGS in the high half and the type in the low. A slice from the
+// middle of a table, bounded at both ends by artefacts of my own filter, and nothing about it looked
+// wrong: 22 plausible names, sane storage addresses, correct types, and a passing suite.
+//
+// THE TAG IS TWO u16 FIELDS: low = value type, high = flags (0 on 100 entries, 1 on 6; the bit's meaning
+// is NOT established). Masking is what makes a walk reach all 106.
+//
+// AND THERE IS A SECOND TABLE BESIDE IT: g_LTEngineCommandTable at 0x6E3280, 34 entries of
+// {name, handler, 0} -- console COMMANDS with function pointers instead of storage:
+//
+//     ShowObjectMem quit serv UpdateServer ListCommands ErrorLog RestartRender RebindTextures
+//     RebindPrefabs RebindVideos RebindMeshes RebindResource Exec MoveConsole Mem ForceCrash Perf
+//     ConsoleFont ConsoleFontSize UpdateAssetLists SetAssetList FlushAssetList OverrideShader
+//     ProfilerPause ProfilerResume DuplicateAssets SoundShowPlayingNames ListResourcesOfType LogModels
+//     PrintDuplicateAnimations ListTrackedResources TrackResourceChanges StopTrackResourceChanges
+//     ListArchiveFiles
+//
+// Distinguishing the two took reading the second dword: a function START means a command, a .data
+// address means a variable. That is also why the variable scan had rejected the command table -- its
+// second dword points into .text, not .data.
+//
+// NOT EXPOSED IN THE SDK: the commands. Reading a variable is a load; invoking a command is a call into
+// the engine on whatever thread the caller happens to be on, which deserves its own design rather than a
+// getter that happens to work.
 //
 //     ShowOnlineServiceAccess  PhysicsDebugAllocator  PausePhysics  PhysicsClientUpdateRate
 //     PhysicsServerUpdateRate  PhysicsClientThreads   PhysicsServerThreads  PhysicsMaxSteps
@@ -1518,7 +1545,10 @@ class CClientMgrCounterNode 0x40 {
 // as a float yields 6e-44, a plausible-looking small number.
 //
 // The suite pins PausePhysics's storage to exe+0x2EE978, tying the table back to the gate that led to
-// it, and asserts the typed refusals. Values are deliberately NOT asserted: they are user settings.
+// it, asserts the walk reaches all 106 entries, and asserts the typed refusals. Values are deliberately
+// NOT asserted: they are user settings. The COUNT is asserted precisely because the 22-entry slice
+// looked entirely plausible -- a wrong extent is exactly the kind of error that needs an external check
+// rather than a library's own confidence.
 //
 // ---- FOUR CLOCKS, AND WHICH ONE ANSWERS "IS THE ENGINE RUNNING" ----
 //
