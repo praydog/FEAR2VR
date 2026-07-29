@@ -369,6 +369,33 @@ public:
     static std::optional<regenny::LTMatrix3x4> view_matrix_from_pose(
         const regenny::LTNodeTransform& pose);
 
+    // 3x4 rotation matrix -> quaternion, transcribed from LTRotation_FromMatrix3x4 (0x407A76): the
+    // standard trace branch, falling back to the largest diagonal element.
+    //
+    // The inverse of sdk::rotation_matrix, which is how it is TESTED rather than merely transcribed --
+    // the two are independent transcriptions of two engine functions, so requiring them to round-trip
+    // catches a sign or index error in either.
+    //
+    // WHY A CONSUMER WANTS IT: the engine takes a camera as an LTNodeTransform, i.e. a QUATERNION. Any
+    // orientation built with matrix maths -- a look-at, a basis from tracked axes, an interpolation --
+    // has to come back to a quaternion before the engine will accept it. nullopt for a non-finite
+    // matrix or one whose branch produces a degenerate scale.
+    static std::optional<regenny::LTRotation> rotation_from_matrix(const regenny::LTMatrix3x4& m);
+
+    // A 3x4 built from three basis vectors as COLUMNS, matching LTMatrix3x4_FromBasisColumns
+    // (0x40799C): right -> column 0, up -> column 1, forward -> column 2. Columns rather than rows,
+    // consistent with this engine's column-vector convention.
+    static regenny::LTMatrix3x4 matrix_from_basis_columns(float right_x, float right_y, float right_z,
+                                                          float up_x, float up_y, float up_z,
+                                                          float fwd_x, float fwd_y, float fwd_z);
+
+    // A camera transform from a position and rotation. Trivial, and exposed because it documents the
+    // shape the engine actually wants: MakeCubicEnvMap builds exactly this on the stack -- position
+    // then quaternion -- and passes its address to the perspective pass setup. There is no camera
+    // object to construct.
+    static regenny::LTNodeTransform make_camera_transform(float x, float y, float z,
+                                                         const regenny::LTRotation& rotation);
+
     // A 3x4 widened to 4x4 with the implicit (0,0,0,1) row. The engine stores its view matrices and
     // shears as 3x4 but composes into 4x4, so a consumer doing its own composition needs this.
     static std::array<float, 16> promote_affine(const regenny::LTMatrix3x4& affine);

@@ -3889,6 +3889,17 @@ int main(int argc, char** argv) {
             check(json_bool(body, "rotation_rejects_nonfinite", rnf) && rnf,
                   "rotation_matrix refuses a non-finite quaternion");
 
+            // QUATERNION <-> MATRIX, both directions. rotation_matrix and rotation_from_matrix are
+            // independent transcriptions of two different engine functions, so requiring them to
+            // invert each other catches a sign or index error in either -- something no
+            // single-direction test can do. Compared as MATRICES, since q and -q are the same rotation.
+            bool qrt = false;
+            double qbr = -1.0;
+            check(json_bool(body, "quat_roundtrips", qrt) && qrt,
+                  "rotation_from_matrix inverts rotation_matrix for every probe rotation");
+            check(json_double(body, "quat_branches", qbr) && qbr >= 2.0,
+                  "and the negative-trace fallback branch was actually exercised (>= 2 cases)");
+
             // Finite input whose OUTPUT overflows -- the same class of hole the projection builders
             // had. invert_transform's optional must mean "usable transform", not "input looked fine".
             bool rop = false;

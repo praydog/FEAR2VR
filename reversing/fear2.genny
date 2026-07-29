@@ -1481,7 +1481,51 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- WHERE THE CAMERA TRANSFORM ENTERS THE ENGINE, i.e. WHERE TO HOOK ----
+// // ---- HOW THE ENGINE BUILDS A CAMERA TRANSFORM ----
+//
+// THERE IS NO CAMERA OBJECT TO CONSTRUCT, which is the useful part. Renderer_MakeCubicEnvMap writes a
+// position into a stack slot, writes a quaternion into the four floats immediately after it -- forming
+// an LTNodeTransform in place -- and passes that address to SceneRenderer_SetupPassPerspective. So an
+// alternate view needs {position, rotation} on the stack and nothing else.
+//
+// THE ROTATION COMES FROM A LOOK-AT: LTRotation_FromForwardUp (0x612827), named for what it computes
+// rather than its one caller, since nothing in it is cube-specific.
+//
+//     dot = LTVisPlane_DotNormal(forward, up)
+//     if dot > 0.99 or dot < -0.99                 <- g_LTLookAtParallelMax / Min
+//         up = (forward.y, forward.z, forward.x)   swizzle, so a forward parallel to the hint still
+//                                                  yields an independent second axis
+//     LTVector_Cross, LTVector_NormalizeInPlace, LTVector_Cross
+//     LTMatrix3x4_FromBasisColumns  then  LTRotation_FromMatrix3x4
+//
+// THE CROSS OPERAND ORDER IS NOT PINNED, only that two crosses and one normalise occur, so HANDEDNESS
+// IS NOT ESTABLISHED from this function. A consumer building its own look-at must verify against a
+// known rotation rather than assume this order -- which is why the SDK exposes the primitives and not a
+// look-at helper.
+//
+// THE PRIMITIVES, all pinned:
+//
+//     LTVector_Cross                 0x407936  out = this x a3, the standard formula
+//     LTVector_NormalizeInPlace      0x410150  length, reciprocal square root, scale
+//     LTMatrix3x4_FromBasisColumns   0x40799C  vectors into COLUMNS 0, 1, 2 -- not rows, consistent
+//                                              with this engine's column-vector convention
+//     LTRotation_FromMatrix3x4       0x407A76  matrix -> quaternion, trace branch above -0.999 and
+//                                              largest-diagonal fallback below it
+//
+// LTRotation_FromMatrix3x4 IS THE INVERSE OF LTRotation_ToMatrix3x4, and that pairing is worth more
+// than either alone: the SDK transcribes both from separate engine functions, so requiring them to
+// round-trip catches a sign or index error in either. The suite does exactly that, and covers both
+// branches -- a 180-degree rotation drives the trace to -1 and forces the fallback path.
+//
+// w IS AT INDEX 3 in the trace branch, a FOURTH independent confirmation of the component order after
+// the identity pose, LTRotation's declaration and LTRotation_ToMatrix3x4.
+//
+// EXPOSED AS sdk::SceneCamera::rotation_from_matrix / matrix_from_basis_columns /
+// make_camera_transform. The last is trivial by design: it documents the shape the engine wants, which
+// is the whole point -- any orientation built with matrix maths has to return to a quaternion before
+// the engine will take it.
+//
+// ---- WHERE THE CAMERA TRANSFORM ENTERS THE ENGINE, i.e. WHERE TO HOOK ----
 //
 // CLTRenderer_vftable SLOTS 15, 16 AND 17 are the pass setup entry points, and slot 15 takes the
 // CAMERA TRANSFORM as its first stack argument. That makes it the single most useful interception

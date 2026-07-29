@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **TWO ENGINE FUNCTIONS THAT INVERT EACH OTHER ARE A FREE TEST.** LTRotation_ToMatrix3x4 and
+  LTRotation_FromMatrix3x4 are separate functions transcribed separately, so requiring the SDK's pair to
+  round-trip catches a sign or index error in either -- something no single-direction check can do. Compare
+  the MATRICES rather than the quaternion components, since q and -q are the same rotation. And pick probe
+  inputs that force each branch: a 180-degree rotation drives the trace to -1 and exercises the
+  largest-diagonal fallback that a small rotation never touches.
+  
+- **NAME THE FUNCTION FOR WHAT IT COMPUTES, NOT ITS ONE CALLER.** sub_612827 was reachable only from
+  MakeCubicEnvMap, so "BuildCubeFaceTransform" looked right. Nothing in it is cube-specific: it is a look-at
+  taking a forward and an up hint. The caller-derived name would have hidden a generally useful primitive
+  behind a special case.
+  
+- **DECLINE TO EXPOSE WHAT THE DECOMPILE DOES NOT PIN.** The look-at's two cross products appear in the
+  pseudocode without their operand order, so handedness is unestablished -- and a flipped cross yields a
+  mirrored view that looks plausible. The SDK exposes the pinned primitives (cross, normalise, basis columns,
+  matrix-to-quaternion) and no look-at helper, with the gap named in the header instead of papered over.
+
 - **A GATE CAN ANSWER A SAMPLING MYSTERY.** I spent two passes noting that 4000 consecutive reads of the
   camera record never caught a perspective pass, and treating it as a limitation of sampling.
   SceneRenderer_DrawScene's second gate explains it outright: it refuses to run when the pass mode is 2, so

@@ -724,6 +724,83 @@ std::optional<SceneCamera::RoundTripError> SceneCamera::view_inverse_round_trip_
     return out;
 }
 
+std::optional<regenny::LTRotation> SceneCamera::rotation_from_matrix(
+    const regenny::LTMatrix3x4& m) {
+    for (size_t i = 0; i < 12; ++i) {
+        if (!std::isfinite(m.m[i])) {
+            return std::nullopt;
+        }
+    }
+    regenny::LTRotation out{};
+    const float trace = m.m[0] + m.m[5] + m.m[10];
+    // The engine's own threshold is -0.999 rather than 0: below it the trace branch loses precision.
+    if (trace >= -0.999f) {
+        const float root = std::sqrt(trace + 1.0f);
+        if (!std::isfinite(root) || root <= 0.0f) {
+            return std::nullopt;
+        }
+        const float scale = 0.5f / root;
+        out.w = root * 0.5f;
+        out.x = (m.m[9] - m.m[6]) * scale;
+        out.y = (m.m[2] - m.m[8]) * scale;
+        out.z = (m.m[4] - m.m[1]) * scale;
+    } else {
+        // Largest diagonal element, then the cyclic permutation around it.
+        size_t i = (m.m[0] < m.m[5]) ? 1 : 0;
+        if (m.m[5 * i] < m.m[10]) {
+            i = 2;
+        }
+        const size_t j = (i + 1) % 3;
+        const size_t k = (i + 2) % 3;
+        const float root = std::sqrt(m.m[5 * i] - (m.m[5 * j] + m.m[5 * k]) + 1.0f);
+        if (!std::isfinite(root) || root <= 0.0f) {
+            return std::nullopt;
+        }
+        const float scale = 0.5f / root;
+        float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        q[i] = root * 0.5f;
+        q[3] = (m.m[4 * k + j] - m.m[4 * j + k]) * scale;
+        q[j] = (m.m[4 * j + i] + m.m[4 * i + j]) * scale;
+        q[k] = (m.m[4 * k + i] + m.m[4 * i + k]) * scale;
+        out.x = q[0];
+        out.y = q[1];
+        out.z = q[2];
+        out.w = q[3];
+    }
+    if (!std::isfinite(out.x) || !std::isfinite(out.y) || !std::isfinite(out.z) ||
+        !std::isfinite(out.w)) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+regenny::LTMatrix3x4 SceneCamera::matrix_from_basis_columns(float right_x, float right_y,
+                                                            float right_z, float up_x, float up_y,
+                                                            float up_z, float fwd_x, float fwd_y,
+                                                            float fwd_z) {
+    regenny::LTMatrix3x4 out{};
+    out.m[0] = right_x;
+    out.m[4] = right_y;
+    out.m[8] = right_z;
+    out.m[1] = up_x;
+    out.m[5] = up_y;
+    out.m[9] = up_z;
+    out.m[2] = fwd_x;
+    out.m[6] = fwd_y;
+    out.m[10] = fwd_z;
+    return out;
+}
+
+regenny::LTNodeTransform SceneCamera::make_camera_transform(float x, float y, float z,
+                                                            const regenny::LTRotation& rotation) {
+    regenny::LTNodeTransform out{};
+    out.position.x = x;
+    out.position.y = y;
+    out.position.z = z;
+    out.rotation = rotation;
+    return out;
+}
+
 std::array<float, 12> SceneCamera::affine_identity() {
     return {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
 }

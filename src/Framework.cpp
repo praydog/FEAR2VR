@@ -3637,6 +3637,66 @@ std::string build_shader_params_json() {
         rotation_rejects_nonfinite = !sdk::rotation_matrix(bad).has_value();
     }
 
+    // QUATERNION <-> MATRIX ROUND TRIP. rotation_matrix and rotation_from_matrix are independent
+    // transcriptions of two different engine functions (LTRotation_ToMatrix3x4 and
+    // LTRotation_FromMatrix3x4), so requiring them to invert each other catches a sign or index error in
+    // either -- which no single-direction test would.
+    //
+    // Both branches of the conversion are exercised: a small rotation takes the trace path, and a
+    // 180-degree one about an axis drives the trace negative and takes the largest-diagonal path.
+    int quat_roundtrip_failures = 0;
+    int quat_branches_covered = 0;
+    {
+        // (angle, axis) pairs: the second and third have negative trace, so they exercise the fallback.
+        const float axes[3][4] = {
+            {0.7f, 0.3f, -0.5f, 0.2f},   // arbitrary small-ish rotation
+            {3.1415f, 1.0f, 0.0f, 0.0f}, // 180 about x  -> trace = -1
+            {3.1415f, 0.0f, 0.0f, 1.0f}, // 180 about z  -> trace = -1
+        };
+        for (const auto& spec : axes) {
+            const float half = spec[0] * 0.5f;
+            const float sn = sinf(half);
+            float ax = spec[1], ay = spec[2], az = spec[3];
+            const float len = sqrtf(ax * ax + ay * ay + az * az);
+            if (len <= 0.0f) {
+                continue;
+            }
+            ax /= len; ay /= len; az /= len;
+            regenny::LTRotation q{};
+            q.x = ax * sn; q.y = ay * sn; q.z = az * sn; q.w = cosf(half);
+
+            const auto m = sdk::rotation_matrix(q);
+            if (!m.has_value()) {
+                ++quat_roundtrip_failures;
+                continue;
+            }
+            regenny::LTMatrix3x4 mm{};
+            for (size_t i = 0; i < 12; ++i) {
+                mm.m[i] = m->m[i];
+            }
+            if (mm.m[0] + mm.m[5] + mm.m[10] < -0.999f) {
+                ++quat_branches_covered;  // the fallback branch really was taken
+            }
+            const auto back = sdk::SceneCamera::rotation_from_matrix(mm);
+            if (!back.has_value()) {
+                ++quat_roundtrip_failures;
+                continue;
+            }
+            // q and -q are the same rotation, so compare the MATRICES rather than the components.
+            const auto m2 = sdk::rotation_matrix(*back);
+            if (!m2.has_value()) {
+                ++quat_roundtrip_failures;
+                continue;
+            }
+            for (size_t i = 0; i < 12; ++i) {
+                if (fabsf(m2->m[i] - mm.m[i]) > 2e-3f) {
+                    ++quat_roundtrip_failures;
+                    break;
+                }
+            }
+        }
+    }
+
     // Finite input, overflowing output: FLT_MAX positions make the dot products infinite.
     regenny::LTNodeTransform huge_pose = probe_pose;
     huge_pose.position.x = std::numeric_limits<float>::max();
@@ -3790,6 +3850,8 @@ std::string build_shader_params_json() {
     json_append_bool(out, "rotation_scale_invariant", rotation_scale_invariant);
     json_append_bool(out, "rotation_rejects_zero", rotation_rejects_zero);
     json_append_bool(out, "rotation_rejects_nonfinite", rotation_rejects_nonfinite);
+    json_append_bool(out, "quat_roundtrips", quat_roundtrip_failures == 0);
+    json_append_double(out, "quat_branches", static_cast<double>(quat_branches_covered), 0);
     json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
     json_append_bool(out, "tolerance_guards_hold", tolerance_guard_failures == 0);
     json_append_bool(out, "mismatch_detected", mismatch_detect_failures == 0);
