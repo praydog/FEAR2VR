@@ -1194,6 +1194,26 @@ class CClientMgrCounterNode 0x40 {
 // the SDK reads WITHOUT calling (sdk::interfaces::slot1_constant_string). Measured live: all 36 resolved
 // interfaces carry that same entry sequence at slot 1.
 //
+// WHAT IS NOT ESTABLISHED ABOUT THE OBJECT. Only +0x00 is proven: it holds the vtable above (live read,
+// and slot 1 returns "CLTClient"). The dwords that FOLLOW +0x00 in .data are function addresses, and it
+// is tempting to read them as a block of direct method pointers -- five CLTClient_* methods do exist that
+// are absent from the vtable (GetServiceList, SelectService, GetTcpIpAddress, IsLobbyLaunched,
+// GetLobbyLaunchInfo), which makes that story attractive. It is NOT supported:
+//   * a run of .text addresses in .data is equally consistent with neighbouring globals, and at least two
+//     of them ARE independent -- 0x6E31B0 and 0x6E31B4 are pushed as their own globals (off_6E31B0,
+//     off_6E31B4) from 0x406829 and 0x40686A;
+//   * no constructor or static initializer has been traced writing 0x66F258 together with those pointers
+//     as one aggregate, and no code was found accessing them as [g_pILTClient + offset].
+// Methods missing from a vtable need no exotic explanation anyway -- non-virtual members do not appear
+// there. Nothing past +0x00 is modelled until an initializer or an indexed access proves the extent.
+//
+// AN UNEXPLAINED STORE, recorded rather than resolved: sub_66B35F does
+// `mov [0x6E3138], offset off_678C80`, i.e. writes a DIFFERENT vtable (151 consecutive entries, and its
+// slot 1 does NOT have the constant-string shape, so it is another class) into the same first dword. Live
+// the field reads 0x66F258, so that store either runs earlier and is overwritten, or does not run in this
+// state. Its neighbours in that region are CAPIHolder_dtor tails, which hints at teardown, and that is a
+// hint, not a finding.
+//
 // 44 of the 147 implementations were already named from earlier passes, which the slot indices now
 // attach to the interface. A sample, and note these are the ENGINE's implementations in FEAR2.exe:
 //    16/17  GetObjectRotation / SetObjectRotation      18/19  GetObjectPos / SetObjectPos

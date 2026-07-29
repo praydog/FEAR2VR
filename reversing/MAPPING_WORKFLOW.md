@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE BOUNDARY MISTAKE, FOURTH TIME THIS SESSION -- NAME THE PATTERN.** Its shapes so far: `0xC3`
+  proving a body is one byte; "exactly six bytes" for an entry sequence; a vtable sized by scanning until
+  the pointers stopped looking like code; and now a "block of direct method pointers" read off consecutive
+  .data dwords after an object's vptr. Every instance is the same move -- a fixed-size or run-length
+  READ licensing a claim about an OBJECT'S EXTENT.
+  
+  The tell is available every time: ask what ELSE produces the same bytes. Consecutive .text addresses in
+  .data are equally consistent with unrelated neighbouring globals -- and here two of them provably ARE
+  (0x6E31B0/0x6E31B4 are pushed as their own globals). What would settle it is an initializer writing the
+  aggregate, or code doing [ptr + offset]; neither was found, so nothing past +0x00 gets modelled.
+  
+  Also worth recording: five CLTClient_* methods really are absent from the vtable, which made the field
+  block attractive. Missing-from-vtable has a boring explanation -- non-virtual members are not in one --
+  and an attractive story is exactly when to demand the initializer.
+  
+- **RECORD CONTRADICTIONS, DO NOT SMOOTH THEM.** sub_66B35F stores a different 151-entry vtable into the
+  ILTClient object's first dword, while the live field reads the 147-entry one. Both observations are
+  solid and they do not fit together yet. Written down as an open question with the evidence, because the
+  alternative -- quietly trusting the live read because it agrees with the rest of the mapping -- is how a
+  wrong model survives.
+
 - **IF THE PRODUCER ALREADY WALKS THE DATA, LET IT COUNT.** My first slot-1 fixture check re-parsed the
   endpoint's JSON array with a bespoke `},{` splitter to count resolved entries -- fragile, and a
   duplicate of a loop the producer was already running. Moved the counts into the endpoint
