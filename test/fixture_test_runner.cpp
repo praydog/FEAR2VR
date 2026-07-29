@@ -577,6 +577,52 @@ int main(int argc, char** argv) {
         printf("[fixture] caps: max texture %lld, vs %u.%u, ps %u.%u\n",
                static_cast<long long>(mtw), (vs >> 8) & 0xFF, vs & 0xFF,
                (ps >> 8) & 0xFF, ps & 0xFF);
+
+        // ---- SECTOR LOCATION: the KD shortcut against brute force ---------------------
+        //
+        // sectors_at() descends the visibility tree to narrow 263 sectors to a handful;
+        // scanning EVERY sector and testing its volume is the ORACLE. The two must name the
+        // same sector, and that is the whole point: the tree's structure does not state
+        // which child holds which side of a split, nor that sectors hang off INTERNAL nodes
+        // as well as leaves. Both were got wrong here and the oracle caught both -- a
+        // descent harvesting only leaves returned 2 candidates, neither of them the sector
+        // the player was standing in.
+        int64_t stot = -1, scand = -1, sbrute = -1, psec = -2, bsec = -2;
+        int64_t swith = -1, splanes = -1, sreadok = -1;
+        json_int(body, "sector_total", stot);
+        json_int(body, "sector_candidates", scand);
+        json_int(body, "sector_brute", sbrute);
+        json_int(body, "player_sector", psec);
+        json_int(body, "brute_sector", bsec);
+        json_int(body, "sec_with_planes", swith);
+        json_int(body, "sec_plane_total", splanes);
+        json_int(body, "sec_read_ok", sreadok);
+        check(stot > 0, "the world has visibility sectors");
+        check(sreadok == stot, "EVERY sector reads back through the public accessor");
+        if (sbrute > 0) {
+            // THE LOAD-BEARING ONE. Two independent routes to one answer.
+            check(psec == bsec,
+                  "the KD descent and a brute-force scan of all sectors name the SAME "
+                  "sector for the player");
+            check(psec >= 0 && psec < stot, "the located sector index is in range");
+            // The tree must actually NARROW, or the descent earns nothing over a scan.
+            check(scand > 0 && scand < stot,
+                  "the descent narrows the sector set instead of returning all of them");
+            printf("[fixture] player in sector %lld of %lld (descent offered %lld "
+                   "candidates)\n",
+                   static_cast<long long>(psec), static_cast<long long>(stot),
+                   static_cast<long long>(scand));
+        } else {
+            printf("[fixture] NOTE: the player is in no sector -- location was NOT "
+                   "cross-checked.\n");
+        }
+        // REPORTED: most sectors are box-only. 19 of 263 carry planes live, so a consumer
+        // must not require them -- which is what an earlier version of this API did.
+        check(swith >= 0 && swith <= stot,
+              "sectors carrying bounding planes are a reported fraction");
+        printf("[fixture] sectors: %lld of %lld carry planes (%lld planes total)\n",
+               static_cast<long long>(swith), static_cast<long long>(stot),
+               static_cast<long long>(splanes));
         // REPORTED: HAL vs REF is the machine's business, but a fallback to the reference
         // rasteriser is worth seeing in the log -- the engine itself warns about it.
         printf("[fixture] presenting %lldx%lld fmt %lld x%lld, swap %lld, depth %lld, "

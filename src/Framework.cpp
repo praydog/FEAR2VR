@@ -328,6 +328,54 @@ std::string build_targets_json() {
         }
     }
 
+    // Direct probe of the sector array itself: how many of the first N sectors read back
+    // with planes at all. If this is zero the array access is wrong and any containment
+    // result built on it is vacuous rather than negative.
+    int sec_read_ok = 0, sec_with_planes = 0, sec_plane_total = 0;
+    {
+        const int n = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < n; ++i) {
+            if (const auto s = sdk::VisTree::sector(static_cast<size_t>(i)); s.has_value()) {
+                ++sec_read_ok;
+                if (s->plane_count != 0) {
+                    ++sec_with_planes;
+                }
+                sec_plane_total += static_cast<int>(sdk::VisTree::sector_planes(
+                    static_cast<size_t>(i)).size());
+            }
+        }
+    }
+    // WHERE IS THE PLAYER, IN THE WORLD'S OWN TERMS -- the locomotion question, and the
+    // KD shortcut checked against brute force so the descent is proven, not trusted.
+    //
+    // sectors_at() descends the tree to a leaf and hands back a handful of candidates;
+    // scanning all sectors and testing every one's planes is the ORACLE. If the KD result
+    // ever omits a sector the brute-force scan finds, the descent's side convention is
+    // wrong -- which is the one thing about that structure the layout does not state.
+    int sector_total = 0, sector_candidates = 0, sector_brute = 0;
+    int player_sector = -1, brute_sector = -1;
+    if (player.has_value()) {
+        if (const auto info = sdk::object_info(player->object); info.has_value()) {
+            sector_total = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+            const auto cands = sdk::VisTree::sectors_at(info->position);
+            sector_candidates = static_cast<int>(cands.size());
+            if (const auto s = sdk::VisTree::sector_containing(info->position);
+                s.has_value()) {
+                player_sector = static_cast<int>(s->index);
+            }
+            // The oracle: every sector in the world, tested directly.
+            for (int i = 0; i < sector_total; ++i) {
+                if (sdk::VisTree::sector_contains(static_cast<size_t>(i), info->position)
+                        .value_or(false)) {
+                    ++sector_brute;
+                    if (brute_sector < 0) {
+                        brute_sector = i;
+                    }
+                }
+            }
+        }
+    }
+
     // THE MUZZLE, asked mechanically: not "which attachment is the weapon" but "what
     // mounted on me carries a socket called flash". Live that resolves the shotgun and
     // skips the engine\default.mdl placeholder beside it.
@@ -447,6 +495,9 @@ std::string build_targets_json() {
              // The muzzle, and the engine-vs-us agreement on where the weapon sits.
              "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
+             // Where the player is in the world's own spatial terms.
+             "\"sector_total\":%d,\"sector_candidates\":%d,\"sector_brute\":%d,\"sec_read_ok\":%d,\"sec_with_planes\":%d,\"sec_plane_total\":%d,"
+             "\"player_sector\":%d,\"brute_sector\":%d,"
              // THE D3D9 SIDE. Both interfaces, and for each the module that IMPLEMENTS
              // its methods -- which differs: the factory is a Steam-overlay proxy while
              // the device is the real runtime.
@@ -513,6 +564,9 @@ std::string build_targets_json() {
              muzzle_clean ? "true" : "false",
              muzzle[0], muzzle[1], muzzle[2],
              muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
+             sector_total, sector_candidates, sector_brute,
+             sec_read_ok, sec_with_planes, sec_plane_total, player_sector,
+             brute_sector,
              reinterpret_cast<uintptr_t>(sdk::Render::d3d9()),
              sdk::Render::interface_impl_owner(sdk::Render::d3d9())
                  .value_or(std::string{"(none)"}).c_str(),

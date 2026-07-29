@@ -606,7 +606,7 @@ class LTVisSector 0x30 {
 // of LTVisTree.sectors, with none outside it. The node count matched
 // LTVisTree.node_count exactly.
 class LTVisTreeNode 0x18 {
-    LTVisSector** elements @0x00   // CONFIRMED: array of sector pointers held at this node
+    LTVisSector** elements @0x00   // CONFIRMED: array of sector pointers held at this node -- AND INTERNAL NODES CARRY THEM, not just leaves. That is the fact a point-location query turns on: a sector spanning a whole subtree's region is attached at the node covering it rather than pushed down into every leaf below, so descending to a leaf and reading only its elements MISSES it. Measured: descending to the leaf for the player's position offered 2 sectors and the one he was actually inside (142 of 263, found by scanning all of them) was not among them; collecting elements at every node along the path gives 19 candidates and includes it. The engine's own walk (LTVisTree_QuerySphere) tests elements at each node it visits for exactly this reason.
     uint32_t element_count @0x04   // CONFIRMED: its length; the walk tests each element against the query volume
     LTVisTreeNode* child_a @0x08   // CONFIRMED: taken when the query lies on one side of the split
     LTVisTreeNode* child_b @0x0C   // CONFIRMED

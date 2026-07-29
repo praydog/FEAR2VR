@@ -963,6 +963,43 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Build the brute-force oracle BEFORE the clever query, then keep it as the test.**
+  Extracting point-location out of `VisTree::check` needed a KD descent, and the structure
+  does not state two things it depends on: which child holds which side of a split, and
+  whether sectors hang off internal nodes or only leaves. Guessing either is a coin flip
+  that produces a plausible answer.
+
+  So the fixture scans ALL 263 sectors and tests each volume directly -- O(n), useless in a
+  frame, perfect as ground truth -- and asserts the descent names the same sector. That
+  caught two separate errors in a row:
+
+  1. A plane-ONLY containment test answered "cannot say" for 244 of 263 sectors, because
+     only 19 carry planes. Every result was `nullopt`, the oracle returned 0, and the
+     descent's 0 "agreed" with it. **A vacuous oracle agrees with anything** -- the first
+     fix was making the oracle able to answer at all.
+  2. With the oracle live, brute force found sector 142 and the descent offered 2
+     candidates, neither of them 142. Flipping the split side changed nothing. The real
+     cause: the tree attaches sectors to INTERNAL nodes too, so a descent that harvests
+     only leaves misses the sector covering a whole region. Collecting at every node on the
+     path gives 19 candidates including 142.
+
+  The tell for (2) was in the original code all along -- `seh_read_and_walk` harvests
+  `elements` from every node it visits, not just leaves. Reading what the existing walk DOES
+  beats reasoning about what a KD-tree SHOULD do, which is the same lesson the shadowed
+  sprite field taught one entry above.
+
+- **A sparse optional field will masquerade as a broken read.** `LTVisSector.plane_count` is
+  zero on 244 of 263 sectors, so the first version of this API -- which treated planes as
+  the sector's shape and the AABB as a loose hull -- looked like a field-offset bug. It was
+  the opposite: the box IS the shape and planes are an extra the art supplies 7% of the
+  time. Measure the POPULATION of a field before designing around it; "present on the ones
+  I looked at" is the same selection error as a range measured on interesting samples.
+
+  Worse, the schema ALREADY SAID SO: `LTVisSector.plane_count`'s comment reads "live, only
+  19 of 263 sectors have any planes -- the rest are AABB-only, which is why the loop is
+  skipped for them." I wrote a header contradicting a fact this project had already
+  established and recorded. Before designing an API over a structure, READ ITS SCHEMA
+  COMMENT -- it is where past passes left exactly this kind of population fact.
 - **A derived class can redeclare a base field's NAME at a different offset -- and lifting
   logic out is exactly when you switch to the wrong one.** Extracting the cull-volume rule
   out of `check_spatial_records` broke 9 objects. The old code read `s->aabb_min` on an

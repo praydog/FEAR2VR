@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
+
+#include "regenny/regenny/LTVector.hpp"
 
 #include "regenny/regenny/LTVisTree.hpp"
 #include "regenny/regenny/LTWorldClientBSP.hpp"
@@ -67,6 +70,72 @@ public:
     // nullopt when the interface is unresolved, the tree is empty, or the walk
     // faulted / failed to terminate.
     static std::optional<TreeCheck> check(size_t max_nodes = 8192);
+
+    // ---- CONSUMER API: WHERE AM I IN THE WORLD? ---------------------------
+    //
+    // Everything below was reachable only through check() until this pass -- the tree
+    // walk, the sector geometry and the KD descent all lived inside its SEH guard and it
+    // returned counters. For a VR mod this is the locomotion question: is a point inside
+    // the level, which room is it in, and where are that room's walls.
+
+    // One convex sector: the leaf volume the engine culls and lights with.
+    struct Sector {
+        // Index into the tree's sector array. A STABLE KEY -- unlike a pointer it can be
+        // logged, compared across frames and stored, because the array is built at load.
+        size_t index;
+        // THE SECTOR'S SHAPE. Measured: this box is the primary volume, not merely an
+        // extent. Only 19 of 263 live sectors carry bounding PLANES at all (125 planes
+        // between them) -- an earlier version of this comment had it backwards and claimed
+        // every sector was a plane-bounded convex cell with the box as a loose hull. The
+        // box is what almost every sector actually has.
+        regenny::LTVector min;
+        regenny::LTVector max;
+        // Extra bounding planes, when the sector has them -- ZERO on 244 of 263 live, so a
+        // caller must not require them. Where present they refine the box.
+        size_t plane_count;
+    };
+    struct SectorPlane {
+        regenny::LTVector normal;
+        float distance;
+    };
+
+    // The engine's own sector total, straight from the tree header.
+    static std::optional<size_t> sector_count();
+
+    // Sector by index. nullopt when the tree is unresolved, `index` is out of range, or
+    // the read faulted.
+    static std::optional<Sector> sector(size_t index);
+
+    // Its bounding planes. Empty when the sector has none, is out of range, or the read
+    // faulted -- a caller that needs to tell those apart should call sector() first.
+    static std::vector<SectorPlane> sector_planes(size_t index);
+
+    // IS THIS POINT INSIDE that sector? THE BOX DECIDES, and the planes refine it when the
+    // sector has any -- which 244 of 263 do not. An earlier version of this tested the
+    // planes ALONE and therefore answered "cannot say" for 93% of the world, which read as
+    // "the player is nowhere" and made a brute-force cross-check vacuous rather than
+    // failing loudly.
+    //
+    // `slop` widens the box on every axis and is added to each plane distance, which is how
+    // a caller asks "within a few units of inside" -- useful for a position resting on a
+    // floor, where the exact boundary is the thing being tested.
+    static std::optional<bool> sector_contains(size_t index, const regenny::LTVector& point,
+                                               float slop = 0.0f);
+
+    // POINT LOCATION, the query a mod actually makes. Descends the KD-tree to the leaf
+    // containing `point` and returns that leaf's sectors, nearest-first is NOT promised --
+    // a leaf can hold several sectors and they are returned in the engine's own order.
+    //
+    // Empty when the point is outside the tree, the tree is unresolved, or the walk
+    // faulted. Combine with sector_contains() when you need the exact cell rather than the
+    // candidates: the KD leaf narrows it to a handful, the planes decide.
+    static std::vector<Sector> sectors_at(const regenny::LTVector& point);
+
+    // THE WHOLE QUERY IN ONE CALL: the first sector whose planes contain the point.
+    // nullopt means the point is in no sector, which for a world position means outside
+    // the playable volume -- exactly what a teleport check wants to know.
+    static std::optional<Sector> sector_containing(const regenny::LTVector& point,
+                                                   float slop = 0.0f);
 };
 
 

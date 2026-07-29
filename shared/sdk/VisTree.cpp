@@ -5,6 +5,7 @@
 #include <utility/Seh.hpp>
 
 #include "regenny/regenny/LTVisPortal.hpp"
+#include "regenny/regenny/LTVisPlane.hpp"
 #include "regenny/regenny/LTVisSector.hpp"
 #include "regenny/regenny/LTVisTreeNode.hpp"
 #include "regenny/regenny/LTWorldTreeLink.hpp"
@@ -387,3 +388,304 @@ std::optional<WorldBSP::WorldTreeCheck> WorldBSP::check(size_t max_nodes) {
 }
 
 } // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD mirror of one sector, copied out under the guard.
+struct SectorRaw {
+    float mn[3];
+    float mx[3];
+    uint8_t plane_count;
+    const void* planes;
+    bool ok;
+};
+
+SectorRaw seh_read_sector(const regenny::LTVisTree* tree, size_t index) {
+    SectorRaw r{};
+    KANANLIB_SEH_TRY {
+        const auto* arr = tree->sectors;
+        if (arr == nullptr || index >= tree->sector_count) {
+            return r;
+        }
+        const auto& s = arr[index];
+        r.mn[0] = s.aabb_min.x;
+        r.mn[1] = s.aabb_min.y;
+        r.mn[2] = s.aabb_min.z;
+        r.mx[0] = s.aabb_max.x;
+        r.mx[1] = s.aabb_max.y;
+        r.mx[2] = s.aabb_max.z;
+        r.plane_count = s.plane_count;
+        r.planes = s.planes;
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    return r;
+}
+
+VisTree::Sector make_sector(size_t index, const SectorRaw& r) {
+    VisTree::Sector out{};
+    out.index = index;
+    out.min.x = r.mn[0];
+    out.min.y = r.mn[1];
+    out.min.z = r.mn[2];
+    out.max.x = r.mx[0];
+    out.max.y = r.mx[1];
+    out.max.z = r.mx[2];
+    out.plane_count = r.plane_count;
+    return out;
+}
+
+}  // namespace
+
+std::optional<size_t> VisTree::sector_count() {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    size_t n = 0;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        n = tree->sector_count;
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok ? std::optional<size_t>{n} : std::nullopt;
+}
+
+std::optional<VisTree::Sector> VisTree::sector(size_t index) {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_sector(tree, index);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    return make_sector(index, r);
+}
+
+// The guarded half, POD only: MSVC refuses __try in any function that must unwind an
+// object, and the vector below is exactly that. Returns planes copied, or -1 on fault.
+namespace {
+
+struct PlaneRaw {
+    float n[3];
+    float d;
+};
+
+int64_t seh_copy_planes(const void* src, size_t count, PlaneRaw* out) {
+    int64_t n = -1;
+    KANANLIB_SEH_TRY {
+        const auto* p = static_cast<const regenny::LTVisPlane*>(src);
+        for (size_t i = 0; i < count; ++i) {
+            out[i].n[0] = p[i].normal.x;
+            out[i].n[1] = p[i].normal.y;
+            out[i].n[2] = p[i].normal.z;
+            out[i].d = p[i].distance;
+        }
+        n = static_cast<int64_t>(count);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        n = -1;
+    }
+    return n;
+}
+
+}  // namespace
+
+std::vector<VisTree::SectorPlane> VisTree::sector_planes(size_t index) {
+    std::vector<SectorPlane> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    const auto r = seh_read_sector(tree, index);
+    if (!r.ok || r.planes == nullptr || r.plane_count == 0) {
+        return out;
+    }
+    // plane_count is a uint8, so this bound is the field's own maximum rather than a
+    // guess about what a sector "should" have.
+    PlaneRaw raw[256]{};
+    const int64_t n = seh_copy_planes(r.planes, r.plane_count, raw);
+    if (n <= 0) {
+        return out;
+    }
+    out.resize(static_cast<size_t>(n));
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i].normal.x = raw[i].n[0];
+        out[i].normal.y = raw[i].n[1];
+        out[i].normal.z = raw[i].n[2];
+        out[i].distance = raw[i].d;
+    }
+    return out;
+}
+
+std::optional<bool> VisTree::sector_contains(size_t index, const regenny::LTVector& point,
+                                             float slop) {
+    const auto s = sector(index);
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    // THE BOX FIRST, because it is what a sector actually has: only 19 of 263 live sectors
+    // carry planes, so a plane-only test cannot answer for the rest.
+    if (point.x < s->min.x - slop || point.x > s->max.x + slop ||
+        point.y < s->min.y - slop || point.y > s->max.y + slop ||
+        point.z < s->min.z - slop || point.z > s->max.z + slop) {
+        return false;
+    }
+    // Then any planes, which refine the box where the art provided them.
+    for (const auto& pl : sector_planes(index)) {
+        const float d = pl.normal.x * point.x + pl.normal.y * point.y +
+                        pl.normal.z * point.z - pl.distance;
+        if (d > slop) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// Descends the KD-tree to the leaf containing `point` and copies out that leaf's sector
+// indices, all under one guard.
+//
+// THE SIDE CONVENTION IS NOT ASSUMED. `split_axis` selects the axis and `split_value` the
+// plane, but which child holds the lower half is not stated anywhere in the structure. So
+// when the point sits within `kSplitSlop` of the split plane BOTH children are followed --
+// which makes the descent correct whichever way round the engine stores them, at the cost
+// of returning a few extra candidates near a boundary. The caller narrows with the plane
+// test, and the fixture cross-checks the whole thing against a brute-force scan of every
+// sector, so a wrong convention shows up as a disagreement rather than as a plausible miss.
+constexpr float kSplitSlop = 0.5f;
+
+int64_t seh_leaf_sectors(const regenny::LTVisTree* tree, const float p[3], size_t* out,
+                         size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* root = tree->root;
+        const auto* sectors = tree->sectors;
+        const uint32_t sector_count = tree->sector_count;
+        if (root == nullptr || sectors == nullptr || sector_count == 0) {
+            return -1;
+        }
+        const regenny::LTVisTreeNode* stack[128];
+        size_t sp = 0;
+        stack[sp++] = root;
+        size_t n = 0;
+        size_t guard = 0;
+        while (sp != 0 && guard < 4096) {
+            ++guard;
+            const auto* node = stack[--sp];
+            if (node == nullptr) {
+                continue;
+            }
+            // COLLECT AT EVERY NODE, not only at leaves. The tree's own walk (see
+            // seh_read_and_walk) harvests `elements` from each node it visits, and that is
+            // not incidental: a sector overlapping an internal node's whole region is
+            // attached THERE rather than pushed down to every leaf below it. Collecting
+            // only at leaves missed the sector the player was actually standing in, which a
+            // brute-force scan of all 263 found immediately.
+            {
+                const uint32_t count = node->element_count;
+                if (node->elements != nullptr && count != 0 && count < 100000u) {
+                    for (uint32_t i = 0; i < count && n < max_out; ++i) {
+                        const auto* s = node->elements[i];
+                        if (s == nullptr) {
+                            continue;
+                        }
+                        const auto sa = reinterpret_cast<uintptr_t>(s);
+                        const auto ba = reinterpret_cast<uintptr_t>(sectors);
+                        if (sa < ba) {
+                            continue;
+                        }
+                        const uintptr_t off = sa - ba;
+                        if (off % sizeof(regenny::LTVisSector) != 0) {
+                            continue;
+                        }
+                        const uintptr_t idx = off / sizeof(regenny::LTVisSector);
+                        if (idx >= sector_count) {
+                            continue;
+                        }
+                        // Skip a duplicate: a sector can appear in several leaves and both
+                        // may be followed near a split.
+                        bool dup = false;
+                        for (size_t k = 0; k < n; ++k) {
+                            if (out[k] == static_cast<size_t>(idx)) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            out[n++] = static_cast<size_t>(idx);
+                        }
+                    }
+                }
+            }
+            if (node->split_axis > 2u) {
+                continue;  // leaf: nothing below it
+            }
+            if (sp + 2 > 128) {
+                return -1;
+            }
+            const float v = p[node->split_axis] - node->split_value;
+            if (v < -kSplitSlop) {
+                stack[sp++] = node->child_a;
+            } else if (v > kSplitSlop) {
+                stack[sp++] = node->child_b;
+            } else {
+                stack[sp++] = node->child_a;
+                stack[sp++] = node->child_b;
+            }
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<VisTree::Sector> VisTree::sectors_at(const regenny::LTVector& point) {
+    std::vector<Sector> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    const float p[3] = {point.x, point.y, point.z};
+    size_t idx[64]{};
+    const int64_t n = seh_leaf_sectors(tree, p, idx, 64);
+    if (n <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        if (const auto s = sector(idx[static_cast<size_t>(i)]); s.has_value()) {
+            out.push_back(*s);
+        }
+    }
+    return out;
+}
+
+std::optional<VisTree::Sector> VisTree::sector_containing(const regenny::LTVector& point,
+                                                         float slop) {
+    for (const auto& s : sectors_at(point)) {
+        if (sector_contains(s.index, point, slop).value_or(false)) {
+            return s;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace sdk
