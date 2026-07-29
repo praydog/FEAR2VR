@@ -1180,13 +1180,16 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE DEVICE VTABLE, READ FROM THE LIVE PROCESS ----
 //
-// A SECOND INSTRUMENT AGREES ABOUT Present -- AND THAT AGREEMENT IS WORTH LESS THAN IT LOOKS.
+// A SECOND INSTRUMENT AGREES ABOUT Present, AND BOTH SEE THE SAME RESTRICTED POPULATION.
 //
 // The first tracker keyed on the VTABLE register, so a cached vtable defeated it. A second keys on the DEVICE
 // PUSH instead: COM stdcall passes `this` on the stack, so `mov R, g_Renderer` ... `push R` ...
-// `call [Rv+off]` identifies a call however the vtable was obtained. It finds 151 sites across 31 offsets and
-// reproduces the first distribution closely -- SetRenderState 64 against 66, same leaders below -- and finds
-// no Present, BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF.
+// `call [Rv+off]` flags a nearby INDIRECT-CALL CANDIDATE whatever register the vtable came from -- but only
+// for calls that begin with that read of g_Renderer, the same entry condition the first tracker has. It flags
+// 151 candidate sites across 31 offsets, reproduces the first distribution closely (SetRenderState 64 against
+// 66, same leaders below), and flags none at Present, BeginScene, EndScene, SetTransform, SetVertexShader or
+// SetVertexShaderConstantF. They are candidates and not established device-method calls: see the receiver
+// caveat below.
 //
 // BUT THE TWO DO NOT HAVE DIFFERENT BLIND SPOTS, which an earlier draft of this note claimed. Both START from
 // a read of g_Renderer. If Present is called on a device obtained from a heap field, a parameter or a register
