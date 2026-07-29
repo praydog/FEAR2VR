@@ -8,6 +8,7 @@
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTAnimNameEntry.hpp"
 #include "regenny/regenny/LTModelSocket.hpp"
+#include "regenny/regenny/LTNodeTransform.hpp"
 #include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -63,6 +64,13 @@ struct SkelRaw {
     // one consistent asset rather than two reads of a possibly-rebound one.
     const void* sockets;
     uint32_t socket_count;
+    // The ACTIVE cache, chosen exactly as LTModelObject_GetNodeTransform chooses:
+    // the mode selector picks block130's pair (dirty stride 3, flag at byte +1) or
+    // block120's (dirty stride 2, flag at byte +0).
+    const void* node_xform;
+    const void* node_dirty;
+    uint32_t dirty_stride;
+    uint32_t dirty_offset;
 };
 
 bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
@@ -87,6 +95,22 @@ bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
                     if (socks != nullptr && sn > 0 && sn <= kMaxNodes) {
                         out->sockets = socks;
                         out->socket_count = sn;
+                    }
+
+                    // THE ENGINE'S OWN BRANCH, reproduced rather than chosen: a model
+                    // holds two per-node caches and GetNodeTransform reads whichever
+                    // the mode selector at +0x156 names. Picking one here would be
+                    // right on 193 of 215 models and silently wrong on the other 22.
+                    if (model->sphere_source != 0) {
+                        out->node_xform = model->block_130.node_transforms;
+                        out->node_dirty = model->block_130.node_dirty_stride3;
+                        out->dirty_stride = 3;
+                        out->dirty_offset = 1;  // the engine tests the SECOND byte
+                    } else {
+                        out->node_xform = model->block_120.node_transforms;
+                        out->node_dirty = model->block_120.node_dirty_stride2;
+                        out->dirty_stride = 2;
+                        out->dirty_offset = 0;
                     }
 
                     // BindAsset's own arithmetic, term for term. Verified live: every
@@ -329,6 +353,10 @@ std::optional<ModelSkeleton> ModelSkeleton::from_object(const regenny::LTObject*
     s.m_count = raw.count;
     s.m_sockets = raw.sockets;
     s.m_socket_count = raw.socket_count;
+    s.m_node_xform = raw.node_xform;
+    s.m_node_dirty = raw.node_dirty;
+    s.m_dirty_stride = raw.dirty_stride;
+    s.m_dirty_offset = raw.dirty_offset;
     return s;
 }
 
@@ -725,6 +753,70 @@ std::optional<size_t> ModelSkeleton::find_socket(const char* name) const {
         }
     }
     return std::nullopt;
+}
+
+} // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+struct NodeXformRaw {
+    float pos[3];
+    float rot[4];
+    uint8_t dirty;
+    bool ok;
+};
+
+// The transform and its dirty byte in ONE guard. Reading them separately would let
+// the engine clear the flag and rewrite the slot in between, which is precisely the
+// case that would hand back a "clean" answer holding stale bytes.
+NodeXformRaw seh_node_xform(const void* xform, const void* dirty, size_t stride,
+                            size_t offset, size_t index) {
+    NodeXformRaw r{};
+    if (xform == nullptr || dirty == nullptr) {
+        return r;
+    }
+    KANANLIB_SEH_TRY {
+        const auto* t = static_cast<const regenny::LTNodeTransform*>(xform) + index;
+        r.pos[0] = t->position.x;
+        r.pos[1] = t->position.y;
+        r.pos[2] = t->position.z;
+        r.rot[0] = t->rotation.x;
+        r.rot[1] = t->rotation.y;
+        r.rot[2] = t->rotation.z;
+        r.rot[3] = t->rotation.w;
+        r.dirty = static_cast<const uint8_t*>(dirty)[stride * index + offset];
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+} // namespace
+
+std::optional<ModelSkeleton::NodeTransform> ModelSkeleton::node_transform(size_t index) const {
+    if (index >= m_count) {
+        return std::nullopt;
+    }
+    const NodeXformRaw r =
+        seh_node_xform(m_node_xform, m_node_dirty, m_dirty_stride, m_dirty_offset, index);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    NodeTransform out{};
+    out.position.x = r.pos[0];
+    out.position.y = r.pos[1];
+    out.position.z = r.pos[2];
+    out.rotation.x = r.rot[0];
+    out.rotation.y = r.rot[1];
+    out.rotation.z = r.rot[2];
+    out.rotation.w = r.rot[3];
+    // Non-zero is the engine's own test -- it recomputes rather than reading the slot.
+    out.stale = r.dirty != 0;
+    return out;
 }
 
 } // namespace sdk

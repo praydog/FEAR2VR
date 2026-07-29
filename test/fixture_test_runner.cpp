@@ -1726,6 +1726,35 @@ int main(int argc, char** argv) {
                 // loaded art, so a level without characters legitimately has none.
                 check(scam >= 0 && scam <= st, "camera sockets are a reported count");
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
+
+                // CACHED NODE TRANSFORMS. The contract being defended is the DIRTY
+                // FLAG: a slot the engine considers clean holds a usable position, and
+                // a dirty one holds whatever was there last -- live, 187 of the dirty
+                // slots held values up to 7.8e37.
+                int64_t nxo = -1, nxs = -1, nxc = -1, nxcs = -1, cnc = -1;
+                json_int(ab, "node_xform_ok", nxo);
+                json_int(ab, "node_xform_stale", nxs);
+                json_int(ab, "node_xform_clean", nxc);
+                json_int(ab, "node_xform_clean_sane", nxcs);
+                json_int(ab, "camera_node_clean", cnc);
+                check(nxo > 0, "node transforms read through the public accessor");
+                // The partition must be total: every slot is exactly one of the two.
+                check(nxc + nxs == nxo, "every node transform is either clean or stale");
+                // THE LOAD-BEARING ONE. Measured 343/343 live. If this ever fails,
+                // either the dirty array's stride/offset is wrong or the wrong one of
+                // the model's TWO caches is being read -- and note that picking the
+                // wrong cache would still look fine on the 193 models whose mode
+                // selector is zero, which is exactly why it is asserted over all of
+                // them rather than sampled.
+                check(nxcs == nxc,
+                      "EVERY clean node transform holds a finite, sane position");
+                // REPORTED: whether any model's camera-socket bone happens to be clean
+                // right now is per-frame state, and on an idle menu most are not.
+                check(cnc >= 0, "camera-socket bone cleanliness is a reported count");
+                printf("[fixture] node transforms: %lld total, %lld clean, %lld stale "
+                       "(camera-socket bones clean: %lld)\n",
+                       static_cast<long long>(nxo), static_cast<long long>(nxc),
+                       static_cast<long long>(nxs), static_cast<long long>(cnc));
                 printf("[fixture] sockets: %lld total, %lld with a 'camera', %lld with both "
                        "eye sockets\n",
                        static_cast<long long>(st), static_cast<long long>(scam),

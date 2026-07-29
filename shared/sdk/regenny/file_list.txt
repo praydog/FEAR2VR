@@ -42,6 +42,7 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelAsset.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelRecord.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\StdString.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTNodeTransform.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelBlock120.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelBlock130.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelObject.hpp" \

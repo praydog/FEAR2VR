@@ -1477,7 +1477,7 @@ class LTModelNode 0x40 {
 class LTModelSocket 0x28 {
     LTVector position     @0x00   // CONFIRMED the socket's offset from its node, and live these are real art values, not zeroes: socket_left_eye sits at (-3.013, 13.745, 2.784) and camera at (-4.251, 13.156, 0.000) on the same Head node.
     LTRotation rotation   @0x0C   // CONFIRMED a UNIT quaternion: |q| == 1.00000 on the records sampled. camera's is (0.5002, -0.4998, -0.5002, -0.4998), i.e. a coordinate-frame flip rather than an identity -- which is what a camera attach point needs and what makes it clear the field is a real orientation and not padding.
-    float unk_1C          @0x1C   // live exactly 1.0 on the records sampled. A scale would fit and is NOT established.
+    float scale           @0x1C   // CONFIRMED a SCALE, and not by the live 1.0 alone -- that would be a guess. The engine's node-transform getter fills a 0x20-byte output struct whose layout it spells out on its failure path: zeroes at +0x00..+0x14, then 1.0 at +0x18 (the quaternion's w) AND 1.0 at +0x1C. A unit written beside an identity rotation is a scale, and a socket's leading 0x20 bytes are exactly that struct -- which is why this field is where it is.
     char* name            @0x20   // CONFIRMED the socket's name, from the lookup's own String_EqualsI comparison against this offset. Live all 186 are non-empty.
     uint32_t node_index   @0x24   // CONFIRMED the skeleton node the socket hangs off: LTModelObject_GetSocketTransform reads `*(rec + 36)` and passes it to LTModelObject_GetNodeTransform. Live inside node_count on 186/186, and resolving it through node_names gives the pairings above.
 }
@@ -1556,13 +1556,35 @@ class StdString 0x1C {
     uint32_t capacity @0x18   // _Myres; >= 15 always, and >= size
 }
 
+// One cached per-node TRANSFORM: 28 bytes, position then rotation. The size and the
+// split both come from the engine rather than from a stride scan --
+// LTModelObject_TransformFromRecord (0x4292A8) is literally
+// `sub_42018A(rec, rec + 12, 1.0f)`, i.e. it hands the caller (position, rotation,
+// scale=1) out of a record whose rotation starts 12 bytes in.
+//
+// The 0x20-byte struct the public getter FILLS is this plus a scale: on its failure
+// path LTModelObject_GetNodeTransform writes six zeroes at +0x00..+0x14 and then 1.0
+// at BOTH +0x18 and +0x1C -- an identity quaternion whose w is +0x18, and a unit
+// scale at +0x1C. That is also what retroactively settles LTModelSocket's +0x1C: the
+// socket record's first 0x20 bytes are this same transform-with-scale shape.
+//
+// VALIDITY IS GATED, and this is the part a consumer must not skip. See the dirty
+// arrays on the two blocks below: live, of 2222 node slots only 343 had a clear dirty
+// byte, and EVERY one of those 343 held a sane position (0 exceptions). Of the 1879
+// dirty ones, 187 held values like 7.8e37 -- stale memory the engine would recompute
+// before using. Read the flag or read garbage.
+class LTNodeTransform 0x1C {
+    LTVector position   @0x00   // CONFIRMED position, live sane on 343/343 clean slots
+    LTRotation rotation @0x0C   // CONFIRMED a UNIT quaternion on 2222/2222 slots -- notably unit even where the position is stale garbage, so the rotation alone is NOT a validity test
+}
+
 // The sub-object OT_MODEL_ctor builds at LTModelObject+0x120 (ctor 0x4257CE,
 // which zeroes four dwords; dtor 0x428CAC). Its span is pinned by adjacency at
 // both ends: four dwords is 0x10, and the next sub-object starts at 0x130.
 class LTModelBlock120 0x10 {
     void* unk_00          @0x00   // live a heap pointer unique to each model (215 distinct, none null)
-    void* per_node_stride2 @0x04   // CONFIRMED a PER-NODE array indexed by node index with stride 2: LTModelObject_MarkNodeSubtreeDirty (0x4290A8) writes `*(this[0x124] + 2*node) = 1` while walking the skeleton. Live non-null on 215/215 models. Element meaning unmapped, but the indexing is proven, so its length is the asset's node_count.
-    void* unk_08          @0x08   // live likewise unique per model
+    uint8_t* node_dirty_stride2 @0x04   // CONFIRMED a per-node DIRTY-FLAG array, stride 2, and now by TWO functions rather than one indexing site. LTModelObject_MarkNodeSubtreeDirty (0x4290A8) writes `*(base + 2*node) = 1` walking the skeleton; LTModelObject_GetNodeTransform READS `base[2*node]` and, when it is non-zero, recomputes the transform instead of trusting the cache. So the element's meaning -- which an earlier pass left unmapped -- is "this node's cached transform is stale". Live 215/215 non-null. Only the FIRST of the two bytes is proven; the second is untouched by both functions.
+    LTNodeTransform* node_transforms @0x08   // CONFIRMED the per-node TRANSFORM CACHE this block's dirty array guards, used when the model's mode selector (+0x156) is ZERO: GetNodeTransform reads `base + 28*node`. Live non-null on 215/215 and every slot's rotation is unit (2222/2222); the POSITIONS are only meaningful where the dirty byte is clear -- 343 clean slots live, all sane, against 187 of the dirty ones holding values up to 7.8e37.
     LTModelAsset* asset   @0x0C   // CONFIRMED equal to the owning model's record.asset on 215/215 -- the THIRD offset that reaches the same pointer (record.asset at 0xEC, here at 0x12C, and LTModelBlock130.asset at 0x130)
 }
 
@@ -1574,8 +1596,8 @@ class LTModelBlock130 0x24 {
     uint32_t unk_04       @0x04   // ctor writes 0
     uint32_t unk_08       @0x08   // ctor writes 0
     uint32_t unk_0C       @0x0C   // ctor writes 0
-    uint32_t per_node_stride3 @0x10 // CONFIRMED a PER-NODE array with stride 3, from the same walk: `*(this[0x140] + 3*node + 1) = 1`. Note the +1: the byte written is the SECOND of the three, so the element is a small record rather than a scalar. Live non-null.
-    uint32_t unk_14       @0x14   // ctor writes 0
+    uint8_t* node_dirty_stride3 @0x10 // CONFIRMED a per-node DIRTY-FLAG array with stride 3, same pair of functions as block120's: MarkNodeSubtreeDirty writes `*(base + 3*node + 1) = 1` and GetNodeTransform tests that same byte before deciding whether to recompute. The +1 is the engine's, not an alignment guess -- the flag is the SECOND byte of each three, so the element is a small record whose other two bytes neither function touches. Live non-null.
+    LTNodeTransform* node_transforms @0x14 // CONFIRMED the per-node TRANSFORM CACHE guarded by the stride-3 array, used when the mode selector (+0x156) is NON-ZERO: GetNodeTransform reads `base + 28*node` on that branch. Live non-null on 215/215 with unit rotations throughout. Note the model carries BOTH caches at once -- this one and block120's -- and the selector decides which the engine reads, so a consumer must branch the same way rather than picking one.
     uint8_t unk_18        @0x18   // ctor writes 0
     uint8_t unk_19        @0x19   // ctor writes 0
     uint32_t unk_1C       @0x1C   // ctor writes 0xFFFFFFFF and live it is STILL 0xFFFFFFFF on 215/215 -- a "none" sentinel nothing in a loaded level sets

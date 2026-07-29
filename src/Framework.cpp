@@ -889,7 +889,9 @@ std::string build_objects_json() {
                api_attachments = 0, api_att_child_ok = 0, api_att_socketed = 0,
                api_att_socket_named = 0, api_socket_total = 0, api_socket_ok = 0,
                api_socket_named_node = 0, api_socket_roundtrip = 0,
-               api_socket_camera = 0, api_socket_eyes = 0;
+               api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
+               api_node_xform_stale = 0, api_node_xform_clean = 0,
+               api_node_xform_clean_sane = 0, api_camera_node_clean = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -981,6 +983,39 @@ std::string build_objects_json() {
                                 ++api_socket_roundtrip;
                             }
                         }
+                        // THE WHOLE CHAIN A VR MOD WALKS, end to end: find a socket by
+                        // name, take the node it rides, ask where that node currently
+                        // is. Counted separately for clean and stale, because the
+                        // difference is the entire contract.
+                        for (size_t ni = 0; ni < sk->node_count(); ++ni) {
+                            if (const auto nt = sk->node_transform(ni); nt.has_value()) {
+                                ++api_node_xform_ok;
+                                if (nt->stale) {
+                                    ++api_node_xform_stale;
+                                } else {
+                                    ++api_node_xform_clean;
+                                    // A clean slot must hold a usable position. This is
+                                    // the measured invariant (343/343 live), so it is
+                                    // counted for assertion rather than reported.
+                                    const float m = std::abs(nt->position.x) +
+                                                    std::abs(nt->position.y) +
+                                                    std::abs(nt->position.z);
+                                    if (std::isfinite(m) && m < 1.0e5f) {
+                                        ++api_node_xform_clean_sane;
+                                    }
+                                }
+                            }
+                        }
+                        // And the same question a mod really asks: where is the head
+                        // socket's bone right now?
+                        if (const auto ci = sk->find_socket("camera"); ci.has_value()) {
+                            if (const auto s = sk->socket(*ci); s.has_value()) {
+                                if (const auto nt = sk->node_transform(s->node_index);
+                                    nt.has_value() && !nt->stale) {
+                                    ++api_camera_node_clean;
+                                }
+                            }
+                        }
                         // The VR-relevant ones, REPORTED rather than required: which
                         // sockets exist depends entirely on what the level loaded.
                         if (sk->find_socket("camera").has_value()) {
@@ -997,7 +1032,7 @@ std::string build_objects_json() {
                 }
             }
         }
-        char ab[896];
+        char ab[1152];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
@@ -1005,13 +1040,16 @@ std::string build_objects_json() {
                  "\"with_attachments\":%zu,\"attachments\":%zu,\"att_child_ok\":%zu,"
                  "\"att_socketed\":%zu,\"att_socket_named\":%zu,"
                  "\"socket_total\":%zu,\"socket_ok\":%zu,\"socket_named_node\":%zu,"
-                 "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu}",
+                 "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu,"
+                 "\"node_xform_ok\":%zu,\"node_xform_stale\":%zu,\"node_xform_clean\":%zu,"
+                 "\"node_xform_clean_sane\":%zu,\"camera_node_clean\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
                  api_att_socketed, api_att_socket_named, api_socket_total, api_socket_ok,
                  api_socket_named_node, api_socket_roundtrip, api_socket_camera,
-                 api_socket_eyes);
+                 api_socket_eyes, api_node_xform_ok, api_node_xform_stale,
+                 api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

@@ -157,6 +157,41 @@ public:
     // across assets, so a case-sensitive search would miss half the weapons.
     std::optional<size_t> find_socket(const char* name) const;
 
+    // ---- CACHED NODE TRANSFORMS -------------------------------------------------
+    //
+    // Where a bone actually IS, as the engine last computed it -- position and
+    // rotation per node. This is a different thing from bone_matrix() above: that is
+    // the skinning palette the renderer fills during a draw, so it is empty on an idle
+    // frame. These caches are populated all the time (2222/2222 slots hold a unit
+    // rotation live), which makes them the readable source for "where is the head".
+    //
+    // THE CATCH IS A FLAG, NOT A GUESS, and that is what makes this usable. The engine
+    // keeps a per-node dirty byte and recomputes a node's transform before using it
+    // when that byte is set (LTModelObject_MarkNodeSubtreeDirty writes it, and
+    // LTModelObject_GetNodeTransform tests it). Measured live: of 2222 slots, 343 had
+    // a clear flag and ALL 343 held a sane position; of the 1879 dirty ones, 187 held
+    // values up to 7.8e37. So `stale` is not advisory -- reading a stale position is
+    // reading uninitialised memory.
+    //
+    // The rotation is a different matter: it is unit-length on every slot sampled,
+    // stale or not, so it is NOT a validity test and cannot be used as one.
+    //
+    // A model carries TWO of these caches at once and a mode selector decides which
+    // the engine reads. This picks the same one the engine would; a caller does not
+    // see the choice.
+    struct NodeTransform {
+        regenny::LTVector position;
+        regenny::LTRotation rotation;
+        // True when the engine would recompute before using this. The position must
+        // not be trusted; the rotation was unit on every sample either way.
+        bool stale;
+    };
+
+    // nullopt when the index is out of range, the cache is absent, or the read
+    // faulted. A STALE entry is still returned -- flagged -- because a caller deciding
+    // "skip this frame" needs to know the difference between stale and missing.
+    std::optional<NodeTransform> node_transform(size_t index) const;
+
 private:
     // The engine's per-object allocation, reconstructed from BindAsset's own size
     // expression, so every palette read can be bounded exactly instead of trusting
@@ -173,6 +208,12 @@ private:
     // Per-ASSET like the node data above: two models sharing an asset share sockets.
     const void* m_sockets{};
     size_t m_socket_count{};
+    // The ACTIVE node-transform cache and its dirty array, already resolved through
+    // the model's mode selector so callers never branch on it.
+    const void* m_node_xform{};
+    const void* m_node_dirty{};
+    size_t m_dirty_stride{};
+    size_t m_dirty_offset{};
 };
 
 // The object's .mdl path, e.g. "char\ai\rep_heavyweapons\rep_heavyweapons.mdl".

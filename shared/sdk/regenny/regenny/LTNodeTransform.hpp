@@ -3,13 +3,10 @@
 #include "LTVector.hpp"
 namespace regenny {
 #pragma pack(push, 1)
-class LTModelSocket {
+class LTNodeTransform {
 public:
     regenny::LTVector position; // 0x0
     regenny::LTRotation rotation; // 0xc
-    float scale; // 0x1c
-    char* name; // 0x20
-    uint32_t node_index; // 0x24
-}; // Size: 0x28
+}; // Size: 0x1c
 #pragma pack(pop)
 }

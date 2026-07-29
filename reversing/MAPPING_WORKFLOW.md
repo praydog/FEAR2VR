@@ -963,6 +963,36 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **When a cache looks like garbage, look for the VALIDITY FLAG before doubting the
+  layout.** The per-node transform arrays read as `(position, unit quaternion)` at
+  stride 28 -- 2222 of 2222 slots had a unit rotation, which is about as strong as a
+  shape signal gets. But the positions included values like `7.8e37`, so the obvious
+  conclusion was that the layout was wrong.
+
+  It was not. The engine keeps a per-node DIRTY BYTE and recomputes a node's transform
+  before using it when that byte is set. Partitioning the same 2222 slots by that flag:
+
+  ```
+  dirty clear   343 slots   343 sane positions     0 wild
+  dirty set    1879 slots  1692 sane positions   187 wild
+  ```
+
+  Clean implies sane with zero exceptions; every wild value sits behind a set flag. The
+  layout was right the whole time and the data was simply stale.
+
+  Three things worth carrying forward:
+  1. **A field can be structurally valid and semantically meaningless at once.** The
+     rotation is unit-length even in stale slots, so it cannot serve as the validity
+     test -- the neighbouring flag can.
+  2. **The engine's own reader tells you the predicate.** Rather than inventing a
+     sanity heuristic, find the function that consumes the field and copy its gate.
+     Here `GetNodeTransform` tests `dirty[stride*i + off]` and takes a recompute path;
+     that IS the contract, and it belongs in the API as a `stale` flag.
+  3. **Two caches can coexist behind a selector.** This model holds TWO per-node
+     arrays with dirty arrays of DIFFERENT strides (2 and 3, flag at byte +0 and +1),
+     and a mode field picks one. Reading the wrong one looks correct on the 193 models
+     whose selector is zero and is silently wrong on the other 22 -- which no
+     single-array stride scan could ever have revealed.
 - **A probe loop that forgets to ADVANCE reports inflated counts that look real.**
   While classifying attachment sockets I wrote a walk that read `record + 0x20`, did
   the classification, and never assigned `cur = record->next`. It re-read the FIRST
