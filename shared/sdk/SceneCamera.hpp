@@ -188,7 +188,9 @@ public:
     // otherwise produce a matrix with a zero scale coefficient that still classifies as
     // perspective -- usable-looking and wrong, which is the worst thing a builder can hand back.
     // Requires finite, strictly positive half-extents, a finite near plane, and for the affine
-    // form a non-zero finite depth span.
+    // form a non-zero finite depth span -- AND checks the computed scale coefficients, because a
+    // finite but tiny extent overflows its reciprocal to infinity. nullopt therefore means "no
+    // usable matrix", not merely "bad-looking input".
     static std::optional<std::array<float, 16>> make_perspective_projection(float half_x,
                                                                            float half_y,
                                                                            float near_z);

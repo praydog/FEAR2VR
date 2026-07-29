@@ -272,10 +272,17 @@ std::optional<std::array<float, 16>> SceneCamera::make_perspective_projection(fl
     if (!usable_half_extent(half_x) || !usable_half_extent(half_y) || !std::isfinite(near_z)) {
         return std::nullopt;
     }
+    // THE RECIPROCALS ARE CHECKED, not assumed: a finite positive but very small extent overflows
+    // to infinity here, so validating the input alone would let nullopt-means-usable be a lie.
+    const float sx = 1.0f / half_x;
+    const float sy = 1.0f / half_y;
+    if (!std::isfinite(sx) || !std::isfinite(sy)) {
+        return std::nullopt;
+    }
     // Column 3 holds the translation and m[3][2] = 1 makes w = z, exactly as the engine emits.
     return std::array<float, 16>{
-        1.0f / half_x, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f / half_y, 0.0f, 0.0f,
+        sx, 0.0f, 0.0f, 0.0f,
+        0.0f, sy, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, -near_z,
         0.0f, 0.0f, 1.0f, 0.0f,
     };
@@ -292,9 +299,14 @@ std::optional<std::array<float, 16>> SceneCamera::make_affine_projection(float h
     if (!std::isfinite(k) || std::fabs(k) < 1e-9f) {
         return std::nullopt;
     }
+    const float sx = k / half_x;
+    const float sy = k / half_y;
+    if (!std::isfinite(sx) || !std::isfinite(sy)) {
+        return std::nullopt;
+    }
     return std::array<float, 16>{
-        k / half_x, 0.0f, 0.0f, 0.0f,
-        0.0f, k / half_y, 0.0f, 0.0f,
+        sx, 0.0f, 0.0f, 0.0f,
+        0.0f, sy, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, -near_z,
         0.0f, 0.0f, 0.0f, k,
     };

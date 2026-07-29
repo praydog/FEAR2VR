@@ -3400,6 +3400,9 @@ std::string build_shader_params_json() {
         !sdk::SceneCamera::make_perspective_projection(0.0f, kProbeHalfY, 4.3f).has_value();
     const bool rejects_negative_extent =
         !sdk::SceneCamera::make_perspective_projection(kProbeHalfX, -1.0f, 4.3f).has_value();
+    // A finite POSITIVE extent whose reciprocal is not finite: input validation alone passes this.
+    const bool rejects_tiny_extent =
+        !sdk::SceneCamera::make_perspective_projection(1e-40f, kProbeHalfY, 4.3f).has_value();
     const bool rejects_zero_span =
         !sdk::SceneCamera::make_affine_projection(kProbeHalfX, kProbeHalfY, 4.3f, 4.3f).has_value();
 
@@ -3414,7 +3417,7 @@ std::string build_shader_params_json() {
              "\"probe_scaled_fov_y\":%.6f,\"probe_affine_is_affine\":%s,"
              "\"probe_affine_fov_present\":%s,\"probe_built\":%s,"
              "\"probe_rejects_zero_extent\":%s,\"probe_rejects_negative_extent\":%s,"
-             "\"probe_rejects_zero_span\":%s,",
+             "\"probe_rejects_zero_span\":%s,\"probe_rejects_tiny_extent\":%s,",
              probe.is_perspective_projection() ? "true" : "false",
              probe.projection_agrees_with_half_view_plane() ? "true" : "false",
              probe_fov_y.value_or(-1.0f), want_fov_y,
@@ -3425,7 +3428,8 @@ std::string build_shader_params_json() {
              (probe_matrix.has_value() && affine_matrix.has_value()) ? "true" : "false",
              rejects_zero_extent ? "true" : "false",
              rejects_negative_extent ? "true" : "false",
-             rejects_zero_span ? "true" : "false");
+             rejects_zero_span ? "true" : "false",
+             rejects_tiny_extent ? "true" : "false");
     if (pr_len < 0 || static_cast<size_t>(pr_len) >= sizeof(pr)) {
         return "{\"ok\":false,\"error\":\"probe fragment truncated\"}";
     }

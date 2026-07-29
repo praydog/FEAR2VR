@@ -3807,6 +3807,11 @@ int main(int argc, char** argv) {
                   "the perspective builder rejects a negative half-extent");
             check(json_bool(body, "probe_rejects_zero_span", r2) && r2,
                   "the affine builder rejects a zero depth span");
+            // The case input validation alone would miss: finite and positive, but its reciprocal
+            // overflows, so the matrix would carry an infinity while has_value() said yes.
+            bool r3 = false;
+            check(json_bool(body, "probe_rejects_tiny_extent", r3) && r3,
+                  "the perspective builder rejects an extent whose reciprocal is not finite");
         }
 
         // ---- THE SCENE CAMERA RECORD -------------------------------------------------

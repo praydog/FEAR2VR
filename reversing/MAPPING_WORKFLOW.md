@@ -963,6 +963,12 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **VALIDATING THE INPUT IS NOT VALIDATING THE OUTPUT.** The projection builders rejected non-finite and
+  non-positive half-extents, so `optional` looked like it meant "usable matrix". It did not: a finite
+  POSITIVE extent near the bottom of float range overflows its reciprocal to infinity, and the builder
+  happily returned a matrix containing it. Now the scale coefficients are computed and checked before the
+  array is built, with a probe at 1e-40 covering exactly the case input validation waves through.
+
 - **`json_has(body, "\"key\":true")` CANNOT TELL false FROM ABSENT, AND false IS OFTEN THE PASSING
   ANSWER.** A field rename that silently failed left the endpoint emitting `sc_ortho` while the fixture
   looked for `sc_perspective`; the missing key read as false, which was the expected answer for the affine
