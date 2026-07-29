@@ -281,6 +281,48 @@ std::string build_targets_json() {
             }
         }
     }
+
+    // THE WHOLE VR CHAIN, end to end, on the object that matters: local player -> its
+    // skeleton -> a socket by NAME -> that socket's world transform. Four subsystems in
+    // one expression, which is why it is worth exercising as a unit rather than
+    // separately. The hands are the interesting pair: their bones are clean at rest, so
+    // a mod can read them from any thread, unlike the view bones.
+    int player_sockets = 0;
+    bool hands_ok = false, hands_clean = false, hands_distinct = false;
+    float hands_reach = -1.0f;
+    float lhand[3] = {0, 0, 0}, rhand[3] = {0, 0, 0};
+    if (player.has_value()) {
+        if (const auto sk = sdk::ModelSkeleton::from_object(player->object); sk.has_value()) {
+            player_sockets = static_cast<int>(sk->socket_count());
+            const auto l = sk->socket_world_transform("LeftHand");
+            const auto r = sk->socket_world_transform("RightHand");
+            if (l.has_value() && r.has_value()) {
+                hands_ok = true;
+                hands_clean = !l->stale && !r->stale;
+                lhand[0] = l->position.x; lhand[1] = l->position.y; lhand[2] = l->position.z;
+                rhand[0] = r->position.x; rhand[1] = r->position.y; rhand[2] = r->position.z;
+                // Two DIFFERENT bones must give two different points. If the socket
+                // lookup or the node indexing collapsed, both hands would land together
+                const float dx = lhand[0] - rhand[0];
+                const float dy = lhand[1] - rhand[1];
+                const float dz = lhand[2] - rhand[2];
+                hands_distinct = (dx * dx + dy * dy + dz * dz) > 1.0f;
+                // AND the hands must belong to the BODY. This is the regression guard for
+                // the double-apply bug: when a world-space bone cache was composed with
+                // the object's transform anyway, sockets landed 5449 units from their
+                // owner. A hand is attached to a person, so its distance from the
+                // object's own origin is bounded by the model, not by the level.
+                if (const auto info = sdk::object_info(player->object); info.has_value()) {
+                    const auto& pos = info->position;
+                    const auto d = [&](const float* h) {
+                        const float ax = h[0] - pos.x, ay = h[1] - pos.y, az = h[2] - pos.z;
+                        return std::sqrt(ax * ax + ay * ay + az * az);
+                    };
+                    hands_reach = std::max(d(lhand), d(rhand));
+                }
+            }
+        }
+    }
     // ROUND TRIP, and deliberately not against a hardcoded name: take variables the
     // table itself reported, upper-case them, and require the lookup to find each one
     // with the same value. That tests the case-insensitive path without assuming which
@@ -342,7 +384,11 @@ std::string build_targets_json() {
              // The local player: how many slots are filled, whether the two routes to
              // slot 0 agree, and what the object says it is.
              "\"player_count\":%d,\"player_ok\":%s,\"player_handle\":%d,"
-             "\"player_routes_agree\":%s,\"player_mdl\":\"%s\"}",
+             "\"player_routes_agree\":%s,\"player_mdl\":\"%s\","
+             // The VR chain's answer: the player's two hands, in world space.
+             "\"player_sockets\":%d,\"hands_ok\":%s,\"hands_clean\":%s,"
+             "\"hands_distinct\":%s,\"hands_reach\":%.2f,"
+             "\"lhand\":[%.2f,%.2f,%.2f],\"rhand\":[%.2f,%.2f,%.2f]}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -383,7 +429,13 @@ std::string build_targets_json() {
              player.has_value() ? "true" : "false",
              player.has_value() ? static_cast<int>(player->handle) : -1,
              player_routes_agree ? "true" : "false",
-             player_mdl.c_str());
+             player_mdl.c_str(),
+             player_sockets,
+             hands_ok ? "true" : "false",
+             hands_clean ? "true" : "false",
+             hands_distinct ? "true" : "false", hands_reach,
+             lhand[0], lhand[1], lhand[2],
+             rhand[0], rhand[1], rhand[2]);
     return buf;
 }
 

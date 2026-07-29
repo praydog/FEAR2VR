@@ -692,6 +692,35 @@ int main(int argc, char** argv) {
             const size_t mp = body.find("\"player_mdl\":\"");
             check(mp != std::string::npos && body[mp + 14] != '"',
                   "the player object names a model path");
+
+            // ---- THE VR CHAIN, END TO END ---------------------------------------------
+            //
+            // local player -> skeleton -> socket BY NAME -> world transform. Four
+            // subsystems, and the only assertion that can catch a fault anywhere along it
+            // is a geometric one, because every intermediate step returns a plausible
+            // number when it is wrong.
+            int64_t psock = -1;
+            json_int(body, "player_sockets", psock);
+            check(psock > 0, "the player's model defines sockets to attach to");
+            if (json_has(body, "\"hands_ok\":true")) {
+                check(json_has(body, "\"hands_distinct\":true"),
+                      "the two hand sockets resolve to two DIFFERENT points");
+                double reach = -1.0;
+                json_double(body, "hands_reach", reach);
+                // THE REGRESSION GUARD. The composition bug put sockets 5449 units from
+                // their owner; this model's half-extents are (40, 95, 40), so a hand is
+                // ~84 away. The bound is deliberately loose at 400 -- an arm cannot be
+                // longer than a few body-lengths, and 400 still catches that bug 13x over.
+                check(reach > 0.0 && reach < 400.0,
+                      "each hand sits within BODY SCALE of the player object, not level scale");
+                printf("[fixture] VR chain: %lld sockets, hands %.1f from the body, %s\n",
+                       static_cast<long long>(psock), reach,
+                       json_has(body, "\"hands_clean\":true") ? "bones CLEAN"
+                                                             : "bones stale this frame");
+            } else {
+                printf("[fixture] NOTE: the player's hand sockets did not resolve -- the "
+                       "end-to-end chain was NOT exercised.\n");
+            }
             printf("[fixture] local player: handle %lld, %lld slot(s) filled\n",
                    static_cast<long long>(phandle), static_cast<long long>(pcount));
         } else {

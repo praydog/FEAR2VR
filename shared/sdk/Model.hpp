@@ -147,6 +147,11 @@ public:
         regenny::LTRotation rotation;
     };
 
+    // ZERO IS THE COMMON CASE, not an error: measured across 34 live assets the range is
+    // 0..19, and most of them -- every shell casing, debris chunk, medkit, armour pickup
+    // and collectible in the sample -- have none, because a prop has nothing to attach.
+    // Only characters and weapons carry sockets. Do not treat an empty table or a failed
+    // find_socket() as a fault.
     size_t socket_count() const { return m_socket_count; }
 
     // nullopt when the index is out of range or the read faulted.
@@ -236,6 +241,27 @@ public:
     // In WORLD space: the above, composed once more with the owning object's own
     // position/rotation/scale. This is what a mod attaches something to.
     std::optional<SocketTransform> socket_world_transform(size_t socket_index) const;
+
+    // The same, BY NAME -- which is how a consumer actually asks. Every caller of the
+    // index form was going to write find_socket() immediately above it, so this saves the
+    // dance and the chance of pairing an index with the wrong skeleton.
+    //
+    // Case-insensitive, like find_socket(). nullopt when no socket has that name.
+    //
+    // WHAT THE PLAYER ACTUALLY DEFINES, measured on `fp_playerm05.mdl` (65 nodes, 19
+    // sockets), because it decides which of these a mod can use right now:
+    //
+    //   LeftHand / RightHand -> L_Hand / R_Hand    bones CLEAN -- usable immediately
+    //   Light                -> L_Hand             CLEAN (the flashlight mount)
+    //   back, Torso_Forward  -> torso bones        CLEAN
+    //   camera               -> Eye_Cam (node 64)  bone DIRTY at rest
+    //   eyes, head, nose, chin, cameraDEAD -> Head bone DIRTY at rest
+    //
+    // So the HANDS are readable from any thread at any time, while the VIEW bones are
+    // recomputed by the engine in its render path and read stale outside it -- exactly
+    // the split node_transform()'s `stale` flag exists to report. Do not read that as a
+    // defect: it is why the flag is part of the API.
+    std::optional<SocketTransform> socket_world_transform(const char* name) const;
 
 private:
     // The engine's per-object allocation, reconstructed from BindAsset's own size

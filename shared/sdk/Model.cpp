@@ -1111,6 +1111,15 @@ ModelSkeleton::socket_transform(size_t socket_index) const {
 }
 
 std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::socket_world_transform(const char* name) const {
+    const auto index = find_socket(name);
+    if (!index.has_value()) {
+        return std::nullopt;
+    }
+    return socket_world_transform(*index);
+}
+
+std::optional<ModelSkeleton::SocketTransform>
 ModelSkeleton::socket_world_transform(size_t socket_index) const {
     const auto local = socket_transform(socket_index);
     if (!local.has_value() || m_object == nullptr) {

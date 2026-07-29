@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A range measured on the interesting samples is not the range.** `socket_count` was
+  documented as "live 1..15 per asset" from a pass that looked at characters and weapons.
+  Re-walking all 34 live assets gave **0..19** -- wrong at both ends, and the wrong end
+  that mattered was the LOW one: most assets have ZERO sockets, because a shell casing or
+  a wood-debris chunk has nothing to attach. A consumer trusting "at least one" would have
+  treated the common case as a fault.
+
+  The failure mode is selection, not arithmetic: sockets were being studied ON the assets
+  that have sockets. When recording a range, say what population it was measured over, and
+  prefer walking the whole set even when the interesting members are obvious.
+
+  Same pass, same shape: a note claimed the player was "the only asset with a `camera`
+  socket" while the fixture was already printing `32 with a 'camera'` two lines below it.
+  The true claim was narrower and more interesting -- the player is the only one that
+  routes `camera` to a bone other than `Head`.
 - **When a structure stores the SAME thing twice, that redundancy is your best test.**
   The client shell keeps each local player in two parallel arrays: a `uint16` handle at
   +0x60 and the already-resolved `LTObject*` at +0x6C. Neither array proves anything on

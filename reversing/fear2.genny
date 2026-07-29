@@ -1557,6 +1557,33 @@ class LTModelNode 0x40 {
 // and a weapon asset carries flash, breach, laser, physics, flashlight -> its own
 // offset node. Several passes were spent hunting the view camera by heuristic; the
 // asset names one.
+//
+// AND THE PLAYER'S OWN TABLE, which is not the same and is the one a VR mod needs.
+// `char\player\player\fp_playerm05.mdl`, 65 nodes / 19 sockets -- the widest in the
+// sample -- routes its view socket to a DEDICATED bone rather than to the head:
+//
+//   camera            -> node 64  Eye_Cam        <- exists only for the view
+//   cameraDEAD        -> node 13  Head           <- the death camera
+//   eyes/head/nose/chin -> node 13 Head
+//   LeftHand          -> node 18  L_Hand
+//   RightHand         -> node 38  R_Hand
+//   Light             -> node 18  L_Hand         <- the flashlight mount
+//   back              -> node 9   Upper_Torso
+//   Torso_Forward     -> node 5   Torso_Base
+//   Align, Attach     -> node 4   attach
+//   LeftFoot/RightFoot, *FootScissor, RightFootIdleKick -> L/R_Foot
+//   RightElbow        -> node 39  R_Arml_Ulna
+//
+// A generic character asset points `camera` at Head instead (and carries
+// socket_left_eye / socket_right_eye, which the player's table does NOT). So "the
+// camera socket lives on the head bone" is true of NPCs and false of the player.
+//
+// THE PART THAT DECIDES WHAT IS USABLE: at rest only 13 of the player's 65 bones are
+// clean. The HANDS are among them -- LeftHand/RightHand/Light/back/Torso_Forward all
+// read live -- while camera/Eye_Cam and every Head-based socket read STALE, because the
+// engine recomputes the view bones inside its render path. Measured, not assumed. A mod
+// wanting hand anchors can read them from any thread today; a mod wanting the eye must
+// either hook the render path or force the recompute.
 class LTModelSocket 0x28 {
     LTVector position     @0x00   // CONFIRMED the socket's offset from its node, and live these are real art values, not zeroes: socket_left_eye sits at (-3.013, 13.745, 2.784) and camera at (-4.251, 13.156, 0.000) on the same Head node.
     LTRotation rotation   @0x0C   // CONFIRMED a UNIT quaternion: |q| == 1.00000 on the records sampled. camera's is (0.5002, -0.4998, -0.5002, -0.4998), i.e. a coordinate-frame flip rather than an identity -- which is what a camera attach point needs and what makes it clear the field is a real orientation and not padding.
@@ -1584,7 +1611,7 @@ class LTModelAsset 0xA0 {
     uint16_t material_count @0x54  // CONFIRMED the asset's MATERIAL count -- the number of .mat paths it renders with -- and the value every model's material_count is set from: equal on 215/215 live. Found from the allocation side: LTModelObject_BindAsset sizes one of its regions as `28 * asset->unk_54`, and 28 is sizeof(std::string) here, so the term is an array of that many material paths. Read as a WORD from the file behind a byte flag. Live 1..8, and 8 on the player's viewmodel. // NOT THE PIECE COUNT. An earlier version of this comment called it "the MATERIAL (piece) count", which is wrong and propagated into the SDK: piece_count at +0x30 is a separate, usually LARGER number (they differ on 17 of 34 assets). Materials are what pieces render with, not the pieces themselves.
     LTAnimRecordTable anim_records @0x5C   // CONFIRMED the ANIMATION RECORD VECTOR, indexed by animation index (see LTAnimRecordTable). ILTModel_GetAnimName reads `asset + 92`, bounds the index with StdVector8_Size, takes `slot + 4` and copies the string at `record + 32`. An earlier note called this "a sub-object starts here, unmapped" -- it was spotted because the loader finalises it through 0x458894, which turns out to BE StdVector8_Size. Live its entry count equals the name table's on 34/34 assets, so the two tables cover the same animation set by index and by hash respectively.
     LTModelSocket* sockets @0x84   // CONFIRMED the socket ARRAY, from LTModelAsset_FindSocketByName's `asset[33] + 40*i` walk. Live non-null on every asset that reports a count, and walking it yields 186 named sockets across the 34 live assets.
-    uint32_t socket_count  @0x88   // CONFIRMED the socket count, the loop bound in that same function (`if (++index >= asset[34]) return 0`) and the split point of the engine's UNIFIED socket/node index space: LTModelObject_GetSocketTransform does `if (index >= socket_count) return GetNodeTransform(index - socket_count, ...)`, so a caller's "socket handle" addresses sockets first and then skeleton nodes. Live 1..15 per asset.
+    uint32_t socket_count  @0x88   // CONFIRMED the socket count, the loop bound in that same function (`if (++index >= asset[34]) return 0`) and the split point of the engine's UNIFIED socket/node index space: LTModelObject_GetSocketTransform does `if (index >= socket_count) return GetNodeTransform(index - socket_count, ...)`, so a caller's "socket handle" addresses sockets first and then skeleton nodes. Live range 0..19 over 34 distinct assets, 186 sockets total. An earlier note here said "1..15" -- WRONG AT BOTH ENDS, and the low end is the one that matters: MOST assets have ZERO sockets (every shell casing, wood-debris chunk, medkit, armour pickup and collectible in the sample), because a prop has nothing to attach. Code that treats a zero count or a failed name lookup as an error is wrong; it is the common case. The widest is `char\player\player\fp_playerm05.mdl` at 19 -- see LTModelSocket for the player's own table. It is NOT the only asset with a `camera` socket (the fixture counts 32 objects carrying one); it is the only one that routes it to a bone other than Head.
     uint32_t refcount      @0x7C   // CONFIRMED the refcount, from TWO sites: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing a fresh asset out, and LTModelAsset_FindCached does `++*(hit + 124)` on a cache hit -- same offset, two independent paths. The ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset (34/34). A tidier shape does NOT survive counting: refcount == 2*users + 1 fits 27 of 34, but 6 assets fall BELOW that and 1 above -- and below refutes a per-model floor outright. Eyeballing the ten biggest rows made it look exact; counting all 34 did not.
     float radius_from_file @0x80   // CONFIRMED read directly out of the .mdl: the loader does `stream->Read(this + 128, 4)`. Equal to `radius` on 34/34, so radius is a working copy of this one -- and that PROVENANCE is what the earlier "radius_dup, a second copy" note was missing.
     uint32_t string_blob_size @0x90 // CONFIRMED the size passed to LTMem_Alloc for string_blob, computed by LTModelAsset_ComputeBlobSize before the allocation. Live 336..19496, scaling with model complexity.
