@@ -73,6 +73,18 @@ void* resolve_interface(const char* name);
 // interface fails the shape test rather than being misread.
 std::optional<std::string> slot1_constant_string(void* iface);
 
+// The function pointer at `iface`'s vtable slot `slot`, or 0.
+//
+// `known_slot_count` is REQUIRED and must come from a MAPPED table -- e.g. ILTModelClient's 83 entries,
+// recorded in reversing/fear2.genny. A slot at or past it returns 0 rather than a pointer read from
+// beyond the array. This project has already shipped one unbounded vtable accessor and had to bound it;
+// the bound cannot be discovered at runtime, so the caller states it and the mapping is the source.
+//
+// The result is additionally required to lie on an executable, non-guard page, so a caller cannot end up
+// invoking a data address. That is a containment check, NOT a signature check: the ABI of whatever lives
+// in the slot is the caller's problem and must come from reading that function.
+uintptr_t vtable_slot(void* iface, size_t slot, size_t known_slot_count);
+
 // Holder bookkeeping for `name`: how many holders requested it, how many slots
 // currently hold a pointer, and whether those agree.
 //

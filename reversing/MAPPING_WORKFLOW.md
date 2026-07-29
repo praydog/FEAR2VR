@@ -963,6 +963,28 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A VARARGS MISMATCH IN THE PROBE LOOKS EXACTLY LIKE AN UNSAFE ENGINE CALL.** Adding two probe fields, I
+  updated the snprintf ARGUMENT list but the format-string edit silently matched nothing, so two doubles
+  were passed with no conversions. Every later argument shifted, and that format has `%s` conversions
+  downstream -- snprintf then read a double's bits as a char pointer. The game died.
+  
+  I diagnosed it as the new off-thread vt[22] calls and wrote "GAME THREAD ONLY, and that is not
+  boilerplate" into the SDK header, citing the crash as evidence. Wrong, and the contradiction was already
+  in front of me: an earlier run had made 1994 of those same calls successfully. Slot 22's disassembly is a
+  pure asset read that neither dirties nor evaluates the skeleton, so it never had vt[3]'s game-thread
+  requirement. Retracted.
+  
+  Two habits from this: when a scripted edit is supposed to change a format string AND its arguments,
+  assert BOTH replacements landed -- a `.replace()` that matches nothing is silent. And when a crash
+  coincides with new code, check what else changed in the same edit before writing causation into
+  documentation.
+  
+- **THE FIXTURE CAN RELAUNCH THE GAME BUT NOT RESTORE THE SESSION.** Launching FEAR2.exe directly leaves it
+  stuck pre-init -- gameclient.dll never maps, engine globals stay null, last_sample_time_ms does not
+  advance -- so the world-dependent majority of the suite cannot run. Worth knowing before interpreting a
+  wall of failures as regressions: check `gameclient.dll mapped in game` first, since everything downstream
+  depends on it.
+
 - **`ret N` IS A STACK-POP SIZE, NOT AN ARGUMENT COUNT, AND NOT A CONVENTION.** I inventoried all 83
   ILTModelClient entries by their `ret N` and was about to call the column "arity". Three things it is not:
   a __thiscall member carries an additional ECX `this` on top of the popped dwords; hidden return-buffer or

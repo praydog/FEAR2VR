@@ -879,6 +879,114 @@ std::string build_targets_json() {
     int wb_bounds_ok = 0, wb_bounds_probed = 0;
     float wb_inst[6]{}, wb_glob[6]{};
     int wb_loaded = -1, wb_srv_probed = 0, wb_srv_expanded = -1;
+    // WHICH DIRECTION IS THE +0x08 PAIR? ILTModel_GetBindPoseNodeTransform copies it and then INVERTS it
+    // (LTTransform_InvertInPlace), so either the record stores the bind pose and the engine hands out its
+    // inverse, or the record stores the INVERSE bind and the engine hands out the pose. A model-space bind
+    // pose has one signature its inverse does not: adjacent bones sit a BONE LENGTH apart. So measure the
+    // mean parent-child position distance both ways -- raw, and after inverting each pose.
+    double raw_edge = 0.0, inv_edge = 0.0;
+    int edge_n = 0;
+    int inv_roundtrip_ok = 0, inv_roundtrip_n = 0;
+    double rt_worst = 0.0, rt_worst_mag = 0.0;
+    // THE DECISIVE CROSS-CHECK, through the SDK's own guarded accessor rather than a raw call here:
+    // ModelSkeleton::engine_bind_pose() resolves ILTModelClient vt[22] with the mapped bound, verifies its
+    // RVA, and SEH-guards the invocation.
+    int eng_calls = 0, eng_match = 0, eng_rc_ok = 0;
+    double eng_worst = 0.0;
+    const bool eng_avail = sdk::ModelSkeleton::engine_bind_pose_available();
+    int bp_reject_oor = 0;
+    if (auto* emgr = sdk::CClientMgr::get(); emgr != nullptr) {
+        std::vector<sdk::CClientMgr::ObjectSnapshot> esnaps(2048);
+        for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
+            const auto taken = emgr->snapshot_objects(static_cast<sdk::ObjectType>(t), esnaps.data(),
+                                                      esnaps.size());
+            if (!taken.has_value()) {
+                continue;
+            }
+            for (size_t si = 0; si < *taken; ++si) {
+                const auto* obj = reinterpret_cast<const regenny::LTObject*>(esnaps[si].address);
+                const auto sk = sdk::ModelSkeleton::from_object(obj);
+                if (!sk.has_value()) {
+                    continue;
+                }
+                if (bp_reject_oor == 0) {
+                    bp_reject_oor = (!sk->inverse_bind_pose(sk->node_count() + 1000).has_value() &&
+                                     !sk->bind_pose(sk->node_count() + 1000).has_value()) ? 1 : -1;
+                }
+                for (size_t i = 0; i < sk->node_count(); ++i) {
+                    const auto par = sk->parent_of(i);
+                    if (!par.has_value() || *par == i) {
+                        continue;
+                    }
+                    const auto a = sk->inverse_bind_pose(i), b = sk->inverse_bind_pose(*par);
+                    if (!a.has_value() || !b.has_value()) {
+                        continue;
+                    }
+                    const auto dist = [](const regenny::LTVector& u, const regenny::LTVector& v) {
+                        const double dx = u.x - v.x, dy = u.y - v.y, dz = u.z - v.z;
+                        return std::sqrt(dx * dx + dy * dy + dz * dz);
+                    };
+                    // The inverted side now goes through the SDK accessor, so the probe measures the
+                    // shipped helper rather than a copy of its arithmetic.
+                    const auto ea = sk->bind_pose(i);
+                    const auto eb = sk->bind_pose(*par);
+                    if (!ea.has_value() || !eb.has_value()) {
+                        continue;
+                    }
+                    raw_edge += dist(a->position, b->position);
+                    inv_edge += dist(ea->position, eb->position);
+                    ++edge_n;
+                    // invert_rigid is its own inverse: applying it twice must return the input. Checks the
+                    // shipped helper's arithmetic against a property rather than against a copy of itself.
+                    if (eng_avail && eng_calls < 4000) {
+                        ++eng_calls;
+                        if (const auto got = sk->engine_bind_pose(i); got.has_value()) {
+                            ++eng_rc_ok;
+                            const double d = dist(got->position, ea->position);
+                            const double dr = std::fabs(got->rotation.x - ea->rotation.x) +
+                                              std::fabs(got->rotation.y - ea->rotation.y) +
+                                              std::fabs(got->rotation.z - ea->rotation.z) +
+                                              std::fabs(got->rotation.w - ea->rotation.w);
+                            if (d + dr > eng_worst) {
+                                eng_worst = d + dr;
+                            }
+                            if (d < 0.01 && dr < 1e-3) {
+                                ++eng_match;
+                            }
+                        }
+                    }
+                    const auto back = sdk::ModelSkeleton::invert_rigid(*ea);
+                    ++inv_roundtrip_n;
+                    // ALL SEVEN components, and finite. Comparing only x and w would pass a bug in y or
+                    // z, which is exactly where the inversion's cross terms live.
+                    const bool finite = std::isfinite(back.position.x) && std::isfinite(back.position.y) &&
+                                        std::isfinite(back.position.z) && std::isfinite(back.rotation.x) &&
+                                        std::isfinite(back.rotation.y) && std::isfinite(back.rotation.z) &&
+                                        std::isfinite(back.rotation.w);
+                    {
+                        const double e = dist(back.position, a->position);
+                        if (e > rt_worst) {
+                            rt_worst = e;
+                            rt_worst_mag = std::sqrt(static_cast<double>(a->position.x) * a->position.x +
+                                                     static_cast<double>(a->position.y) * a->position.y +
+                                                     static_cast<double>(a->position.z) * a->position.z);
+                        }
+                    }
+                    if (finite && dist(back.position, a->position) < 0.01 &&
+                        std::fabs(back.rotation.x - a->rotation.x) < 1e-4f &&
+                        std::fabs(back.rotation.y - a->rotation.y) < 1e-4f &&
+                        std::fabs(back.rotation.z - a->rotation.z) < 1e-4f &&
+                        std::fabs(back.rotation.w - a->rotation.w) < 1e-4f) {
+                        ++inv_roundtrip_ok;
+                    }
+                }
+            }
+        }
+        if (edge_n > 0) {
+            raw_edge /= edge_n;
+            inv_edge /= edge_n;
+        }
+    }
     // THE GAME DLL'S PER-FRAME HOOK ANCHORS. Reported so the slot map is checked against the live
     // build every run: the identity string must match, and all three addresses must land inside
     // gameclient.dll -- an implementation slot pointing anywhere else would mean the layout
@@ -1247,7 +1355,7 @@ std::string build_targets_json() {
              "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
              "\"lp_slots\":%d,\"lp_consistent\":%d,\"lp_accepted\":%d,"
-             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,\"gcs_entry_agrees\":%d,"
+             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,\"gcs_entry_agrees\":%d,\"bp_raw_edge\":%.4f,\"bp_inv_edge\":%.4f,\"bp_edges\":%d,\"bp_rt_ok\":%d,\"bp_rt_n\":%d,\"bp_rt_worst\":%.5f,\"bp_rt_worst_mag\":%.2f,\"bp_eng_calls\":%d,\"bp_eng_rc_ok\":%d,\"bp_eng_match\":%d,\"bp_eng_worst\":%.5f,\"bp_reject_oor\":%d,"
              "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
@@ -1337,7 +1445,7 @@ std::string build_targets_json() {
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
              wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
-             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes, gcs_entry_agrees,
+             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes, gcs_entry_agrees, raw_edge, inv_edge, edge_n, inv_roundtrip_ok, inv_roundtrip_n, rt_worst, rt_worst_mag, eng_calls, eng_rc_ok, eng_match, eng_worst, bp_reject_oor,
              wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],
@@ -1430,7 +1538,7 @@ std::string build_models_json() {
                 const auto back = skel->node_name(*idx);
                 const auto parent = skel->parent_of(*idx);
                 const auto chain = skel->path_to_root(*idx);
-                const auto pose = skel->bind_pose(*idx);
+                const auto pose = skel->inverse_bind_pose(*idx);
                 char nb[512];
                 snprintf(nb, sizeof(nb),
                          "%s{\"asked\":\"%s\",\"index\":%zu,\"name\":\"%s\",\"round_trip\":%s,"
@@ -1762,7 +1870,7 @@ std::string build_models_json() {
     // terrible for a JSON consumer: the reply parses as an unterminated string and
     // the failure looks like a transport bug. It returns the length it WANTED, so a
     // buffer that grew past its literal is caught here instead of downstream.
-    char sum[1152];
+    char sum[1536];
     const int want = snprintf(sum, sizeof(sum),
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
              "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
@@ -2675,7 +2783,7 @@ std::string build_objects_json() {
                                     // First sighting: record this asset's bind poses.
                                     std::vector<std::array<float, 7>> poses;
                                     for (size_t ni = 0; ni < sk->node_count(); ++ni) {
-                                        if (const auto bp = sk->bind_pose(ni); bp.has_value()) {
+                                        if (const auto bp = sk->inverse_bind_pose(ni); bp.has_value()) {
                                             poses.push_back(std::array<float, 7>{
                                                 bp->position.x, bp->position.y, bp->position.z,
                                                 bp->rotation.x, bp->rotation.y, bp->rotation.z,
@@ -2708,7 +2816,7 @@ std::string build_objects_json() {
                                             // grows. If they are parent-relative, the position IS
                                             // the bone length and the difference is meaningless.
                                             if (const auto par = sk->parent_of(ni); par.has_value()) {
-                                                if (const auto pp = sk->bind_pose(*par);
+                                                if (const auto pp = sk->inverse_bind_pose(*par);
                                                     pp.has_value()) {
                                                     const float ex = bp->position.x - pp->position.x;
                                                     const float ey = bp->position.y - pp->position.y;
@@ -2753,7 +2861,7 @@ std::string build_objects_json() {
                                     }
                                     bool same = true;
                                     for (size_t ni = 0; ni < sk->node_count(); ++ni) {
-                                        const auto bp = sk->bind_pose(ni);
+                                        const auto bp = sk->inverse_bind_pose(ni);
                                         if (!bp.has_value() || ni >= it->second.first.size()) {
                                             same = false;
                                             break;

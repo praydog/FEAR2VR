@@ -1,5 +1,7 @@
 #pragma once
 
+#include <type_traits>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -93,7 +95,7 @@ public:
 
     // Each node stores TWO (position, rotation) pairs. This header used to expose them as
     // pose_a/pose_b because which was which was not established -- it now is, separately for each
-    // half and each by its own reader, so they are named for what they are. See bind_pose() and
+    // half and each by its own reader, so they are named for what they are. See bind_pose_as_stored() and
     // anim_fallback_position() further down for the evidence and for the one field left unexposed.
     struct Pose {
         regenny::LTVector position;
@@ -256,30 +258,47 @@ public:
     std::optional<regenny::LTVector> anim_fallback_position(size_t index) const;
 
 
-    // THE BIND POSE. nullopt when the index is out of range or the read faulted.
+    // THE +0x08 PAIR IS THE INVERSE BIND TRANSFORM, and the long-standing "coordinate space
+    // unresolved" note above it is now closed -- by reading the engine's getter rather than by any
+    // further measurement of the values.
     //
-    // ITS COORDINATE SPACE IS UNRESOLVED IN FEAR2, and that is a real gap rather than an omission:
+    // ILTModel_GetBindPoseNodeTransform does exactly two things: copy this record's +0x08 pair, then
+    // INVERT it in place (LTTransform_InvertInPlace at 0x41DB20 -- rotation becomes its conjugate via
+    // LTRotation_Conjugate, position becomes -(conjugate * position)). So what the engine HANDS OUT is
+    // the inverse of what is STORED.
     //
-    //   * the getter reads ONE node and composes nothing, so it evidences no space
-    //   * the sibling field at +0x24 being parent-relative says nothing about this one
-    //   * the LithTech reference implements the same-named method as
-    //     `mat = pNode->GetGlobalTransform()`, which POINTS at model-space -- but that is a reference,
-    //     and FEAR2's version already differs in shape, filling a position/quaternion pair rather
-    //     than a matrix
-    //   * three in-process measurements failed to discriminate: magnitude-versus-depth (confounded by
-    //     mixed asset scale), the parent-child delta (undefined under the local hypothesis, so it
-    //     cannot adjudicate), and fitting the object's bounding radius (both forms fit)
+    // Which direction is "the bind pose" is settled from the binary, not from the reference: that
+    // function pushes the literal 'ILTModel::GetBindPoseNodeTransform' for its own error report, so the
+    // engine's own name for the value it returns -- the INVERTED one -- is the bind pose. The reference
+    // implements the same-named method as `mat = pNode->GetGlobalTransform()`, a model-space pose, which
+    // agrees. Therefore the stored pair is the inverse-bind matrix, which is exactly what skinning wants
+    // and exactly what a model file would keep.
     //
-    // A fourth experiment -- composing +0x24 down the hierarchy to see whether it reproduces this
-    // field -- came out at 268 of 2196 nodes, but it says nothing about spaces either: the evaluator
-    // does not use +0x30's rotation, so that composition fed the engine a rotation it never uses.
+    // BOTH DIRECTIONS ARE OFFERED, named for what they ARE now that the direction is settled:
+    //   inverse_bind_pose()  the record's +0x08 pair verbatim -- the inverse-bind transform, what the
+    //                        file stores and what skinning consumes directly.
+    //   bind_pose()          that pair inverted, i.e. bit-for-bit what a caller of the engine's
+    //                        ILTModelClient vt[22] receives.
+    // Both are asset data: no staleness, no game thread. nullopt when the index is out of range or a read
+    // faulted.
+
+    // The rigid inverse of a pose -- the ONE operation separating the two accessors, and exactly what
+    // LTTransform_InvertInPlace does: rotation becomes its conjugate, position becomes
+    // -(conjugate * position). Public because a consumer holding one direction needs the other, and
+    // because it is its own inverse, a property worth being able to check.
     //
-    // WHAT WOULD SETTLE IT: this getter has no callers inside FEAR2.exe at all, only its two vtable
-    // slots, so a consumer that composes its output lives in gameclient.dll. Until then, do not
-    // compose these and do not assume they are already composed.
-    //
-    // (The composition arithmetic itself is NOT in doubt -- LTTransform_Compose was read directly and
-    // the SDK's version agrees with the engine on every clean socket. Only these fields' meaning is.)
+    // Pure arithmetic on values: no reads, no engine state, safe on any thread.
+    static Pose invert_rigid(const Pose& p);
+
+    // engine_bind_pose() hands a Pose* straight to engine code that writes 28 bytes into it: position at
+    // +0, rotation at +12. If the generated members' layout ever shifts, that call becomes an unchecked
+    // overwrite, so the layout is asserted rather than assumed to keep packing.
+    static_assert(sizeof(Pose) == 28, "engine_bind_pose writes 28 bytes into a Pose");
+    static_assert(offsetof(Pose, position) == 0, "engine writes position at +0");
+    static_assert(offsetof(Pose, rotation) == 12, "engine writes rotation at +12");
+    static_assert(std::is_standard_layout_v<Pose>, "Pose must be standard-layout to hand to engine code");
+
+    std::optional<Pose> inverse_bind_pose(size_t index) const;
     std::optional<Pose> bind_pose(size_t index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------
@@ -516,6 +535,24 @@ public:
     // nullopt when the socket cannot be resolved or the engine reports failure; the result is
     // never stale by construction.
     std::optional<SocketTransform> socket_pose(size_t handle) const;
+
+    // THE ENGINE'S OWN BIND POSE, via ILTModelClient vt[22] (GetBindPoseNodeTransform).
+    //
+    // UNLIKE engine_socket_transform(), THIS DOES NOT EVALUATE ANYTHING. Slot 22 reads asset data only --
+    // it walks obj -> +0xEC -> +0x1C to the node records, copies one pair and inverts it -- so it neither
+    // dirties nor evaluates the skeleton and carries no game-thread requirement of its own. What remains
+    // is object lifetime: an object found in a snapshot can be unregistered before the call, which is why
+    // the invocation is SEH-guarded and returns nullopt rather than faulting.
+    //
+    // PREFER bind_pose() ANYWAY for bulk work: it reproduces this exactly -- verified equal on 1994 of
+    // 1994 live nodes, worst combined error 0.0058 -- from the same asset data, without needing the
+    // interface resolved or an object pointer to stay valid.
+    //
+    // The slot is read with the mapped bound (83) and its RVA verified, so a reshuffled table yields
+    // nothing rather than a wrong call. nullopt on any of that, or a non-zero engine rc -- see
+    // last_engine_rc().
+    std::optional<Pose> engine_bind_pose(size_t index) const;
+    static bool engine_bind_pose_available();
 
     static bool engine_socket_transform_available();
 

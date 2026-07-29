@@ -102,6 +102,17 @@ std::optional<std::string> slot1_constant_string(void* iface) {
     return std::string(buf, len);
 }
 
+uintptr_t vtable_slot(void* iface, size_t slot, size_t known_slot_count) {
+    if (iface == nullptr || known_slot_count == 0 || slot >= known_slot_count) {
+        return 0;
+    }
+    const auto fn = seh_read_vtable_slot(iface, slot);
+    if (fn == 0 || !is_executable(fn)) {
+        return 0;
+    }
+    return fn;
+}
+
 Registry::Agreement interface_agreement(const char* name) {
     auto& reg = Registry::get();
     reg.initialize();

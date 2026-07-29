@@ -1177,6 +1177,12 @@ namespace {
 // verify the slot before calling -- never to call. Both the client and server ILTModel tables
 // place GetSocket at 2 and GetSocketTransform at 3.
 constexpr size_t kSlotGetSocketTransform = 3;
+// ILTModelClient's mapped entry count, from reversing/fear2.genny -- the bound every slot read needs.
+constexpr size_t kILTModelClientSlots = 83;
+// GetBindPoseNodeTransform: slot 22, and its RVA pins the exact function so a reshuffled table cannot
+// hand back something else. Its own error string is 'ILTModel::GetBindPoseNodeTransform'.
+constexpr size_t kSlotGetBindPose = 22;
+constexpr uintptr_t kGetBindPoseRva = 0x42C958 - 0x400000;
 constexpr uintptr_t kGetSocketTransformRva = 0x42B775 - 0x400000;
 
 // THE FIRST STACK ARGUMENT IS THE OBJECT, and `this` is ignored. The disassembly is explicit:
@@ -1212,6 +1218,38 @@ GetSocketTransformFn resolve_get_socket_transform() {
         fn = nullptr;
     }
     return fn;
+}
+
+// __stdcall, THREE stack dwords, and the caller's ECX is dead -- all read off 0x42C958 itself, where
+// both ECX reads are dominated by `mov ecx, [esp+node_index]`. Do NOT assume the sibling slots' arity:
+// GetSocketTransform pops four dwords, this pops three.
+using GetBindPoseFn = int(__stdcall*)(const void*, unsigned, ModelSkeleton::Pose*);
+
+GetBindPoseFn resolve_get_bind_pose() {
+    GetBindPoseFn fn = nullptr;
+    auto* iface = interfaces::ILTModel::get_client();
+    const auto* exe = Modules::get().exe();
+    if (iface == nullptr || exe == nullptr || exe->base == 0) {
+        return nullptr;
+    }
+    const auto entry = interfaces::vtable_slot(iface, kSlotGetBindPose, kILTModelClientSlots);
+    if (entry != 0 && entry - exe->base == kGetBindPoseRva) {
+        fn = reinterpret_cast<GetBindPoseFn>(entry);
+    }
+    return fn;
+}
+
+// The object can be unregistered between a snapshot and this call, so the invocation itself is guarded.
+int64_t seh_call_get_bind_pose(GetBindPoseFn fn, const void* obj, unsigned index,
+                               ModelSkeleton::Pose* out) {
+    int64_t r = -1;
+    KANANLIB_SEH_TRY {
+        r = fn(obj, index, out);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r = -1;
+    }
+    return r;
 }
 
 int64_t seh_call_get_socket_transform(GetSocketTransformFn fn, const void* obj,
@@ -1295,12 +1333,43 @@ std::optional<regenny::LTVector> ModelSkeleton::anim_fallback_position(size_t in
 }
 
 
-std::optional<ModelSkeleton::Pose> ModelSkeleton::bind_pose(size_t index) const {
+std::optional<ModelSkeleton::Pose> ModelSkeleton::inverse_bind_pose(size_t index) const {
     NodeRaw nd{};
     if (!seh_read_node(m_records, static_cast<uint32_t>(m_count), index, &nd)) {
         return std::nullopt;
     }
     return Pose{nd.pos_a, nd.rot_a};
+}
+
+ModelSkeleton::Pose ModelSkeleton::invert_rigid(const Pose& p) {
+    // Conjugate the rotation, then rotate the position by that conjugate and negate it. Component order
+    // is (x, y, z, w), per the schema and the engine's own LTRotation_Conjugate (0x41DAB6), which negates
+    // x/y/z and copies w.
+    const double x = -static_cast<double>(p.rotation.x);
+    const double y = -static_cast<double>(p.rotation.y);
+    const double z = -static_cast<double>(p.rotation.z);
+    const double w = static_cast<double>(p.rotation.w);
+    const double px = p.position.x, py = p.position.y, pz = p.position.z;
+    const double tx = 2.0 * (y * pz - z * py);
+    const double ty = 2.0 * (z * px - x * pz);
+    const double tz = 2.0 * (x * py - y * px);
+    Pose out{};
+    out.position.x = static_cast<float>(-(px + w * tx + (y * tz - z * ty)));
+    out.position.y = static_cast<float>(-(py + w * ty + (z * tx - x * tz)));
+    out.position.z = static_cast<float>(-(pz + w * tz + (x * ty - y * tx)));
+    out.rotation.x = static_cast<float>(x);
+    out.rotation.y = static_cast<float>(y);
+    out.rotation.z = static_cast<float>(z);
+    out.rotation.w = p.rotation.w;
+    return out;
+}
+
+std::optional<ModelSkeleton::Pose> ModelSkeleton::bind_pose(size_t index) const {
+    const auto p = inverse_bind_pose(index);
+    if (!p.has_value()) {
+        return std::nullopt;
+    }
+    return invert_rigid(*p);
 }
 
 std::optional<ModelSkeleton::EyeGeometry> ModelSkeleton::eye_geometry() const {
@@ -1361,6 +1430,22 @@ ModelSkeleton::socket_pose(size_t handle) const {
     }
     // Otherwise let the engine do the work. This is the branch that needs the game thread.
     return engine_socket_transform(handle, 1);
+}
+
+bool ModelSkeleton::engine_bind_pose_available() { return resolve_get_bind_pose() != nullptr; }
+
+std::optional<ModelSkeleton::Pose> ModelSkeleton::engine_bind_pose(size_t index) const {
+    auto* fn = resolve_get_bind_pose();
+    if (fn == nullptr || m_object == nullptr || index >= m_count) {
+        return std::nullopt;
+    }
+    Pose out{};
+    const auto rc = seh_call_get_bind_pose(fn, m_object, static_cast<unsigned>(index), &out);
+    g_last_engine_rc = rc;
+    if (rc != 0) {
+        return std::nullopt;
+    }
+    return out;
 }
 
 bool ModelSkeleton::engine_socket_transform_available() {

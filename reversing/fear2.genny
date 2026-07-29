@@ -2062,36 +2062,32 @@ class LTModelBlock130 0x24 {
 // SLOT MAP (2026-07). 60 of the 83 client entries were already named by earlier passes, so walking the
 // table attached the indices for free.
 //
-// THE NUMBER AFTER EACH NAME IS STACK DWORDS POPPED BY ITS `ret N` -- an inventory, not a signature. It is
-// NOT the argument count: a __thiscall member would carry an additional ECX `this` on top of it, hidden
-// return-buffer or register parameters would not appear, and nothing about output semantics follows from it.
-// The aggregate claim it does support is that all 83 clean up their own stack. Which slots take the OBJECT
-// first is established only for 2, 3 and 22, above.
-//    0  abstract_base_dtor (shared with CLTClient_vftable slot 0)   1  _InterfaceImplementation
-//    7  GetPieceName                  8/9  Get/SetPieceHideStatus
-//   10/11 Get/SetLODDistanceBias      12  GetNode        13  GetNodeName
-//   18  GetNumChildren                19  GetChild       20  GetParent      21  GetNumNodes
-//   22  GetBindPoseNodeTransform  -- the +0x08 pose reader. The reference declares it on the BASE
-//                                    ILTModel, which fits the early slot. No callers inside FEAR2.exe,
-//                                    so whatever composes its output reaches it as vt[22] from
-//                                    gameclient.dll. SAME object-first shape as slots 2/3 but
-//                                    `retn 0Ch` -- THREE dwords (object, node_index, float* out), not
-//                                    four. Verified from 0x42C958 itself; the arity does NOT carry over
-//                                    from the sibling slots.
-//   28  UpdateMainTracker             29  GetNumAnimations      30  GetAnimInterpolationTime
-//   33  GetAnimKeyFrames
-//   34  GetAnimNodeTransform      -- the +0x24 animation-fallback reader
-//   36  GetPlaybackState              37  AddTracker     38  RemoveTracker
-//   41/42/43 GetAnimIndex/GetAnimName/GetCurAnim         44  SetCurAnim
-//   45  GetIsInterpolating            46  ResetAnim      47/48 Get/SetLooping
-//   49/50 Get/SetPlaying              52/53 Get/SetCurAnimTime   55/56 Set/GetAnimRate
-//   57  GetNumWeightSets              60  SetWeightSet   61..64 physics weight sets, GetPhysicsVisNode
-//   65  DirtyAllNodeTransforms        66  DirtyNodeTransform     67  UpdateModelAttachments
-//   68  GetModelFilename              69  GetMaterialFilename    70  SetMaterialFilename
-//   71  GetMovementEncodingTransform  72  ResetMovementEncodingTransform
-//   73  SetMovementEncodingTracker    74  DisableMovementEncoding
-//   75  IsAnimDataLoaded              78  UpdatePhysicsOnlyOnDeath
-//   79/80 Add/RemoveCharacterProxyToWorld                 81/82 Get/SetMaterial
+// EACH ENTRY READS `slot Name/N`, where N is the STACK DWORDS POPPED by that function's `ret N` -- an
+// inventory, not a signature. N is NOT the argument count: a __thiscall member would carry an additional
+// ECX `this` on top of it, hidden return-buffer or register parameters would not appear, and nothing about
+// output semantics follows from it. The aggregate claim it supports is that all 83 clean up their own stack.
+// Which slots take the OBJECT first is established only for 2, 3 and 22, above.
+//   0 abstract_base_dtor/1  1 InterfaceImplementation/0  2 GetSocket/3  3 GetSocketTransform/4
+//   7 GetPieceName/4  8 GetPieceHideStatus/3  9 srv:SetPieceHideStatus/3  10 GetLODDistanceBias/2
+//   11 SetLODDistanceBias/2  12 GetNode/3  13 GetNodeName/4  18 GetNumChildren/3  19 GetChild/4
+//   20 GetParent/3  21 GetNumNodes/2  22 GetBindPoseNodeTransform/3  28 UpdateMainTracker/2
+//   29 GetNumAnimations/2  30 GetAnimInterpolationTime/3  31 CommonLT_GetModelAnimUserDims/3
+//   33 GetAnimKeyFrames/3  34 GetAnimNodeTransform/5  36 GetPlaybackState/3  37 AddTracker/3
+//   38 RemoveTracker/2  41 GetAnimIndex/3  42 GetAnimName/4  43 GetCurAnim/3  44 SetCurAnim/4
+//   45 GetIsInterpolating/2  46 ResetAnim/2  47 GetLooping/2  48 SetLooping/3  49 GetPlaying/2
+//   50 SetPlaying/3  52 GetCurAnimTime/3  53 SetCurAnimTime/3  55 SetAnimRate/3  56 GetAnimRate/3
+//   57 GetNumWeightSets/2  60 SetWeightSet/3  61 FindPhysicsWeightSet/3  62 SetPhysicsWeightSet/2
+//   63 GetPhysicsWeightSet/2  64 GetPhysicsVisNode/2  65 DirtyAllNodeTransforms/1
+//   66 DirtyNodeTransform/2  67 UpdateModelAttachments/1  68 GetModelFilename/3
+//   69 GetMaterialFilename/4  70 SetMaterialFilename/3  71 GetMovementEncodingTransform/2
+//   72 ResetMovementEncodingTransform/1  73 SetMovementEncodingTracker/2  74 DisableMovementEncoding/1
+//   75 IsAnimDataLoaded/2  78 UpdatePhysicsOnlyOnDeath/1  79 AddCharacterProxyToWorld/1
+//   80 RemoveCharacterProxyFromWorld/1  81 GetMaterial/3  82 SetMaterial/3
+//
+// slot 22 GetBindPoseNodeTransform is the +0x08 pose reader this project reversed; the reference declares
+// it on the BASE ILTModel, which fits the early slot. slot 34 GetAnimNodeTransform is the +0x24
+// animation-fallback reader. Both have no callers inside FEAR2.exe, so whatever composes their output
+// reaches them as vt[22] and vt[34] from gameclient.dll.
 // The other 23 are unnamed.
 //
 // WHAT "83 ENTRIES" RESTS ON. The executable-pointer RUN ends at 83: the string "CLTModelClient" is the

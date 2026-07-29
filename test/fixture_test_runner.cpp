@@ -1050,6 +1050,47 @@ int main(int argc, char** argv) {
         json_int(body, "wb_inside", wbin);
         json_int(body, "wb_bounds_probed", wbbp);
         json_int(body, "wb_bounds_ok", wbbok);
+        // ---- THE BIND POSE, AGAINST THE ENGINE'S OWN GETTER ---------------------------
+        //
+        // ILTModelClient vt[22] (GetBindPoseNodeTransform) copies the node record's +0x08 pair and INVERTS
+        // it, so sdk::ModelSkeleton::bind_pose() -- which applies that same inversion to asset data --
+        // must reproduce the engine's output exactly. That is the check: two independent producers of one
+        // value, one of them the engine itself.
+        //
+        // NEEDS A LOADED WORLD. With no world there are no model objects, so the counts are zero and
+        // there is nothing to compare. That is reported rather than passed over: a check that silently
+        // succeeds on an empty population is worse than no check.
+        {
+            int64_t edges = -1, rt_ok = -1, rt_n = -1, calls = -1, rc_ok = -1, match = -1, oor = -1;
+            double worst = -1.0;
+            json_int(body, "bp_edges", edges);
+            json_int(body, "bp_rt_ok", rt_ok);
+            json_int(body, "bp_rt_n", rt_n);
+            json_int(body, "bp_eng_calls", calls);
+            json_int(body, "bp_eng_rc_ok", rc_ok);
+            json_int(body, "bp_eng_match", match);
+            json_int(body, "bp_reject_oor", oor);
+            json_double(body, "bp_eng_worst", worst);
+            if (edges > 0) {
+                check(oor == 1, "an out-of-range node index is refused by both pose accessors");
+                check(rt_n > 0 && rt_ok * 100 >= rt_n * 99,
+                      "invert_rigid round-trips on essentially every node (it is its own inverse)");
+                check(calls > 0, "the engine's own bind-pose getter was reachable and called");
+                check(rc_ok == calls, "every engine call returned LT_OK");
+                check(match == calls,
+                      "the SDK's bind_pose() reproduces the ENGINE's vt[22] output on every node");
+                check(worst >= 0.0 && worst < 0.05, "worst engine-vs-SDK disagreement stays negligible");
+                printf("[fixture] bind pose: %lld/%lld match the engine (worst %.5f), %lld/%lld invert "
+                       "round-trips, %lld edges\n",
+                       static_cast<long long>(match), static_cast<long long>(calls), worst,
+                       static_cast<long long>(rt_ok), static_cast<long long>(rt_n),
+                       static_cast<long long>(edges));
+            } else {
+                printf("[fixture] bind pose NOTE: no model objects in this state (no world loaded) -- the "
+                       "engine comparison is UNEXERCISED, not passing\n");
+            }
+        }
+
         // ---- SLOT 1 ACROSS THE RESOLVED INTERFACES ------------------------------------
         //
         // interfaces::slot1_constant_string() reports a string only when slot 1's ENTRY SEQUENCE is
