@@ -794,6 +794,24 @@ int main(int argc, char** argv) {
         check(pans > 0, "piece visibility answers for real pieces");
         check(mobj > 0 && pans < 64 * mobj,
               "the piece accessor refuses indices beyond the model's piece count");
+        // THE REGRESSION GUARD for a bug this pass fixed. The accessor must answer for
+        // exactly the pieces the models report -- no more, no fewer. It previously
+        // bounded piece indices by the MATERIAL count, which is a different and usually
+        // smaller number, and silently refused 221 of 697 real pieces (32%). If anyone
+        // reintroduces that bound this check fails immediately, because the two totals
+        // are 476 and 697.
+        int64_t pcounts = -1, pnamed = -1, prt = -1;
+        json_int(body, "piece_counts", pcounts);
+        json_int(body, "piece_named", pnamed);
+        json_int(body, "piece_roundtrip", prt);
+        check(pcounts > 0, "models report a piece count");
+        check(pans == pcounts,
+              "the piece accessor answers for EVERY piece the models report");
+        // Every piece is named, and every name finds its own index back through the
+        // case-insensitive lookup -- the same two-way check the sockets get.
+        check(pnamed == pcounts, "EVERY piece resolves to a name");
+        check(prt == pcounts,
+              "every piece is found again by its own UPPER-CASED name");
         // REPORTED: nothing is hidden in the sampled scene, so a floor here would be
         // asserting the level's art rather than the engine's mechanism.
         check(phid >= 0 && phid <= pans,

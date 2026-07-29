@@ -4,10 +4,10 @@
 #include "CClientMgrPtrVector.hpp"
 #include "LTObjectHandleTable.hpp"
 namespace regenny {
-class CClientMgrCounterNode;
+class CClientShell;
 }
 namespace regenny {
-class CClientShell;
+class CClientMgrCounterNode;
 }
 namespace regenny {
 #pragma pack(push, 1)

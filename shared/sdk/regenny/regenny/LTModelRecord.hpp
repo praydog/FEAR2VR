@@ -11,8 +11,9 @@ public:
     void* self_ref; // 0x8
     private: char pad_c[0xc]; public:
     uint8_t tracker_id; // 0x18
-    private: char pad_19[0x3]; public:
-    uint32_t unk_1C; // 0x1c
+    uint8_t anim_flags; // 0x19
+    private: char pad_1a[0x2]; public:
+    uint32_t anim_time; // 0x1c
     regenny::LTModelAsset* asset; // 0x20
     uint16_t anim_index; // 0x24
     uint16_t node_a; // 0x26

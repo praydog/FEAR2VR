@@ -862,10 +862,14 @@ int seh_piece_hidden(const regenny::LTObject* obj, size_t index) {
     KANANLIB_SEH_TRY {
         if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
             const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            // Two bounds, both the engine's: the mask is two dwords (pinned by
-            // material_names starting right after it), and a piece index only means
-            // anything below the model's own piece count.
-            if (index < model->material_count && index < 64) {
+            // THE BOUND IS THE ASSET'S PIECE COUNT, not the model's material count.
+            // An earlier version used material_count and was WRONG: the two differ on
+            // 17 of 34 live assets, so a grunt (7 pieces, 3 materials) would have had
+            // four of its pieces refused. ILTModel::GetPieceName bounds by this field.
+            // The second bound is the mask's own width -- two dwords, pinned by
+            // material_names starting immediately after it.
+            const auto* asset = model->record.asset;
+            if (asset != nullptr && index < asset->piece_count && index < 64) {
                 const uint32_t word = model->piece_hide_bits[index >> 5];
                 result = ((word & (1u << (index & 31))) != 0) ? 1 : 0;
             }
@@ -877,7 +881,7 @@ int seh_piece_hidden(const regenny::LTObject* obj, size_t index) {
     return result;
 }
 
-} // namespace
+}  // namespace
 
 std::optional<std::string> model_current_anim_name(const regenny::LTObject* obj) {
     const char* src = seh_anim_name_ptr(obj);
@@ -900,3 +904,79 @@ std::optional<bool> model_piece_hidden(const regenny::LTObject* obj, size_t inde
 }
 
 } // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// One guarded read of the asset's piece table: the count and the requested name
+// POINTER together, so the bound and the entry come from the same instant. The copy
+// happens outside, through seh_copy_cstr, to avoid nesting SEH frames.
+struct PieceRaw {
+    uint32_t count;
+    const char* name_ptr;
+    bool ok;
+};
+
+PieceRaw seh_piece(const regenny::LTObject* obj, size_t index, bool want_name) {
+    PieceRaw r{};
+    KANANLIB_SEH_TRY {
+        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
+            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+            const auto* asset = model->record.asset;
+            if (asset != nullptr) {
+                r.count = asset->piece_count;
+                r.ok = true;
+                if (want_name && index < r.count && asset->piece_names != nullptr) {
+                    r.name_ptr = asset->piece_names[index];
+                }
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+}  // namespace
+
+std::optional<size_t> model_piece_count(const regenny::LTObject* obj) {
+    const PieceRaw r = seh_piece(obj, 0, false);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    return r.count;
+}
+
+std::optional<std::string> model_piece_name(const regenny::LTObject* obj, size_t index) {
+    const PieceRaw r = seh_piece(obj, index, true);
+    if (!r.ok || r.name_ptr == nullptr) {
+        return std::nullopt;
+    }
+    char buf[kMaxName]{};
+    if (seh_copy_cstr(r.name_ptr, buf, sizeof(buf)) < 0) {
+        return std::nullopt;
+    }
+    return std::string{buf};
+}
+
+std::optional<size_t> model_find_piece(const regenny::LTObject* obj, const char* name) {
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    const PieceRaw probe = seh_piece(obj, 0, false);
+    if (!probe.ok) {
+        return std::nullopt;
+    }
+    // Linear, like every other name lookup here: piece counts run 1..10 live.
+    for (size_t i = 0; i < probe.count; ++i) {
+        const auto nm = model_piece_name(obj, i);
+        if (nm.has_value() && equals_i(nm->c_str(), name, kMaxName)) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace sdk

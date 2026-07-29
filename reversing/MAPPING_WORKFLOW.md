@@ -963,6 +963,31 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A TOTAL can match by accident while every element differs. Never validate a field
+  by its aggregate.** Having just mapped the asset's piece count at +0x30, the endpoint
+  reported 697 pieces summed over 215 models -- the exact number the socket walk had
+  reported in an earlier pass. Two different fields at two different offsets summing to
+  the identical total looks like a misread.
+
+  It was not. Checked per asset, the counts differ on **215 of 215 objects**:
+
+  ```
+  assaultrifle    pieces  8   sockets  5
+  grunt           pieces  7   sockets 14
+  submachinegun   pieces 10   sockets  5
+  shell casing    pieces  1   sockets  0
+  ```
+
+  and they still sum to 697 apiece. A coincidence, and a cheap one to resolve: print
+  the per-element pairs and count the disagreements. The general rule is that a sum
+  compresses away exactly the information that would distinguish two fields, so a
+  matching total is never evidence of sameness and a differing total is only evidence
+  of difference. Compare element-wise or not at all.
+
+  The mirror-image error is more dangerous and this project has committed it: bounding
+  a piece index by the MATERIAL count. Those two totals differ (476 against 697), so
+  the aggregate WOULD have caught it -- but nothing was comparing them, because both
+  numbers looked plausible on their own.
 - **When a cache looks like garbage, look for the VALIDITY FLAG before doubting the
   layout.** The per-node transform arrays read as `(position, unit quaternion)` at
   stride 28 -- 2222 of 2222 slots had a unit rotation, which is about as strong as a

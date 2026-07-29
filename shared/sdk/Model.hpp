@@ -314,6 +314,29 @@ std::optional<std::string> model_current_anim_name(const regenny::LTObject* obj)
 // count, or the read faulted.
 std::optional<bool> model_piece_hidden(const regenny::LTObject* obj, size_t index);
 
+// The NAME of a piece, e.g. "Face", "body_shadow", "Clip_Group", "Assault_Group".
+//
+// This is what makes model_piece_hidden() usable: a mod wants to hide "the head", not
+// "piece 4", and piece numbering differs per asset. Resolved exactly as
+// ILTModel::GetPieceName does, from the asset's own piece-name array.
+//
+// nullopt when the object is not a model, the index is at or beyond piece_count, or
+// the read faulted.
+std::optional<std::string> model_piece_name(const regenny::LTObject* obj, size_t index);
+
+// How many PIECES the model has -- the bound both piece accessors respect.
+//
+// THIS IS NOT model_materials().size(). Pieces are the addressable sub-objects;
+// materials are what they render with, and several pieces can share one. Live the two
+// counts differ on 17 of 34 assets (a grunt has 7 pieces and 3 materials), so a caller
+// that used the material count as a piece bound would silently skip real pieces --
+// which is exactly the bug an earlier version of this header shipped.
+std::optional<size_t> model_piece_count(const regenny::LTObject* obj);
+
+// Find a piece by NAME, case-insensitively (matching how the engine compares names
+// elsewhere). nullopt when no piece matches.
+std::optional<size_t> model_find_piece(const regenny::LTObject* obj, const char* name);
+
 
 // How a mod finds the object it cares about.
 //

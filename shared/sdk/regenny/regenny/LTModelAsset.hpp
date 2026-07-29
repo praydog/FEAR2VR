@@ -21,7 +21,9 @@ public:
     uint32_t node_count; // 0x20
     char** node_names; // 0x24
     uint32_t* node_hashes; // 0x28
-    private: char pad_2c[0x10]; public:
+    char** piece_names; // 0x2c
+    uint32_t piece_count; // 0x30
+    private: char pad_34[0x8]; public:
     void* container_3C; // 0x3c
     uint32_t node_count_dup; // 0x40
     private: char pad_44[0x4]; public:
