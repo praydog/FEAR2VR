@@ -1178,6 +1178,32 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- CAPIHolder IN gameclient.dll: HOW THE GAME DLL GETS ITS INTERFACES ----
+//
+// The SDK already scans FEAR2.exe for CAPIHolder call sites (shared/sdk/interfaces/Registry.cpp).
+// gameclient.dll links its OWN copy of the same base ctor at 0x101781D0 and has 46 holders of its own,
+// so the same class shows up twice in the process with separate instances.
+//
+// HOLDER LAYOUT, 12 bytes -- proven by the ctor's stores, the dtor's reads, AND the 0xC stride across
+// the seven consecutive holders at 0x101FC180..0x101FC1C8:
+//   +0x00 void*  vftable        each holder has its own
+//   +0x04 char*  name           "ILTClient.Default" etc -- read live to confirm
+//   +0x08 void** ppInterface    address of the pointer variable; zeroed at ctor, filled at runtime
+//
+// IDENTITY COMES FROM +8. The holder that names an interface stores the ADDRESS OF that interface's
+// pointer variable, so name -> global is a decoded relationship, not a guess from adjacency. Verified
+// live for all seven (holder+8 == &g_pXxx, and holder+4 reads back the expected name).
+//
+// WHY ADJACENCY IS A TRAP HERE: the seven pointers sit consecutively at 0x101FC160..0x101FC178, which
+// makes them LOOK like one table with an obvious order. They are seven separate variables, and an
+// interface can have several -- ILTInput has 9, ILTOnlineService 18. Reader counts settle which copy
+// the DLL actually uses (ILTClient: 787 readers at 0x101FC170 versus 2 at 0x102042F4), and getting
+// that backwards is easy: ILTCustomRender's most-read copy is 0x1020172C, NOT the one in this band.
+//
+// UNRESOLVED: whether g_pAPIHolderList (0x1020458C, this module's holder list) is handed to the
+// engine's interface database or stays module-local. Not traced. The SDK's Registry scanning the exe
+// only is a fact about our scanner, not evidence about the game's topology.
+
 // ---- IClientShell: THE GAME DLL'S PER-FRAME ENTRY POINTS ----
 //
 // TWO DIFFERENT VTABLES ARE IN PLAY AND THIS NOTE IS ABOUT THE OTHER ONE. The class below,

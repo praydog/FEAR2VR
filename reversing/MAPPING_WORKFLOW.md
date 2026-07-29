@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **DECODE THE RELATIONSHIP, DO NOT READ THE ADDRESSES.** Seven interface pointers sit consecutively at
+  0x101FC160..0x101FC178 in gameclient.dll, so which global belongs to which interface looked obvious.
+  It was not: identity lives in the CAPIHolder at +8, which stores the ADDRESS OF the pointer variable
+  for the name at +4. Decoding one thunk end-to-end gave the rule; applying it to all 46 holders gave
+  the mapping; reading holder+4 and holder+8 live in the running game confirmed all seven.
+  
+  The trap was real, not hypothetical. An interface can have SEVERAL pointer variables (ILTInput 9,
+  ILTOnlineService 18), and the one in the tidy band is not always the one the DLL uses --
+  ILTCustomRender's most-read copy is 0x1020172C (7 readers) while the band copy has 2. I had named the
+  minor one. Reader counts, not layout, settle "which copy matters".
+  
+- **CHECK THE SDK'S VOCABULARY BEFORE COINING ONE.** I named the class LTInterfaceRequest, then found
+  shared/sdk/interfaces/Registry.cpp already scans FEAR2.exe for this exact ctor and calls it
+  CAPIHolder, documenting the same `this[2] = slot; *slot = 0` shape. Renamed to match. A second name
+  for one concept is the same failure as a second accessor for one field.
+  
+- **A SCANNER'S SCOPE IS NOT A FACT ABOUT THE GAME.** Our Registry scans the exe only, so the DLL's 46
+  holders are invisible to it. That tempted a claim that gameclient.dll has a "separate registry".
+  Unknown: the module-local list at g_pAPIHolderList may or may not be handed to the engine's database,
+  and pointer agreement would not settle topology either way. Recorded as untraced.
+
 - **AN EMPTY FUNCTION IDENTIFIES NOTHING IN THIS DLL, AND ITS ADDRESS IS NOT A HOOK TARGET.** I named
   0x100F6680 `CGameClientShell_PreUpdate` because IClientShell slot 2 points there. Then
   `CGameClientShell_Update` turned out to CALL that address twice, which makes no sense for PreUpdate
