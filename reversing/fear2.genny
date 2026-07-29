@@ -1197,10 +1197,16 @@ class CClientMgrCounterNode 0x40 {
 //
 // TWO THINGS COME OUT OF THIS.
 //
-// The +2 FORMULA IS CONFIRMED FROM A NEW DIRECTION. ILTCursor's 8 declared methods predict exactly the 10
-// entries measured. This project derived that leading pair from CGameClientShell's slot map -- slot 1
-// returning a class literal, so slot 0 is implementation-only -- and here an unrelated interface reproduces
-// it arithmetically. That is worth more than either observation alone.
+// THE LEADING PAIR IS INDEPENDENTLY CORROBORATED FOR ILTCursor -- and only for it. Its 8 declared methods
+// plus 2 predict exactly the 10 entries measured, AND for that table both leading entries are directly
+// identified rather than inferred from the arithmetic: slot 0 is abstract_base_dtor and slot 1 is
+// CLTCursor_InterfaceImplementation. So the accounting is complete for CLTCursor: 2 observed + 8 declared =
+// 10 measured, with nothing left over.
+//
+// THAT IS CONSISTENCY EVIDENCE, NOT A GENERAL RESULT. One exact match cannot establish the formula for
+// interfaces that diverge, and every other one checked does diverge. The direct evidence for the leading pair
+// stays what it always was -- slot 1's literal body, which makes slot 0 implementation-only -- and this
+// arithmetic agrees with it on the one table where the counts can agree at all.
 //
 // AND THE REFERENCE CANNOT ALIGN THE BIG INTERFACES. ILTServer diverges by 61 methods, ILTClient by 43,
 // ILTModel by 23. Divergence also runs BOTH ways: the reference declares more than this build for ILTCommon,

@@ -969,10 +969,13 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   ILTModel by 23 -- and the reference declares MORE than this build for ILTCommon (+7), ILTPhysics (+2) and
   ILTTextureString (+1), so it is not merely an earlier smaller version. Divergence runs both ways.
   
-  The ILTCursor match is the useful part: it confirms the "+2 leading pair" from a completely different
-  direction. This project derived that from CGameClientShell's slot 1 returning a class literal, hence slot 0
-  being implementation-only; an unrelated interface now reproduces the same arithmetic. Two independent routes
-  to one structural fact.
+  The ILTCursor match corroborates the "+2 leading pair" for THAT TABLE, and there the accounting is complete
+  rather than merely arithmetic: slot 0 is observed to be abstract_base_dtor and slot 1
+  CLTCursor_InterfaceImplementation, so 2 observed + 8 declared = 10 measured with nothing unexplained.
+  
+  It does NOT confirm the formula generally -- one match cannot, and every other interface checked diverges,
+  where the arithmetic predicts nothing. The direct evidence for the leading pair remains slot 1's literal
+  body; this is a second line agreeing with it on the one table whose counts can agree.
   
   Two parsing traps worth remembering, both of which silently produce zeros: a forward declaration
   (`class ILTModel;`) creates an entry with no virtuals and will overwrite the real body if seen later, so
