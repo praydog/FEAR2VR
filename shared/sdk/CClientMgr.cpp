@@ -876,6 +876,112 @@ std::optional<CClientMgr::MaterialCheck> CClientMgr::check_model_materials(size_
     return out;
 }
 
+// POD-only SEH helper for the shared model assets. Collects distinct assets in a
+// small fixed table -- no allocation inside the guard -- then checks each one.
+// Returns the number of distinct assets, or -1 on fault / non-termination.
+static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t max,
+                               size_t* self_ok, size_t* rad_ok, size_t* name_dup_ok,
+                               size_t* name_ok, size_t* rc_ge, size_t* rc_exact, size_t cap) {
+    // Distinct assets live in the low tens; the table is a hard ceiling, and
+    // overflow simply stops collecting rather than corrupting anything.
+    constexpr size_t kMaxAssets = 512;
+    constexpr uint32_t kMaxPath = 260;
+    const regenny::LTModelAsset* seen[kMaxAssets]{};
+    uint32_t users[kMaxAssets]{};
+    size_t distinct = 0;
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* a = obj->record.asset;
+                if (a != nullptr) {
+                    size_t i = 0;
+                    for (; i < distinct; ++i) {
+                        if (seen[i] == a) {
+                            break;
+                        }
+                    }
+                    if (i == distinct && distinct < kMaxAssets) {
+                        seen[distinct] = a;
+                        users[distinct] = 0;
+                        ++distinct;
+                    }
+                    if (i < kMaxAssets) {
+                        ++users[i];
+                    }
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        if (cur != head) {
+            return -1;
+        }
+        for (size_t i = 0; i < distinct; ++i) {
+            const auto* a = seen[i];
+            if (a->self_ref == a) {
+                ++*self_ok;
+            }
+            if (a->radius > 0.0f && a->radius == a->radius_dup) {
+                ++*rad_ok;
+            }
+            if (a->filename == a->filename_dup) {
+                ++*name_dup_ok;
+            }
+            const char* p = a->filename;
+            if (p != nullptr) {
+                uint32_t k = 0;
+                bool good = true;
+                for (; k < kMaxPath; ++k) {
+                    const unsigned char c = static_cast<unsigned char>(p[k]);
+                    if (c == 0) {
+                        break;
+                    }
+                    if (c < 0x20 || c > 0x7E) {
+                        good = false;
+                        break;
+                    }
+                }
+                if (good && k > 0 && k < kMaxPath) {
+                    ++*name_ok;
+                }
+            }
+            if (a->refcount >= users[i]) {
+                ++*rc_ge;
+            }
+            if (a->refcount == 2 * users[i] + 1) {
+                ++*rc_exact;
+            }
+        }
+        result = static_cast<int64_t>(distinct);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+std::optional<CClientMgr::AssetCheck> CClientMgr::check_model_assets(size_t max) const {
+    constexpr size_t kModelType = 1;
+    if (regenny() == nullptr || kModelType >= object_list_count()) {
+        return std::nullopt;
+    }
+    AssetCheck out{};
+    const int64_t n = seh_check_assets(&regenny()->object_lists[kModelType], max, &out.self_ref_ok,
+                                      &out.radius_dup_ok, &out.name_dup_ok, &out.name_readable,
+                                      &out.refcount_ge, &out.refcount_exact, max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    out.assets = static_cast<size_t>(n);
+    return out;
+}
+
 std::optional<CClientMgr::GeometryCheck> CClientMgr::check_object_geometry(
     size_t max_per_type) const {
     GeometryCheck out{};

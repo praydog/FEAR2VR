@@ -776,6 +776,45 @@ int main(int argc, char** argv) {
             }
         }
 
+        // THE SHARED ASSET. Four of these are the asset checked against itself --
+        // a self-pointer, two duplicated fields, and a filename that has to decode
+        // as printable NUL-terminated ASCII. The fifth compares the refcount to
+        // the models actually pointing at the asset, which is the engine's own
+        // bookkeeping against a live traversal.
+        //
+        // refcount is asserted only as an INEQUALITY, on purpose. refcount ==
+        // 2*users + 1 fits 27 of 34 live and looked like the rule from the ten
+        // biggest assets; counting all 34 found six BELOW that figure, which
+        // refutes a per-model floor outright rather than just complicating it.
+        // The tight count is reported so the gap stays visible.
+        {
+            const size_t ap = body.find("\"model_assets\":");
+            check(ap != std::string::npos, "objects report includes the asset check");
+            if (json_has(body, "\"model_assets\":null")) {
+                check(false, "asset walk completed");
+            } else if (ap != std::string::npos) {
+                const size_t end = body.find('}', ap);
+                const std::string ab = body.substr(ap, end - ap + 1);
+                int64_t assets = -1, self = -1, rad = -1, ndup = -1, nread = -1, rge = -1, rex = -1;
+                json_int(ab, "assets", assets);
+                json_int(ab, "self_ref_ok", self);
+                json_int(ab, "radius_dup_ok", rad);
+                json_int(ab, "name_dup_ok", ndup);
+                json_int(ab, "name_readable", nread);
+                json_int(ab, "refcount_ge", rge);
+                json_int(ab, "refcount_exact", rex);
+
+                check(assets > 0, "shared model assets exist");
+                check(self == assets, "every asset's self_ref holds its own address");
+                check(rad == assets, "every asset's radius_dup equals its radius, and radius > 0");
+                check(ndup == assets, "every asset's filename_dup equals its filename");
+                check(nread == assets, "every asset filename decodes as printable NUL-terminated ASCII");
+                check(rge == assets, "every asset's refcount is at least its live model users");
+                check(rex >= 0 && rex <= assets,
+                      "refcount == 2*users+1 is a reported fraction, not a rule (6 of 34 fall below)");
+            }
+        }
+
         // Bounding geometry across every object type. These are identities the
         // engine's own SetDims establishes (aabb = position +/- dims, radius =
         // |dims| + 0.1), so every live object must satisfy them. They guard the

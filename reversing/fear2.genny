@@ -1233,20 +1233,37 @@ class CClientMgr 0x1468 {
 
 // A SHARED model asset record. Live, 215 OT_MODEL objects point at only 34
 // distinct instances of this, and never at null (215/215) -- so it is per-ASSET,
-// not per-instance, which is what makes LTModelObject.asset a resource handle
-// rather than an owned sub-object.
+// not per-instance, which is what makes the asset field a resource handle rather
+// than an owned sub-object.
 //
-// Size is the MAPPED EXTENT, not a proven class size.
+// SIZE IS NOW PROVEN, and the previous reasoning about it was wrong in an
+// instructive way. LTModelAsset_FindOrLoad (0x425D7E) allocates it with
+// `LTMem_Alloc(0xA0)`, so the class is 160 bytes -- and LTModelAsset_ctor
+// (0x425AC6) corroborates from the other side: the last field it writes is the
+// dword at 0x9C, ending exactly at 0xA0.
 //
-// NOT MAPPED, and specifically tested and rejected: the fields after +0x04 look
-// like (pointer, count) array descriptors at +0x04/+0x0C/+0x14/+0x1C, which
-// would be a normal asset header. Checking all four pairs across all 34 assets,
-// only 69 of 136 had both a heap-shaped pointer and a plausible count, and the
-// dword at +0x08 reads 0 on 14 assets, 1 on 10 and 11 on 10. That is not an
-// array header; the shape was a guess and it failed, so nothing beyond radius is
-// claimed here.
-class LTModelAsset 0x4 {
-    float radius   @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 20, 25, 100, 120, 200, 240 across 15 distinct readings -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one.
+// The rejected inference is worth keeping. Live, the 34 asset addresses are all
+// separated by exact multiples of 0xC8, with 0xC8 the minimum -- which by the
+// argument that worked for CClientMgr.object_banks would make the class 0xC8.
+// It does not: these come from a GENERAL HEAP, not a fixed-size bank, so the
+// spacing is only an upper bound. A "the tail 0xA0..0xC8 is all zero" check
+// seemed to support 0xA0-ish too, but that held on the one asset first sampled
+// and on 0 of 34 overall -- those bytes belong to the next allocation.
+//
+// ALSO REJECTED, from an earlier pass and still worth its space: the fields after
+// +0x04 look like (pointer, count) array descriptors at +0x04/+0x0C/+0x14/+0x1C.
+// Across all 34 assets only 69 of 136 had both a heap-shaped pointer and a
+// plausible count, and the dword at +0x08 reads 0 on 14 assets, 1 on 10 and 11 on
+// 10. Not an array header; the shape was a guess and it failed.
+class LTModelAsset 0xA0 {
+    float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0, so the real value comes from the load.
+    void* self_ref      @0x48   // CONFIRMED live on 34/34: holds the asset's OWN address. The ctor zeroes it, so the loader writes it. A free integrity check -- see sdk::CClientMgr::check_model_assets.
+    uint16_t unk_50     @0x50   // ctor writes 0
+    uint16_t unk_52     @0x52   // ctor writes 1
+    uint32_t refcount   @0x7C   // CONFIRMED the refcount: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing the asset out, and the ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset, which holds 34/34. A tidier shape suggested itself and does NOT survive counting: refcount == 2*users + 1 (one held by the cache, two per model) fits 27 of 34, but 6 assets have FEWER refs than that and 1 has more -- and "fewer" refutes the story outright, since a per-model floor cannot be undershot. Eyeballing the ten biggest rows made it look exact; counting all 34 did not. Live examples of the fit: 21 users/43 refs, 17/35, 9/19. Of the misses, engine\default.mdl (11 users, 25 refs) is the easy direction to explain -- things other than models hold assets -- while the six low ones mean a model does not always hold two counted references.
+    float radius_dup    @0x80   // CONFIRMED equal to `radius` on 34/34 -- a second copy, and another free cross-route check. The ctor zeroes both.
+    char* filename      @0x98   // CONFIRMED the model's .mdl PATH, as a plain char* (not a std::string): e.g. "char\ai\rep_heavyweapons\rep_heavyweapons.mdl", "weapons\assaultrifle\assaultrifle.mdl", "engine\default.mdl". PROVEN a lookup key, not just a label: LTModelObject_LoadModelAndSkins (0x44E3AC) string-compares a requested filename against `*(asset + 156)` == +0x9C to decide whether the cached asset can be reused. Live all 34 are readable, printable and NUL-terminated.
+    char* filename_dup  @0x9C   // CONFIRMED equal to `filename` on 34/34, and this is the copy the engine's own compare reads. Ends at 0xA0 == the class size.
 }
 
 // The record a model keeps its asset reference in. Constructed by 0x4297CF,

@@ -210,6 +210,35 @@ for the full evidence trail this recipe produced).
   exactly how many elements there are and how far apart they sit; a ctor must
   know which sub-object each range belongs to. Neither has the option of being
   vague, which is what makes both more reliable than any reader you find later.
+- **THE ALLOCATION CALL IS THE SIZE. Address spacing is only an upper bound, and
+  it is a trap when the allocator is a general heap.** `LTModelAsset_FindOrLoad`
+  does `LTMem_Alloc(0xA0)`, so the class is 160 bytes -- and its ctor's last write
+  ends at exactly 0xA0, corroborating from the other side. Before finding that
+  call I had concluded 0xC8, from a genuinely good-looking argument: the 34 live
+  asset addresses are separated by exact multiples of 0xC8, minimum 0xC8, which is
+  precisely the reasoning that correctly sized the object types from
+  `CClientMgr.object_banks`. The difference is that objects come from FIXED-SIZE
+  POOLS, where adjacent blocks are exactly one element apart; assets come from the
+  general heap, where spacing reflects the allocator's bucketing and tells you
+  nothing except "not larger than this". Same observation, opposite reliability,
+  and the only way to tell is to know which allocator you are looking at.
+  A second inference failed alongside it, worth recording because it looked like
+  independent support: "the bytes from 0xA0 to 0xC8 are all zero, so the object
+  probably ends around 0xA0". That was true of the ONE asset I had dumped and true
+  of ZERO of the 34 once checked -- those bytes belong to the next allocation. Two
+  weak arguments pointing at different answers, and the strong one was a single
+  call instruction away.
+- **Eyeballing the top of a distribution is not counting it.** The asset refcount
+  looked like exactly `2*users + 1`: the ten biggest assets fit it perfectly
+  (21 users/43 refs, 17/35, 9/19) and the story wrote itself -- one reference held
+  by the cache, two per model. Counting all 34 gave 27 fits, 1 above and **6
+  BELOW**. The six matter far more than the 27: a per-model floor cannot be
+  undershot, so they refute the story rather than complicate it, while the one
+  above is trivially explainable (non-model owners hold assets too). The sort
+  order caused this -- the rows I looked at were the largest counts, which are
+  exactly the ones where a constant offset is least visible. So: when a relation
+  looks exact, count the whole population before writing it down, and look hardest
+  at the SMALL cases where the noise is proportionally largest.
 - **A MISSING switch case is proof of impossibility, and it upgrades an
   observation into a theorem.** OT_LIGHT's object list reads 0 entries in every
   live sample, which for a long time was only recorded as "consistent with it

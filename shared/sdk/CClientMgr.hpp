@@ -361,6 +361,38 @@ public:
     // SEH-guarded, and every length is bounded before use.
     std::optional<MaterialCheck> check_model_materials(size_t max) const;
 
+    // ---- LTModelAsset (the shared per-.mdl resource) ---------------------
+    //
+    // 34 distinct assets serve 215 models live. The class is 0xA0 because
+    // LTModelAsset_FindOrLoad allocates exactly that (`LTMem_Alloc(0xA0)`) and the
+    // ctor's last write ends there -- NOT because of the 0xC8 minimum spacing
+    // between live assets, which is a general-heap artefact and only an upper
+    // bound. That mistake is recorded in fear2.genny so it is not re-made.
+    //
+    // Every check below is the asset against ITSELF or against the models that
+    // point at it, never against a recorded value:
+    //   * self_ref holds the asset's own address,
+    //   * radius_dup equals radius, and filename_dup equals filename,
+    //   * filename decodes as printable NUL-terminated ASCII,
+    //   * refcount is at least the number of models referencing it.
+    // The last one is deliberately an INEQUALITY. refcount == 2*users + 1 fits 27
+    // of 34, but six assets fall BELOW that, which kills the "one cache ref plus
+    // two per model" reading rather than merely complicating it. The tight
+    // relation is reported so the shortfall stays visible.
+    struct AssetCheck {
+        size_t assets;         // distinct assets reached from live models
+        size_t self_ref_ok;    // self_ref == the asset's own address
+        size_t radius_dup_ok;  // radius_dup == radius, and radius > 0
+        size_t name_dup_ok;    // filename_dup == filename
+        size_t name_readable;   // filename is printable and NUL-terminated
+        size_t refcount_ge;    // refcount >= models referencing it
+        size_t refcount_exact; // refcount == 2*users + 1 (reported, not asserted)
+    };
+
+    // Walks up to `max` type-1 objects, collecting distinct assets. nullopt on
+    // fault or a walk that did not terminate.
+    std::optional<AssetCheck> check_model_assets(size_t max) const;
+
     // Walks up to `max` type-1 objects. nullopt on fault or a walk that did not
     // terminate.
     std::optional<ModelListCheck> check_model_lists(size_t max) const;
