@@ -1418,11 +1418,11 @@ class LTModelRecord 0x34 {
     void* self_ref           @0x08   // ctor writes `this` -- the record's OWN base address, not this field's address. Live it still does on 215/215 embedded records. Probably the tail/head pointer of an inner list that is empty in every sample; unmapped.
     uint32_t unk_1C          @0x1C   // ctor writes 0
     LTModelAsset* asset      @0x20   // CONFIRMED non-null and SHARED -- 34 distinct assets across 215 models. Its radius is what branch A of OT_MODEL_GetCullVolume uses (`**(float**)(obj+0xEC)`), and SlotIndex_WantsSlot requires it non-null for type 1, so it is a mandatory resource handle.
-    uint16_t unk_24          @0x24   // ctor writes 0
-    uint16_t unk_26          @0x26   // ctor writes 0
-    uint16_t unk_28          @0x28   // ctor writes 0
-    uint16_t unk_2A          @0x2A   // ctor writes 0
-    float unk_2C             @0x2C   // ctor writes 0.0
+    uint16_t anim_index      @0x24   // CONFIRMED an ANIMATION INDEX by its bound: it is strictly less than the owning asset's animation-table entry count on 215/215 models, and the ctor writes 0. That bound is the evidence -- a field that stays inside a per-asset count across 34 different assets with counts from 1 to 457 is an index into that table, not a coincidence. Live non-zero on 76 of 215.
+    uint16_t unk_26          @0x26   // ctor writes 0. NOT an animation index: only 154 of 215 fall inside the anim count, so the bound that identifies the other two fails here.
+    uint16_t anim_index_b    @0x28   // CONFIRMED a second animation index, same bound and same 215/215 result. Equal to anim_index on 214 of 215 models, differing on exactly one -- so the pair is a current/target or current/previous couple that normally coincides. WHICH of those it is has not been established.
+    uint16_t unk_2A          @0x2A   // ctor writes 0. Not an index either (86 of 215 in range). Live non-zero on 181 and reads 1 on every sampled shell casing.
+    float anim_fraction      @0x2C   // CONFIRMED a NORMALISED fraction: live it is within [0,1] on 215/215, min exactly 0.0 and max exactly 1.0, with 33 models at zero. The ctor writes 0.0. WHAT it measures is deliberately not claimed -- playback position through the current animation and blend weight between the two indices both fit, and the data does not separate them: 178 of the 214 models whose indices are EQUAL sit at exactly 0 or 1, but 36 hold a mid-range value while their indices agree, which a pure blend weight would not do.
     uint32_t unk_30          @0x30   // NOT written by the ctor, and live it is 0 on 215/215. Included to carry the record up to the owning model's list_head at +0x100; the boundary is inferred from that adjacency, not proven.
 }
 

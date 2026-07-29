@@ -623,6 +623,29 @@ int main(int argc, char** argv) {
         check(nslots > 0, "palette slots were actually read");
         check(nlive >= 0 && nlive <= nslots,
               "populated palette slots are a reported fraction, never a requirement");
+
+        // ANIMATION STATE. The index bound is not decoration -- it is the evidence
+        // that identified the field in the first place. anim_index was called an
+        // animation index BECAUSE it stays strictly inside the asset's animation-table
+        // count across 34 assets whose counts run 1..457. Asserting it keeps that
+        // identification honest: if the field ever leaves the range, either it was
+        // never an index or one of the two offsets moved, and both deserve a red test.
+        //
+        // The fraction being in [0,1] is the same kind of claim -- normalisation is
+        // what makes it a fraction rather than an arbitrary float.
+        int64_t aok = -1, aidx = -1, afrac = -1, ablend = -1;
+        json_int(body, "anim_ok", aok);
+        json_int(body, "anim_index_in_range", aidx);
+        json_int(body, "anim_frac_in_range", afrac);
+        json_int(body, "anim_blending", ablend);
+        check(aok == with_skeleton, "model_anim_state answers for every model with a skeleton");
+        check(aidx == aok, "every animation index stays inside its asset's animation count");
+        check(afrac == aok, "every animation fraction is within [0,1]");
+        // REPORTED: whether any model is mid-transition depends entirely on what the
+        // game is doing this instant (live: 1 of 215). A floor here would fail on a
+        // paused game, which is the per-frame-state trap TESTING.MD describes.
+        check(ablend >= 0 && ablend <= aok,
+              "models with differing index pair are a reported count, not a requirement");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised

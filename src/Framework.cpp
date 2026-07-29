@@ -388,11 +388,14 @@ std::string build_models_json() {
         ++emitted;
     }
 
-    // The BONE MATRIX PALETTE, through the public accessor. Reported as a POPULATED
-    // count, never asserted full: this is per-frame render state filled during the
-    // draw, so on an idle frame most slots are legitimately zero. Surfacing the count
-    // is how a mod (or a render hook, later) can tell when the frame has filled it.
+    // The BONE MATRIX PALETTE and ANIMATION STATE, both through the public API. The
+    // palette is reported as a POPULATED count, never asserted full: it is per-frame
+    // render state filled during the draw, so on an idle frame most slots are
+    // legitimately zero. The animation numbers have real invariants though -- the
+    // index is bounded by the asset's table and the fraction is normalised -- so
+    // those are counted for assertion.
     size_t bone_slots = 0, bone_slots_live = 0, models_with_palette = 0;
+    size_t anim_ok = 0, anim_index_in_range = 0, anim_frac_in_range = 0, anim_blending = 0;
     for (size_t si = 0; si < *taken; ++si) {
         const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
         const auto skel = sdk::ModelSkeleton::from_object(obj);
@@ -413,6 +416,24 @@ std::string build_models_json() {
         }
         if (any) {
             ++models_with_palette;
+        }
+
+        // Animation state, same object, through the public accessors. The two
+        // invariants a consumer can rely on are counted here: the index stays inside
+        // the asset's animation table, and the fraction stays normalised.
+        const auto anim = sdk::model_anim_state(obj);
+        const auto anim_n = sdk::model_anim_count(obj);
+        if (anim.has_value() && anim_n.has_value()) {
+            ++anim_ok;
+            if (*anim_n > 0 && anim->index < *anim_n && anim->index_b < *anim_n) {
+                ++anim_index_in_range;
+            }
+            if (anim->fraction >= 0.0f && anim->fraction <= 1.0f) {
+                ++anim_frac_in_range;
+            }
+            if (anim->index != anim->index_b) {
+                ++anim_blending;
+            }
         }
     }
 
@@ -446,10 +467,13 @@ std::string build_models_json() {
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
              "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
              "\"handle_table_slots\":%zu,\"found_weapons\":%zu,\"found_all\":%zu,"
-             "\"bone_slots\":%zu,\"bone_slots_live\":%zu,\"models_with_palette\":%zu}",
+             "\"bone_slots\":%zu,\"bone_slots_live\":%zu,\"models_with_palette\":%zu,"
+             "\"anim_ok\":%zu,\"anim_index_in_range\":%zu,\"anim_frac_in_range\":%zu,"
+             "\"anim_blending\":%zu}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
              handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
-             everything.size(), bone_slots, bone_slots_live, models_with_palette);
+             everything.size(), bone_slots, bone_slots_live, models_with_palette, anim_ok,
+             anim_index_in_range, anim_frac_in_range, anim_blending);
     out += sum;
     return out;
 }

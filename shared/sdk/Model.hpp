@@ -158,6 +158,36 @@ std::optional<std::string> model_filename(const regenny::LTObject* obj);
 // pieces. Live, 34 of 476 slots are empty.
 std::optional<std::vector<std::string>> model_materials(const regenny::LTObject* obj);
 
+// ---- animation state -------------------------------------------------------
+//
+// What the engine keeps on the model's embedded record. A mod reaches for this to
+// notice that an animation CHANGED (index moved) or to time something against one
+// (the fraction), without knowing where the fields live.
+struct AnimState {
+    // Both are indices into the asset's animation table, and that bound is how they
+    // were identified: strictly less than the table's entry count on 215/215 models
+    // across 34 assets whose counts range 1..457.
+    uint16_t index;
+    // A second index, equal to `index` on 214 of 215 models live. Whether the pair is
+    // current/target or current/previous is NOT established, so both are exposed and
+    // neither is named for a role it might not have.
+    uint16_t index_b;
+    // Within [0,1] on 215/215. Deliberately not called "progress" or "blend weight":
+    // 36 models hold a mid-range value while their two indices agree, which a pure
+    // blend weight would not do, and a pure playback position would not explain the
+    // 178 sitting at exactly 0 or 1. Read it as a normalised fraction and measure
+    // what it tracks before relying on either reading.
+    float fraction;
+};
+
+// nullopt when `obj` is not a model or the read faulted.
+std::optional<AnimState> model_anim_state(const regenny::LTObject* obj);
+
+// How many animations the model's asset has -- the bound `index` respects, so a
+// caller can validate or range-check without a second lookup. The count comes from
+// the asset's animation-name table, which the engine binary-searches by name hash.
+std::optional<size_t> model_anim_count(const regenny::LTObject* obj);
+
 
 // How a mod finds the object it cares about.
 //

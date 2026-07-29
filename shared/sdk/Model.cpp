@@ -6,6 +6,7 @@
 
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
+#include "regenny/regenny/LTAnimNameEntry.hpp"
 #include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -550,6 +551,67 @@ bool ModelSkeleton::is_populated(const BoneMatrix& mat) {
         }
     }
     return any;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+struct AnimRaw {
+    uint16_t index;
+    uint16_t index_b;
+    float fraction;
+    uint32_t anim_count;
+    bool ok;
+};
+
+// One guarded read of both the record's animation words and the asset's table
+// length, so a caller gets the value and its bound from the same instant. Reading
+// them in two calls would let the asset change between, which is exactly the kind of
+// seam that produces an "index out of range" that never actually happened.
+AnimRaw seh_anim(const regenny::LTObject* obj) {
+    AnimRaw r{};
+    KANANLIB_SEH_TRY {
+        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
+            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+            const auto* asset = model->record.asset;
+            if (asset != nullptr) {
+                r.index = model->record.anim_index;
+                r.index_b = model->record.anim_index_b;
+                r.fraction = model->record.anim_fraction;
+                const auto* first = asset->anim_names.first;
+                const auto* last = asset->anim_names.last;
+                if (first != nullptr && last >= first) {
+                    r.anim_count = static_cast<uint32_t>(last - first);
+                }
+                r.ok = true;
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+}  // namespace
+
+std::optional<AnimState> model_anim_state(const regenny::LTObject* obj) {
+    const AnimRaw r = seh_anim(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    return AnimState{r.index, r.index_b, r.fraction};
+}
+
+std::optional<size_t> model_anim_count(const regenny::LTObject* obj) {
+    const AnimRaw r = seh_anim(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(r.anim_count);
 }
 
 }  // namespace sdk

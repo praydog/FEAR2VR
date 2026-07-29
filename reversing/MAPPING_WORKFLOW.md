@@ -396,6 +396,33 @@ So: exact division is evidence, a recognised shape is a hypothesis. Do the
 division first, and if a gap divides evenly by the count, treat that as the
 stride and make the fields fit it.
 
+**A field that stays inside a KNOWN COUNT across a varied population is an index
+into whatever that count measures.** This is the cheapest identification technique in
+the file and it needs no disassembly at all -- just a count you already trust and a
+population with spread.
+
+`LTModelRecord` had four unmapped uint16s. Testing each against the owning asset's
+animation-table size gave 215/215 for two of them, 154/215 and 86/215 for the other
+two. The two that always fit are animation indices; the two that do not are not. What
+makes that convincing is the SPREAD: the 34 assets involved have animation counts from
+1 to 457, so a field tracking a per-asset bound across all of them is not doing it by
+accident, while a field that merely holds small numbers fails the assets with count 1.
+
+Two things follow:
+- **Choose the population, not just the field.** A test against assets that all had
+  ~40 animations would have passed for any field holding values under 40. The counts
+  ranging over three orders of magnitude is what turned a plausible result into a
+  decisive one.
+- **Assert the bound afterwards.** It was the evidence, so it belongs in the test: if
+  the field ever leaves the range, either it was never an index or one of the two
+  offsets moved. Same discipline as asserting `entry_count == (b - a) / 4` after using
+  that arithmetic to find the count field.
+
+The same pass found a float in the same record sitting inside [0,1] on 215/215, which
+identifies it as a NORMALISED fraction while saying nothing about what it measures --
+and the mapping records exactly that much, because the data does not separate
+"playback position" from "blend weight".
+
 **Then run the arithmetic BACKWARDS to find the field that stores the count:
 compute the value, and search every offset of every instance for a field equal to
 it.** The division gives you a number the structure must know somewhere. Turn that

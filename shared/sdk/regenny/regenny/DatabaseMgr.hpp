@@ -1,9 +1,9 @@
 #pragma once
 namespace regenny {
-class DatabaseMgrVTable;
+class DatabaseMgrEntry;
 }
 namespace regenny {
-class DatabaseMgrEntry;
+class DatabaseMgrVTable;
 }
 namespace regenny {
 #pragma pack(push, 1)
