@@ -4103,6 +4103,62 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE MODEL TWIN -------------------------------------------------------------------------
+    //
+    // CLTModelClient has 83 slots, CLTModelServer 81, and they align at offset +0. The two extra client
+    // slots are the TAIL (GetMaterial/SetMaterial) -- which is the shape that matters: extras appended
+    // rather than inserted means every shared slot index is valid on both sides, and a consumer holding a
+    // slot number does not need to know which side it is on.
+    const uintptr_t mdl_c = sdk::Vtables::address("CLTModelClient");
+    const uintptr_t mdl_s = sdk::Vtables::address("CLTModelServer");
+    const auto* mdl_ce = sdk::Vtables::find("CLTModelClient");
+    const auto* mdl_se = sdk::Vtables::find("CLTModelServer");
+    size_t mdl_shared = 0, mdl_differ = 0;
+    if (mdl_c != 0 && mdl_s != 0 && mdl_ce != nullptr && mdl_se != nullptr) {
+        const size_t common = mdl_se->slot_count < mdl_ce->slot_count ? mdl_se->slot_count
+                                                                     : mdl_ce->slot_count;
+        for (size_t i = 0; i < common; ++i) {
+            const auto a = sdk::Vtables::vtable_of(mdl_c + i * sizeof(uint32_t));
+            const auto b = sdk::Vtables::vtable_of(mdl_s + i * sizeof(uint32_t));
+            if (!a.has_value() || !b.has_value()) {
+                continue;
+            }
+            if (*a == *b) {
+                ++mdl_shared;
+            } else {
+                ++mdl_differ;
+            }
+        }
+    }
+    json_append_double(out, "model_client_slots",
+                       static_cast<double>(mdl_ce != nullptr ? mdl_ce->slot_count : 0), 0);
+    json_append_double(out, "model_server_slots",
+                       static_cast<double>(mdl_se != nullptr ? mdl_se->slot_count : 0), 0);
+    json_append_double(out, "model_shared_slots", static_cast<double>(mdl_shared), 0);
+    json_append_double(out, "model_differing_slots", static_cast<double>(mdl_differ), 0);
+    // The four node-control slots must be four DISTINCT functions: the Add/Remove and node/object split
+    // rests on them being separate implementations, not one shared entry point.
+    size_t nc_distinct = 0;
+    if (mdl_c != 0) {
+        uintptr_t seen[4]{};
+        for (size_t k = 0; k < 4; ++k) {
+            const auto v = sdk::Vtables::vtable_of(mdl_c + (23 + k) * sizeof(uint32_t));
+            seen[k] = v.value_or(0);
+        }
+        for (size_t k = 0; k < 4; ++k) {
+            bool uniq = seen[k] != 0;
+            for (size_t j = 0; j < k; ++j) {
+                if (seen[j] == seen[k]) {
+                    uniq = false;
+                }
+            }
+            if (uniq) {
+                ++nc_distinct;
+            }
+        }
+    }
+    json_append_double(out, "model_node_control_distinct", static_cast<double>(nc_distinct), 0);
+
     // ---- PURE VIRTUALS, AND THE CLASS HIERARCHY THEY REVEAL -----------------------------------
     //
     // A _purecall slot terminates the process rather than returning an error, so "may I call this slot"

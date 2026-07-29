@@ -4052,6 +4052,30 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE MODEL TWIN ----------------------------------------------------------------
+            //
+            // 83 client slots against 81 server, aligned at offset +0, with the two extras at the TAIL.
+            // That shape is the load-bearing part: extras APPENDED rather than inserted means every
+            // shared slot index is valid on both sides, so a consumer holding a slot number does not have
+            // to know which side it came from. Inserted extras would silently shift the server's map.
+            double md_c = -1.0, md_s = -1.0, md_sh = -1.0, md_df = -1.0;
+            const bool md = json_double(body, "model_client_slots", md_c) &&
+                            json_double(body, "model_server_slots", md_s) &&
+                            json_double(body, "model_shared_slots", md_sh) &&
+                            json_double(body, "model_differing_slots", md_df);
+            check(md && md_c == 83.0 && md_s == 81.0,
+                  "CLTModelClient has 83 slots and CLTModelServer 81");
+            check(md && (md_sh + md_df) == md_s,
+                  "the two tables are comparable across every server slot");
+            check(md && md_sh == 61.0 && md_df == 20.0,
+                  "61 slots share one implementation; 20 are overridden per side");
+
+            // The four node-control slots must be four DISTINCT functions -- the Add/Remove and
+            // node/object split rests on separate implementations, not one shared entry point.
+            double nc = -1.0;
+            check(json_double(body, "model_node_control_distinct", nc) && nc == 4.0,
+                  "the four node-control slots are four distinct functions");
+
             // ---- PURE VIRTUALS, AND THE HIERARCHY THEY REVEAL ----------------------------------
             //
             // A _purecall slot terminates the process rather than returning an error, so a consumer

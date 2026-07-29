@@ -824,4 +824,41 @@ struct AttachedSocket {
 std::optional<AttachedSocket> attached_socket(const regenny::LTObject* parent,
                                               const char* socket_name);
 
+// ---- ILTModel's NODE CONTROL CALLBACKS ---------------------------------------------------
+//
+// THE MOST DIRECT WAY TO DRIVE A BONE FROM A MOD, which is why these are documented here rather than left
+// in the IDB: the engine will call a function you install every time it evaluates a node's transform, and
+// hand you that transform to modify. For VR that is exactly the hook a head, hand or weapon bone needs --
+// no hooking of engine code, no per-frame race against the animation system.
+//
+// Four ILTModel vtable slots, and NONE of them was named from its position:
+//
+//     23  AddNodeControlFn(HOBJECT, NodeControlFn, void* userdata)              -- every node
+//     24  AddNodeControlFn(HOBJECT, HMODELNODE, NodeControlFn, void* userdata)  -- one node
+//     25  RemoveNodeControlFn(HOBJECT, NodeControlFn, void* userdata)
+//     26  RemoveNodeControlFn(HOBJECT, HMODELNODE, NodeControlFn, void* userdata)
+//
+// The reference's declaration order narrowed the block to these four overloads -- the delta between
+// reference index and slot falls monotonically across ~20 anchors, so this interface has methods INSERTED
+// rather than reordered. But ordering could not say which slot is which, and three independent
+// discriminators did:
+//
+//   ALLOCATION vs FREE. Slot 24's implementation calls the engine allocator, slot 26's calls the free
+//     path, so those two are Add and Remove. Slots 23 and 25 delegate into those same inner functions,
+//     which is what makes them the object-wide variants of each.
+//   ARG COUNT plus a `!= 255` GUARD. The four-argument forms additionally reject handle 255, the invalid
+//     node handle already mapped in this SDK -- so they take an HMODELNODE and the three-argument forms
+//     do not.
+//   INVALIDATION. Slots 25 and 26 also call LTModelObject_InvalidateNodeTransforms. Dropping a control
+//     function must discard cached node transforms; installing one need not.
+//
+// NOT WRAPPED, deliberately. Installing a callback hands the engine a pointer it will call on ITS thread
+// during animation evaluation, for the lifetime of the object -- so registration, unregistration and the
+// callback's own thread-safety are a consumer's design problem, not something an accessor should quietly
+// do. What this SDK owes them is the verified slot numbers and the argument shapes, which is what is above.
+//
+// SLOT 27 IS A FEAR 2 ADDITION AND IS DELIBERATELY UNNAMED. It takes a five-argument function pointer plus
+// a userdata word and walks a list invoking it, so it is another callback mechanism -- but over what, and
+// for what, is not established, and the reference has no counterpart whose name could be borrowed.
+
 }  // namespace sdk

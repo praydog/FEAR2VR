@@ -4053,3 +4053,48 @@ class LTInputDeviceMouse 0x30 {
 // subclass) and the 22-slot accounting.
 //
 // 907 checks, 0 failures.
+
+// ==================================================================================================
+// ILTModel (CLTModelClient) -- THE NODE CONTROL BLOCK, AND THE MOST USEFUL HOOK IN THE ENGINE FOR VR
+// ==================================================================================================
+//
+// 83 slots, 62 of them already named by earlier passes. Its server twin has 81 and aligns at offset +0 with
+// 61 identical, and THE TWO EXTRA CLIENT SLOTS ARE THE TAIL -- 81 GetMaterial and 82 SetMaterial,
+// client-only because materials are a rendering concern the server has no use for. That the extras are
+// APPENDED rather than inserted is the part worth asserting: every shared slot index is valid on both sides,
+// so a consumer holding a slot number need not know which side it came from.
+//
+// THE REFERENCE ORDER IS PRESERVED HERE, unlike ILTCommon. Across roughly twenty anchors the delta between
+// reference index and slot falls MONOTONICALLY from +3 to -13, so FEAR 2 inserted methods rather than
+// rearranging them. That narrowed slots 23-26 to exactly the reference's four AddNodeControlFn /
+// RemoveNodeControlFn overloads -- and no further, since ordering cannot say which slot is which.
+//
+// THREE INDEPENDENT DISCRIMINATORS SPLIT THE BLOCK, none positional:
+//
+//     ALLOCATION vs FREE -- slot 24's implementation calls LTMem_Alloc, slot 26's calls LTMem_Free, so
+//         those are Add and Remove. Slots 23 and 25 delegate into those same inner functions, which is what
+//         makes each the object-wide variant of the other.
+//     ARG COUNT plus a `!= 255` GUARD -- the four-argument forms reject handle 255, the invalid node handle
+//         already mapped in this SDK, so they take an HMODELNODE; the three-argument forms do not.
+//     INVALIDATION -- slots 25 and 26 additionally call LTModelObject_InvalidateNodeTransforms. Dropping a
+//         control function must discard cached node transforms; installing one need not.
+//
+//     23  AddNodeControlFn(HOBJECT, fn, userdata)                 -- every node
+//     24  AddNodeControlFn(HOBJECT, HMODELNODE, fn, userdata)     -- one node
+//     25  RemoveNodeControlFn(HOBJECT, fn, userdata)
+//     26  RemoveNodeControlFn(HOBJECT, HMODELNODE, fn, userdata)
+//
+// WHY THIS BLOCK MATTERS MORE THAN THE REST OF THE INTERFACE: the engine calls an installed function every
+// time it evaluates a node's transform, and hands that transform over to be modified. For a VR mod that is
+// precisely the hook a head, hand or weapon bone wants -- no engine code hooked, no per-frame race against
+// the animation system. Documented in shared/sdk/Model.hpp with the slot numbers and argument shapes, and
+// deliberately NOT wrapped: installing a callback hands the engine a pointer it will call on its own thread
+// for the lifetime of the object, so registration and thread-safety are a consumer's design problem rather
+// than something an accessor should quietly do.
+//
+// SLOT 27 IS A FEAR 2 ADDITION AND IS LEFT UNNAMED. It takes a five-argument function pointer plus a
+// userdata word and walks a list invoking it, so it is another callback mechanism -- but over what, and for
+// what, is not established, and the reference has no counterpart whose name could be borrowed. Naming it
+// from plausibility is the error this project has spent several passes learning to avoid.
+//
+// 911 checks, 0 failures.
