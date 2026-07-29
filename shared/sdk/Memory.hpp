@@ -144,6 +144,38 @@ std::optional<std::string> read_name(uintptr_t at, size_t max_length = kMaxNameL
                                      size_t min_length = kMinNameLength);
 
 //
+// INTRUSIVE LIST LINKS, WHICH THIS ENGINE USES EVERYWHERE.
+//
+// A link is two dwords, {prev, next}, and an EMPTY list is self-pointing: both hold the address of the link
+// itself. Object lists, resource-hash buckets, console-variable buckets, the world-tree index, standing-on
+// relationships and a player camera's event sinks all use this one shape.
+//
+// WHY IT IS WORTH A HELPER. The test is three lines and this project has written it six times, and got it
+// wrong once in a way that cost real effort: a resource walk read the FIRST dword as the chain head when the
+// head is the SECOND, which self-terminates instantly on some buckets and never terminates on others. That
+// note still stands in Resources.cpp. Reading a link through one function makes the field order a single
+// decision rather than six.
+//
+// EMPTY versus LINKED is also the only reliable way to tell an owned list HEAD from a registered NODE when
+// both are embedded in the same object. A player camera has eleven such links: three heads that read Empty
+// because it owns them and nothing has been added, and eight nodes that read Linked because they have been
+// inserted into other subsystems' lists. Nothing but the link state distinguishes them.
+enum class LinkState {
+    Unreadable,  // the read faulted, or a pointer was null -- never reported as Empty
+    Empty,       // both pointers name the link itself: an owned list with nothing in it
+    Linked,      // threaded into a list, which for an embedded node means "registered"
+};
+
+// Classify the link at `link_address`, where prev sits at +0 and next at +4.
+LinkState classify_link(uintptr_t link_address);
+
+// Convenience for the common question. False for an unreadable link as well as a threaded one, so a caller
+// that must distinguish those should use classify_link.
+inline bool link_is_empty(uintptr_t link_address) {
+    return classify_link(link_address) == LinkState::Empty;
+}
+
+//
 // IS THIS DWORD A FLOAT OR AN INTEGER?
 //
 // Engine settings tables tag their entries with a type, and the tag can disagree with the bytes. Two entries

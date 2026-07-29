@@ -4261,6 +4261,32 @@ int main(int argc, char** argv) {
             check(json_bool(body, "pmgr_camera_rot_matches", pm_ar) && pm_ar,
                   "the camera object's rotation is bit-identical to the camera pose");
 
+            // ---- THE CAMERA'S COMPOSITION, READ FROM LINK STATE ------------------------------------
+            //
+            // The constructor self-links eleven embedded intrusive links. By runtime eight are threaded into
+            // other subsystems' lists and three are still empty, and that difference is the ONLY thing
+            // separating a registered sink from a list the camera owns.
+            //
+            // Both halves are asserted with their vtable evidence, because the counts alone would also fit a
+            // reader that walked one link eleven times: eight nodes carrying eight DISTINCT vtables, three
+            // heads sharing ONE.
+            double cam_nodes = -1.0, cam_heads = -1.0, cam_unread = -1.0, cam_empty = -1.0, cam_vts = -1.0;
+            const bool cmn = json_double(body, "cam_sink_nodes", cam_nodes) &&
+                             json_double(body, "cam_sink_heads", cam_heads) &&
+                             json_double(body, "cam_sink_unreadable", cam_unread) &&
+                             json_double(body, "cam_owned_lists_empty", cam_empty) &&
+                             json_double(body, "cam_sink_distinct_vtables", cam_vts);
+            check(cmn && cam_nodes == 8.0 && cam_heads == 0.0 && cam_unread == 0.0,
+                  "all eight embedded sinks are threaded into lists, none empty or unreadable");
+            check(cmn && cam_vts == 8.0,
+                  "and they carry eight distinct vtables -- eight sub-objects, not one read eight times");
+            check(cmn && cam_empty == 3.0, "the three lists the camera owns are empty");
+            bool cam_share = false, cam_null = false;
+            check(json_bool(body, "cam_owned_share_vtable", cam_share) && cam_share,
+                  "those three share one vtable, so they are the same container type");
+            check(json_bool(body, "cam_link_null_refused", cam_null) && cam_null,
+                  "a null link is unreadable rather than reported as an empty list");
+
             // TWO POSE GENERATIONS, and which one the engine carries matters to anyone reading the view.
             //
             // The +232 pair is bit-equal to the camera object's own LTObject transform; the +300 pair's

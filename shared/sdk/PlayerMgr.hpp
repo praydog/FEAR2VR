@@ -23,6 +23,17 @@
 // So "the player's position" has two answers and a caller must say which it means. This class answers with
 // the game's, and hands over both engine objects so a caller can ask the engine's too.
 //
+// THE CAMERA IS NOT A MULTIPLE-INHERITANCE OBJECT, and an earlier version of this comment said it was, on the
+// evidence of vtable pointers at +0x00, +0x10 and +0x24. Its constructor shows what those are: a repeating
+// twenty-byte pattern of {vtable, prev = self, next = self, 0, 0} at +16, +36, +56, +76, +96, +116, +136 and
+// +156 -- EIGHT EMBEDDED SUB-OBJECTS, each an intrusive list link with its own vtable. Only the pointer at
+// +0x00 is the camera's own.
+//
+// Live, all eight read Linked with eight DISTINCT vtables, so they are event sinks the camera has registered
+// into eight other subsystems' lists. Three further links at +420, +468 and +516 read Empty and share ONE
+// vtable: those are lists the camera owns and nothing has been added to. Nothing but sdk::mem::classify_link
+// separates a registered node from an owned head, since the constructor self-links both.
+//
 // THE MODEL IS *NOT* THE OBJECT THE SHELL NAMES, and getting that wrong is instructive. It reads back as an
 // OT_MODEL with dims (40, 95, 40) whose asset is char\player\player\fp_playerm05.mdl -- exactly the pair
 // recorded for CClientShell's player slot -- at exactly the same world position. On that evidence an earlier

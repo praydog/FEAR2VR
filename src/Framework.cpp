@@ -4273,6 +4273,48 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pmgr_camera_no_dims",
                          dims_ok && anchor_dims[0] == 0.0f && anchor_dims[1] == 0.0f &&
                              anchor_dims[2] == 0.0f);
+        // THE CAMERA'S COMPOSITION, told apart by LINK STATE alone. Its constructor self-links eleven
+        // embedded links; by runtime the eight at +16..+156 have been inserted into other subsystems' lists
+        // (Linked) while the three at +420/+468/+516 are owned heads with nothing in them (Empty). Reading
+        // the vtable at +16 as a base-class vtable -- which an earlier pass did -- gets the class wrong.
+        size_t cam_nodes = 0, cam_heads = 0, cam_unreadable = 0;
+        for (const uintptr_t off : {16u, 36u, 56u, 76u, 96u, 116u, 136u, 156u}) {
+            switch (sdk::mem::classify_link(pm_player->holder + off + 4)) {
+            case sdk::mem::LinkState::Linked: ++cam_nodes; break;
+            case sdk::mem::LinkState::Empty: ++cam_heads; break;
+            default: ++cam_unreadable; break;
+            }
+        }
+        size_t cam_owned_empty = 0;
+        for (const uintptr_t off : {420u, 468u, 516u}) {
+            if (sdk::mem::link_is_empty(pm_player->holder + off + 8)) {
+                ++cam_owned_empty;
+            }
+        }
+        json_append_double(out, "cam_sink_nodes", static_cast<double>(cam_nodes), 0);
+        json_append_double(out, "cam_sink_heads", static_cast<double>(cam_heads), 0);
+        json_append_double(out, "cam_sink_unreadable", static_cast<double>(cam_unreadable), 0);
+        json_append_double(out, "cam_owned_lists_empty", static_cast<double>(cam_owned_empty), 0);
+        // Eight distinct vtables on the nodes against one shared by the owned heads -- the other half of
+        // the composition claim, and it does not depend on link state at all.
+        std::vector<uint32_t> node_vts;
+        for (const uintptr_t off : {16u, 36u, 56u, 76u, 96u, 116u, 136u, 156u}) {
+            node_vts.push_back(sdk::mem::read_u32(pm_player->holder + off).value_or(0));
+        }
+        std::sort(node_vts.begin(), node_vts.end());
+        const size_t distinct_node_vts =
+            static_cast<size_t>(std::unique(node_vts.begin(), node_vts.end()) - node_vts.begin());
+        json_append_double(out, "cam_sink_distinct_vtables", static_cast<double>(distinct_node_vts), 0);
+        const auto h1 = sdk::mem::read_u32(pm_player->holder + 420);
+        const auto h2 = sdk::mem::read_u32(pm_player->holder + 468);
+        const auto h3 = sdk::mem::read_u32(pm_player->holder + 516);
+        json_append_bool(out, "cam_owned_share_vtable",
+                         h1.has_value() && h1 == h2 && h2 == h3 && *h1 != 0);
+        // A null link is refused rather than reported as an empty list.
+        json_append_bool(out, "cam_link_null_refused",
+                         sdk::mem::classify_link(0) == sdk::mem::LinkState::Unreadable &&
+                             !sdk::mem::link_is_empty(0));
+
         // TWO POSE GENERATIONS: the applied pair matches the engine object bit-for-bit, and the other pair's
         // POSITION does not. Both halves reported, because "they match" alone would also be true if this SDK
         // were reading one pair twice.

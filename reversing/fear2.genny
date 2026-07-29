@@ -4737,3 +4737,47 @@ class LTInputDeviceMouse 0x30 {
 // the bug that yields a mirrored view.
 //
 // 994 checks, 0 failures.
+
+// ---- THE CAMERA'S EXTRA VTABLES ARE NOT BASE CLASSES -----------------------------------------------
+//
+// Two passes ago I described the camera as having "vtables at +0x00/+0x10/+0x24 -- multiple bases, no RTTI".
+// Its constructor says otherwise. CPlayerCamera_ctor writes a repeating twenty-byte pattern:
+//
+//     +N+0   vtable
+//     +N+4   prev = &self      <- self-linked: an EMPTY intrusive list
+//     +N+8   next = &self
+//     +N+12  0
+//     +N+16  0
+//
+// at N = 16, 36, 56, 76, 96, 116, 136, 156 -- EIGHT EMBEDDED SUB-OBJECTS, each an intrusive link carrying its
+// own vtable. Only the pointer at +0x00 belongs to the camera itself. Three vtable pointers in the first 40
+// bytes is exactly what multiple inheritance looks like, and exactly what a composition of link-shaped members
+// looks like too; the ctor is what separates them.
+//
+// LIVE THE TWO KINDS SEPARATE CLEANLY, and only by link state:
+//     +16..+156        8 links, all THREADED into other heap objects' lists, 8 DISTINCT vtables
+//                      -> event sinks the camera has registered with eight other subsystems
+//     +420/+468/+516   3 links, all still SELF-LINKED, sharing ONE vtable (off_101C9450)
+//                      -> lists the camera OWNS, with nothing in them
+//
+// The constructor self-links both kinds, so nothing in the static image distinguishes them. Only reading the
+// live link does.
+//
+// > A vtable pointer near the start of an object is evidence of a vtable pointer. Whether it belongs to a base
+// > class or to an embedded member is a question about the constructor, not about the offset.
+//
+// ALSO FROM THE CTOR: 1388 bytes, 109 distinct offsets, highest +6341 -- so the class is at least 6342 bytes,
+// where the live field sweep two passes ago covered ~700 and had no way to know it. A -1 sentinel at +688,
+// zeroes at the camera-object and player-model pointers, and NO literal initialisation of the pose fields at
+// +232/+244/+300/+324, which therefore come from embedded constructors or a later Init.
+//
+// EXPOSED AS sdk::mem::classify_link -- Unreadable / Empty / Linked, prev at +0 and next at +4.
+//
+// This engine uses self-linking intrusive lists for object lists, resource-hash buckets, console-variable
+// buckets, the world-tree index, standing-on relationships and now camera sinks, and this project had written
+// the self-link test six separate times. It got it wrong once, expensively: a resource walk read the FIRST
+// dword as the chain head when the head is the SECOND, which self-terminates on some buckets and never
+// terminates on others. That comment still stands in Resources.cpp. One function makes the field order one
+// decision instead of six.
+//
+// 999 checks, 0 failures.

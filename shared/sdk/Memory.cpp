@@ -110,6 +110,24 @@ std::optional<std::string> read_name(uintptr_t at, size_t max_length, size_t min
     return text;
 }
 
+LinkState classify_link(uintptr_t link_address) {
+    if (link_address == 0) {
+        return LinkState::Unreadable;
+    }
+
+    const auto prev = read<uint32_t>(link_address);
+    const auto next = read<uint32_t>(link_address + sizeof(uint32_t));
+    if (!prev.has_value() || !next.has_value() || *prev == 0 || *next == 0) {
+        return LinkState::Unreadable;
+    }
+
+    const auto self = static_cast<uint32_t>(link_address);
+    if (*prev == self && *next == self) {
+        return LinkState::Empty;
+    }
+    return LinkState::Linked;
+}
+
 bool looks_like_float(uint32_t raw) {
     if (raw == 0) {
         return false;  // zero is both readings, so it is not evidence either way
