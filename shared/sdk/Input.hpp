@@ -240,6 +240,51 @@ public:
     // why the engine routes those through a threshold accumulator instead.
     static std::optional<bool> object_changed(int object_id);
 
+    // ---- ILTInput's VTABLE, AND THE ADJUSTOR THUNKS ------------------------------------
+    //
+    // Every slot below is a thin adjustor thunk -- `add ecx, 4; jmp impl` -- shifting `this` from the
+    // CLTInput object to its DEVICE ARRAY at +4. A caller going through the vtable therefore passes the
+    // INTERFACE pointer and lets the thunk adjust; handing it the array directly would adjust twice.
+    //
+    //    0  ~CLTInput(bool deleting)
+    //    1  InterfaceImplementation() -> "CLTInput"
+    //    2  Init()      -- allocates the keyboard (0x304) and mouse (0x30), installs the subclass WndProc
+    //    3  Poll()      -- polls the six device slots, then dispatches every binding set
+    //    4  Term()      -- restores the WndProc, then destroys all six devices via their slot 0
+    //    5  EnableInput()   -- writes 1 to the enable flag at +0x4C
+    //    6  DisableInput()  -- writes 0 to it
+    //    7  AllocBindingSet(recordCount) -> set
+    //    8  DestroyBindingSet(set)
+    //    9  SetBindingSetDeviceKind(set, kind)  -- the byte at the set's +0x1C; -1 leaves it inert
+    //   10  GetDeviceCount() -> 6
+    //   11  IsDevicePresent(index) -> bool
+    //
+    // SLOTS 5 AND 6 ARE WHY THE ENABLE FLAG IS WORTH KNOWING: the engine exposes an explicit switch for
+    // input, entirely separate from the simulation gate, and a mod that wants input while the game thinks
+    // it should be off can drive it deliberately rather than fighting the window messages that clear it.
+
+    static constexpr size_t kSlotPoll = 3;
+    static constexpr size_t kSlotEnableInput = 5;
+    static constexpr size_t kSlotDisableInput = 6;
+    static constexpr size_t kSlotAllocBindingSet = 7;
+    static constexpr size_t kSlotDestroyBindingSet = 8;
+    static constexpr size_t kSlotSetBindingSetKind = 9;
+    static constexpr size_t kSlotGetDeviceCount = 10;
+    static constexpr size_t kSlotIsDevicePresent = 11;
+
+    // The ILTInput object, which is the CLTInput singleton. 0 when the exe is not mapped.
+    static uintptr_t interface_address();
+
+    // ---- DEVICE SIZES, WHICH PROVE THE LAYOUTS ------------------------------------------
+    //
+    // CLTInput::Init allocates each device with a literal size, derived independently of the field
+    // offsets this header uses -- those came from the poll functions' shift loops and the value getters.
+    // The two agree exactly, and the static_asserts below are that agreement written down: if anyone
+    // adjusts an offset without re-deriving it, the build stops.
+
+    static constexpr size_t kKeyboardDeviceSize = 0x304;
+    static constexpr size_t kMouseDeviceSize = 0x30;
+
     // ---- THE BINDING SETS: THE ENGINE'S ACTION TABLE -----------------------------------
     //
     // CLTInput_Poll polls the devices and then walks a list of binding sets, firing the handler of every
@@ -292,6 +337,17 @@ public:
     // The actions that are actually bound to something, across every set -- the question a consumer
     // asking "what does this game respond to" actually has.
     static std::vector<BindingRecord> bound_actions();
+
+    // ---- THE ENGINE'S OWN ANSWERS ABOUT ITS DEVICES ------------------------------------
+    //
+    // Both call through the ILTInput vtable rather than reading fields, which makes them an independent
+    // check on the device array this SDK walks itself. GetDeviceCount is a leaf returning a constant;
+    // IsDevicePresent tests devices[index] and forwards to a stub that always returns true, so its answer
+    // is exactly "that slot is populated" -- the same question devices() answers by walking. The suite
+    // compares the two across all six slots.
+
+    static std::optional<uint32_t> engine_device_count();
+    static std::optional<bool> device_is_present(size_t index);
 
     // ---- THE WINDOW-MESSAGE KEY QUEUE -------------------------------------------------
     //

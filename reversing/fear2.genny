@@ -3334,6 +3334,38 @@ struct CLTInput {
     void* binding_list_begin  @0x54   // CONFIRMED BEGIN, and NOT a linked-list node -- established by reading the iterator primitives rather than by probing. The constructor (0x46D384) validates `container[1] <= p <= container[2]`, i.e. this dword is the lower bound; the advance (0x621381) adds 4; the dereference (0x622E62) returns the element ADDRESS and requires it below container[2]. So this is a contiguous ARRAY of 4-byte binding-set pointers. Live: begin and end 4 apart, i.e. exactly ONE set registered.
     void* binding_list_end    @0x58   // CONFIRMED END (one past the last element), the upper bound both the deref and the advance check against. TWO EARLIER READINGS OF THIS PAIR WERE WRONG IN OPPOSITE DIRECTIONS: first labelled begin/end and marked CONFIRMED on no evidence, then downgraded to "unestablished" after probing the begin value as a {next, prev, value} node and finding nothing recognisable. The probe failed because the model was a linked list and the data is an array. Reading the four primitives settled it; guessing the shape twice did not.
 }
+
+// LTInputDeviceKeyboard -- CLTInput's devices[0], vtable 0x67807C.
+//
+// THE SIZE PROVES THE LAYOUT. CLTInput_Init allocates exactly 0x304 bytes, and 0x304 == 4 + 3 * 256: the
+// vtable pointer followed by three 256-byte banks with nothing left over. Those bank offsets were derived
+// independently, from the poll function's shift loop (`cur[i + 256] = cur[i]; cur[i] = cur[i + 512]`) and
+// from LTInputDevice_Keyboard_SetIncomingKey writing `this[vk + 516]`. Two derivations and an allocation
+// size all agreeing.
+class LTInputDeviceKeyboard 0x304 {
+    void* vtable            @0x000  // CONFIRMED 0x67807C live
+    uint8_t current[256]    @0x004  // CONFIRMED what LTInputDevice_Keyboard_GetObjectValue indexes (`this[id + 4] == 1`), tested against 1 rather than non-zero
+    uint8_t previous[256]   @0x104  // CONFIRMED the bank LTInputDevice_Keyboard_ObjectChanged compares against (`this[vk + 260] != this[vk + 4]`), which is what makes the binding dispatch edge-triggered
+    uint8_t incoming[256]   @0x204  // CONFIRMED written by LTInputDevice_Keyboard_SetIncomingKey (`this[vk + 516] = isDown`) straight from the subclass WndProc's WM_KEYDOWN/WM_KEYUP path; the poll shifts it into current
+}
+
+// LTInputDeviceMouse -- CLTInput's devices[1], vtable 0x678050.
+//
+// SAME ARITHMETIC PROOF: CLTInput_Init allocates 0x30, and the fields below fill it exactly --
+// 4 + 3*3 buttons + 3 padding + 3*2 axis floats + 2 position ints == 0x30. The allocation size is what
+// EXPLAINS the three padding bytes at +0x0D: the float banks must be 4-byte aligned.
+class LTInputDeviceMouse 0x30 {
+    void* vtable              @0x00  // CONFIRMED 0x678050 live, installed by LTInputDevice_Mouse_ctor
+    uint8_t buttons[3]        @0x04  // CONFIRMED current bank: left, right, middle. Object ids 1000/1001/1002 test `== 1`
+    uint8_t buttons_prev[3]   @0x07  // CONFIRMED the bank LTInputDevice_Mouse_ObjectChanged compares against
+    uint8_t buttons_in[3]     @0x0A  // CONFIRMED written by LTInputDevice_Mouse_SetIncomingButton (`this[button + 10] = state`) from the WndProc's button messages
+    uint8_t pad_0D[3]         @0x0D  // Alignment only, and the allocation size is what shows it is padding rather than a field: without it the float banks would not be 4-byte aligned and the struct would not reach 0x30.
+    float axis_in[2]          @0x10  // CONFIRMED the incoming axis pair; the poll zeroes an entry after shifting it ONLY when it is exactly 1.0, a one-shot convention
+    float axis[2]             @0x18  // CONFIRMED current: what object ids 1005/1006 return, and what LTInputDevice_Mouse_ObjectChanged reads as this[6]/this[7]
+    float axis_prev[2]        @0x20  // CONFIRMED previous: this[8]/this[9] in that same comparison
+    int32_t screen_x          @0x28  // CONFIRMED the position LTInputDevice_Mouse_SetPositionFromClient writes (as a POINT at this[5]) after ClientToScreen, and what ids 1003/1004 subtract the window centre from
+    int32_t screen_y          @0x2C  // CONFIRMED the other half of that POINT
+}
 }
 
 // ==================================================================================================
@@ -3617,4 +3649,39 @@ struct CLTInput {
 // WHICH action codes map to which keys is NOT asserted -- that is the user's configuration, not a property
 // of the engine.
 //
-// 852 checks, 0 failures.
+// ---- ILTInput's PUBLIC VTABLE, AND WHERE THE ACTION NAMES ARE NOT ------------------------------
+//
+// EVERY SLOT IS AN ADJUSTOR THUNK -- `add ecx, 4; jmp impl` -- shifting `this` from the CLTInput object to
+// its DEVICE ARRAY at +4. That is worth knowing before calling one: a caller passes the INTERFACE pointer
+// and lets the thunk adjust, and it also explains why IDA's pseudocode for these methods indexes fields
+// four bytes lower than the CLTInput layout would suggest.
+//
+//     0  ~CLTInput(bool deleting)              6  DisableInput()   -- writes 0 to +0x4C
+//     1  InterfaceImplementation() -> CLTInput 7  AllocBindingSet(recordCount)
+//     2  Init()                                8  DestroyBindingSet(set)
+//     3  Poll()                                9  SetBindingSetDeviceKind(set, kind)
+//     4  Term()                               10  GetDeviceCount() -> 6
+//     5  EnableInput()  -- writes 1 to +0x4C  11  IsDevicePresent(index) -> bool
+//
+// Slot 11's behaviour is fully determined even though the device method it forwards to is opaque: it tests
+// devices[index] and calls vtable slot 8, a stub that returns true unconditionally, so the answer is
+// exactly "that slot is populated". The other shared device stubs return 0.0f (slot 6) and 1.0f (slots 5
+// and 7); plausibly per-object range metadata, but with both devices sharing one constant stub there is no
+// differentiating evidence, so their MEANING IS NOT ESTABLISHED.
+//
+// THE ACTION NAMES ARE NOT IN THE EXE, and two independent observations say so: a search for
+// action-shaped strings (Forward, Jump, Fire, Reload, Crouch, Zoom...) finds none with data references,
+// and LTInput_AllocBindingSet has NO DIRECT CALLERS -- it is reachable only as ILTInput slot 7. So the
+// 108-record set was created by gameclient.dll through the interface, and the action codes are the game's
+// enumeration, not the engine's. The engine owns the binding MACHINERY; the game owns the vocabulary. A
+// consumer wanting to map "Forward" to a key has to go to gameclient.dll for the code.
+//
+// EXPOSED AS sdk::Input::engine_device_count() and device_is_present(), both called through the vtable so
+// they are independent of the array walk. That separates two different bugs: a wrong slot COUNT would show
+// up as GetDeviceCount disagreeing with the constant this SDK iterates, and a wrong slot ADDRESS as
+// IsDevicePresent disagreeing per slot with what the walk found. The suite checks both, 6/6.
+//
+// The device sizes are asserted at COMPILE time in Input.hpp, as the sums that must equal 0x304 and 0x30 --
+// so adjusting an offset without re-deriving it stops the build rather than passing a runtime check.
+//
+// 855 checks, 0 failures.

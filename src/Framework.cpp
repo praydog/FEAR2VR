@@ -4100,6 +4100,38 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE ENGINE'S OWN VIEW OF ITS DEVICES ---------------------------------------------------
+    //
+    // Both answers come through the ILTInput vtable, so they are independent of the array walk above.
+    // GetDeviceCount returning something other than kDeviceSlots would mean this SDK is iterating the
+    // wrong number of slots; IsDevicePresent disagreeing with the walk would mean it is iterating the
+    // wrong ADDRESS. Neither error is visible from inside either method alone.
+    const auto engine_dev_count = sdk::Input::engine_device_count();
+    json_append_bool(out, "input_engine_device_count_readable", engine_dev_count.has_value());
+    json_append_double(out, "input_engine_device_count",
+                       static_cast<double>(engine_dev_count.value_or(0)), 0);
+
+    size_t presence_checked = 0, presence_agrees = 0;
+    for (size_t i = 0; i < sdk::Input::kDeviceSlots; ++i) {
+        const auto present = sdk::Input::device_is_present(i);
+        if (!present.has_value()) {
+            continue;
+        }
+        ++presence_checked;
+        bool walked = false;
+        for (const auto& d : input_devices) {
+            if (d.slot == i) {
+                walked = true;
+                break;
+            }
+        }
+        if (*present == walked) {
+            ++presence_agrees;
+        }
+    }
+    json_append_double(out, "input_presence_checked", static_cast<double>(presence_checked), 0);
+    json_append_double(out, "input_presence_agrees", static_cast<double>(presence_agrees), 0);
+
     // ---- THE BINDING SETS -----------------------------------------------------------------------
     //
     // THE OWNER BACK-POINTER IS THE LOAD-BEARING CHECK: every record carries the address of its own set

@@ -4052,6 +4052,25 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE ENGINE'S OWN VIEW OF ITS DEVICES ------------------------------------------
+            //
+            // Asked through the ILTInput vtable, so independent of the array walk. A wrong slot COUNT and
+            // a wrong slot ADDRESS are different bugs, and these two checks separate them: the count is
+            // compared against the constant this SDK iterates, and presence is compared per slot against
+            // what the walk found.
+            bool edc_ok = false;
+            double edc = -1.0;
+            check(json_bool(body, "input_engine_device_count_readable", edc_ok) && edc_ok &&
+                      json_double(body, "input_engine_device_count", edc) && edc == 6.0,
+                  "the engine's own GetDeviceCount returns the six slots this SDK iterates");
+
+            double pres_checked = -1.0, pres_agrees = -1.0;
+            check(json_double(body, "input_presence_checked", pres_checked) && pres_checked == 6.0,
+                  "all six slots answer the engine's IsDevicePresent");
+            check(json_double(body, "input_presence_agrees", pres_agrees) &&
+                      pres_agrees == pres_checked,
+                  "and every answer agrees with the array walk, populated and empty alike");
+
             // ---- THE BINDING SETS: THE ENGINE'S ACTION TABLE -----------------------------------
             //
             // Walked as an ARRAY, which is what the iterator primitives say it is: the container holds a

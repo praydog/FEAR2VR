@@ -70,6 +70,7 @@ constexpr uintptr_t kSetRecordCount = 0x18;
 constexpr uintptr_t kSetKind = 0x1C;
 constexpr size_t kRecordStride = 0x20;
 constexpr uintptr_t kCLTInputDevices = 0x2F768C;  // CLTInput + 4
+constexpr uintptr_t kCLTInput = 0x2F7688;  // the ILTInput object; its device array is +4
 constexpr uintptr_t kKeyboardVtable = 0x27807C;
 constexpr uintptr_t kMouseVtable = 0x278050;
 
@@ -84,6 +85,17 @@ constexpr uintptr_t kMousePrevButtons = 0x07;
 constexpr uintptr_t kMouseAxisCurrent = 0x18;  // incoming pair lives at +0x10/+0x14
 constexpr uintptr_t kMousePosX = 0x28;
 constexpr uintptr_t kMousePosY = 0x2C;
+
+// THE LAYOUTS FILL THE ALLOCATIONS EXACTLY, and these are that fact as a build-time check.
+//
+// Keyboard: 4 bytes of vtable then three 256-byte banks.
+static_assert(sizeof(uint32_t) + 3u * Input::kKeyStateCount == Input::kKeyboardDeviceSize,
+              "keyboard bank layout no longer fills CLTInput::Init's 0x304 allocation");
+// Mouse: vtable, three 3-byte button banks, 3 bytes of padding to align the floats, three pairs of axis
+// floats, then the two position ints. Written as the sum so a changed offset breaks the build.
+static_assert(sizeof(uint32_t) + 3u * 3u + 3u + 3u * 2u * sizeof(float) + 2u * sizeof(int32_t) ==
+                  Input::kMouseDeviceSize,
+              "mouse field layout no longer fills CLTInput::Init's 0x30 allocation");
 
 uintptr_t exe_at(uintptr_t offset) {
     const auto* exe = Modules::get().exe();
@@ -375,6 +387,75 @@ std::optional<bool> Input::window_is_iconic() {
         return std::nullopt;
     }
     return ::IsIconic(reinterpret_cast<HWND>(hwnd)) != 0;
+}
+
+// ---- the engine's own answers about its devices ---------------------------------------------------
+
+uintptr_t Input::interface_address() {
+    return exe_at(kCLTInput);
+}
+
+namespace {
+
+// Resolve an ILTInput vtable slot, guarded and bounds-checked into the exe.
+uintptr_t interface_slot(size_t slot) {
+    const uintptr_t obj = Input::interface_address();
+    if (obj == 0) {
+        return 0;
+    }
+    uint32_t vtable = 0;
+    if (!seh_copy(&vtable, obj, sizeof(vtable)) || vtable == 0) {
+        return 0;
+    }
+    uint32_t fn = 0;
+    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+        return 0;
+    }
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || fn < exe->base || fn >= exe->base + exe->size) {
+        return 0;
+    }
+    return fn;
+}
+
+}  // namespace
+
+std::optional<uint32_t> Input::engine_device_count() {
+    const uintptr_t fn = interface_slot(kSlotGetDeviceCount);
+    const uintptr_t obj = interface_address();
+    if (fn == 0 || obj == 0) {
+        return std::nullopt;
+    }
+    // Returns a byte in al; the thunk adjusts `this` itself, so pass the interface pointer.
+    using Fn = uint8_t(__thiscall*)(void*);
+    uint8_t out = 0;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj));
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    return static_cast<uint32_t>(out);
+}
+
+std::optional<bool> Input::device_is_present(size_t index) {
+    if (index >= kDeviceSlots) {
+        return false;  // the engine's own bound check is `index < 6`
+    }
+    const uintptr_t fn = interface_slot(kSlotIsDevicePresent);
+    const uintptr_t obj = interface_address();
+    if (fn == 0 || obj == 0) {
+        return std::nullopt;
+    }
+    using Fn = uint8_t(__thiscall*)(void*, uint8_t);
+    uint8_t out = 0;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), static_cast<uint8_t>(index));
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    return out != 0;
 }
 
 // ---- the binding sets ----------------------------------------------------------------------------
