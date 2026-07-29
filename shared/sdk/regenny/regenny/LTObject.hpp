@@ -5,13 +5,13 @@
 #include "LTVector.hpp"
 #include "LTWorldTreeLink.hpp"
 namespace regenny {
-class LTSpatialRecord;
-}
-namespace regenny {
 class LTObjectRef;
 }
 namespace regenny {
 class LTAttachment;
+}
+namespace regenny {
+class LTSpatialRecord;
 }
 namespace regenny {
 #pragma pack(push, 1)

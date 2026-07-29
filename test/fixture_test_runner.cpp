@@ -308,6 +308,10 @@ bool process_alive(uint32_t pid) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // UNBUFFERED, so a crash cannot swallow the log. Block buffering loses everything written since the
+    // last 4K flush, which is precisely the run you most need to read: a fault mid-suite printed nothing
+    // at all and the failing check had to be found by other means.
+    setvbuf(stdout, nullptr, _IONBF, 0);
     fs::path injector;
     fs::path dll;
     fs::path fixture;
@@ -368,7 +372,17 @@ int main(int argc, char** argv) {
     // 3. Clear stale instance; 4. load.
     if (http::port_open(port)) {
         run_injector(injector, "unload", dll, port);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // WAIT FOR THE MODULE TO GO, do not sleep and hope. A fixed 500ms is a race: on a slow unload
+        // the reinject below lands on a still-resident payload, which the injector refuses, and the run
+        // then proceeds against a stale DLL. wait_unloaded is already the primitive this runner uses for
+        // the same question at the end of the suite.
+        if (const auto stale = find_pid("FEAR2.exe"); stale != 0) {
+            if (!wait_unloaded(stale, 50)) {  // 50 x 200ms
+                printf("[fixture] a previous fear2vr payload is still resident after 10s -- skipping "
+                       "rather than testing against it\n");
+                return 77;
+            }
+        }
     }
     // INJECT, the verified path. A `reload` variant was tried here to survive a dormant leftover
     // and it HUNG the run, so it is not kept: an unverified change to the harness that starts the
@@ -1248,8 +1262,17 @@ int main(int argc, char** argv) {
         check(wname.find('.') == std::string::npos, "the world name has no extension left in it");
         check(wpath.find(wname) != std::string::npos,
               "the world name is a substring of the world path");
-        check(wpath.compare(wpath.size() - wname.size() - 4, wname.size(), wname) == 0,
-              "the world name is exactly the path's final component before .wld");
+        // GUARDED, because this arithmetic underflows on an empty path. With no world loaded both
+        // strings are empty, `wpath.size() - wname.size() - 4` wraps to a huge size_t, and compare()
+        // throws out_of_range -- an uncaught throw, so terminate, so MSVC's abort() raises __fastfail
+        // and the run dies as 0xC0000409 having printed nothing (its log was still buffered). That is
+        // how a legitimate state -- sitting at the main menu -- looked like a crashing harness.
+        if (!wpath.empty() && !wname.empty() && wpath.size() >= wname.size() + 4) {
+            check(wpath.compare(wpath.size() - wname.size() - 4, wname.size(), wname) == 0,
+                  "the world name is exactly the path's final component before .wld");
+        } else {
+            printf("[fixture] world NOTE: no world loaded, so the path/name relationship is UNEXERCISED\n");
+        }
         printf("[fixture] world loaded: %s (name %s)\n", wpath.c_str(), wname.c_str());
 
         // ---- IS A WORLD LOADED, and does the schema's class even fit -------------------

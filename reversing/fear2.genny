@@ -1724,55 +1724,32 @@ class LTAnimRecordTable 0x10 {
 // on 34/34, and sum(child_count) == node_count - 1 on 34/34 -- which is the
 // defining property of a tree with one root and no cycles.
 //
-// BOTH POSES ARE NOW NAMED, each by its own reader: +0x08 is the BIND POSE
-// (ILTModel_GetBindPoseNodeTransform) and +0x24 is the ANIMATION FALLBACK that
-// ILTModel_GetAnimNodeTransform substitutes for a node with no animation key. Two
-// getters, two offsets, no inference.
+// BOTH POSES ARE NAMED BY THEIR READERS, and +0x08's DIRECTION is now settled too.
 //
-// THE BIND POSE'S COORDINATE SPACE IS STILL OPEN. +0x24 is parent-relative because its
-// reader accumulates it up the chain; nothing observed so far pins +0x08 either way, and
-// an earlier draft of this file assumed parent-relative because that is what a rest pose
-// usually is. Assumption, not evidence.
+// ILTModel_GetBindPoseNodeTransform (0x42C958) does exactly two things: LTTransform_Copy from
+// `node_records + (index << 6) + 8` -- this pair -- and then LTTransform_InvertInPlace (0x41DB20)
+// on the result, which conjugates the rotation (LTRotation_Conjugate, 0x41DAB6, negating x/y/z
+// and keeping w) and replaces the position with -(conjugate * position).
 //
-// TWO HEURISTICS TRIED, BOTH INCONCLUSIVE. Mean |bind_position| is 12.9 at depth <= 1 and
-// 57.2 at depth >= 4, which suggests accumulated model-space -- but the sample mixes assets
-// of different scale and the depth bands are not the same models, so scale alone can produce
-// that. Against it: mean |pos(child) - pos(parent)| is 38.6 across 623 edges, and a
-// model-space pair would differ by a BONE LENGTH, i.e. far less than 57.2. But that second
-// metric cannot adjudicate either: if the pairs ARE local, the two vectors sit in different
-// parent frames and their difference is geometrically meaningless, so it is only interpretable
-// once the answer is already known. One confounded measurement and one question-begging one. What would settle it is composing +0x08
-// down the hierarchy and comparing against an engine-produced transform, or finding a caller
-// of the bind getter that composes its output. A THIRD attempt also failed: composing with
-// rotations and measuring both forms against the object's own bounding radius passes on BOTH
-// hypotheses (raw fits 147/147 at 0.265 of the radius, composed 144/147 at 0.421), when a
-// wrongly-composed model-space pose should have blown past the bounds. Note also that the bind
-// getter has NO callers inside FEAR2.exe -- only its two vtable slots -- so whatever composes
-// its output lives in gameclient.dll, which is where this question has to be answered.
+// So the engine RETURNS the inverse of what is STORED here, and which of the two is "the bind
+// pose" comes from the binary rather than from the reference: that function pushes the literal
+// 'ILTModel::GetBindPoseNodeTransform' for its own error report. The value it returns is the bind
+// pose; therefore THIS RECORD STORES THE INVERSE-BIND TRANSFORM -- the inverse bind matrix that
+// skinning consumes, which is exactly what a model file would keep. LithTech's reference
+// implementing the same-named method as `mat = pNode->GetGlobalTransform()` agrees.
 //
-// A FOURTH TEST REFUTED THE RELATIONSHIP BETWEEN THE TWO POSES. Since +0x24 is provably
-// parent-relative, composing it from the root would reproduce +0x08 if that were the same
-// rest pose expressed globally. It does not: 268 of 2196 nodes agree -- roughly one per
-// skeleton, i.e. the roots where composition is the identity -- and divergence begins at
-// depth 1 with a worst error of 163.6. The two pairs are DIFFERENT POSES, not one pose in
-// two spaces, which is a fact worth having even though it does not name either space.
+// That closes a question this file carried for several passes as "the bind pose's coordinate space
+// is still open", and it was closed by reading the READER, not by measuring the values again. Four
+// separate experiments on the values had failed to settle it; none of them needed to.
 //
-// THE REFERENCE SDK POINTS AT GLOBAL: LithTech's ILTModel::GetBindPoseNodeTransform is
-// `mat = pNode->GetGlobalTransform()`. Reference, not ground truth -- and FEAR2's version
-// already differs in shape, filling a position/quaternion pair rather than a matrix, so a
-// matching name does not carry matching semantics. It agrees with the depth-magnitude growth
-// and with the raw values fitting object bounds, so model-space is the standing hypothesis
-// and is recorded as exactly that.
+// The other pair, +0x24, is the ANIMATION FALLBACK that LTModelObject_EvaluateSkeleton substitutes
+// for a node whose animation index is 0xFF. Still a genuinely different pose from +0x08, not one
+// pose in two spaces: composing +0x24 from the root reproduces +0x08 on only 268 of 2196 nodes --
+// about one per skeleton, i.e. the roots where composition is the identity.
 //
-// TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
-// its rigid inverse, the way LTWorldModelObject's pair is. If they were,
-// `pos_b == -(rot_a^-1 * pos_a)` and `rot_b == conjugate(rot_a)` would hold
-// everywhere; live they hold on 92 and 107 of 660, and the fits cluster on nodes
-// whose rot_a is near identity, where the relation degenerates into a plain
-// negation (78 of 660 satisfy even that). So the pairs are two DIFFERENT poses,
-// not one pose and its inverse, and what distinguishes them is unmapped. The
-// looking-alike was strong -- `attach` has a=(0,0,-10) against b=(0,0,10) -- which
-// is exactly why it needed testing rather than asserting.
+// VERIFIED AGAINST THE ENGINE: sdk::ModelSkeleton::bind_pose() applies that same inversion to this
+// stored pair, and agreed with a live vt[22] call on 1994 of 1994 nodes, worst combined error
+// 0.0058 (float precision, not a discrepancy in kind).
 class LTModelNode 0x40 {
     uint8_t parent_index   @0x00   // CONFIRMED: 255 on the root (the reader's sentinel), and always < own_index otherwise, on 34/34 assets
     uint8_t unk_01         @0x01
@@ -1781,8 +1758,8 @@ class LTModelNode 0x40 {
     uint8_t child_count    @0x04   // CONFIRMED: the reader stores the low byte of a dword read from the file, and live the counts sum to node_count - 1 on 34/34 -- one root, no cycles. Paired with first_child_offset it fully describes the child set, and the recursive walk at 0x4290A8 uses exactly that pair.
     uint8_t unk_05         @0x05   // CONFIRMED read as a single byte straight from the file
     uint16_t unk_06        @0x06
-    LTVector bind_position @0x08   // CONFIRMED THE BIND POSE, by its own reader: ILTModel_GetBindPoseNodeTransform (0x42C958) computes `(node_index << 6) + asset->node_records + 8` and copies from there -- stride 0x40, offset +0x08, i.e. exactly this pair. That settles which of this record's two poses is the bind pose, which an earlier pass could only record as unmapped. Being ASSET data it is staleness-free and identical on every instance of the model, unlike the per-object node caches. CONFIRMED finite and sane on 660/660
-    LTRotation bind_rotation @0x14 // CONFIRMED the bind pose's rotation, the second half of the pair ILTModel_GetBindPoseNodeTransform reads. CONFIRMED unit-length on 660/660, so a real quaternion
+    LTVector inverse_bind_position @0x08   // CONFIRMED THE INVERSE-BIND TRANSFORM'S position, by its own reader: ILTModel_GetBindPoseNodeTransform (0x42C958) copies `(node_index << 6) + asset->node_records + 8` -- stride 0x40, offset +0x08, i.e. exactly this pair -- and then INVERTS it (LTTransform_InvertInPlace). So what the engine hands out is the inverse of this, and since that getter's own error string names it GetBindPoseNodeTransform, the RETURNED value is the bind pose and this is its inverse. Being ASSET data it is staleness-free and identical on every instance of the model, unlike the per-object node caches. CONFIRMED finite on 660/660.
+    LTRotation inverse_bind_rotation @0x14 // CONFIRMED the second half of the pair ILTModel_GetBindPoseNodeTransform reads and inverts; the engine returns its CONJUGATE. CONFIRMED unit-length on 660/660, so a real quaternion -- which also means the conjugate is a true inverse rather than merely a transpose-like approximation.
     LTVector anim_fallback_position @0x24 // CONFIRMED A LOCAL, PARENT-RELATIVE POSITION BY THE SKELETON EVALUATOR ITSELF. LTModelObject_EvaluateSkeleton (0x428670) is what fills the per-node cache, and per node it takes the local position from the animation buffer or, when that node has no animation (its anim index is 0xFF), from `node_records + (index << 6) + 36` -- this field -- then composes it onto THE PARENT'S ALREADY-CACHED TRANSFORM via LTTransform_ComposeIntoIdentity and stores the result at cache stride 28. So the field is local, the cache is a composed space, and both facts come from the producer rather than from a query. Also found by its other reader: ILTModel_GetAnimNodeTransform (0x42C9CF) walks the parent chain and for each node takes `node_records + (index << 6) + 36` -- exactly this pair -- whenever that node has no animation mapping (its anim node index is 0xFF) or there is no animation state at all; otherwise it evaluates the animation instead. So +0x08 is what the bind-pose getter hands out and +0x24 is what animation composition falls back to. That the same function walks UP the parent chain establishes THIS pair is PARENT-RELATIVE, and the per-step rule is READ rather than inferred from the loop: LTTransform_ComposeIntoIdentity (0x424FF0) initialises the output rotation to identity and calls LTTransform_Compose (0x424CEB), which is `out.rot = LTRotation_Multiply(parent.rot, child.rot)` and `out.pos = LTVector_Add(LTRotation_RotateVector(parent.rot, child.pos), parent.pos)` -- the standard parent-to-child composition. The identity-zeroing momentarily looked like evidence against a plain compose and is merely output initialisation. Note this says nothing about the bind-pose getter reads a single node and composes nothing, so it evidences nothing about +0x08's space. CONFIRMED finite and sane on 660/660, and NOT the inverse of the bind pose -- see the class comment.
     LTRotation anim_getter_rotation @0x30 // NAMED AFTER ITS ONLY EVIDENCE, not after a role. Calling it a fallback rotation would assert what the producer refutes: LTModelObject_EvaluateSkeleton, the function that fills the node cache, sources local rotations from g_AnimEval_NodeLocalRotations for EVERY node whether animated or not, and never reads this. The one function that does read it is ILTModel_GetAnimNodeTransform, which copies the whole 7-float pair out with LTTransform_Copy -- so all that is established is that a secondary getter hands it to callers. ILTModel_GetAnimNodeTransform copies the WHOLE pair out with LTTransform_Copy (position and rotation, 7 floats). LTModelObject_EvaluateSkeleton takes ONLY THE POSITION from here and sources the rotation from g_AnimEval_NodeLocalRotations regardless of whether the node has animation. So on the evaluator's path this rotation is not read at all, and its role rests on the one reader that does use it. NOTE THIS ALSO EXPLAINS A FAILED EXPERIMENT recorded above: composing the full (position, rotation) pair down the hierarchy does not reproduce the bind pose, and the reason is that the engine does not treat this rotation as the node's local rotation at all on its main path. CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride. CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride.
 }

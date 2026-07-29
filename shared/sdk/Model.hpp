@@ -95,7 +95,7 @@ public:
 
     // Each node stores TWO (position, rotation) pairs. This header used to expose them as
     // pose_a/pose_b because which was which was not established -- it now is, separately for each
-    // half and each by its own reader, so they are named for what they are. See bind_pose_as_stored() and
+    // half and each by its own reader, so they are named for what they are. See inverse_bind_pose() and
     // anim_fallback_position() further down for the evidence and for the one field left unexposed.
     struct Pose {
         regenny::LTVector position;
@@ -277,8 +277,9 @@ public:
     // BOTH DIRECTIONS ARE OFFERED, named for what they ARE now that the direction is settled:
     //   inverse_bind_pose()  the record's +0x08 pair verbatim -- the inverse-bind transform, what the
     //                        file stores and what skinning consumes directly.
-    //   bind_pose()          that pair inverted, i.e. bit-for-bit what a caller of the engine's
-    //                        ILTModelClient vt[22] receives.
+    //   bind_pose()          that pair inverted, i.e. what a caller of the engine's ILTModelClient
+    //                        vt[22] receives -- agreeing on 1994 of 1994 live nodes at worst 0.0058,
+    //                        which is float precision rather than bit-identity.
     // Both are asset data: no staleness, no game thread. nullopt when the index is out of range or a read
     // faulted.
 

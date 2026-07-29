@@ -963,6 +963,35 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE HARNESS CRASHED ON A LEGITIMATE GAME STATE, AND HID ITS OWN LOG WHILE DOING IT.** Two independent
+  faults, and the second is what made the first hard to find:
+  * `wpath.compare(wpath.size() - wname.size() - 4, ...)` underflows when no world is loaded -- both strings
+    empty, so the offset wraps to a huge size_t, compare() throws out_of_range, nothing catches it, and
+    MSVC's abort() raises __fastfail. The run dies as 0xC0000409, which reads like a stack-buffer overrun in
+    the harness rather than an unguarded index.
+  * stdout was block-buffered, so a mid-suite fault printed NOTHING -- the log that would have named the
+    failing check was still in the buffer. `setvbuf(stdout, nullptr, _IONBF, 0)` in main() now makes a crash
+    keep its evidence, which is the one run where you cannot afford to lose it.
+  Guarded the arithmetic and made the no-world case report UNEXERCISED. Sitting at the main menu is a state
+  the harness must survive, not a state it may fault on.
+  
+- **A FIXED SLEEP BEFORE REINJECTION IS A RACE.** The stale-instance path unloaded then slept 500ms, while the
+  runner already had `wait_unloaded()` for exactly that question and used it at the end of the suite. On a
+  slow unload the reinject lands on a still-resident payload, the injector refuses, and the run proceeds
+  against a stale DLL -- silently testing the wrong build. Now it waits, and skips with 77 rather than
+  guessing if the module is still there.
+
+- **THE GENERATED-HEADER OUTPUT PATH IS `shared/sdk/regenny`.** Not recorded anywhere before, which is how I
+  generated a whole stray tree at `shared/regenny/` and then watched the build keep compiling the OLD field
+  names -- the schema said one thing and the headers another. `git status` naming the new directory as
+  untracked is what caught it. Writing it down here so the next regeneration does not repeat it:
+  
+      regenny:sdk():generate("<repo>/shared/sdk/regenny")
+  
+  And a rename that crosses the schema is a FOUR-surface edit: the .genny field, the regenerated header, the
+  C++ readers, and the prose that cites the old name. Missing any one leaves the tree inconsistent in a way
+  that compiles or -- worse -- does not.
+
 - **A DIAGNOSTIC FIELD'S ABSENCE MUST NOT READ AS ITS ZERO.** My new bind-pose fixture block parsed seven
   `bp_*` fields and ignored every parse result, then branched on `edges > 0`. If the endpoint ever stopped
   emitting them, `edges` would stay at its -1 sentinel and the block would print "no world loaded" -- an
