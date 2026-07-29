@@ -3947,6 +3947,26 @@ int main(int argc, char** argv) {
             bool recomposed = false;
             check(json_bool(body, "sc_compose_matches_record", recomposed) && recomposed,
                   "our compose reproduces the engine's own stored view-projection");
+            // THE WIDEST COHERENCE CHECK ON THIS RECORD: world_to_screen must equal the viewport
+            // transform (derived from the rect) times the view-projection. That spans four regions
+            // the render thread writes at different moments, and unlike the perspective checks it
+            // holds in whatever pass happens to be live.
+            bool w2s = false;
+            check(json_bool(body, "sc_w2s_coherent", w2s) && w2s,
+                  "world_to_screen == viewport_transform * view_projection (four regions agree)");
+
+            // Projecting a point through it. In the screen pass the matrix is the identity, so a
+            // point must project to ITSELF -- not a tautology, since that identity is the product of
+            // the screen ortho and the viewport transform and any error in either breaks it.
+            bool pid = false, rb = false;
+            if (json_has(body, "\"sc_pose_identity\":true")) {
+                check(json_bool(body, "sc_projects_identity", pid) && pid,
+                      "project_point returns the point itself in the screen pass, where the composed "
+                      "matrix is the identity");
+                check(json_bool(body, "sc_rejects_behind", rb) && rb,
+                      "and refuses a point with non-positive w where the pass can produce one");
+            }
+
             // The pose -> view recipe against the engine's own two regions. Same pass-dependence:
             // in the screen pass both are identity, so this cannot distinguish a wrong recipe --
             // the synthetic round trip above is what does that.

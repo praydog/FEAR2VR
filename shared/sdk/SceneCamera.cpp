@@ -25,7 +25,7 @@ constexpr size_t kDepthRange = 0x40;         // 64
 constexpr size_t kView = 0x48;               // 72, 3 rows of 4
 constexpr size_t kProjection = 0x78;         // 120
 constexpr size_t kViewProjection = 0xB8;     // 184
-constexpr size_t kDerived = 0xF8;            // 248
+constexpr size_t kWorldToScreen = 0xF8;      // 248, viewport * view_projection
 constexpr size_t kTrailing = 0x138;          // 312, 12 floats
 constexpr size_t kRecordSize = 0x168;        // 360 -- through the trailing floats
 
@@ -183,6 +183,90 @@ bool SceneCameraSnapshot::view_matches_pose(float tolerance) const {
         }
     }
     return true;
+}
+
+std::optional<regenny::LTMatrix3x4> SceneCameraSnapshot::viewport_transform() const {
+    if (!viewport_valid()) {
+        return std::nullopt;
+    }
+    const float half_w = static_cast<float>(viewport_width()) * 0.5f;
+    const float half_h = static_cast<float>(viewport_height()) * 0.5f;
+    const float centre_x = static_cast<float>(viewport_left) + half_w;
+    const float centre_y = static_cast<float>(viewport_top) + half_h;
+    if (!std::isfinite(half_w) || !std::isfinite(half_h) || !std::isfinite(centre_x) ||
+        !std::isfinite(centre_y)) {
+        return std::nullopt;
+    }
+    regenny::LTMatrix3x4 out{};
+    out.m[0] = half_w;
+    out.m[3] = centre_x;
+    out.m[5] = -half_h;  // y flipped, as the engine emits it
+    out.m[7] = centre_y;
+    out.m[10] = 1.0f;
+    return out;
+}
+
+bool SceneCameraSnapshot::world_to_screen_is_coherent(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
+    const auto viewport = viewport_transform();
+    if (!viewport.has_value()) {
+        return false;
+    }
+    std::array<float, 12> affine{};
+    for (size_t i = 0; i < 12; ++i) {
+        affine[i] = viewport->m[i];
+    }
+    // MulAffineBy4x4's shape: the affine operand on the LEFT, the 4x4 on the right, with the output's
+    // row 3 taken from the 4x4.
+    std::array<float, 16> expected{};
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t col = 0; col < 4; ++col) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < 4; ++k) {
+                sum += affine[row * 4 + k] * view_projection[k * 4 + col];
+            }
+            expected[row * 4 + col] = sum;
+        }
+    }
+    for (size_t col = 0; col < 4; ++col) {
+        expected[12 + col] = view_projection[12 + col];
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        if (!near_equal(world_to_screen[i], expected[i], tolerance)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<SceneCameraSnapshot::ScreenPoint> SceneCameraSnapshot::project_point(
+    float world_x, float world_y, float world_z) const {
+    if (!std::isfinite(world_x) || !std::isfinite(world_y) || !std::isfinite(world_z)) {
+        return std::nullopt;
+    }
+    const auto& m = world_to_screen;
+    for (size_t i = 0; i < 16; ++i) {
+        if (!std::isfinite(m[i])) {
+            return std::nullopt;
+        }
+    }
+    // Row-major, point as a column vector: p' = M * p.
+    const float x = m[0] * world_x + m[1] * world_y + m[2] * world_z + m[3];
+    const float y = m[4] * world_x + m[5] * world_y + m[6] * world_z + m[7];
+    const float w = m[12] * world_x + m[13] * world_y + m[14] * world_z + m[15];
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || w <= 0.0f) {
+        return std::nullopt;  // on or behind the camera plane: no honest pixel exists
+    }
+    ScreenPoint out{};
+    out.x = x / w;
+    out.y = y / w;
+    out.depth = w;
+    if (!std::isfinite(out.x) || !std::isfinite(out.y)) {
+        return std::nullopt;
+    }
+    return out;
 }
 
 bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {
@@ -635,7 +719,7 @@ std::optional<SceneCameraSnapshot> SceneCamera::snapshot() {
     std::memcpy(&out.view, raw + kView, sizeof(out.view));
     out.projection = floats_at<16>(raw, kProjection);
     out.view_projection = floats_at<16>(raw, kViewProjection);
-    out.derived = floats_at<16>(raw, kDerived);
+    out.world_to_screen = floats_at<16>(raw, kWorldToScreen);
     out.trailing = floats_at<12>(raw, kTrailing);
     return out;
 }

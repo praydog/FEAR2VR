@@ -1446,7 +1446,7 @@ class CClientMgrCounterNode 0x40 {
 //     +0x48   view matrix, 3 rows of 4
 //     +0x78   projection = proj(depth) * shear
 //     +0xB8   VIEW-PROJECTION = projection * view
-//     +0xF8   derived from +0xB8 via sub_610333; role not established
+//     +0xF8   WORLD -> SCREEN PIXELS = viewportTransform * viewProjection
 //     +0x138  12 trailing floats from sub_610658
 //
 // THE CENTRE OFFSET IS APPLIED AS A SHEAR, straight out of the builder:
@@ -1552,9 +1552,31 @@ class CClientMgrCounterNode 0x40 {
 // form of P * T in all sixteen coefficients, including the homogeneous row, since a bug confined to
 // row 3 passes both an identity multiply and a translation checked only at [3] and [7].
 //
-// +0xF8'S ROLE REMAINS OPEN. LTMatrix_MulAffineBy4x4 derives it from +0xB8 and a 48-byte local
-// whose contents are not established. The multiply's shape is settled; its inputs are not, so the
-// earlier note calling +0xF8 "derived, role not established" still stands.
+// +0xF8 IS THE WORLD-TO-SCREEN MATRIX -- viewportTransform * viewProjection. Closing this needed the
+// 48-byte operand identified, and it was hiding in a register: the builder does
+// `lea ecx, [ebp+var_BC]` at 0x610BD4, and ecx survives that whole span -- one write, no intervening
+// calls -- to LTMatrix3x4_Set12Thunk at 0x610C71. So var_BC is what that call fills, and its argument
+// setup names it outright:
+//
+//     [ halfW    0       0   centreX ]     halfW   = (right - left) / 2
+//     [ 0      -halfH    0   centreY ]     centreX = left + halfW  (`fild [ebx+4]`, `fadd halfW`)
+//     [ 0        0       1   0       ]     centreY = top  + halfH
+//
+// the VIEWPORT TRANSFORM: clip -> pixels with y flipped.
+//
+// AND IT EXPLAINS THE IDENTITY THIS FIELD READS LIVE, which had been recorded as an oddity. In the
+// screen pass the view-projection IS the screen ortho -- 1/2560, -1/720, biases -1 and +1 -- and the
+// viewport transform is its exact inverse -- 2560, -720, centres 2560 and 720. So 2560 * (1/2560) = 1
+// along the diagonal and -2560 + 2560 = 0 in the translation column: the product is the identity BY
+// CONSTRUCTION, not by coincidence, and the measured identity is the confirmation.
+//
+// That makes it the matrix a consumer actually wants -- world point straight to pixel -- so
+// sdk::SceneCamera exposes project_point(), viewport_transform() and world_to_screen_is_coherent().
+// The last ties FOUR separately-written regions (the rect, the view, the projection and the composed
+// result) and holds in whatever pass is live, so it is the widest coherence check on this record. The
+// suite also projects a point in the screen pass and requires it to come back UNCHANGED, which is a
+// real round trip rather than a tautology: that identity is the ortho and the viewport transform
+// cancelling, and an error in either breaks it.
 //
 // ---- THE PROJECTION BUILDERS, AND WHAT THEY PROVE ABOUT THE HALF-PLANE ----
 //

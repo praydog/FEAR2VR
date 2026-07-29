@@ -963,6 +963,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **AN UNIDENTIFIED OPERAND MAY BE SITTING IN A REGISTER SET LONG EARLIER.** +0xF8's affine operand looked
+  like an uninitialised local in the decompiler for several passes. It was filled by a thiscall whose `this`
+  came from a `lea ecx` a hundred bytes earlier -- one write, no intervening calls, so ecx survived. Hex-Rays
+  showed the call with its stack arguments and no hint of the receiver's identity. When a local looks used
+  before it is written, check what ecx held at the last thiscall.
+  
+- **AN IDENTITY MATRIX IN A RECORD IS A CLUE, NOT A DEAD END.** +0xF8 read as the identity live, which I
+  logged as "role not established". It is the identity because it is the product of the screen ortho and the
+  viewport transform, which are exact inverses in that pass -- so the identity was itself the evidence for
+  what the field is. Asking WHY a value is degenerate beat waiting for a pass where it would not be.
+
 - **A BUG THE LIVE DATA CANNOT EXPOSE NEEDS A SYNTHETIC REGRESSION TEST.** rotation_matrix() hardcoded a
   factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit, so both formulas
   agree everywhere the suite looks -- 761 checks passed over the buggy version, and only a decompile found

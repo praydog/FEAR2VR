@@ -3348,6 +3348,27 @@ std::string build_shader_params_json() {
     // it is the most useful check on this record, spanning three regions the render thread writes
     // at different moments.
     const bool compose_matches_record = scam.has_value() && scam->view_projection_is_coherent();
+
+    // The world-to-screen matrix against the viewport transform the record's own rect implies. Ties
+    // four separately-written regions, and holds in whatever pass is live.
+    const bool world_to_screen_coherent =
+        scam.has_value() && scam->world_to_screen_is_coherent();
+
+    // Projection through that matrix. In the screen pass it is the identity, so a point projects to
+    // ITSELF -- which is a real round-trip check rather than a tautology, because the identity is the
+    // product of the ortho and the viewport transform and any error in either breaks it.
+    bool projects_identity = false;
+    bool rejects_behind_camera = false;
+    if (scam.has_value() && scam->pose_is_identity()) {
+        const auto p = scam->project_point(123.0f, -45.0f, 1.0f);
+        if (p.has_value()) {
+            projects_identity = fabsf(p->x - 123.0f) < 0.01f && fabsf(p->y + 45.0f) < 0.01f;
+        }
+        // w comes from row 3, which in the screen pass is (0,0,0,1) -- so w is 1 regardless of the
+        // point and nothing is "behind" the camera. Only assert the refusal where w can go non-positive.
+        rejects_behind_camera = !scam->is_perspective_projection() ||
+                                !scam->project_point(0.0f, 0.0f, -1.0f).has_value();
+    }
     // Sized with headroom and CHECKED: an earlier 448 silently truncated once the projection
     // classifiers were added, and a half-written object is invalid JSON that fails downstream as
     // "missing field" rather than as "the report is broken".
@@ -3365,6 +3386,8 @@ std::string build_shader_params_json() {
                  "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
                  "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,"
                  "\"sc_compose_matches_record\":%s,\"sc_view_matches_pose\":%s,"
+                 "\"sc_w2s_coherent\":%s,\"sc_projects_identity\":%s,"
+                 "\"sc_rejects_behind\":%s,"
                  "\"sc_affine\":%s,\"sc_w_row_scale\":%.6f,\"sc_fov_present\":%s,"
                  "\"sc_fov_y_deg\":%.3f,\"sc_proj_agrees_hvp\":%s,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
@@ -3383,6 +3406,9 @@ std::string build_shader_params_json() {
                  scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false",
                  compose_matches_record ? "true" : "false",
                  scam->view_matches_pose() ? "true" : "false",
+                 world_to_screen_coherent ? "true" : "false",
+                 projects_identity ? "true" : "false",
+                 rejects_behind_camera ? "true" : "false",
                  scam->is_affine_projection() ? "true" : "false",
                  scam->projection_w_row_scale(),
                  scam->fov_y_radians().has_value() ? "true" : "false",

@@ -73,7 +73,9 @@ struct SceneCameraSnapshot {
     regenny::LTMatrix3x4 view{};              // 3 rows of 4, the generated 0x30 type
     std::array<float, 16> projection{};       // proj(depth) * shear
     std::array<float, 16> view_projection{};  // projection * view
-    std::array<float, 16> derived{};          // from view_projection; role not established
+    // WORLD -> SCREEN PIXELS: viewport_transform * view_projection. Use project_point() rather than
+    // multiplying by hand.
+    std::array<float, 16> world_to_screen{};
     std::array<float, 12> trailing{};
 
     // int64 ON PURPOSE: these are differences of two ints read from a record the render thread
@@ -161,6 +163,37 @@ struct SceneCameraSnapshot {
     // is identity and so is the view matrix, which the comparison cannot distinguish from a wrong
     // recipe. Pair it with pose_is_identity() when that matters.
     bool view_matches_pose(float tolerance = 1e-3f) const;
+
+    // The viewport transform this record implies: clip -> pixels, y flipped. The engine builds this
+    // from the viewport rect and composes it with the view-projection to get world_to_screen.
+    //
+    //   [ halfW    0      0   centreX ]
+    //   [ 0     -halfH    0   centreY ]
+    //   [ 0        0      1   0       ]
+    //
+    // nullopt for a degenerate viewport.
+    std::optional<regenny::LTMatrix3x4> viewport_transform() const;
+
+    // Does world_to_screen equal viewport_transform * view_projection?
+    //
+    // Ties FOUR regions the render thread writes separately -- the viewport rect, the view matrix,
+    // the projection and the composed result -- so it is the widest coherence check on this record,
+    // and it holds in every pass rather than only a perspective one.
+    bool world_to_screen_is_coherent(float tolerance = 1e-3f) const;
+
+    // Project a world-space point to PIXELS. Returns nullopt when the matrix is unusable or the point
+    // lands on or behind the camera plane (w <= 0), which is the case a caller must not paper over --
+    // a point behind the viewer otherwise projects to a plausible-looking pixel on screen.
+    //
+    // This is the reason the matrix is worth mapping: an overlay, a reticle, a debug marker or a
+    // stereo-disparity check all need world -> pixel, and doing it through the engine's own composed
+    // matrix means agreeing with what the engine drew rather than approximating it.
+    struct ScreenPoint {
+        float x{};
+        float y{};
+        float depth{};  // the w that was divided out; larger is further away
+    };
+    std::optional<ScreenPoint> project_point(float world_x, float world_y, float world_z) const;
 
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
