@@ -3309,6 +3309,25 @@ std::string build_shader_params_json() {
     // accessor has to decline rather than hand back the first of many.
     const auto array_via_fixed = sdk::ShaderParams::matrix4x3("k_mModelObjectNodes");
 
+    // The camera parameters, through the same accessors a stereo path would use. The
+    // reciprocal check is the class's own helper, not re-implemented here -- a consumer
+    // validating what it read calls exactly this.
+    const auto hvp = sdk::ShaderParams::half_view_plane();
+    const auto zr = sdk::ShaderParams::z_range();
+    const auto cam_dir = sdk::ShaderParams::world_space_camera_dir();
+    char cam[384];
+    snprintf(cam, sizeof(cam),
+             "\"half_view_plane\":%s,\"hvp_half_w\":%.4f,\"hvp_half_h\":%.4f,"
+             "\"hvp_reciprocals_consistent\":%s,\"hvp_aspect\":%.4f,"
+             "\"z_range\":%s,\"z_near\":%.4f,\"z_far\":%.1f,\"camera_dir\":%s,",
+             hvp.has_value() ? "true" : "false", hvp.has_value() ? hvp->half_width : 0.0f,
+             hvp.has_value() ? hvp->half_height : 0.0f,
+             (hvp.has_value() && hvp->reciprocals_consistent()) ? "true" : "false",
+             hvp.has_value() ? hvp->aspect() : 0.0f,
+             zr.has_value() ? "true" : "false", zr.has_value() ? (*zr)[0] : 0.0f,
+             zr.has_value() ? (*zr)[1] : 0.0f, cam_dir.has_value() ? "true" : "false");
+    out += cam;
+
     char tail[512];
     snprintf(tail, sizeof(tail),
              "\"screen_res\":%s,\"screen_res_w\":%.1f,\"screen_res_h\":%.1f,"

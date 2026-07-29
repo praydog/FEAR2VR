@@ -166,6 +166,53 @@ public:
     // Render::present_params(), which is what the device was created with -- reading both
     // and comparing is a genuine consistency check rather than a duplicate.
     static std::optional<std::array<float, 2>> screen_resolution();
+
+    // ---- THE CAMERA PARAMETERS A STEREO PATH CARES ABOUT ----------------------------
+
+    // k_vHalfViewPlane, unpacked. The engine stores the view plane's half-extents together
+    // with their reciprocals, so a shader can divide without a divide.
+    //
+    // UNITS FOLLOW THE RENDER PASS, which is how the meaning was established rather than
+    // assumed. Read live during the engine's screen pass (mode 2) the extents are
+    // (2560, 720) -- exactly half of a 5120x1440 screen, so pixels. Left by a 3D pass they
+    // read (2.2651, 0.6371), whose ratio matches that screen's aspect, i.e. half-extents at
+    // unit depth. So this is "half extent of the view plane" in whatever space the pass
+    // works in, and a consumer must know which pass produced what it is holding.
+    struct HalfViewPlane {
+        float half_width{};
+        float half_height{};
+        float inv_half_width{};
+        float inv_half_height{};
+
+        // Do the stored reciprocals actually match the extents? An invariant of the tuple
+        // rather than a property of this machine, so it is a real check: it holds at any
+        // resolution and in either pass, and fails if the four floats were misread.
+        bool reciprocals_consistent(float tolerance = 1e-3f) const;
+
+        // half_width / half_height. Equals the viewport aspect ratio in both passes
+        // observed, so it is the cheapest cross-check against screen_resolution().
+        float aspect() const;
+
+        // NO FOV CONVERSION IS OFFERED, deliberately. For a perspective pass the half-extent
+        // at unit depth is tan(fov/2), so 2*atan(half_height) would be the vertical field of
+        // view -- but this class cannot tell a caller WHICH pass left the value it just read,
+        // and during the engine's screen pass the same parameter holds pixel extents. On
+        // those, 2*atan(2560) is about pi radians: a plausible-looking number that means
+        // nothing. A consumer that has independently established it is looking at a
+        // perspective pass can do the arithmetic itself; an accessor here would only hide
+        // the precondition it cannot check.
+    };
+
+    static std::optional<HalfViewPlane> half_view_plane();
+
+    // k_vScene_ZRange as the engine last published it: (near, far). Live in a loaded level
+    // this reads (4.3, 100000). NOTE it is not refreshed by the screen pass, so it can be
+    // stale with respect to the current frame -- see SceneRenderer_SetupCameraShaderParams,
+    // which skips this write when the pass mode is 2.
+    static std::optional<std::array<float, 2>> z_range();
+
+    // k_vWorldSpaceCameraDir, the camera's forward vector in world space.
+    static std::optional<std::array<float, 3>> world_space_camera_dir();
 };
 
 }  // namespace sdk

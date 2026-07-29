@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A LIVE READ THAT DISAGREES WITH THE CODE IS USUALLY A STATE QUESTION, NOT A BAD OFFSET.** The
+  scene camera's z-range source read (0.0, 1.0) while `k_vScene_ZRange` held (4.3, 100000). The offsets
+  were right: the writer skips that store when the pass mode is 2, and mode 2 was the last pass to run,
+  so the parameter was simply older than the record. Reading the *gate* explained the mismatch that
+  re-deriving the offset never would have.
+  
+- **UNITS CAN BE ESTABLISHED BY SAMPLING TWO DIFFERENT STATES.** `k_vHalfViewPlane` looked like it could
+  be anything. In mode 2 the field read (2560, 720) -- exactly half the screen, so pixels -- and after a
+  3D pass (2.2651, 0.6371), a ratio matching the screen aspect. Neither sample alone pins the meaning;
+  together they say "half extent of the view plane, in the pass's own space".
+  
+- **AN INVARIANT ACROSS TWO INDEPENDENT VALUES BEATS A VALUE ASSERTION.** `hvp_aspect == screen_w/screen_h`
+  holds at every resolution and comes from two parameters nothing forces to agree, so it catches a misread
+  without hard-coding this machine's 5120x1440. Same for the stored reciprocals matching their extents.
+
 - **THE PRODUCTIVE DIRECTION WAS THE ONE I ALMOST DISCARDED.** A raw `call [reg+0x44]` hit was a
   displacement collision, and the honest conclusion was "static scanning cannot find Present". But the
   colliding call was `IDirect3DTexture9::GetLevelDesc`, and following THAT -- not the failure -- led to

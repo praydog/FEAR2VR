@@ -1353,6 +1353,75 @@ class CClientMgrCounterNode 0x40 {
 // object-to-clip transform, set per draw, so a write would be overwritten before a shader saw
 // it. Reading is genuinely useful now; a setter would be a lie about what it achieves.
 //
+// ---- WHO WRITES THE SHADER PARAMETERS, AND THE CAMERA ONES IN PARTICULAR ----
+//
+// A TYPED SETTER PER SIZE, each __thiscall on a parameter record, each copying to +0x1C and
+// calling Flush with its own byte count. That third independent confirmation of the +0x1C
+// inline value is worth as much as the setters themselves.
+//
+//     LTShaderParam_SetMatrix4x4  0x60C396  rep movsd 16 dwords, Flush(64)
+//     LTShaderParam_SetMatrix4x3  0x60C3D0  12 fld/fstp,         Flush(48)
+//     LTShaderParam_SetFloat4     0x60C3B4  LTRotation_Copy,     Flush(16)
+//     LTShaderParam_SetFloat3     0x60C3F3  3 fld/fstp,          Flush(12)
+//     LTShaderParam_SetFloat      0x610859  fld/fstp,            Flush(4)
+//     LTShaderParam_SetDword      0x60C5B9  integer mov,         Flush(4)
+//
+// 64, 48, 16 and 12 each belong to exactly one registry type, so those four names are exact.
+// THE TWO 4-BYTE ONES ARE NOT SEPARATED BY SIZE -- texture (tag 1) and float (tag 5) are both
+// 4 bytes -- but by MOVE KIND: fld/fstp is a float assignment, a plain mov is not. So the FPU
+// one is SetFloat on that evidence, and the integer one is left generic as SetDword rather
+// than SetTexture, even though textures are what its caller sub_61AA17 feeds it.
+//
+// 161 FUNCTIONS TOUCH PARAMETER RECORDS. The heaviest: sub_62C61D and sub_60F877 (7 each),
+// SceneRenderer_ResetObjectShaderParams 0x60C765 (6, including k_mObjectToClip), sub_60C4FA
+// (the DrawPrim video planes), sub_61312E (the frame maps plus screen res).
+//
+// ---- THE SCENE CAMERA ----
+//
+// g_SceneRenderer 0x72E788 is an OBJECT, not a flag, and its first dword is the state that
+// earlier passes saw compared against 1..4. Proven by the receiver: sub_60FBD2 does
+// `mov edi, offset g_SceneRenderer` then `mov ecx, edi` into
+// SceneRenderer_SetupCameraShaderParams (0x610E21), which gates on *this == 3 and sets it to 4.
+//
+// NOT NAMED BeginScene despite that 3 -> 4 hop: no D3D BeginScene call is evidenced anywhere in
+// this exe's g_Renderer readers, so the name would assert something unmeasured. It is named for
+// what it does -- publish the camera parameters.
+//
+// A SceneCamera RECORD AT g_SceneRenderer+8, filled by sub_610DA2 from that function's
+// arguments:
+//
+//     +0x00  mode           2 = the screen/2D pass
+//     +20    view transform LTTransform_Copy
+//     +48/52 half view-plane extents  -> k_vHalfViewPlane
+//     +56/60 a second pair, role not established
+//     +64/68 z range source           -> k_vScene_ZRange
+//
+// k_vHalfViewPlane IS (x, y, 1/x, 1/y), CONFIRMED IN LIVE MEMORY rather than read off the code:
+// it held (2.2651, 0.6371, 0.4415, 1.5697), and 1/2.2651 = 0.4415, 1/0.6371 = 1.5696. The
+// engine stores the reciprocals so a shader can avoid a divide.
+//
+// THE UNITS FOLLOW THE PASS MODE, which is how the meaning got settled instead of guessed.
+// Sampled live in mode 2, the record's own extents read (2560.0, 720.0) -- exactly half of the
+// 5120x1440 screen, so PIXELS. The parameter left by a 3D pass read (2.2651, 0.6371), whose
+// ratio 3.5556 equals the screen aspect 5120/1440. Same field, two passes, both consistent with
+// "half extent of the view plane".
+//
+// WHICH ALSO EXPLAINED AN APPARENT CONTRADICTION rather than leaving it hanging: the z range
+// source at +64/68 read (0.0, 1.0) while k_vScene_ZRange held (4.3, 100000.0). Not a bad
+// offset -- SetupCameraShaderParams SKIPS both the half-plane and z-range writes when mode == 2,
+// and the last pass to touch the record was mode 2. The parameter was simply older than the
+// record.
+//
+// NO FOV ACCESSOR IS EXPOSED, on purpose. tan(fov/2) is the natural reading of a unit-depth
+// half-extent, but the SDK cannot tell a caller which pass left the value it read, and
+// 2*atan(2560) is about pi radians -- a plausible number that means nothing. The precondition is
+// not checkable there, so the arithmetic stays with whoever can establish it.
+//
+// Exposed as sdk::ShaderParams::half_view_plane() / z_range() / world_space_camera_dir(), with
+// HalfViewPlane::reciprocals_consistent() and aspect() as the invariant checks a consumer can
+// call on its own read. The suite asserts both: the reciprocal identity, and agreement between
+// k_vHalfViewPlane's aspect and k_vScene_ScreenRes -- two parameters nothing forces to agree.
+//
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
 // WHICH DEVICE METHODS THE ENGINE IS SEEN TO CALL -- CANDIDATES, NOT A CENSUS. Extracted by tracking

@@ -314,4 +314,48 @@ std::optional<std::array<float, 2>> ShaderParams::screen_resolution() {
     return float2("k_vScene_ScreenRes");
 }
 
+bool ShaderParams::HalfViewPlane::reciprocals_consistent(float tolerance) const {
+    if (half_width == 0.0f || half_height == 0.0f) {
+        return false;
+    }
+    const float want_x = 1.0f / half_width;
+    const float want_y = 1.0f / half_height;
+    const float dx = want_x - inv_half_width;
+    const float dy = want_y - inv_half_height;
+    // Relative to the expected value: the reciprocals differ in scale by orders of magnitude
+    // between passes (0.44 in a 3D pass, 0.00039 in the screen pass), so a fixed absolute
+    // epsilon would either pass everything or fail the small one.
+    const float ex = want_x == 0.0f ? dx : dx / want_x;
+    const float ey = want_y == 0.0f ? dy : dy / want_y;
+    return (ex > -tolerance && ex < tolerance) && (ey > -tolerance && ey < tolerance);
+}
+
+float ShaderParams::HalfViewPlane::aspect() const {
+    if (half_height == 0.0f) {
+        return 0.0f;
+    }
+    return half_width / half_height;
+}
+
+std::optional<ShaderParams::HalfViewPlane> ShaderParams::half_view_plane() {
+    const auto raw = float4("k_vHalfViewPlane");
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    HalfViewPlane out{};
+    out.half_width = (*raw)[0];
+    out.half_height = (*raw)[1];
+    out.inv_half_width = (*raw)[2];
+    out.inv_half_height = (*raw)[3];
+    return out;
+}
+
+std::optional<std::array<float, 2>> ShaderParams::z_range() {
+    return float2("k_vScene_ZRange");
+}
+
+std::optional<std::array<float, 3>> ShaderParams::world_space_camera_dir() {
+    return float3("k_vWorldSpaceCameraDir");
+}
+
 }  // namespace sdk

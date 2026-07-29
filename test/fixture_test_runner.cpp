@@ -3682,6 +3682,51 @@ int main(int argc, char** argv) {
               "the bound count parses as a count within the record total");
         check(json_int(body, "pending_count", pending) && pending >= 0 && pending <= count,
               "the pending-upload count parses as a count within the record total");
+
+        // ---- THE CAMERA PARAMETERS, AND TWO INVARIANTS WORTH THE NAME ----------------
+        //
+        // Both checks below hold at ANY resolution and in either render pass, which is what
+        // separates them from asserting 5120x1440: they are properties of the data the
+        // engine publishes, not of this machine.
+        check(json_has(body, "\"half_view_plane\":true"),
+              "k_vHalfViewPlane reads through the unpacking accessor");
+
+        // INVARIANT 1: the tuple stores each half-extent's reciprocal alongside it, so a
+        // shader can avoid a divide. If the four floats were misread -- wrong offset, wrong
+        // order, torn read -- the reciprocals would not match. The check is the class's own
+        // HalfViewPlane::reciprocals_consistent(), so a consumer validating its own read
+        // calls the same code this asserts on.
+        check(json_has(body, "\"hvp_reciprocals_consistent\":true"),
+              "k_vHalfViewPlane's stored reciprocals match its extents (tuple invariant)");
+
+        // INVARIANT 2, and the stronger one: TWO INDEPENDENT PARAMETERS AGREE. The half
+        // view plane's extent ratio is the viewport aspect, and k_vScene_ScreenRes reports
+        // that viewport separately. Nothing in the engine forces these to be consistent
+        // with each other, so agreement means both were read correctly. Gated on the view
+        // plane being populated, because before the first 3D pass it legitimately is not.
+        double hvp_aspect = 0.0, hvp_h = 0.0;
+        if (json_double(body, "hvp_half_h", hvp_h) && hvp_h != 0.0 &&
+            json_double(body, "hvp_aspect", hvp_aspect) && res_h > 0.0) {
+            const double screen_aspect = res_w / res_h;
+            const double rel = (hvp_aspect - screen_aspect) / screen_aspect;
+            check(rel > -0.01 && rel < 0.01,
+                  "k_vHalfViewPlane's aspect agrees with k_vScene_ScreenRes (two parameters, "
+                  "one viewport)");
+            double hvp_w = 0.0;
+            (void)json_double(body, "hvp_half_w", hvp_w);
+            printf("[fixture] view plane: half %.4f x %.4f, aspect %.4f vs screen %.4f\n",
+                   hvp_w, hvp_h, hvp_aspect, screen_aspect);
+        }
+
+        // The Z range is published by 3D passes only and deliberately NOT refreshed by the
+        // screen pass, so it can be stale. What must hold regardless is the ordering.
+        double z_near = -1.0, z_far = -1.0;
+        check(json_has(body, "\"z_range\":true"), "k_vScene_ZRange reads");
+        check(json_double(body, "z_near", z_near) && json_double(body, "z_far", z_far) &&
+                  z_far >= z_near && z_near >= 0.0,
+              "the reported depth range is ordered and non-negative");
+        check(json_has(body, "\"camera_dir\":true"),
+              "k_vWorldSpaceCameraDir reads through the typed float3 accessor");
         printf("[fixture] shader params: %lld records, %lld bound, %lld pending upload, "
                "screen %.0fx%.0f\n",
                static_cast<long long>(count), static_cast<long long>(bound),
