@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **RETRACTING A CLAIM MEANS SWEEPING EVERY PLACE IT LANDED.** Deleting the speculative helper was
+  only the first step. The header still had, in the SAME comment block: "+0x24 is parent-relative"
+  applied to the whole pair, the 268/2196 composition presented as evidence about coordinate spaces,
+  and a line calling the quaternion convention unvalidated when it had since been read directly. Three
+  disproven or superseded statements sitting next to the corrected ones, which is worse than either
+  alone -- a reader cannot tell which paragraph is current.
+  
+  So the block was REWRITTEN rather than patched, and the confidence split was carried through to
+  every surface: the schema field renamed `anim_fallback_rotation` -> `anim_getter_rotation` (named
+  after its only evidence, not a role), the accessor narrowed to `anim_fallback_position()`, and even
+  the SEH read reduced to three floats so the accessor's success no longer depends on data it
+  deliberately does not expose.
+  
+  When a finding narrows, the retraction has to reach the schema, the accessor, the type, the guarded
+  read and the prose. A correction that stops at the function leaves the old claim alive everywhere
+  else.
+
 - **WHEN THE PRODUCER CONTRADICTS A SHIPPED HELPER, DELETE THE HELPER.** `composed_fallback_pose()`
   composed the +0x24 pair down the hierarchy and was documented as the transform the engine would
   reach along an all-fallback path. Then reading LTModelObject_EvaluateSkeleton showed the engine

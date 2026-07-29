@@ -224,7 +224,7 @@ bool seh_read_node(const void* records, uint32_t count, size_t index, NodeRaw* o
             out->pos_a = nd->bind_position;
             out->rot_a = nd->bind_rotation;
             out->pos_b = nd->anim_fallback_position;
-            out->rot_b = nd->anim_fallback_rotation;
+            out->rot_b = nd->anim_getter_rotation;
             ok = true;
         }
     }
@@ -1288,17 +1288,15 @@ int64_t seh_read_bind_pose(const void* records, size_t index, float* out) {
 
 namespace {
 
-int64_t seh_read_fallback_pose(const void* records, size_t index, float* out) {
+// POSITION ONLY, deliberately: the accessor does not expose the rotation half, so its success
+// should not depend on reading it either.
+int64_t seh_read_fallback_position(const void* records, size_t index, float* out) {
     int64_t ok = -1;
     KANANLIB_SEH_TRY {
         const auto* n = static_cast<const regenny::LTModelNode*>(records) + index;
         out[0] = n->anim_fallback_position.x;
         out[1] = n->anim_fallback_position.y;
         out[2] = n->anim_fallback_position.z;
-        out[3] = n->anim_fallback_rotation.x;
-        out[4] = n->anim_fallback_rotation.y;
-        out[5] = n->anim_fallback_rotation.z;
-        out[6] = n->anim_fallback_rotation.w;
         ok = 1;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
@@ -1309,23 +1307,22 @@ int64_t seh_read_fallback_pose(const void* records, size_t index, float* out) {
 
 }  // namespace
 
-std::optional<ModelSkeleton::NodePose>
-ModelSkeleton::anim_fallback_pose(size_t node_index) const {
+std::optional<regenny::LTVector>
+ModelSkeleton::anim_fallback_position(size_t node_index) const {
     if (m_records == nullptr || node_index >= m_count) {
         return std::nullopt;
     }
-    float v[7]{};
-    if (seh_read_fallback_pose(m_records, node_index, v) < 0) {
+    float v[3]{};
+    if (seh_read_fallback_position(m_records, node_index, v) < 0) {
         return std::nullopt;
     }
-    NodePose out{};
-    out.position.x = v[0];
-    out.position.y = v[1];
-    out.position.z = v[2];
-    out.rotation.x = v[3];
-    out.rotation.y = v[4];
-    out.rotation.z = v[5];
-    out.rotation.w = v[6];
+    // POSITION ONLY. The rotation half of this record pair is read by exactly one secondary getter
+    // and never by the skeleton evaluator, so its role is undescribed -- and an accessor for a value
+    // nobody can characterise would only invite a consumer to assume one.
+    regenny::LTVector out{};
+    out.x = v[0];
+    out.y = v[1];
+    out.z = v[2];
     return out;
 }
 

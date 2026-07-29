@@ -15,7 +15,7 @@ public:
     regenny::LTVector bind_position; // 0x8
     regenny::LTRotation bind_rotation; // 0x14
     regenny::LTVector anim_fallback_position; // 0x24
-    regenny::LTRotation anim_fallback_rotation; // 0x30
+    regenny::LTRotation anim_getter_rotation; // 0x30
 }; // Size: 0x40
 #pragma pack(pop)
 }

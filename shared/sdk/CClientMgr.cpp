@@ -1077,10 +1077,10 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                                              nd.bind_rotation.y * nd.bind_rotation.y +
                                              nd.bind_rotation.z * nd.bind_rotation.z +
                                              nd.bind_rotation.w * nd.bind_rotation.w;
-                            const float mb = nd.anim_fallback_rotation.x * nd.anim_fallback_rotation.x +
-                                             nd.anim_fallback_rotation.y * nd.anim_fallback_rotation.y +
-                                             nd.anim_fallback_rotation.z * nd.anim_fallback_rotation.z +
-                                             nd.anim_fallback_rotation.w * nd.anim_fallback_rotation.w;
+                            const float mb = nd.anim_getter_rotation.x * nd.anim_getter_rotation.x +
+                                             nd.anim_getter_rotation.y * nd.anim_getter_rotation.y +
+                                             nd.anim_getter_rotation.z * nd.anim_getter_rotation.z +
+                                             nd.anim_getter_rotation.w * nd.anim_getter_rotation.w;
                             if (ma > 0.99f && ma < 1.01f) {
                                 ++*rot_a_unit;
                             }
