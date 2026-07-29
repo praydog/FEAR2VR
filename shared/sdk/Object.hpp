@@ -104,6 +104,27 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj);
 // live, 40 objects pass the gate and hold no spatial entries).
 std::optional<bool> is_renderable(const regenny::LTObject* obj);
 
+// THE ENGINE'S OTHER "RENDERABLE" PREDICATE, and the two are NOT the same test:
+//
+//   is_renderable()    (flags & 1) && !(flags2 & 0x700)          -- will it be DRAWN
+//   is_tree_eligible() !(flags & 0x200) && (flags & 0x10C30)     -- will it be INDEXED
+//
+// The second is LTObject_IsRenderable (0x4200A0), and despite the engine's name for it, what
+// it actually decides is SPATIAL INDEX MEMBERSHIP: it is the gate on every call to
+// LTWorldTree_AddObject -- from SetPos, SetPosRot, SetDims_Notify and SetFlags. Different
+// mask, different flag word clause, different purpose. Reproducing one and assuming it
+// answers for the other would be wrong in both directions.
+//
+// WHY A CONSUMER WANTS IT: paired with WorldBSP::is_linked() it explains spatial staleness.
+// is_tree_eligible() is whether the object SHOULD be in the tree; is_linked() is whether it
+// IS. LTObject_SetPos writes an object's AABB unconditionally but relinks only when this
+// predicate holds, so an object that moves while ineligible keeps its old node -- which is
+// why 370 of 2142 indexed entries are stale while zero AABBs are.
+//
+// So: before trusting WorldBSP::objects_near() for something that moves, ask whether it is
+// eligible. If it is not, the index will not have followed it.
+std::optional<bool> is_tree_eligible(const regenny::LTObject* obj);
+
 // Whether this is a SERVER object -- the engine's own concept, and its own test.
 //
 // This is not a name I chose. CLTClient::IsServerObject (dump 0x40991C) is, in its

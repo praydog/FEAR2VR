@@ -2552,8 +2552,23 @@ int main(int argc, char** argv) {
                     // The suppressor bit, also mechanism-backed and exercised.
                     check(sup > 0, "flag-0x200 suppressed objects exist (suppressor exercised)");
                     check(suplk == 0, "no flag-0x200 suppressed object is world-tree linked");
-                    // lnr is intentionally NOT asserted; it is non-zero by design.
-                    check(lnr >= 0, "linked-not-renderable count reported (not an invariant)");
+                    // lnr is NOT an invariant, and it is now explained rather than shrugged
+                    // at. The gate is checked on the way IN -- LTObject_SetPos and friends
+                    // relink only `if (LTObject_IsRenderable(this))` -- and nothing removes an
+                    // object when it later stops qualifying. So the tree accumulates objects
+                    // that are no longer eligible, and THOSE are the ones whose entries go
+                    // stale when they move: live 384 linked-not-eligible against 370 stale
+                    // entries reported by the currency check above.
+                    //
+                    // Not asserted as `stale <= lnr` on purpose: that would only hold if every
+                    // move of an ELIGIBLE object went through SetPos, which is exactly the
+                    // kind of thing this project has been wrong about before. Printed so the
+                    // two numbers can be compared across runs.
+                    check(lnr >= 0, "linked-not-eligible count reported (not an invariant)");
+                    printf("[fixture] tree eligibility: %lld eligible, %lld linked, %lld linked "
+                           "but no longer eligible\n",
+                           static_cast<long long>(rend), static_cast<long long>(lk),
+                           static_cast<long long>(lnr));
                 }
             }
         }

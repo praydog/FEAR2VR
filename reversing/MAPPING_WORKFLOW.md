@@ -963,6 +963,38 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Two engine functions can share a NAME and test different things.** The SDK exposed one
+  "renderable" predicate -- `(flags & 1) && !(flags2 & 0x700)`, the draw gate from
+  `LTObjectOwner_UpdateSpatialRecord` -- and a check quietly contained a second:
+  `!(flags & 0x200) && (flags & 0x10C30)`, which IS `LTObject_IsRenderable` (0x4200A0).
+  Different mask, different flag word, different purpose. Reproducing one and assuming it
+  answers for the other is wrong in both directions.
+
+  And the engine's name for the second one is misleading: every one of its callers is a
+  `LTWorldTree_AddObject` gate, so what it actually decides is SPATIAL INDEX MEMBERSHIP.
+  Exposed as `is_tree_eligible()` -- named for what it does, with the engine's name in the
+  comment, per the rule about not letting a borrowed name outlive the evidence.
+
+  That closed the staleness story quantitatively. `eligible => linked` holds with ZERO
+  exceptions, so the engine always indexes what qualifies -- but 384 linked objects are no
+  longer eligible, because the gate is only checked on the way IN and nothing removes an
+  object when it stops qualifying. Those are the ones that go stale when they move: 384
+  linked-not-eligible against 370 stale entries.
+
+  Deliberately NOT asserted as `stale <= linked_not_eligible`: that holds only if every move
+  of an eligible object goes through SetPos, which is exactly the sort of thing this log
+  already records being wrong about twice. Printed instead.
+
+- **A 78-specifier printf is a defect, not a style preference -- fix it at the source.** Three
+  misalignments in one sitting, two of which printed plausible wrong numbers because the
+  shifts partially cancelled. Replaced with a `JsonFields` builder that names each field AT
+  its value: no format string, no argument list to drift, no fixed buffer, and the JSON
+  escaping (which had already broken the payload twice on Windows paths) centralised.
+
+  The conversion itself was done by SCRIPT rather than by hand: parse the format's key/
+  specifier pairs, parse the argument list, and fail loudly unless the counts match. That both
+  generated 78 correct calls and PROVED the call was aligned at the moment of conversion
+  (78/78), which hand-editing could not have established.
 - **Two derived values written by ONE function can still disagree -- read the gates, not just
   the writes.** `LTObject_SetPos` updates both of an object's cached geometry facts, so
   "written by the same function" looked like it should mean "consistent with each other".

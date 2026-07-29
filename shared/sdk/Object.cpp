@@ -936,3 +936,21 @@ std::optional<BoundingRadius> bounding_radius(const regenny::LTObject* obj) {
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+std::optional<bool> is_tree_eligible(const regenny::LTObject* obj) {
+    // The masks are the ENGINE'S, transcribed from LTObject_IsRenderable (0x4200A0). They are
+    // the one place a raw constant is right rather than a smell: they ARE the predicate under
+    // reproduction, so naming them after a guess at their meaning would obscure what is
+    // being reproduced.
+    constexpr uint32_t kSuppress = 0x200u;
+    constexpr uint32_t kAccept = 0x10C30u;
+    const auto info = object_info(obj);
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    return (info->flags & kSuppress) == 0 && (info->flags & kAccept) != 0;
+}
+
+}  // namespace sdk

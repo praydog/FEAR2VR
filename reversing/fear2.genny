@@ -710,7 +710,7 @@ class LTWorldClientBSP 0x244 {
     LTVector bounds_min        @0x04   // CONFIRMED: equals the +0x22C copy live
     LTVector bounds_max        @0x10   // CONFIRMED
     uint32_t world_tree_node_count @0x1C   // CONFIRMED == 649 live, exactly the nodes reached by walking world_tree_root
-    LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED: the same root that climbing LTObject.world_tree_link's parent chain reaches
+    LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED: the same root that climbing LTObject.world_tree_link's parent chain reaches, and the root VisTree/WorldBSP descend from live. // NOTE A CLASS THAT IS NOT THIS ONE: LTWorldTree_AddObject is `(world, object)` and reads its starting node from `world + 0x1C` -- which CANNOT be this class, since +0x1C here is the node COUNT (649, confirmed against the walk) and the root is at +0x20. That `world` is fetched per-call from the object's owner (LTObject +0x34) through the owner's vtable slot 3, so it is some other world/tree holder whose layout is unmapped. Recorded because the near-miss is instructive: the offsets differ by 4 and assuming one class would have put the root one field early. Hex-Rays also renders AddObject with an invented argument and the start node as the object's own position.z -- read the disassembly there.
     LTVisTree vis_tree         @0x24   // CONFIRMED embedded sub-object: IWorldClientBSP vtable slot 14 is `return this + 36`
     uint8_t unk_48             @0x48   // vtable slot 7 returns this byte (IWorldClientBSP_GetFlag48); live 1
     uint8_t unk_49             @0x49   // live 1

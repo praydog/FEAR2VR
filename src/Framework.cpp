@@ -228,6 +228,79 @@ void json_escape_append(std::string& out, const std::string& s) {
     out += '"';
 }
 
+// A JSON object built FIELD BY FIELD, so a key and its value cannot drift apart.
+//
+// WHY THIS EXISTS, from three failures in one sitting: the object report below was a single
+// snprintf with 78 format specifiers. Twice an edit added arguments without specifiers or
+// specifiers without arguments, and both times the shifts PARTIALLY CANCELLED -- so most
+// fields still printed plausible numbers and one read 669, a real count from a different
+// counter in the same struct. The third time the new fields were simply absent, because
+// extra arguments are benign while missing specifiers are silent.
+//
+// A format string has no type checking across it and no way to notice a shift. Naming each
+// field AT its value removes the whole class of bug, and drops the fixed buffer and its
+// truncation guard with it -- the report can no longer outgrow itself either.
+class JsonFields {
+public:
+    explicit JsonFields(std::string& out) : m_out{out} { m_out += '{'; }
+    ~JsonFields() { m_out += '}'; }
+
+    JsonFields(const JsonFields&) = delete;
+    JsonFields& operator=(const JsonFields&) = delete;
+
+    JsonFields& u(const char* k, size_t v) {
+        key(k);
+        m_out += std::to_string(v);
+        return *this;
+    }
+    JsonFields& i(const char* k, long long v) {
+        key(k);
+        m_out += std::to_string(v);
+        return *this;
+    }
+    // Fixed precision so a float field reads the same as it did under %.4f.
+    JsonFields& f(const char* k, double v, int precision = 2) {
+        key(k);
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%.*f", precision, v);
+        m_out += tmp;
+        return *this;
+    }
+    JsonFields& b(const char* k, bool v) {
+        key(k);
+        m_out += v ? "true" : "false";
+        return *this;
+    }
+    // Escaped, so a Windows path in a field can no longer break the payload -- which it did
+    // twice before this existed.
+    JsonFields& s(const char* k, const std::string& v) {
+        key(k);
+        json_escape_append(m_out, v);
+        return *this;
+    }
+    JsonFields& hex(const char* k, uintptr_t v) {
+        key(k);
+        char tmp[32];
+        snprintf(tmp, sizeof(tmp), "\"0x%08" PRIXPTR "\"", v);
+        m_out += tmp;
+        return *this;
+    }
+
+private:
+    void key(const char* k) {
+        if (!m_first) {
+            m_out += ',';
+        }
+        m_first = false;
+        m_out += '"';
+        m_out += k;
+        m_out += "\":";
+    }
+
+    std::string& m_out;
+    bool m_first{true};
+};
+
 std::string build_health_fragment() {
     Framework* fw = Framework::get();
     char buf[256];
@@ -1794,66 +1867,92 @@ std::string build_objects_json() {
                 }
             }
         }
-        // Grown as the object API gained accessors. The truncation guard below is what makes
-        // that safe: it reported `{"error":"truncated"}` the moment this overflowed rather
-        // than emitting half an object, which is how the overflow was noticed at all.
-        char ab[3584];
-        const int abw = snprintf(ab, sizeof(ab),
-                 ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
-                 "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
-                 "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu,"
-                 "\"with_attachments\":%zu,\"attachments\":%zu,\"att_child_ok\":%zu,"
-                 "\"att_socketed\":%zu,\"att_resolved\":%zu,\"att_is_socket\":%zu,"
-                 "\"att_measured\":%zu,\"att_placed\":%zu,\"att_worst_err\":%.4f,"
-                 "\"socket_total\":%zu,\"socket_ok\":%zu,\"socket_named_node\":%zu,"
-                 "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu,"
-                 "\"node_xform_ok\":%zu,\"node_xform_stale\":%zu,\"node_xform_clean\":%zu,"
-                 "\"node_xform_clean_sane\":%zu,\"camera_node_clean\":%zu,"
-                 "\"dims_ok\":%zu,\"dims_nonneg\":%zu,\"dims_zero\":%zu,"
-                 "\"standing\":%zu,\"standing_sane\":%zu,\"standing_node\":%zu,"
-                 "\"color_ok\":%zu,\"color_packed_ok\":%zu,\"color_default\":%zu,"
-                 "\"color_translucent\":%zu,\"brush\":%zu,\"brush_roundtrip\":%zu,"
-                 "\"brush_rt_exact\":%zu,\"brush_origin_ok\":%zu,"
-                 "\"brush_worst_rt\":%.5f,\"brush_worst_origin\":%.5f,"
-                 "\"brush_quality\":%zu,\"brush_trusted\":%zu,\"brush_matrix\":%zu,"
-                 "\"brush_origin_agrees\":%zu,\"brush_worst_rot\":%.5f,"
-                 "\"cull_ok\":%zu,\"cull_sphere\":%zu,\"cull_box\":%zu,\"cull_none\":%zu,"
-                 "\"cull_sane\":%zu,\"cull_compared\":%zu,\"cull_current\":%zu,"
-                 "\"tree_asked\":%zu,\"tree_linked\":%zu,\"tree_nonempty\":%zu,"
-                 "\"tree_self_found\":%zu,\"tree_nonwm\":%zu,"
-                 "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu,"
-                 "\"miss_slot_found\":%zu,\"miss_max_depth\":%zu,\"miss_at_leaf\":%zu,"
-                 "\"miss_stale\":%zu,\"cur_asked\":%zu,\"cur_ok\":%zu,"
-                 "\"aabb_ok\":%zu,\"aabb_ordered\":%zu,\"aabb_asked\":%zu,"
-                 "\"aabb_current\":%zu,\"rad_ok\":%zu,\"rad_sized\":%zu,"
-                 "\"rad_unsized\":%zu,\"rad_sane\":%zu}",
-                 api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
-                 api_with_handle, api_with_slot, api_identities_agree, api_addressable,
-                 api_with_attachments, api_attachments, api_att_child_ok,
-                 api_att_socketed, api_att_resolved, api_att_is_socket,
-                 api_att_measured, api_att_placed, api_att_worst_err,
-                 api_socket_total, api_socket_ok,
-                 api_socket_named_node, api_socket_roundtrip, api_socket_camera,
-                 api_socket_eyes, api_node_xform_ok, api_node_xform_stale,
-                 api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean,
-                 api_dims_ok, api_dims_nonneg, api_dims_zero, api_standing,
-                 api_standing_sane, api_standing_node, api_color_ok, api_color_packed_ok,
-                 api_color_default, api_color_translucent, api_brush, api_brush_roundtrip,
-                 api_brush_rt_exact, api_brush_origin_ok, api_brush_worst_rt,
-                 api_brush_worst_origin, api_brush_quality, api_brush_trusted,
-                 api_brush_matrix, api_brush_origin_agrees, api_brush_worst_rot,
-                 api_cull_ok, api_cull_sphere, api_cull_box, api_cull_none,
-                 api_cull_sane, api_cull_compared, api_cull_current,
-                 api_tree_asked, api_tree_linked, api_tree_nonempty, api_tree_self_found,
-                 api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed,
-                 api_tree_miss_slot_found, api_tree_miss_max_depth, api_tree_miss_at_leaf,
-                 api_tree_miss_stale, api_tree_cur_asked, api_tree_cur_ok,
-                 api_aabb_ok, api_aabb_ordered, api_aabb_asked, api_aabb_current,
-                 api_rad_ok, api_rad_sized, api_rad_unsized, api_rad_sane);
-        if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
-            out += ",\"object_api\":{\"error\":\"truncated\"}";
-        } else {
-            out += ab;
+        // BUILT FIELD BY FIELD rather than with one 78-specifier snprintf -- see
+        // JsonFields for the three misalignments that motivated it. No format string, no
+        // fixed buffer, and therefore no truncation guard to grow.
+        out += ",\"object_api\":";
+        {
+            JsonFields j{out};
+            j
+        .u("objects", api_objects)
+        .u("info_ok", api_info_ok)
+        .u("renderable", api_renderable)
+        .u("cameras", api_cameras)
+        .u("cameras_with_bit11", api_camera_bit)
+        .u("with_handle", api_with_handle)
+        .u("with_slot", api_with_slot)
+        .u("identities_agree", api_identities_agree)
+        .u("addressable", api_addressable)
+        .u("with_attachments", api_with_attachments)
+        .u("attachments", api_attachments)
+        .u("att_child_ok", api_att_child_ok)
+        .u("att_socketed", api_att_socketed)
+        .u("att_resolved", api_att_resolved)
+        .u("att_is_socket", api_att_is_socket)
+        .u("att_measured", api_att_measured)
+        .u("att_placed", api_att_placed)
+        .f("att_worst_err", api_att_worst_err, 4)
+        .u("socket_total", api_socket_total)
+        .u("socket_ok", api_socket_ok)
+        .u("socket_named_node", api_socket_named_node)
+        .u("socket_roundtrip", api_socket_roundtrip)
+        .u("socket_camera", api_socket_camera)
+        .u("socket_eyes", api_socket_eyes)
+        .u("node_xform_ok", api_node_xform_ok)
+        .u("node_xform_stale", api_node_xform_stale)
+        .u("node_xform_clean", api_node_xform_clean)
+        .u("node_xform_clean_sane", api_node_xform_clean_sane)
+        .u("camera_node_clean", api_camera_node_clean)
+        .u("dims_ok", api_dims_ok)
+        .u("dims_nonneg", api_dims_nonneg)
+        .u("dims_zero", api_dims_zero)
+        .u("standing", api_standing)
+        .u("standing_sane", api_standing_sane)
+        .u("standing_node", api_standing_node)
+        .u("color_ok", api_color_ok)
+        .u("color_packed_ok", api_color_packed_ok)
+        .u("color_default", api_color_default)
+        .u("color_translucent", api_color_translucent)
+        .u("brush", api_brush)
+        .u("brush_roundtrip", api_brush_roundtrip)
+        .u("brush_rt_exact", api_brush_rt_exact)
+        .u("brush_origin_ok", api_brush_origin_ok)
+        .f("brush_worst_rt", api_brush_worst_rt, 5)
+        .f("brush_worst_origin", api_brush_worst_origin, 5)
+        .u("brush_quality", api_brush_quality)
+        .u("brush_trusted", api_brush_trusted)
+        .u("brush_matrix", api_brush_matrix)
+        .u("brush_origin_agrees", api_brush_origin_agrees)
+        .f("brush_worst_rot", api_brush_worst_rot, 5)
+        .u("cull_ok", api_cull_ok)
+        .u("cull_sphere", api_cull_sphere)
+        .u("cull_box", api_cull_box)
+        .u("cull_none", api_cull_none)
+        .u("cull_sane", api_cull_sane)
+        .u("cull_compared", api_cull_compared)
+        .u("cull_current", api_cull_current)
+        .u("tree_asked", api_tree_asked)
+        .u("tree_linked", api_tree_linked)
+        .u("tree_nonempty", api_tree_nonempty)
+        .u("tree_self_found", api_tree_self_found)
+        .u("tree_nonwm", api_tree_nonwm)
+        .u("tree_nonwm_found", api_tree_nonwm_found)
+        .u("tree_wm_missed", api_tree_wm_missed)
+        .u("miss_slot_found", api_tree_miss_slot_found)
+        .u("miss_max_depth", api_tree_miss_max_depth)
+        .u("miss_at_leaf", api_tree_miss_at_leaf)
+        .u("miss_stale", api_tree_miss_stale)
+        .u("cur_asked", api_tree_cur_asked)
+        .u("cur_ok", api_tree_cur_ok)
+        .u("aabb_ok", api_aabb_ok)
+        .u("aabb_ordered", api_aabb_ordered)
+        .u("aabb_asked", api_aabb_asked)
+        .u("aabb_current", api_aabb_current)
+        .u("rad_ok", api_rad_ok)
+        .u("rad_sized", api_rad_sized)
+        .u("rad_unsized", api_rad_unsized)
+        .u("rad_sane", api_rad_sane)
+                ;
         }
     }
 
