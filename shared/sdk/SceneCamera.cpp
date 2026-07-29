@@ -144,6 +144,23 @@ bool SceneCameraSnapshot::view_projection_is_coherent(float tolerance) const {
     return true;
 }
 
+bool SceneCameraSnapshot::view_matches_pose(float tolerance) const {
+    const auto want = SceneCamera::view_matrix_from_pose(pose);
+    if (!want.has_value()) {
+        return false;
+    }
+    for (size_t i = 0; i < 12; ++i) {
+        if (!std::isfinite(view.m[i]) || !std::isfinite(want->m[i])) {
+            return false;
+        }
+        const float allow = std::fabs(want->m[i]) * tolerance + 1e-4f;
+        if (std::fabs(view.m[i] - want->m[i]) > allow) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {
     const float x = pose.rotation.x, y = pose.rotation.y, z = pose.rotation.z, w = pose.rotation.w;
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {
@@ -326,6 +343,121 @@ std::optional<std::array<float, 16>> SceneCamera::make_affine_projection(float h
         0.0f, 0.0f, 1.0f, -near_z,
         0.0f, 0.0f, 0.0f, k,
     };
+}
+
+std::optional<regenny::LTMatrix3x4> SceneCamera::transform_to_matrix(
+    const regenny::LTNodeTransform& transform) {
+    const auto rotation = rotation_matrix(transform.rotation);
+    if (!rotation.has_value()) {
+        return std::nullopt;
+    }
+    if (!std::isfinite(transform.position.x) || !std::isfinite(transform.position.y) ||
+        !std::isfinite(transform.position.z)) {
+        return std::nullopt;
+    }
+    regenny::LTMatrix3x4 out{};
+    for (size_t i = 0; i < 12; ++i) {
+        out.m[i] = rotation->m[i];
+    }
+    // Column 3, exactly where LTTransform_ToMatrix3x4 puts it.
+    out.m[3] = transform.position.x;
+    out.m[7] = transform.position.y;
+    out.m[11] = transform.position.z;
+    return out;
+}
+
+std::optional<regenny::LTNodeTransform> SceneCamera::invert_transform(
+    const regenny::LTNodeTransform& transform) {
+    regenny::LTRotation conjugate{};
+    conjugate.x = -transform.rotation.x;
+    conjugate.y = -transform.rotation.y;
+    conjugate.z = -transform.rotation.z;
+    conjugate.w = transform.rotation.w;
+
+    // Rotate the position by the conjugate and negate it. Done through the rotation MATRIX rather
+    // than a second quaternion-product transcription: R(conj q) is R(q) transposed for any norm, so
+    // this is the rigid inverse without duplicating LTRotation_RotateVector's expansion -- and the
+    // round-trip check in the suite is what confirms it composes to the identity.
+    const auto r = rotation_matrix(conjugate);
+    if (!r.has_value()) {
+        return std::nullopt;
+    }
+    const float px = transform.position.x, py = transform.position.y, pz = transform.position.z;
+    if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {
+        return std::nullopt;
+    }
+    regenny::LTNodeTransform out{};
+    out.rotation = conjugate;
+    out.position.x = -(r->m[0] * px + r->m[1] * py + r->m[2] * pz);
+    out.position.y = -(r->m[4] * px + r->m[5] * py + r->m[6] * pz);
+    out.position.z = -(r->m[8] * px + r->m[9] * py + r->m[10] * pz);
+    return out;
+}
+
+std::optional<regenny::LTMatrix3x4> SceneCamera::view_matrix_from_pose(
+    const regenny::LTNodeTransform& pose) {
+    const auto inverted = invert_transform(pose);
+    if (!inverted.has_value()) {
+        return std::nullopt;
+    }
+    return transform_to_matrix(*inverted);
+}
+
+std::array<float, 16> SceneCamera::promote_affine(const regenny::LTMatrix3x4& affine) {
+    std::array<float, 16> out{};
+    for (size_t i = 0; i < 12; ++i) {
+        out[i] = affine.m[i];
+    }
+    out[12] = 0.0f;
+    out[13] = 0.0f;
+    out[14] = 0.0f;
+    out[15] = 1.0f;
+    return out;
+}
+
+bool SceneCamera::view_inverts_pose(const regenny::LTNodeTransform& pose, float tolerance) {
+    const auto view = view_matrix_from_pose(pose);
+    const auto forward = transform_to_matrix(pose);
+    if (!view.has_value() || !forward.has_value()) {
+        return false;
+    }
+    std::array<float, 12> rhs{};
+    for (size_t i = 0; i < 12; ++i) {
+        rhs[i] = forward->m[i];
+    }
+    const auto product = multiply_by_affine(promote_affine(*view), rhs);
+
+    // THE TRANSLATION ALLOWANCE SCALES WITH THE POSE'S DISTANCE FROM THE ORIGIN. Column 3 of the
+    // product is a cancellation -- R^T applied to -R^T p, back to zero -- so its residual grows with
+    // |p| in float, while the rotation block stays near absolute identity. One absolute epsilon for
+    // both would reject a perfectly good pose out at level coordinates, making this validator
+    // range-dependent, which is exactly what a consumer must not have to think about.
+    float distance = std::fabs(pose.position.x);
+    if (std::fabs(pose.position.y) > distance) {
+        distance = std::fabs(pose.position.y);
+    }
+    if (std::fabs(pose.position.z) > distance) {
+        distance = std::fabs(pose.position.z);
+    }
+    if (!std::isfinite(distance)) {
+        return false;
+    }
+    const float translation_allowance = tolerance * (distance > 1.0f ? distance : 1.0f);
+
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t col = 0; col < 4; ++col) {
+            const float got = product[row * 4 + col];
+            if (!std::isfinite(got)) {
+                return false;
+            }
+            const float want = (col == row) ? 1.0f : 0.0f;
+            const float allow = (col == 3) ? translation_allowance : tolerance;
+            if (std::fabs(got - want) > allow) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 std::array<float, 12> SceneCamera::affine_identity() {

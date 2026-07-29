@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 
+#include "Object.hpp"
 #include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTNodeTransform.hpp"
 
@@ -134,6 +135,17 @@ struct SceneCameraSnapshot {
     // transposed multiply. Pair it with view_is_identity() when that distinction matters.
     bool view_projection_is_coherent(float tolerance = 1e-4f) const;
 
+    // Does the record's view matrix match the view matrix its own pose implies?
+    //
+    // Ties the pose at +0x14 to the view matrix at +0x48 -- two more regions the render thread
+    // writes at different moments, so it is both a coherence check and a check that our
+    // reconstruction of the engine's view-matrix recipe is right.
+    //
+    // Pass-dependent in the same way as view_projection_is_coherent(): in the screen pass the pose
+    // is identity and so is the view matrix, which the comparison cannot distinguish from a wrong
+    // recipe. Pair it with pose_is_identity() when that matters.
+    bool view_matches_pose(float tolerance = 1e-3f) const;
+
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
     // engine gave me a real viewpoint" from "this is the 2D overlay pass" wants this rather than
@@ -231,6 +243,59 @@ public:
 
     // The affine identity, for callers wanting an unmodified composition or a starting point.
     static std::array<float, 12> affine_identity();
+
+    // ---- THE VIEW MATRIX, AND WHERE IT COMES FROM ------------------------------------
+    //
+    // The builder produces it as matrix_from(inverse(pose)) -- LTTransform_CopyInverted (0x41DB87)
+    // called with the camera pose, then LTTransform_ToMatrix3x4 (0x62E31E). That construction is
+    // what settles the pose at +0x14 as the camera's WORLD transform rather than something already
+    // view-relative.
+    //
+    // A consumer overriding the camera -- the whole point of a stereo path -- has to produce the
+    // matching view matrix, so these mirror the engine's steps rather than leaving each caller to
+    // rediscover the convention.
+
+    // LTNodeTransform -> 3x4: rotation via sdk::rotation_matrix (which applies the engine's own
+    // 2/|q|^2 scale) with the position written into COLUMN 3. nullopt when the quaternion describes
+    // no rotation or the position is not finite.
+    static std::optional<regenny::LTMatrix3x4> transform_to_matrix(
+        const regenny::LTNodeTransform& transform);
+
+    // The rigid inverse: conjugated rotation, and the position negated after rotating by it -- the
+    // same two steps the engine takes (LTRotation_Conjugate, then LTRotation_RotateVector negated).
+    //
+    // ON NON-UNIT INPUT, precisely. The returned rotation is the CONJUGATE, which as a quaternion is
+    // the true inverse only when |q| = 1. But every consumer here goes on to build a matrix, and
+    // R(conj q) equals R(q) transposed for ANY nonzero norm because sdk::rotation_matrix divides by
+    // |q|^2 -- so transform_to_matrix(invert_transform(t)) is the correct inverse matrix regardless.
+    // What is NOT preserved for non-unit input is the scaling: composing the two QUATERNIONS gives
+    // |q|^2 rather than 1. If you intend to keep composing quaternions, normalise first;
+    // pose_rotation_is_unit() reports whether the engine's own pose already is.
+    static std::optional<regenny::LTNodeTransform> invert_transform(
+        const regenny::LTNodeTransform& transform);
+
+    // matrix_from(inverse(pose)), i.e. the view matrix for a given camera pose.
+    static std::optional<regenny::LTMatrix3x4> view_matrix_from_pose(
+        const regenny::LTNodeTransform& pose);
+
+    // A 3x4 widened to 4x4 with the implicit (0,0,0,1) row. The engine stores its view matrices and
+    // shears as 3x4 but composes into 4x4, so a consumer doing its own composition needs this.
+    static std::array<float, 16> promote_affine(const regenny::LTMatrix3x4& affine);
+
+    // DOES view_matrix_from_pose(pose) ACTUALLY INVERT pose? Composes the two and compares against
+    // the identity.
+    //
+    // This is the check to run before trusting a camera pose you built yourself: a wrong conjugate
+    // sign, a transposed rotation or a mis-signed translation all produce a view matrix that looks
+    // entirely plausible and renders wrongly. It is also the only way to validate the recipe at all
+    // while the engine's own pose is the identity, which it is in every pass observable from outside
+    // a render hook.
+    //
+    // `tolerance` is applied absolutely to the rotation block and SCALED BY THE POSE'S DISTANCE FROM
+    // THE ORIGIN for the translation column, because that column is a cancellation back to zero and
+    // its float residual grows with |position|. A single absolute epsilon would make this reject
+    // valid poses at level coordinates.
+    static bool view_inverts_pose(const regenny::LTNodeTransform& pose, float tolerance = 2e-3f);
 
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();

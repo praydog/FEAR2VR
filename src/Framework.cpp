@@ -3262,6 +3262,28 @@ std::string build_interfaces_json() {
 // Available at the MAIN MENU, unlike most of what this server reports: the parameter list
 // is static exe data, so it does not wait on a level. What DOES wait is binding -- every
 // record reads kUnboundBinding until the engine assigns handles.
+// Append "key":value pairs to a growing JSON object body. Exists because two fixed snprintf
+// fragments in this reporter overflowed as recon fields were added, and a truncated fragment
+// invalidates the WHOLE response -- a diagnostic that grows every session should not have a
+// hand-maintained size.
+void json_append_bool(std::string& out, const char* key, bool value) {
+    out += '"';
+    out += key;
+    out += "\":";
+    out += value ? "true" : "false";
+    out += ',';
+}
+
+void json_append_double(std::string& out, const char* key, double value, int decimals = 4) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+    out += '"';
+    out += key;
+    out += "\":";
+    out += buf;
+    out += ',';
+}
+
 std::string build_shader_params_json() {
     const auto head = sdk::ShaderParams::list_head_address();
     if (head == 0) {
@@ -3341,7 +3363,7 @@ std::string build_shader_params_json() {
                  "\"sc_pose_rot_unit\":%s,\"sc_pose_pos_finite\":%s,"
                  "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
                  "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,"
-                 "\"sc_compose_matches_record\":%s,"
+                 "\"sc_compose_matches_record\":%s,\"sc_view_matches_pose\":%s,"
                  "\"sc_affine\":%s,\"sc_w_row_scale\":%.6f,\"sc_fov_present\":%s,"
                  "\"sc_fov_y_deg\":%.3f,\"sc_proj_agrees_hvp\":%s,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
@@ -3359,6 +3381,7 @@ std::string build_shader_params_json() {
                  scam->pose.position.x, scam->pose.position.y, scam->pose.position.z,
                  scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false",
                  compose_matches_record ? "true" : "false",
+                 scam->view_matches_pose() ? "true" : "false",
                  scam->is_affine_projection() ? "true" : "false",
                  scam->projection_w_row_scale(),
                  scam->fov_y_radians().has_value() ? "true" : "false",
@@ -3474,39 +3497,64 @@ std::string build_shader_params_json() {
         compose_keeps_perspective = composed.is_perspective_projection();
     }
 
+    // THE INVERSE, CHECKED BY ROUND TRIP on a deliberately non-trivial pose. Composing a transform
+    // with its own inverse must give the identity, which catches a wrong conjugate sign, a
+    // transposed rotation or a mis-signed translation -- none of which the live comparison can see
+    // while the engine's pose is identity.
+    //
+    // The quaternion below is normalised so the conjugate really is the inverse, since that is the
+    // assumption the engine's own inversion makes.
+    regenny::LTNodeTransform probe_pose{};
+    probe_pose.position.x = 137.5f;
+    probe_pose.position.y = -42.25f;
+    probe_pose.position.z = 8.0f;
+    {
+        // An arbitrary rotation, then normalised.
+        float qx = 0.3f, qy = -0.5f, qz = 0.2f, qw = 0.78f;
+        const float n = sqrtf(qx * qx + qy * qy + qz * qz + qw * qw);
+        probe_pose.rotation.x = qx / n;
+        probe_pose.rotation.y = qy / n;
+        probe_pose.rotation.z = qz / n;
+        probe_pose.rotation.w = qw / n;
+    }
+    // Round trip through the snapshot class's own predicate -- the promotion, multiply and identity
+    // comparison used to live here, which meant a consumer wanting to validate a pose it built
+    // could not reach them.
+    const bool inverse_round_trips = sdk::SceneCamera::view_inverts_pose(probe_pose);
+    // The same pose pushed far from the origin, which is what exposes a translation tolerance that
+    // does not scale: the residual of column 3's cancellation grows with |position|.
+    regenny::LTNodeTransform distant_pose = probe_pose;
+    distant_pose.position.x = 98000.0f;
+    distant_pose.position.y = -75500.0f;
+    distant_pose.position.z = 43000.0f;
+    const bool distant_round_trips = sdk::SceneCamera::view_inverts_pose(distant_pose);
+    const bool view_from_pose_built =
+        sdk::SceneCamera::view_matrix_from_pose(probe_pose).has_value();
+
     // The value a correct implementation must recover, computed here from the input rather than
     // hard-coded, so the expectation cannot drift away from the probe.
     const float want_fov_y = 2.0f * atanf(kProbeHalfY);
 
-    char pr[512];
-    const int pr_len = snprintf(pr, sizeof(pr),
-             "\"probe_perspective\":%s,\"probe_agrees\":%s,\"probe_fov_y\":%.6f,"
-             "\"probe_fov_y_want\":%.6f,\"probe_scaled_perspective\":%s,"
-             "\"probe_scaled_fov_y\":%.6f,\"probe_affine_is_affine\":%s,"
-             "\"probe_affine_fov_present\":%s,\"probe_built\":%s,"
-             "\"probe_rejects_zero_extent\":%s,\"probe_rejects_negative_extent\":%s,"
-             "\"probe_rejects_zero_span\":%s,\"probe_rejects_tiny_extent\":%s,"
-             "\"compose_identity\":%s,\"compose_translation\":%s,"
-             "\"compose_keeps_perspective\":%s,",
-             probe.is_perspective_projection() ? "true" : "false",
-             probe.projection_agrees_with_half_view_plane() ? "true" : "false",
-             probe_fov_y.value_or(-1.0f), want_fov_y,
-             scaled.is_perspective_projection() ? "true" : "false",
-             scaled_fov_y.value_or(-1.0f),
-             affine_probe.is_affine_projection() ? "true" : "false",
-             affine_probe.fov_y_radians().has_value() ? "true" : "false",
-             (probe_matrix.has_value() && affine_matrix.has_value()) ? "true" : "false",
-             rejects_zero_extent ? "true" : "false",
-             rejects_negative_extent ? "true" : "false",
-             rejects_zero_span ? "true" : "false",
-             rejects_tiny_extent ? "true" : "false",
-             compose_identity_ok ? "true" : "false",
-             compose_translation_ok ? "true" : "false",
-             compose_keeps_perspective ? "true" : "false");
-    if (pr_len < 0 || static_cast<size_t>(pr_len) >= sizeof(pr)) {
-        return "{\"ok\":false,\"error\":\"probe fragment truncated\"}";
-    }
-    out += pr;
+    // Built by append rather than into a fixed buffer: this fragment gains fields every session.
+    json_append_bool(out, "probe_perspective", probe.is_perspective_projection());
+    json_append_bool(out, "probe_agrees", probe.projection_agrees_with_half_view_plane());
+    json_append_double(out, "probe_fov_y", probe_fov_y.value_or(-1.0f), 6);
+    json_append_double(out, "probe_fov_y_want", want_fov_y, 6);
+    json_append_bool(out, "probe_scaled_perspective", scaled.is_perspective_projection());
+    json_append_double(out, "probe_scaled_fov_y", scaled_fov_y.value_or(-1.0f), 6);
+    json_append_bool(out, "probe_affine_is_affine", affine_probe.is_affine_projection());
+    json_append_bool(out, "probe_affine_fov_present", affine_probe.fov_y_radians().has_value());
+    json_append_bool(out, "probe_built", probe_matrix.has_value() && affine_matrix.has_value());
+    json_append_bool(out, "probe_rejects_zero_extent", rejects_zero_extent);
+    json_append_bool(out, "probe_rejects_negative_extent", rejects_negative_extent);
+    json_append_bool(out, "probe_rejects_zero_span", rejects_zero_span);
+    json_append_bool(out, "probe_rejects_tiny_extent", rejects_tiny_extent);
+    json_append_bool(out, "compose_identity", compose_identity_ok);
+    json_append_bool(out, "compose_translation", compose_translation_ok);
+    json_append_bool(out, "compose_keeps_perspective", compose_keeps_perspective);
+    json_append_bool(out, "inverse_round_trips", inverse_round_trips);
+    json_append_bool(out, "view_from_pose_built", view_from_pose_built);
+    json_append_bool(out, "distant_round_trips", distant_round_trips);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

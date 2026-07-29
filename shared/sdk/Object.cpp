@@ -469,20 +469,41 @@ float abs_f(float v) {
     return v < 0.0f ? -v : v;
 }
 
+// Local rather than <cmath>'s std::isfinite, matching abs_f above: this file deliberately keeps its
+// float predicates dependency-free so they stay usable inside SEH-guarded frames.
+bool is_finite_f(float v) {
+    return v == v && v * 0.0f == 0.0f;
+}
+
 }  // namespace
 
-Matrix34 rotation_matrix(const regenny::LTRotation& q) {
+std::optional<Matrix34> rotation_matrix(const regenny::LTRotation& q) {
     const float x = q.x, y = q.y, z = q.z, w = q.w;
+    if (!is_finite_f(x) || !is_finite_f(y) || !is_finite_f(z) || !is_finite_f(w)) {
+        return std::nullopt;
+    }
+    // THE ENGINE'S OWN SCALE, 2/|q|^2, not a hardcoded 2 -- transcribed from
+    // LTRotation_ToMatrix3x4 (0x40FC87), which divides by the squared norm and therefore yields a
+    // rotation for a non-unit quaternion too. This function used to hardcode 2, which agreed with
+    // the engine only for unit input while its header promised any LTRotation.
+    const float norm_sq = x * x + y * y + z * z + w * w;
+    if (!is_finite_f(norm_sq) || norm_sq <= 0.0f) {
+        return std::nullopt;  // a zero quaternion has no rotation to describe
+    }
+    const float s = 2.0f / norm_sq;
+    if (!is_finite_f(s)) {
+        return std::nullopt;
+    }
     Matrix34 out{};
-    out.m[0] = 1.0f - 2.0f * (y * y + z * z);
-    out.m[1] = 2.0f * (x * y - w * z);
-    out.m[2] = 2.0f * (x * z + w * y);
-    out.m[4] = 2.0f * (x * y + w * z);
-    out.m[5] = 1.0f - 2.0f * (x * x + z * z);
-    out.m[6] = 2.0f * (y * z - w * x);
-    out.m[8] = 2.0f * (x * z - w * y);
-    out.m[9] = 2.0f * (y * z + w * x);
-    out.m[10] = 1.0f - 2.0f * (x * x + y * y);
+    out.m[0] = 1.0f - s * (y * y + z * z);
+    out.m[1] = s * (x * y - w * z);
+    out.m[2] = s * (x * z + w * y);
+    out.m[4] = s * (x * y + w * z);
+    out.m[5] = 1.0f - s * (x * x + z * z);
+    out.m[6] = s * (y * z - w * x);
+    out.m[8] = s * (x * z - w * y);
+    out.m[9] = s * (y * z + w * x);
+    out.m[10] = 1.0f - s * (x * x + y * y);
     return out;
 }
 
@@ -526,7 +547,11 @@ std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject*
     if (!fwd.has_value() || !inv.has_value()) {
         return std::nullopt;
     }
-    const Matrix34 R = rotation_matrix(info.rotation);
+    const auto rotation = rotation_matrix(info.rotation);
+    if (!rotation.has_value()) {
+        return std::nullopt;  // a degenerate quaternion leaves nothing to compare against
+    }
+    const Matrix34 R = *rotation;
     const float* M = fwd->m;
     const float* I = inv->m;
 

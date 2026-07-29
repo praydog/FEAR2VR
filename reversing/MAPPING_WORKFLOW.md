@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **TWO COPIES OF THE SAME FORMULA MEANS ONE OF THEM IS WRONG.** Decompiling LTRotation_ToMatrix3x4
+  exposed that our existing `rotation_matrix()` hardcoded a factor of 2 where the engine divides by the
+  squared norm -- identical for unit quaternions, wrong for everything else, and the header advertised
+  "any LTRotation". Before adding a second converter for the camera I unified on one engine-matching
+  helper. Worth checking for a pre-existing copy every time a decompile hands you a formula.
+  
+- **A TOLERANCE THAT DOES NOT SCALE MAKES A VALIDATOR RANGE-DEPENDENT.** The pose round-trip compared
+  column 3 against zero with one absolute epsilon. That column is a cancellation, so its residual grows
+  with |position|: fine for a probe at 137 units, spurious failure for the same pose at level
+  coordinates. Rotation stays absolute, translation scales with distance, and the suite now checks a
+  pose ~100k units out precisely so the near case cannot pass alone.
+  
+- **A GROWING DIAGNOSTIC FRAGMENT SHOULD NOT HAVE A HAND-MAINTAINED SIZE.** Two fixed snprintf buffers
+  in the same reporter overflowed as recon fields accumulated, and a truncated fragment invalidates the
+  whole response. Converted to checked appends on a std::string. The truncation guard added after the
+  first overflow is what made the second one a one-line diagnosis instead of a hunt -- keep it on any
+  remaining leaf buffers.
+
 - **THE MOST USEFUL PREDICATE IS THE ONE I WROTE IN THE REPORTER FIRST.** The 16-coefficient recomposition
   check -- does the stored view-projection equal projection * view? -- went into Framework.cpp, where only
   the endpoint could use it. It is the strongest coherence check on that record, spanning three regions the

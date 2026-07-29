@@ -3812,6 +3812,22 @@ int main(int argc, char** argv) {
             check(json_bool(body, "compose_keeps_perspective", ck) && ck,
                   "composing preserves the perspective classification");
 
+            // THE RIGID INVERSE, by round trip. view_matrix_from_pose(p) composed with p's own
+            // matrix must be the identity, on a pose with a real rotation and translation. This is
+            // what catches a wrong conjugate sign or a mis-signed translation -- errors the live
+            // comparison cannot see, because the engine's pose is identity in every pass reachable
+            // from outside a render hook.
+            bool vb = false, rt = false;
+            check(json_bool(body, "view_from_pose_built", vb) && vb,
+                  "view_matrix_from_pose builds for a non-trivial pose");
+            check(json_bool(body, "inverse_round_trips", rt) && rt,
+                  "view_matrix_from_pose(p) * matrix(p) == identity (the inverse is a real inverse)");
+            // Out at level coordinates, where column 3's cancellation residual scales with |p|. A
+            // validator with one absolute epsilon passes the near case and fails this one.
+            bool drt = false;
+            check(json_bool(body, "distant_round_trips", drt) && drt,
+                  "and still round-trips for a pose ~100k units from the origin");
+
             // REJECTION, because a builder that quietly accepts a degenerate frustum hands back a
             // matrix that still looks usable -- a zero scale coefficient with m[3][2] intact.
             bool r0 = false, r1 = false, r2 = false;
@@ -3867,6 +3883,12 @@ int main(int argc, char** argv) {
             bool recomposed = false;
             check(json_bool(body, "sc_compose_matches_record", recomposed) && recomposed,
                   "our compose reproduces the engine's own stored view-projection");
+            // The pose -> view recipe against the engine's own two regions. Same pass-dependence:
+            // in the screen pass both are identity, so this cannot distinguish a wrong recipe --
+            // the synthetic round trip above is what does that.
+            bool vmp = false;
+            check(json_bool(body, "sc_view_matches_pose", vmp) && vmp,
+                  "the record's view matrix matches the one its own pose implies");
         }
 
         // ---- PROJECTION CLASSIFICATION, AND THE CONTRACT AROUND FOV ------------------

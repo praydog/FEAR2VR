@@ -335,9 +335,15 @@ struct Matrix34 {
     float m[12];
 };
 
-// R(q) as the top-left 3x3 with a zero translation. PURE MATH, no engine read and no
-// failure mode -- useful on any LTRotation, including ones you built yourself.
-Matrix34 rotation_matrix(const regenny::LTRotation& q);
+// R(q) as the top-left 3x3 with a zero translation. PURE MATH: no engine read, no thread or state
+// requirement -- so it is usable on any LTRotation, including ones you built yourself, because it
+// applies the ENGINE'S scale of 2/|q|^2 (LTRotation_ToMatrix3x4, 0x40FC87) rather than a hardcoded
+// 2. That distinction is invisible for unit quaternions and wrong for every other, and this
+// function previously claimed the general case while implementing the unit-only one.
+//
+// It DOES have a failure mode, despite being pure: nullopt for a non-finite or zero-norm
+// quaternion, which is the only input that describes no rotation at all.
+std::optional<Matrix34> rotation_matrix(const regenny::LTRotation& q);
 
 // The world model's cached local->world transform, and the inverse the engine keeps
 // beside it. Same type gate as world_to_brush: WorldModel or Camera only, since the

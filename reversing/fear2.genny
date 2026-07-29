@@ -1481,7 +1481,48 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- HOW THE ENGINE MULTIPLIES MATRICES ----
+// // ---- WHERE THE VIEW MATRIX COMES FROM ----
+//
+// view = matrix_from(inverse(camera pose)), which is the textbook construction and, more usefully,
+// SETTLES THAT THE POSE AT +0x14 IS THE CAMERA'S WORLD TRANSFORM rather than something already
+// view-relative. Read out of the builder rather than assumed:
+//
+//     LTTransform_CopyInverted  0x41DB87   ecx = record+0x14 (the pose), arg = out
+//                                         LTTransform_CopyFrom then LTTransform_InvertInPlace
+//     LTTransform_ToMatrix3x4   0x62E31E   ecx = transform, arg = out 3x4
+//                                         LTRotation_ToMatrix3x4 then position into COLUMN 3
+//
+// Note the `push ecx` inside LTTransform_CopyInverted: the incoming ecx is the SOURCE, passed on as
+// the copy's argument, which is what identifies the pose as the input rather than the destination.
+//
+// LTRotation_ToMatrix3x4 (0x40FC87) is the standard quaternion expansion and confirms w-LAST for a
+// third independent time -- the scale is 2/(x^2+y^2+z^2+w^2) with this[3] as w, and the products
+// land as 1-2(y^2+z^2), 2(xy-wz), 2(xz+wy) and so on, with column 3 zeroed.
+//
+// THAT SCALE MATTERS AND WE HAD IT WRONG. sdk's rotation_matrix() hardcoded 2 while the engine
+// divides by the squared norm. Identical for unit quaternions, wrong for every other, and the header
+// promised "any LTRotation". Now one shared converter matching the engine, used by both Object and
+// SceneCamera, returning nullopt for a zero-norm or non-finite quaternion.
+//
+// THE INVERSION, exactly: LTRotation_Conjugate (0x41DAB6) negates x, y, z and keeps w, then
+// LTRotation_RotateVector rotates the position by that conjugate and the result is negated. So
+// q' = conj(q), p' = -(q' . p) -- the standard rigid inverse, valid as a QUATERNION inverse only for
+// unit q, which is the engine's assumption everywhere.
+//
+// EXPOSED AS sdk::SceneCamera::transform_to_matrix / invert_transform / view_matrix_from_pose, plus
+// promote_affine for widening the engine's 3x4 storage to the 4x4 its own multiply consumes. A
+// consumer overriding the camera must produce the matching view matrix, and view_inverts_pose()
+// is the validator for a pose it built itself -- a wrong conjugate sign, a transposed rotation or a
+// mis-signed translation all yield a plausible-looking matrix that renders wrongly.
+//
+// WHY THAT VALIDATOR EXISTS AT ALL: in every pass reachable from outside a render hook the engine's
+// pose is the identity, so comparing our recipe against the record cannot distinguish a correct
+// recipe from several wrong ones. The round trip on a pose with a real rotation and translation can.
+// Its translation allowance scales with distance from the origin, because column 3 of the product is
+// a cancellation back to zero whose float residual grows with |p| -- an absolute epsilon passes a
+// pose at 137 units and fails the same pose at 98000.
+//
+// ---- HOW THE ENGINE MULTIPLIES MATRICES ----
 //
 // TWO MULTIPLIES, DIFFERING IN WHICH OPERAND IS AFFINE. Both are out = A * B; the difference is
 // whose fourth row is assumed rather than read, and that is legible directly in the arithmetic.
