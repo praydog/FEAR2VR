@@ -526,8 +526,13 @@ public:
     //
     // The radius is TWO-STATE, and this distinction is load-bearing: the base
     // constructor zeroes both dims and radius, so an object SetDims never ran
-    // on sits at (dims == 0, radius == 0) -- NOT at radius 0.1. Live, 2126
-    // objects are sized and 1457 are pristine, with none outside either state.
+    // on sits at (dims == 0, radius == 0) -- NOT at radius 0.1. Over the WHOLE
+    // object set 2126 are sized and 1457 pristine, totalling all 3583; a call
+    // with `max_per_type` 512 samples ~2215 of them and splits ~1164/1051. The
+    // absolute counts therefore depend on the CAP YOU PASS -- an earlier version
+    // of this comment quoted the full-set numbers without saying so, which made a
+    // capped call look like it had lost objects. What does not depend on the cap,
+    // and is the actual invariant, is that the two states PARTITION the sample.
     // The counts are reported separately rather than merged so a caller can
     // assert both branches are actually exercised; collapsing them into one
     // "ok" tally, or widening the tolerance until the pristine objects slipped

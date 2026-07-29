@@ -2163,6 +2163,44 @@ int main(int argc, char** argv) {
                        "unlocated objects are among them (max depth %lld)\n",
                        static_cast<long long>(cask - cok2), static_cast<long long>(cask),
                        static_cast<long long>(twm), static_cast<long long>(mmd));
+
+                // ---- WORLD BOUNDS, as a consumer API ---------------------------------
+                //
+                // Extracted from check_object_geometry. The AABB identity is asserted for
+                // EVERY object because the engine's own writer establishes it
+                // unconditionally: LTObject_SetPos calls SetWorldAABB(pos-dims, pos+dims)
+                // with no gate. A failure here means something moved an object's position
+                // without going through that path.
+                int64_t aok = -1, aord = -1, aask = -1, acur = -1;
+                int64_t rok = -1, rsz = -1, runs = -1, rsane = -1;
+                json_int(ab, "aabb_ok", aok);
+                json_int(ab, "aabb_ordered", aord);
+                json_int(ab, "aabb_asked", aask);
+                json_int(ab, "aabb_current", acur);
+                json_int(ab, "rad_ok", rok);
+                json_int(ab, "rad_sized", rsz);
+                json_int(ab, "rad_unsized", runs);
+                json_int(ab, "rad_sane", rsane);
+                check(aok == aobj, "EVERY object yields its world AABB");
+                check(aord == aok, "EVERY world AABB is well-ordered (min <= max)");
+                check(acur == aask && aask == aobj,
+                      "EVERY world AABB equals position +/- dims, the engine's own identity");
+                // AND THE CONTRAST THAT EXPLAINS THE STALE INDEX ENTRIES, which is why both
+                // checks live in the same file: the AABB is NEVER stale (0 of 3583) while 370
+                // of 2142 world-tree entries are. Both are written by LTObject_SetPos, but
+                // the AABB write is unconditional and the relink is gated on
+                // LTObject_IsRenderable -- so an object that moves while not renderable gets
+                // fresh bounds and keeps its old node. Asserting the AABB side exactly is
+                // what makes that asymmetry visible rather than a coincidence of counts.
+                check(rok == aobj, "EVERY object yields a bounding radius");
+                check(rsz + runs == rok,
+                      "the radius is in exactly one of its two states for every object");
+                check(rsz > 0 && runs > 0, "both radius states are exercised in this scene");
+                check(rsane == rok, "EVERY radius is finite and non-negative");
+                printf("[fixture] world bounds: %lld AABBs all current; radius %lld sized / "
+                       "%lld unsized\n",
+                       static_cast<long long>(acur), static_cast<long long>(rsz),
+                       static_cast<long long>(runs));
                 check(bt > 0, "the level carries world models to transform against");
                 // THE API CONTRACT: every object the type gate admits must answer BOTH
                 // directions. A gap here means the gate and the field offsets disagree.

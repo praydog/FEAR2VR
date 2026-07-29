@@ -1348,7 +1348,10 @@ std::string build_objects_json() {
                api_tree_nonwm = 0, api_tree_nonwm_found = 0, api_tree_wm_missed = 0,
                api_tree_miss_slot_found = 0, api_tree_miss_max_depth = 0,
                api_tree_miss_at_leaf = 0, api_tree_hit_slot_probed = 0, api_tree_miss_stale = 0,
-               api_tree_cur_asked = 0, api_tree_cur_ok = 0;
+               api_tree_cur_asked = 0, api_tree_cur_ok = 0,
+               api_aabb_ok = 0, api_aabb_ordered = 0, api_aabb_asked = 0,
+               api_aabb_current = 0, api_rad_ok = 0, api_rad_sized = 0,
+               api_rad_unsized = 0, api_rad_sane = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -1578,6 +1581,35 @@ std::string build_objects_json() {
                             }
                         }
                     }
+                    // WORLD BOUNDS, extracted from check_object_geometry this pass. The
+                    // interesting cross-measurement: the AABB is written by the same
+                    // SetPos path that relinks the spatial index, so if 370 index entries
+                    // are stale, are any AABBs stale too? Measured rather than assumed.
+                    if (const auto box = sdk::world_aabb(obj); box.has_value()) {
+                        ++api_aabb_ok;
+                        if (box->min.x <= box->max.x && box->min.y <= box->max.y &&
+                            box->min.z <= box->max.z) {
+                            ++api_aabb_ordered;
+                        }
+                    }
+                    if (const auto fresh = sdk::world_aabb_is_current(obj);
+                        fresh.has_value()) {
+                        ++api_aabb_asked;
+                        if (*fresh) {
+                            ++api_aabb_current;
+                        }
+                    }
+                    if (const auto br = sdk::bounding_radius(obj); br.has_value()) {
+                        ++api_rad_ok;
+                        if (br->from_dims) {
+                            ++api_rad_sized;
+                        } else if (br->unsized) {
+                            ++api_rad_unsized;
+                        }
+                        if (br->radius >= 0.0f && std::isfinite(br->radius)) {
+                            ++api_rad_sane;
+                        }
+                    }
                     // CULL VOLUMES, the way a mod asks for bounds. Extracted from
                     // check_spatial_records this pass -- previously a mod could learn the
                     // population-wide match count and nothing about the object it holds.
@@ -1765,7 +1797,7 @@ std::string build_objects_json() {
         // Grown as the object API gained accessors. The truncation guard below is what makes
         // that safe: it reported `{"error":"truncated"}` the moment this overflowed rather
         // than emitting half an object, which is how the overflow was noticed at all.
-        char ab[2560];
+        char ab[3584];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
@@ -1791,7 +1823,10 @@ std::string build_objects_json() {
                  "\"tree_self_found\":%zu,\"tree_nonwm\":%zu,"
                  "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu,"
                  "\"miss_slot_found\":%zu,\"miss_max_depth\":%zu,\"miss_at_leaf\":%zu,"
-                 "\"miss_stale\":%zu,\"cur_asked\":%zu,\"cur_ok\":%zu}",
+                 "\"miss_stale\":%zu,\"cur_asked\":%zu,\"cur_ok\":%zu,"
+                 "\"aabb_ok\":%zu,\"aabb_ordered\":%zu,\"aabb_asked\":%zu,"
+                 "\"aabb_current\":%zu,\"rad_ok\":%zu,\"rad_sized\":%zu,"
+                 "\"rad_unsized\":%zu,\"rad_sane\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1812,7 +1847,9 @@ std::string build_objects_json() {
                  api_tree_asked, api_tree_linked, api_tree_nonempty, api_tree_self_found,
                  api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed,
                  api_tree_miss_slot_found, api_tree_miss_max_depth, api_tree_miss_at_leaf,
-                 api_tree_miss_stale, api_tree_cur_asked, api_tree_cur_ok);
+                 api_tree_miss_stale, api_tree_cur_asked, api_tree_cur_ok,
+                 api_aabb_ok, api_aabb_ordered, api_aabb_asked, api_aabb_current,
+                 api_rad_ok, api_rad_sized, api_rad_unsized, api_rad_sane);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

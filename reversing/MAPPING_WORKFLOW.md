@@ -963,6 +963,28 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Two derived values written by ONE function can still disagree -- read the gates, not just
+  the writes.** `LTObject_SetPos` updates both of an object's cached geometry facts, so
+  "written by the same function" looked like it should mean "consistent with each other".
+  Measured from both sides: **zero of 3583 world AABBs are stale, while 370 of 2142 world-tree
+  entries are.**
+
+  The reason is in the function's own control flow. It calls `SetWorldAABB(position -/+ dims)`
+  unconditionally, then relinks only `if (LTObject_IsRenderable(this))`. An object that moves
+  while not renderable therefore gets fresh bounds and keeps its old spatial node. That
+  replaced the previous pass's weaker story ("moved by some other route") with the engine's
+  own gate.
+
+  Generalise: when one writer maintains several caches, the interesting question is which
+  writes are CONDITIONAL. A cache behind an `if` is the one that goes stale, and the way to
+  find it is to assert the unconditional sibling EXACTLY -- 3583/3583 here -- so the
+  asymmetry shows up as a contrast instead of being lost in two approximate numbers.
+
+- **State the CAP with any sampled count.** `check_object_geometry`'s doc quoted "2126 sized,
+  1457 pristine" -- the whole 3583-object set -- while its only caller passes `max_per_type`
+  512, which samples ~2215 and splits ~1164/1051. Re-deriving the counts after a refactor
+  looked like the refactor had lost objects. The invariant that does NOT depend on the cap is
+  that the two states PARTITION the sample, and that is what the fixture asserts.
 - **RESOLVED, and the accessor is what resolved it.** The 235 worldmodels a proximity query
   could not find have STALE index entries: `index_is_current()` -- which descends the
   engine's own box rule with an object's CURRENT bounds and compares against the node it is

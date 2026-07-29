@@ -256,10 +256,15 @@ public:
     // objects are parked at a node that is NOT the one their current bounds would choose,
     // and every object this query fails to find (235, all worldmodels) is among them.
     //
-    // The engine relinks only from LTObject_SetPos, SetPosRot, SetDims_Notify and SetFlags,
-    // so anything moved by another route keeps the node it was linked at -- and doors, lifts
-    // and platforms are worldmodels. Ask index_is_current() before trusting a proximity
-    // result for something that moves; the staleness is the engine's, not this SDK's.
+    // THE MECHANISM IS AN ASYMMETRY INSIDE LTObject_SetPos, visible in its own code: it
+    // writes the world AABB UNCONDITIONALLY (SetWorldAABB with position -/+ dims) but relinks
+    // only `if (LTObject_IsRenderable(this))`. So an object that moves while not renderable
+    // gets fresh bounds and KEEPS ITS OLD NODE. That is not a guess -- the contrast is
+    // measurable from the other side: zero of 3583 world AABBs are stale while 370 of 2142
+    // index entries are, and both are written by the same function.
+    //
+    // Ask index_is_current() before trusting a proximity result for something that moves;
+    // the staleness is the engine's, not this SDK's.
     //
     // Four other explanations were measured and REFUTED before this one was confirmed, and
     // they are recorded so nobody re-runs them: result truncation (raising the cap 256 ->

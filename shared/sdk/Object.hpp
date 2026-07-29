@@ -433,4 +433,55 @@ std::optional<CullVolume> computed_cull_volume(const regenny::LTObject* obj);
 // nullopt when `obj` is null, has no spatial record, or a read faulted.
 std::optional<bool> cull_volume_is_current(const regenny::LTObject* obj);
 
+
+// ---- WORLD BOUNDS: the AABB and radius the engine culls with ------------------
+//
+// object_dims() already gives the half-extents. These give the two things the engine
+// DERIVES from them and stores alongside, which is what its own culling reads:
+//
+//   aabb_min/aabb_max  written by LTObject_SetWorldAABB as `position -/+ dims`
+//   radius             |dims| + 0.1 once SetDims has run
+//
+// Both were computed inside CClientMgr::check_object_geometry and thrown away. A mod wants
+// them directly: an AABB is the cheapest broad-phase test there is, and the radius is what
+// a distance check should compare against rather than a number of its own choosing.
+
+struct WorldAABB {
+    regenny::LTVector min;
+    regenny::LTVector max;
+};
+
+// The AABB as the engine STORES it -- available on every object type, unlike
+// cull_volume() which is world-model/camera only. nullopt when `obj` is null or the read
+// faulted.
+std::optional<WorldAABB> world_aabb(const regenny::LTObject* obj);
+
+// IS THAT AABB CURRENT? True when it equals `position -/+ dims`, the identity
+// LTObject_SetWorldAABB establishes.
+//
+// WORTH ASKING FOR THE SAME REASON THE SPATIAL INDEX IS: the engine writes this from
+// LTObject_SetPos and friends, so an object moved by another route carries an AABB around
+// its old position. That is not hypothetical here -- 370 of 2142 indexed objects already
+// have a stale world-tree entry for exactly that reason (see WorldBSP::index_is_current).
+//
+// The comparison uses a RELATIVE tolerance: level coordinates reach five figures, where a
+// fixed epsilon sits below float32 spacing and reports correct data as wrong.
+std::optional<bool> world_aabb_is_current(const regenny::LTObject* obj);
+
+// The engine's bounding radius, and WHICH OF ITS TWO STATES it is in. The distinction is
+// load-bearing rather than trivia: the base constructor zeroes dims and radius together, so
+// an object SetDims never ran on sits at (0, 0) -- which is correct-but-unsized, NOT a
+// radius that should have been 0.1. Live 2126 objects are sized and 1457 unsized, with none
+// in neither state.
+struct BoundingRadius {
+    float radius;    // as stored
+    bool from_dims;  // radius == |dims| + 0.1, i.e. SetDims has run
+    bool unsized;    // dims and radius are all zero: the constructor's state
+};
+
+// nullopt when `obj` is null or the read faulted. An object in NEITHER state returns the
+// stored radius with both flags false -- that is a real answer and worth noticing, since
+// live nothing is in that position.
+std::optional<BoundingRadius> bounding_radius(const regenny::LTObject* obj);
+
 }  // namespace sdk

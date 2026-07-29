@@ -1,6 +1,7 @@
 #include "Object.hpp"
 
 #include <windows.h>
+#include <cmath>
 
 #include <utility/Seh.hpp>
 
@@ -824,6 +825,114 @@ std::optional<bool> cull_volume_is_current(const regenny::LTObject* obj) {
                    volume_approx_eq(stored->max.x, computed->max.x);
     }
     return std::nullopt;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD mirror of the geometry fields, copied out under one guard.
+struct GeomRaw {
+    float pos[3];
+    float dims[3];
+    float mn[3];
+    float mx[3];
+    float radius;
+    bool ok;
+};
+
+GeomRaw seh_read_geom(const regenny::LTObject* obj) {
+    GeomRaw r{};
+    KANANLIB_SEH_TRY {
+        r.pos[0] = obj->position.x;
+        r.pos[1] = obj->position.y;
+        r.pos[2] = obj->position.z;
+        r.dims[0] = obj->dims.x;
+        r.dims[1] = obj->dims.y;
+        r.dims[2] = obj->dims.z;
+        r.mn[0] = obj->aabb_min.x;
+        r.mn[1] = obj->aabb_min.y;
+        r.mn[2] = obj->aabb_min.z;
+        r.mx[0] = obj->aabb_max.x;
+        r.mx[1] = obj->aabb_max.y;
+        r.mx[2] = obj->aabb_max.z;
+        r.radius = obj->radius;
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    return r;
+}
+
+// RELATIVE, for the reason the original helper's own comment gave: level coordinates reach
+// five figures, where a fixed epsilon sits below float32 spacing and fails on correct data.
+bool geom_approx_eq(float a, float b) {
+    const float d = a > b ? a - b : b - a;
+    const float m = b < 0.0f ? -b : b;
+    return d <= 0.01f + 0.0001f * m;
+}
+
+}  // namespace
+
+std::optional<WorldAABB> world_aabb(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_geom(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    WorldAABB out{};
+    out.min.x = r.mn[0];
+    out.min.y = r.mn[1];
+    out.min.z = r.mn[2];
+    out.max.x = r.mx[0];
+    out.max.y = r.mx[1];
+    out.max.z = r.mx[2];
+    return out;
+}
+
+std::optional<bool> world_aabb_is_current(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_geom(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        if (!geom_approx_eq(r.mn[i], r.pos[i] - r.dims[i]) ||
+            !geom_approx_eq(r.mx[i], r.pos[i] + r.dims[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<BoundingRadius> bounding_radius(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_geom(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    BoundingRadius out{};
+    out.radius = r.radius;
+    const bool zero_dims = r.dims[0] == 0.0f && r.dims[1] == 0.0f && r.dims[2] == 0.0f;
+    out.unsized = zero_dims && r.radius == 0.0f;
+    if (!out.unsized) {
+        // The 0.1 is the engine's own constant, added by SetDims -- double-precision there,
+        // so the length is computed in double before the comparison too.
+        const double len = std::sqrt(static_cast<double>(r.dims[0]) * r.dims[0] +
+                                     static_cast<double>(r.dims[1]) * r.dims[1] +
+                                     static_cast<double>(r.dims[2]) * r.dims[2]);
+        out.from_dims = geom_approx_eq(r.radius, static_cast<float>(len) + 0.1f);
+    }
+    return out;
 }
 
 }  // namespace sdk
