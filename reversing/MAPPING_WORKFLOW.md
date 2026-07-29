@@ -413,6 +413,34 @@ Rules that follow:
   `link[1]->[0] = link[0]`), so `next` there is a traversal convention, not a
   proven asymmetry, and `LTWorldTreeLink`'s comment records exactly that.
 
+**An element with TWO link groups belongs to TWO lists — and the two may use
+different linkage disciplines.** `LTSpatialEntry` (0x14) carries `record_next` at
+0x08 and a `hit_prev`/`hit_next` pair at 0x0C/0x10. It is not a doubly-linked
+node with a spare pointer: it is simultaneously
+
+- a member of its record's list, **singly** linked, head at
+  `LTSpatialRecord.entry_list`, length in `entry_count`; and
+- a member of a hit's list, **doubly** linked, so an entry can be unlinked from
+  the hit side without walking that list — which is exactly what
+  `LTSpatialRecord_DetachEntries` does when it tears the whole record down.
+
+The linker is where this is legible: `LTSpatialRecord_LinkEntry` writes five
+fields in two obvious groups. Count the fields a linker writes and how they
+cluster before deciding what shape the element is.
+
+Two practical consequences:
+
+- **Check both lists separately, because they fail for different reasons.** A
+  wrong RECORD-side offset makes `entry_count` disagree with the walked length; a
+  wrong ENTRY-side offset makes the hit-side pointers stop pointing back. Two
+  counters localise the error; one merged "ok" tally would not.
+- **`hit_head` is a pointer-TO-pointer.** It addresses the hit's head *slot*, not
+  the head element — `DetachEntries` does `*hit_head = hit_next` when unlinking
+  the first entry. Reading it as "pointer to the head element" type-checks, walks
+  plausibly, and quietly breaks the unlink story. When a field is only ever
+  dereferenced-and-assigned-through, suspect a slot address rather than an
+  element pointer.
+
 ## Phase 3 — Author/extend `fear2.genny`
 
 - **Self-reference works, and is the fix you usually want.** A class may

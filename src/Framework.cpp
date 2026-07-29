@@ -465,12 +465,14 @@ std::string build_objects_json() {
     // same reason as the attachment walk, so the cap covers rather than samples.
     out += ",\"spatial_records\":";
     if (const auto sr = mgr->check_spatial_records(8192); sr.has_value()) {
-        char sb[256];
+        char sb[384];
         snprintf(sb, sizeof(sb),
                  "{\"objects\":%zu,\"backpointer_ok\":%zu,\"volume_matched\":%zu,"
-                 "\"volume_gated\":%zu,\"unexplained\":%zu}",
+                 "\"volume_gated\":%zu,\"unexplained\":%zu,\"entries\":%zu,"
+                 "\"count_matches_walk\":%zu,\"entry_record_ok\":%zu,\"hit_links_ok\":%zu}",
                  sr->objects, sr->backpointer_ok, sr->volume_matched, sr->volume_gated,
-                 sr->unexplained);
+                 sr->unexplained, sr->entries, sr->count_matches_walk, sr->entry_record_ok,
+                 sr->hit_links_ok);
         out += sb;
     } else {
         out += "null";

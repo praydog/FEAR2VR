@@ -910,6 +910,22 @@ int main(int argc, char** argv) {
                     // genuinely reached rather than assumed.
                     check(matched > 0, "records with a matching volume exist");
                     check(gated > 0, "gated (legitimately empty) records exist");
+
+                    // The record's ENTRY LIST. Each entry is one object<->hit
+                    // association and sits in two lists with different linkage,
+                    // so the two checks below fail for different reasons:
+                    // count_matches_walk breaks on a RECORD-side offset, and
+                    // hit_links_ok breaks on an ENTRY-side one.
+                    int64_t ents = -1, cmw = -1, erok = -1, hlok = -1;
+                    json_int(rb, "entries", ents);
+                    json_int(rb, "count_matches_walk", cmw);
+                    json_int(rb, "entry_record_ok", erok);
+                    json_int(rb, "hit_links_ok", hlok);
+                    check(ents > 0, "spatial entries exist (the association lists are populated)");
+                    check(cmw == objs,
+                          "every record's entry_count equals its walked entry-list length");
+                    check(erok == objs, "every spatial entry names the record that lists it");
+                    check(hlok == objs, "every spatial entry's hit-side links are consistent");
                 }
             }
         }

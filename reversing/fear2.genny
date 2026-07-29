@@ -483,9 +483,36 @@ class LTRotation 0x10 {
 // LTSpriteObject's kind/aabb/radius and LTParticleSystemObject's
 // cull_volume_type/offsets to one separate copy of the same values. A single
 // moved offset in any of those breaks it.
-class LTSpatialRecord 0x3C {
+// One object<->hit association. Each entry is a member of TWO lists at once,
+// with DIFFERENT linkage disciplines, which is why it carries two link groups:
+//   * the RECORD's list -- singly linked through record_next, head at
+//     LTSpatialRecord.entry_list, length counted in LTSpatialRecord.entry_count.
+//   * the HIT's list -- doubly linked through hit_prev/hit_next, whose head
+//     lives elsewhere and is reached through hit_head. Being doubly linked is
+//     what lets LTSpatialRecord_DetachEntries unlink an entry from the hit side
+//     without walking that list.
+//
+// Structure recovered from LTSpatialRecord_LinkEntry (0x4456DB) and
+// LTSpatialRecord_DetachEntries (0x44559D), then verified live over every object:
+//   * entry->record == the record that lists it, 3583/3583 records clean.
+//   * hit-side links are mutually consistent -- for every entry, hit_next's
+//     hit_prev points back, hit_prev's hit_next points back, and an entry with
+//     no hit_prev is the one its hit_head points at: 3583/3583.
+// Size is the mapped extent; LinkEntry writes exactly these five fields.
+class LTSpatialEntry 0x14 {
+    void* record            @0x00   // CONFIRMED: the owning LTSpatialRecord. void* to avoid a circular type reference.
+    void** hit_head         @0x04   // CONFIRMED: points AT the hit's list-head slot, not at the head element -- DetachEntries writes `*hit_head = hit_next` when this entry is first. The hit itself is unmapped.
+    LTSpatialEntry* record_next @0x08   // CONFIRMED: next entry in the RECORD's list (singly linked)
+    LTSpatialEntry* hit_prev @0x0C   // CONFIRMED: previous entry in the HIT's list
+    LTSpatialEntry* hit_next @0x10   // CONFIRMED: next entry in the HIT's list
+}
+
+// (record class continues below)
+class LTSpatialRecord 0x40 {
     float volume[6]     @0x00   // CONFIRMED: sphere shapes use [0..2] centre + [3] radius; AABB shapes use [0..2] min + [3..5] max. WHICH shape applies is a property of the owning object, not of any field here.
+    uint16_t entry_count @0x30  // CONFIRMED uint16: LinkEntry increments it per entry and DetachEntries zeroes it alongside entry_list. Live it equals the walked length of entry_list on 3583/3583 records -- so it is a maintained count, not a hint. Note the upper half of this dword is a SEPARATE field (live 0x9249 on many records), which is why this is 16-bit.
     void* object        @0x38   // CONFIRMED backpointer to the owning LTObject on 3583/3583. void* only to avoid a circular type reference; it is always an LTObject*.
+    LTSpatialEntry* entry_list @0x3C   // CONFIRMED head of this record's association list, rebuilt by LTSpatialRecord_CollectSphere / _CollectAABB. Live totals: 3666 entries across 3583 records, 1699 of them empty. Per type -- OT_SPRITE 1215/224 objects, OT_WORLDMODEL 1821/1473, OT_PARTICLESYSTEM 336/278, OT_MODEL 294/215, and ZERO for both OT_NORMAL (expected: no cull volume) and OT_CAMERA (NOT expected: cameras do get an AABB volume, so why they associate with nothing is unexplained).
 }
 
 // ---- The base virtual interface (from the six object vtables) --------------

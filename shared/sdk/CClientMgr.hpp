@@ -485,6 +485,20 @@ public:
         size_t volume_matched; // head equals the volume recomputed from typed fields
         size_t volume_gated;   // legitimately absent (OT_NORMAL, or flags3 & 0x80)
         size_t unexplained;    // neither -- MUST be 0
+        // The record's ENTRY LIST -- each entry is one object<->hit association,
+        // and every entry sits in two lists at once with different linkage. What
+        // is checked here:
+        //   * entry_count is a MAINTAINED count, not a hint: it must equal the
+        //     walked length of entry_list on every record.
+        //   * each entry names its own record.
+        //   * the hit-side doubly-linked pointers are mutually consistent.
+        // A wrong record offset makes the count disagree with the walk; a wrong
+        // ENTRY offset makes the hit-side links stop pointing back. The two
+        // failure modes are distinguishable, which is why both are counted.
+        size_t entries;             // entries reached across all records
+        size_t count_matches_walk;  // records where entry_count == walked length
+        size_t entry_record_ok;     // records whose every entry names it
+        size_t hit_links_ok;        // records whose entries' hit links all check out
     };
 
     // nullopt on fault or a walk that failed to terminate.

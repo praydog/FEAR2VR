@@ -12,6 +12,7 @@
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
+#include "regenny/regenny/LTSpatialEntry.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
 #include "regenny/regenny/LTSpriteObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
@@ -1106,6 +1107,44 @@ int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, 
                     }
                     if (!matched) {
                         ++out->unexplained;
+                    }
+
+                    // Walk the record's entry list. Two independent things are
+                    // being checked: that entry_count agrees with the walk (a
+                    // record-side offset), and that the hit-side doubly-linked
+                    // pointers point back at each other (an entry-side offset).
+                    size_t walked = 0;
+                    bool rec_ok = true, hit_ok = true;
+                    for (const regenny::LTSpatialEntry* e = rec->entry_list;
+                         e != nullptr && walked < 2048; e = e->record_next) {
+                        ++walked;
+                        if (e->record != reinterpret_cast<const void*>(rec)) {
+                            rec_ok = false;
+                        }
+                        // hit_next's hit_prev must come back here, and likewise
+                        // hit_prev's hit_next. An entry with no hit_prev is the
+                        // head, so *hit_head must be this entry.
+                        if (e->hit_next != nullptr && e->hit_next->hit_prev != e) {
+                            hit_ok = false;
+                        }
+                        if (e->hit_prev != nullptr) {
+                            if (e->hit_prev->hit_next != e) {
+                                hit_ok = false;
+                            }
+                        } else if (e->hit_head == nullptr ||
+                                   *e->hit_head != reinterpret_cast<const void*>(e)) {
+                            hit_ok = false;
+                        }
+                    }
+                    out->entries += walked;
+                    if (walked == rec->entry_count) {
+                        ++out->count_matches_walk;
+                    }
+                    if (rec_ok) {
+                        ++out->entry_record_ok;
+                    }
+                    if (hit_ok) {
+                        ++out->hit_links_ok;
                     }
                 }
                 ++seen;
