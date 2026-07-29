@@ -558,6 +558,7 @@ int64_t seh_check_transforms(const regenny::CClientMgrListLink* head, size_t max
 int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t max,
                               size_t* count_ok, size_t* embedded_ok, size_t* dup_ok,
                               size_t* asset_ok, size_t* rot_ok, size_t* max_members,
+                              size_t* members_total, size_t* member_asset_ok,
                               size_t cap) {
     int64_t result = -1;
     KANANLIB_SEH_TRY {
@@ -568,11 +569,14 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
                 const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
                     reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
 
-                // Walk the object's own list, looking for its embedded node. The
-                // cap is the same guard used for the outer walk: a corrupt link
-                // must not spin here either.
+                // Walk the object's own list. Every member is an LTModelRecord,
+                // recovered from its `link` at offset 0 -- and the check that
+                // makes that claim real is that each member's asset equals the
+                // owner's. The cap is the same guard used for the outer walk: a
+                // corrupt link must not spin here either.
                 const auto* lh = &obj->list_head;
-                const auto* want = &obj->embedded_link;
+                const auto* want = &obj->record.link;
+                const auto* owner_asset = obj->record.asset;
                 const regenny::CClientMgrListLink* e = lh->next;
                 size_t members = 0;
                 bool found = false, closed = false;
@@ -583,6 +587,11 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
                     }
                     if (e == want) {
                         found = true;
+                    }
+                    const auto* rec = reinterpret_cast<const regenny::LTModelRecord*>(e);
+                    ++*members_total;
+                    if (rec->asset != nullptr && rec->asset == owner_asset) {
+                        ++*member_asset_ok;
                     }
                     ++members;
                     e = e->next;
@@ -598,10 +607,10 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
                 if (found) {
                     ++*embedded_ok;
                 }
-                if (obj->asset != nullptr) {
+                if (obj->record.asset != nullptr) {
                     ++*asset_ok;
                 }
-                if (obj->asset_dup == obj->asset) {
+                if (obj->asset_dup == obj->record.asset) {
                     ++*dup_ok;
                 }
                 const auto& q = obj->cached_rotation;
@@ -760,6 +769,7 @@ std::optional<CClientMgr::ModelListCheck> CClientMgr::check_model_lists(size_t m
                                            &out.count_matches_walk, &out.embedded_linked,
                                            &out.asset_dup_agrees, &out.asset_present,
                                            &out.rotation_unit, &out.max_members,
+                                           &out.members_total, &out.member_asset_ok,
                                            max_object_walk);
     if (n < 0) {
         return std::nullopt;
@@ -927,9 +937,9 @@ int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t 
                 // value stored twice (215/215 live); the object's copy is a
                 // cache, so a divergence means either a moved offset or a stale
                 // cache -- both worth surfacing.
-                if (m->asset != nullptr) {
+                if (m->record.asset != nullptr) {
                     ++*asset_nonnull;
-                    if (approx_eq(m->asset->radius, m->vis_radius)) {
+                    if (approx_eq(m->record.asset->radius, m->vis_radius)) {
                         ++*asset_radius_eq;
                     }
                 }

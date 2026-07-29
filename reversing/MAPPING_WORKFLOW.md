@@ -170,6 +170,25 @@ for the full evidence trail this recipe produced).
   OT_PARTICLESYSTEM share slots 1 and 3..15 and are SIBLINGS; OT_MODEL shares no
   slot with anything and is also a direct child of LTObject. Only one real edge
   existed in the whole family, and the slot table did not identify which.
+- **`ctor(this + N)` DELIMITS A SUB-OBJECT, and any field you already mapped
+  inside that span belongs to it, not to the outer class.** When a constructor
+  passes `this + N` as another function's `this`, everything that callee touches
+  is at offsets relative to N. Read the callee, add N to every offset it writes,
+  and check that range against what you have already named on the outer class.
+  `LTModelObject` had `asset @0xEC` on it. Then `LTModelRecord_ctor` turned up,
+  called on `this + 0xCC`, zeroing its own `+0x20` -- and 0xCC + 0x20 is 0xEC.
+  The offset was right; the OWNER was wrong. Restructuring it into a real
+  embedded record immediately paid: the model's list members are records of that
+  same class, so each member's `+0x20` should be the owner's asset, and live it
+  is on 289/289 -- a check that did not exist while the field was misfiled.
+  This is the SECOND time this exact error class showed up (the transform pair
+  sat on `LTCameraObject` before the destructor chain moved it to WorldModel),
+  and both times a CONSTRUCTOR was what settled ownership. The cost of getting it
+  wrong is not a bad offset -- reads still work -- it is that every derived fact
+  is attributed to the wrong population: 474 cameras instead of 1473
+  worldmodels, one asset field instead of a list of records each holding one.
+  So: before declaring a field on a class, check whether a ctor hands some
+  sub-range of the object to another function. If it does, that range is a class.
 - **A MISSING switch case is proof of impossibility, and it upgrades an
   observation into a theorem.** OT_LIGHT's object list reads 0 entries in every
   live sample, which for a long time was only recorded as "consistent with it

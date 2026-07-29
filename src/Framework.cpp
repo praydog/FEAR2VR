@@ -399,13 +399,14 @@ std::string build_objects_json() {
     // routes to the asset pointer agreeing.
     out += ",\"model_lists\":";
     if (const auto ml = mgr->check_model_lists(8192); ml.has_value()) {
-        char mb[288];
+        char mb[384];
         snprintf(mb, sizeof(mb),
                  "{\"sampled\":%zu,\"count_matches_walk\":%zu,\"embedded_linked\":%zu,"
                  "\"asset_dup_agrees\":%zu,\"asset_present\":%zu,\"rotation_unit\":%zu,"
-                 "\"max_members\":%zu}",
+                 "\"max_members\":%zu,\"members_total\":%zu,\"member_asset_ok\":%zu}",
                  ml->sampled, ml->count_matches_walk, ml->embedded_linked, ml->asset_dup_agrees,
-                 ml->asset_present, ml->rotation_unit, ml->max_members);
+                 ml->asset_present, ml->rotation_unit, ml->max_members, ml->members_total,
+                 ml->member_asset_ok);
         out += mb;
     } else {
         out += "null";

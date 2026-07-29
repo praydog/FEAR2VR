@@ -304,22 +304,28 @@ public:
     // ---- OT_MODEL's embedded list (type 1) -------------------------------
     //
     // Every model owns a list whose head is at LTModelObject::list_head with its
-    // own count beside it, and the constructor links the object's own
-    // embedded_link into it before anything else can. So three things must hold
-    // for every live model, none of them recorded from a previous run:
+    // own count beside it, and the constructor links the object's own embedded
+    // record into it before anything else can. So these must hold for every live
+    // model, none of them recorded from a previous run:
     //   * the stored list_count equals the number of members actually walked,
-    //   * the object's own embedded_link is one of those members, and
-    //   * asset_dup equals asset -- two independent routes to one pointer.
+    //   * the object's own record is one of those members,
+    //   * asset_dup equals record.asset -- two independent routes to one pointer,
+    //   * EVERY member's asset equals the owner's. That last one is what makes
+    //     "the members are LTModelRecords" a claim with evidence rather than an
+    //     assumption about a bare link address: a wrong record layout would put
+    //     something other than the owner's asset at member+0x20.
     // The cached_rotation being unit-length is checked too: it is what proves
     // those 16 bytes are a quaternion rather than trailing padding.
     struct ModelListCheck {
         size_t sampled;            // models examined
         size_t count_matches_walk; // list_count == walked members
-        size_t embedded_linked;    // embedded_link is a member of its own list
-        size_t asset_dup_agrees;   // asset_dup == asset
-        size_t asset_present;      // asset is non-null (a mandatory resource)
+        size_t embedded_linked;    // the object's own record is a member
+        size_t asset_dup_agrees;   // asset_dup == record.asset
+        size_t asset_present;      // record.asset is non-null (a mandatory resource)
         size_t rotation_unit;      // cached_rotation is unit length
         size_t max_members;        // largest list seen (one embedded + extras)
+        size_t members_total;      // members walked across every model
+        size_t member_asset_ok;    // members whose asset equals their owner's
     };
 
     // Walks up to `max` type-1 objects. nullopt on fault or a walk that did not

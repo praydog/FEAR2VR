@@ -1249,6 +1249,37 @@ class LTModelAsset 0x4 {
     float radius   @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 20, 25, 100, 120, 200, 240 across 15 distinct readings -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one.
 }
 
+// The record a model keeps its asset reference in. Constructed by 0x4297CF,
+// which is called on LTModelObject+0xCC, and the model then LINKS IT INTO ITS
+// OWN list (see LTModelObject.list_head). So the embedded one is the model's
+// first list member, always present.
+//
+// This is why `asset` lives HERE and not on LTModelObject: the record's ctor
+// zeroes its own +0x20, and LTModelObject+0xCC + 0x20 == +0xEC, which is the
+// pointer OT_MODEL_GetCullVolume dereferences. The offset was right all along;
+// the OWNER was wrong. Same error class as the transform pair on LTCameraObject,
+// and again a constructor is what settled it.
+//
+// CONFIRMED that the extra list members are records of this same shape: across
+// 215 models the lists hold 289 members (74 of them not the embedded one), and
+// EVERY member's +0x20 is non-null AND equal to its owning model's asset --
+// 289/289. So a model's members all bind the one asset. WHY a model wants
+// several such records is unmapped; naming it after the reference SDK's
+// animation tracker would be a guess, and the reference tree here has no
+// ModelInstance header to check against, so the name stays structural.
+class LTModelRecord 0x34 {
+    CClientMgrListLink link  @0x00   // CONFIRMED: self-pointed by this ctor, then linked into the owning model's list_head by OT_MODEL_ctor, which is the write that takes list_count to 1
+    void* self_ref           @0x08   // ctor writes `this` -- the record's OWN base address, not this field's address. Live it still does on 215/215 embedded records. Probably the tail/head pointer of an inner list that is empty in every sample; unmapped.
+    uint32_t unk_1C          @0x1C   // ctor writes 0
+    LTModelAsset* asset      @0x20   // CONFIRMED non-null and SHARED -- 34 distinct assets across 215 models. Its radius is what branch A of OT_MODEL_GetCullVolume uses (`**(float**)(obj+0xEC)`), and SlotIndex_WantsSlot requires it non-null for type 1, so it is a mandatory resource handle.
+    uint16_t unk_24          @0x24   // ctor writes 0
+    uint16_t unk_26          @0x26   // ctor writes 0
+    uint16_t unk_28          @0x28   // ctor writes 0
+    uint16_t unk_2A          @0x2A   // ctor writes 0
+    float unk_2C             @0x2C   // ctor writes 0.0
+    uint32_t unk_30          @0x30   // NOT written by the ctor, and live it is 0 on 215/215. Included to carry the record up to the owning model's list_head at +0x100; the boundary is inferred from that adjacency, not proven.
+}
+
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
 // element_size, and the class is now CLOSED at that boundary: the cached
 // rotation below ends at exactly 0x198.
@@ -1259,12 +1290,11 @@ class LTModelAsset 0x4 {
 // shares no slots with any sibling, there is no intermediate class here.
 class LTModelObject 0x198 {
     LTObject base            @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
-    CClientMgrListLink embedded_link @0xCC   // CONFIRMED: a link pair that the ctor INSERTS INTO THIS OBJECT'S OWN list_head below, immediately after constructing a sub-object at the same offset (0x4297CF), and the insert is what takes list_count to 1. Live, this node is a member of its own object's list on 215/215. So every model owns at least one of whatever the list holds, always the embedded one.
-    LTModelAsset* asset      @0xEC    // CONFIRMED non-null on 215/215 and SHARED -- 34 distinct across 215 objects. Its radius is what branch A of OT_MODEL_GetCullVolume uses. SlotIndex_WantsSlot also requires this non-null for type 1, so it is a mandatory resource handle. A SECOND ROUTE reaches the same pointer: asset_dup at 0x130 equals it on 215/215.
-    CClientMgrListLink list_head @0x100   // CONFIRMED list head: the ctor self-points both halves (an empty list) and then links embedded_link in. Live it is never empty for that reason. Members are recovered as `link` addresses; the only member whose identity is proven is the object's own embedded_link.
-    uint32_t list_count      @0x108   // CONFIRMED the list's OWN stored count: it equals the walked member count on 215/215, and the ctor increments it to 1 as it links embedded_link. Live distribution 1 (x184), 2 (x6), 3 (x12), 4 (x9), 5 (x3), 6 (x1) -- so one embedded member plus up to five extras. WHAT the extra members are is unmapped; the shape (one built-in plus optional additions) is all that is proven.
+    LTModelRecord record     @0xCC    // CONFIRMED: the embedded record, linked into list_head below. Holds `asset`, which is why no separate asset field appears on this class.
+    CClientMgrListLink list_head @0x100   // CONFIRMED list head: the ctor self-points both halves (an empty list) and then links `record` in. Live it is never empty for that reason. Members are recovered as LTModelRecord addresses.
+    uint32_t list_count      @0x108   // CONFIRMED the list's OWN stored count: it equals the walked member count on 215/215, and the ctor increments it to 1 as it links `record`. Live distribution 1 (x184), 2 (x6), 3 (x12), 4 (x9), 5 (x3), 6 (x1) -- so one embedded record plus up to five extras. All 289 members across 215 models bind the SAME asset as their owner (289/289), which is what identifies them as LTModelRecords; why a model wants several is unmapped.
     void* owned_120          @0x120   // ctor constructs a sub-object here (0x4257CE) and the dtor destroys it (0x428CAC). Live this first dword is a heap pointer unique to each object and far from it, so it is an owned allocation rather than an embedded self-reference. Pointee unmapped.
-    LTModelAsset* asset_dup  @0x130   // CONFIRMED equal to `asset` on 215/215 -- two independent routes to one address, which is why this is worth recording rather than folding away. The ctor constructs a sub-object here (0x42CE7D) and the dtor destroys it (0x42DA6C), so this is the first field of that sub-object and the asset pointer is reachable through it.
+    LTModelAsset* asset_dup  @0x130   // CONFIRMED equal to record.asset on 215/215 -- two independent routes to one pointer, which is why this is worth recording rather than folding away. The ctor constructs a sub-object here (0x42CE7D) and the dtor destroys it (0x42DA6C), so this is the first field of that sub-object and the asset is reachable through it.
     uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume. The two branches differ in MORE than where they read from, which is why both exist: non-zero takes the centre from sphere_center and the radius from asset->radius UNSCALED; zero takes the centre from LTObject.position and the radius from vis_radius * LTObject.scale. Since asset->radius == vis_radius on 215/215, the real distinction is explicit-centre-and-unscaled versus object-centre-and-scaled. Live: 22 non-zero / 193 zero of 215.
     LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position). PROVENANCE, from the ctor: it is initialised by copying base.position. That is why it is stale on most objects -- live it still equals base.position on only 12 of 215 -- and why the 193 objects with sphere_source == 0 can safely ignore it.
     float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give branch B's cull radius. Live > 0 on 215/215. It is a CACHE of the shared asset->radius -- the two are equal on 215/215 objects -- so a mod must not treat them as independent knobs. An earlier note said "the sampled models all read exactly 100.0", which was true only of the six models sampled then; across all 34 assets the values are 20/25/100/120/200/240 and more.
@@ -1279,7 +1309,12 @@ class LTModelObject 0x198 {
 // to every component before handing them out, so these are object-local.
 class LTParticleSystemObject 0x108 {
     LTObject base              @0x00   // CONFIRMED: the first 0xCC bytes are an LTObject
-    uint8_t cull_volume_type   @0xDD   // CONFIRMED: OT_PARTICLESYSTEM_GetCullVolume RETURNS this byte, so it is literally the volume-kind selector -- 1 takes the sphere path, anything else the AABB path. Live it is only ever 1 (239) or 2 (39) across 278/278 objects, which is exactly the pair of values the interface defines.
+    uint32_t unk_CC            @0xCC   // ctor writes 0
+    uint32_t unk_D0            @0xD0   // ctor writes 0
+    uint32_t unk_D4            @0xD4   // ctor writes 0
+    uint32_t unk_D8            @0xD8   // ctor writes 0
+    uint8_t unk_DC             @0xDC   // ctor writes 0. Distinct from cull_volume_type beside it.
+    uint8_t cull_volume_type    @0xDD   // CONFIRMED: OT_PARTICLESYSTEM_GetCullVolume RETURNS this byte, so it is literally the volume-kind selector -- 1 takes the sphere path, anything else the AABB path. Live it is only ever 1 (239) or 2 (39) across 278/278 objects, which is exactly the pair of values the interface defines, and OT_PARTICLESYSTEM_ctor initialises it to 1 -- so the sphere path is the default.
     LTVector sphere_offset     @0xE0   // CONFIRMED: added to LTObject.position to give the sphere centre (type 1)
     float sphere_radius        @0xEC   // CONFIRMED: the sphere radius (type 1)
     LTVector aabb_min_offset   @0xF0   // CONFIRMED: added to LTObject.position to give the AABB min (type != 1)
@@ -1295,7 +1330,19 @@ class LTParticleSystemObject 0x108 {
 // identifies what the sprite IS and the volume shape follows from that.
 class LTSpriteObject 0x154 {
     LTObject base          @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
-    uint8_t kind           @0x106   // CONFIRMED selector in OT_SPRITE_GetCullVolume: kinds 3/4/7/9 take the AABB path, all others the sphere path. Live values span 1..9 across 224/224 objects (6 is the most common at 112), so this is a small dense enum -- but only the AABB-vs-sphere split is proven; what each kind MEANS is unmapped.
+    float unk_CC           @0xCC    // ctor writes 1.0
+    float angle_a          @0xE8    // ctor writes pi/2 (flt_671058 == 1.5707964). An ANGLE by that constant alone; which one is unmapped.
+    float angle_b          @0xEC    // ctor writes the same pi/2 constant. The pair is initialised together.
+    float unk_F0           @0xF0    // ctor writes 0.0
+    float unk_F4           @0xF4    // ctor writes 0.0
+    float unk_F8           @0xF8    // ctor writes 0.0
+    uint8_t none_bytes[6]  @0xFC    // CONFIRMED all six set to 0xFF by the ctor -- the engine's "none" sentinel byte, six of them in a row. Note the class ALSO ends with exactly six owned pointers (see `owned`); a six-and-six correspondence is suggestive of one slot table with a byte index and a pointer each, but nothing links the two spans yet.
+    uint8_t zero_bytes[4]  @0x102   // ctor writes 0 to each
+    uint8_t kind           @0x106   // CONFIRMED selector in OT_SPRITE_GetCullVolume: kinds 3/4/7/9 take the AABB path, all others the sphere path. Live values span 1..9 across 224/224 objects (6 is the most common at 112), so this is a small dense enum -- but only the AABB-vs-sphere split is proven; what each kind MEANS is unmapped. The ctor writes 0, which is NOT among the live values, so 0 means "unset".
+    float unk_108          @0x108   // ctor writes 0.0
+    float unk_10C          @0x10C   // ctor writes 0.0
+    float unk_110          @0x110   // ctor writes 0.0
+    LTVector unk_114       @0x114   // ctor writes (0, 0, 1) -- a unit vector along Z, so plausibly a direction or normal. Unverified beyond the initialiser.
     LTVector aabb_min      @0x120   // CONFIRMED: passed to LTMath_WriteAABB as the min for AABB kinds. Live, min <= max componentwise on 9/9 AABB-kind sprites.
     LTVector aabb_max      @0x12C   // CONFIRMED: the max for AABB kinds
     float radius           @0x138   // CONFIRMED: the sphere radius for all other kinds, paired with LTObject.position as the centre. Live, finite and > 0 on 215/215 sphere-kind sprites.

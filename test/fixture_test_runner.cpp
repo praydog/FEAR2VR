@@ -720,6 +720,19 @@ int main(int argc, char** argv) {
                 // One embedded member is guaranteed by the constructor; extras are
                 // scene-dependent, so only the floor is asserted.
                 check(mm >= 1, "at least the embedded member is present in every list");
+
+                // The claim "the list members are LTModelRecords" needs evidence,
+                // not just a plausible cast of a link address. Each member's
+                // asset must be the OWNER's asset -- a wrong record layout puts
+                // something else at member+0x20, and a wrong list walk reaches
+                // records belonging to other models. Live this covers the 74
+                // members that are NOT the embedded one, which is the only part
+                // of the walk that could go wrong silently.
+                int64_t mt = -1, ma = -1;
+                json_int(mb, "members_total", mt);
+                json_int(mb, "member_asset_ok", ma);
+                check(mt >= s, "every model contributes at least its embedded record");
+                check(ma == mt, "every list member's asset is its owner's asset");
             }
         }
 

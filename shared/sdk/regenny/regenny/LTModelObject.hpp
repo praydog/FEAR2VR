@@ -1,5 +1,6 @@
 #pragma once
 #include "CClientMgrListLink.hpp"
+#include "LTModelRecord.hpp"
 #include "LTObject.hpp"
 #include "LTRotation.hpp"
 #include "LTVector.hpp"
@@ -11,10 +12,7 @@ namespace regenny {
 class LTModelObject {
 public:
     regenny::LTObject base; // 0x0
-    regenny::CClientMgrListLink embedded_link; // 0xcc
-    private: char pad_d4[0x18]; public:
-    regenny::LTModelAsset* asset; // 0xec
-    private: char pad_f0[0x10]; public:
+    regenny::LTModelRecord record; // 0xcc
     regenny::CClientMgrListLink list_head; // 0x100
     uint32_t list_count; // 0x108
     private: char pad_10c[0x14]; public:
