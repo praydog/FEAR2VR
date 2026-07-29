@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A BUG THE LIVE DATA CANNOT EXPOSE NEEDS A SYNTHETIC REGRESSION TEST.** rotation_matrix() hardcoded a
+  factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit, so both formulas
+  agree everywhere the suite looks -- 761 checks passed over the buggy version, and only a decompile found
+  it. Fixing it without a test would leave the next rewrite free to reintroduce it. The discriminating input
+  is a NON-UNIT quaternion: scaling q must not change R(q), which the hardcoded form fails by construction.
+  
+- **"IT FAILS CLOSED" IS A CLAIM ABOUT CODE SHAPE, SO ASSERT IT.** A NaN tolerance passed to the half-plane
+  identity rejects rather than accepts, because near_equal's comparisons are both false against NaN -- the
+  opposite of affines_are_inverse, where the comparison was written out and NaN accepted everything. Same
+  input, opposite outcomes, from a difference no reader would notice. Both are now validated explicitly and
+  both refusals are asserted, so the safety survives a rewrite of either helper.
+
 - **A CHECK THAT ONLY FIRES IN AN UNREACHABLE STATE IS NOT A CHECK.** The projection/half-plane identity
   was written for the perspective case and returned false for everything else -- and the engine leaves its
   camera record in the affine screen pass between frames, so the check could never run against the live

@@ -3848,11 +3848,32 @@ int main(int argc, char** argv) {
                       "distant translation residual stays well under the scaled allowance");
             }
 
+            // THE REGRESSION TEST FOR A BUG THE LIVE CHECKS CANNOT SEE. rotation_matrix() hardcoded a
+            // factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit,
+            // so the two formulas agree everywhere the suite looks and the bug survived until a
+            // decompile exposed it. A NON-UNIT quaternion separates them: scaling q must not change
+            // R(q), since a scaled quaternion is the same rotation, and the hardcoded version fails
+            // that by construction.
+            bool rsi = false, rz = false, rnf = false;
+            check(json_bool(body, "rotation_scale_invariant", rsi) && rsi,
+                  "rotation_matrix(q) == rotation_matrix(k*q) -- the engine's 2/|q|^2 scale, which a "
+                  "hardcoded 2 would fail");
+            check(json_bool(body, "rotation_rejects_zero", rz) && rz,
+                  "rotation_matrix refuses a zero quaternion (no rotation to describe)");
+            check(json_bool(body, "rotation_rejects_nonfinite", rnf) && rnf,
+                  "rotation_matrix refuses a non-finite quaternion");
+
             // Finite input whose OUTPUT overflows -- the same class of hole the projection builders
             // had. invert_transform's optional must mean "usable transform", not "input looked fine".
             bool rop = false;
             check(json_bool(body, "rejects_overflow_pose", rop) && rop,
                   "invert_transform rejects a pose whose rotated position overflows");
+
+            // And the same for the half-plane identity, which fails closed by the shape of its
+            // comparison rather than by an explicit guard -- so the refusal is asserted, not argued.
+            bool inan = false;
+            check(json_bool(body, "identity_rejects_nan_tolerance", inan) && inan,
+                  "the half-plane identity refuses a NaN tolerance");
 
             // A NaN tolerance must be refused. Unvalidated, it accepts anything.
             bool nan_ok = false;

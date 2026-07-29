@@ -224,6 +224,14 @@ std::optional<float> SceneCameraSnapshot::fov_y_radians() const {
 }
 
 bool SceneCameraSnapshot::projection_agrees_with_half_view_plane(float tolerance) const {
+    // Validated explicitly even though near_equal already fails CLOSED on a bad tolerance -- a NaN
+    // allowance makes both of its comparisons false, so a mismatch is rejected rather than accepted.
+    // That is the opposite of affines_are_inverse's earlier hole, where the comparison was written
+    // out and NaN accepted everything. Stating the precondition here means the safety is a contract
+    // rather than a property of a helper someone may later rewrite.
+    if (!std::isfinite(tolerance) || tolerance < 0.0f) {
+        return false;
+    }
     if (!std::isfinite(half_view_plane_x) || !std::isfinite(half_view_plane_y) ||
         half_view_plane_x == 0.0f || half_view_plane_y == 0.0f) {
         return false;

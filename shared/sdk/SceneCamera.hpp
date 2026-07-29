@@ -133,6 +133,9 @@ struct SceneCameraSnapshot {
     // Ties the MATRIX to the SCALAR pair the engine publishes as k_vHalfViewPlane -- two regions
     // written at different moments -- so it is an offset check, a coherence check, and the evidence
     // behind fov_x_radians() all at once.
+    //
+    // Returns false for a non-finite or negative tolerance. Note this predicate fails CLOSED either
+    // way, unlike a hand-written comparison: a NaN allowance rejects rather than accepts.
     bool projection_agrees_with_half_view_plane(float tolerance = 0.02f) const;
 
     // Does the stored view-projection actually equal projection * view?

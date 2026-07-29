@@ -3542,6 +3542,38 @@ std::string build_shader_params_json() {
                 !sdk::SceneCamera::affines_are_inverse(*fwd, *inv, 1e-4f, nan_value);
         }
     }
+    // THE REGRESSION TEST FOR THE HARDCODED-2 BUG. rotation_matrix used a fixed factor of 2 where the
+    // engine divides by |q|^2. Every rotation the game exposes is unit, so that bug passed the entire
+    // suite -- the only thing that catches it is a NON-UNIT quaternion, where the two formulas differ:
+    // scaling q must not change R(q), because a scaled quaternion is the same rotation.
+    bool rotation_scale_invariant = false;
+    bool rotation_rejects_zero = false;
+    bool rotation_rejects_nonfinite = false;
+    {
+        regenny::LTRotation q{};
+        q.x = 0.3f; q.y = -0.5f; q.z = 0.2f; q.w = 0.78f;  // deliberately NOT normalised
+        regenny::LTRotation scaled{};
+        constexpr float kScale = 3.7f;
+        scaled.x = q.x * kScale; scaled.y = q.y * kScale;
+        scaled.z = q.z * kScale; scaled.w = q.w * kScale;
+        const auto a = sdk::rotation_matrix(q);
+        const auto b = sdk::rotation_matrix(scaled);
+        if (a.has_value() && b.has_value()) {
+            rotation_scale_invariant = true;
+            for (size_t i = 0; i < 12; ++i) {
+                if (fabsf(a->m[i] - b->m[i]) > 1e-5f) {
+                    rotation_scale_invariant = false;
+                }
+            }
+        }
+        regenny::LTRotation zero{};
+        rotation_rejects_zero = !sdk::rotation_matrix(zero).has_value();
+        regenny::LTRotation bad{};
+        bad.x = std::numeric_limits<float>::quiet_NaN();
+        bad.w = 1.0f;
+        rotation_rejects_nonfinite = !sdk::rotation_matrix(bad).has_value();
+    }
+
     // Finite input, overflowing output: FLT_MAX positions make the dot products infinite.
     regenny::LTNodeTransform huge_pose = probe_pose;
     huge_pose.position.x = std::numeric_limits<float>::max();
@@ -3549,6 +3581,12 @@ std::string build_shader_params_json() {
     huge_pose.position.z = std::numeric_limits<float>::max();
     const bool rejects_overflow_pose =
         !sdk::SceneCamera::invert_transform(huge_pose).has_value();
+
+    // A NaN tolerance must REJECT here too. Asserted rather than argued, since "it fails closed" is a
+    // claim about the comparison's shape and a later rewrite could invert it silently.
+    const bool identity_rejects_nan_tolerance =
+        !scam.has_value() ||
+        !scam->projection_agrees_with_half_view_plane(std::numeric_limits<float>::quiet_NaN());
 
     const auto near_err = sdk::SceneCamera::view_inverse_round_trip_error(probe_pose);
     const auto far_err = sdk::SceneCamera::view_inverse_round_trip_error(distant_pose);
@@ -3585,6 +3623,10 @@ std::string build_shader_params_json() {
     json_append_double(out, "far_trans_err", far_err.has_value() ? far_err->translation : -1.0, 8);
     json_append_bool(out, "rejects_nan_tolerance", rejects_nan_tolerance);
     json_append_bool(out, "rejects_overflow_pose", rejects_overflow_pose);
+    json_append_bool(out, "rotation_scale_invariant", rotation_scale_invariant);
+    json_append_bool(out, "rotation_rejects_zero", rotation_rejects_zero);
+    json_append_bool(out, "rotation_rejects_nonfinite", rotation_rejects_nonfinite);
+    json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer
