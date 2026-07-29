@@ -507,6 +507,19 @@ public:
         // one. Every entry pointing at a malformed sector is a hit either way.
         size_t entry_sector_aabb_ok;   // the sector's AABB is ordered
         size_t entry_sector_planes_ok; // all its plane normals are unit length (or it has none)
+        // The VISIBILITY GATE. LTObjectOwner_UpdateSpatialRecord only collects
+        // associations when `(flags & 1) && !(flags2 & 0x700)`; otherwise it
+        // calls Release and the list stays empty. So the gate is NECESSARY for
+        // entries to exist -- asserted below as gated_violations == 0 -- but not
+        // sufficient, because a gated object's volume can still miss every
+        // sector. Same asymmetry as renderable-implies-linked, and asserted the
+        // same way: only the direction the engine guarantees.
+        //
+        // This is what explains OT_CAMERA holding no associations at all despite
+        // getting an AABB volume: no camera has flags bit 0.
+        size_t gate_open;         // (flags & 1) && !(flags2 & 0x700)
+        size_t records_with_entries;
+        size_t gated_violations;  // entries > 0 while the gate is CLOSED -- MUST be 0
     };
 
     // nullopt on fault or a walk that failed to terminate.

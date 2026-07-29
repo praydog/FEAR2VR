@@ -1169,6 +1169,20 @@ int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, 
                             }
                         }
                     }
+
+                    // The visibility gate. Transcribed from
+                    // LTObjectOwner_UpdateSpatialRecord: it collects only when
+                    // this holds, and calls Release otherwise.
+                    const bool gate = (o->flags & 1u) != 0 && (o->flags2 & 0x700u) == 0;
+                    if (gate) {
+                        ++out->gate_open;
+                    }
+                    if (walked != 0) {
+                        ++out->records_with_entries;
+                        if (!gate) {
+                            ++out->gated_violations;
+                        }
+                    }
                     out->entries += walked;
                     if (walked == rec->entry_count) {
                         ++out->count_matches_walk;

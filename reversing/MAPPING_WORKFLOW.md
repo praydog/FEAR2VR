@@ -116,6 +116,34 @@ for the full evidence trail this recipe produced).
     that looks this convincing will be rediscovered and re-believed otherwise.
     `slot_index`'s comment records the address, the measurement and the number,
     so the next pass starts after this dead end rather than inside it.
+- **When you need to know WHICH object a `__thiscall` was invoked on, read the
+  disassembly — the decompiler routinely drops it.** Hex-Rays renders a call
+  whose `this` it could not name as an ordinary call and silently discards the
+  `mov ecx, ...` that set it up. In `LTObjectOwner_UpdateSpatialRecord` the
+  pseudocode showed a bare `g_pIWorldClientBSP->slot14()` whose result went
+  nowhere, followed by `CollectSphere(record, volume)`. The disassembly shows
+  what actually happens:
+  ```
+  mov ecx, g_pIWorldClientBSP_Default_6ECD04
+  call dword ptr [eax+38h]   ; slot 14 -> returns the vis-tree manager
+  mov ecx, eax               ; ... which BECOMES CollectSphere's `this`
+  call LTSpatialRecord_CollectSphere
+  ```
+  That one dropped instruction is the anchor for an entire subsystem: it is how
+  the visibility tree is reached from a named global. A "return value that is
+  never used" sitting immediately before another call is the tell — in a
+  `__thiscall` ABI it usually became the next call's `this`.
+- **To close an open question, try hardest to confirm the explanation you find
+  most plausible — and let it fail.** Refutation localises much faster than
+  confirmation. `OT_CAMERA` holding zero visibility associations had two candidate
+  causes: geometric (their volumes miss every sector) or a code gate. The
+  geometric story was the intuitive one, so it got tested first: 459 of 474
+  camera volumes DO overlap at least one sector. With geometry eliminated the
+  answer had to be in the code path, and the gate
+  (`(flags & 1) && !(flags2 & 0x700)`) was two lines of disassembly away — no
+  camera has flags bit 0. Had the gate been checked first and matched, the
+  geometric contribution would still have been unmeasured and the note would have
+  read "probably the gate" instead of a number.
 - Two functions at *different vtable slots* sharing the *identical* body
   address is real (ICF/linker folding when two methods compile identically —
   e.g. `GetNumRecords`/some other `GetNumX` both reducing to `return *(a1+8)`).

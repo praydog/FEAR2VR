@@ -937,6 +937,24 @@ int main(int argc, char** argv) {
                     check(saabb == ents, "every entry's vis sector has an ordered AABB");
                     check(splanes == ents,
                           "every entry's vis sector has unit-length plane normals (or no planes)");
+
+                    // The VISIBILITY GATE. UpdateSpatialRecord collects only
+                    // when (flags & 1) && !(flags2 & 0x700), else it Releases.
+                    // Asymmetric on purpose, same as renderable-implies-linked:
+                    // the gate is necessary, not sufficient, because a gated
+                    // object's volume can still miss every sector. So
+                    // gated_violations is asserted and the 40-odd
+                    // gate-open-but-empty records are simply not.
+                    int64_t gopen = -1, rwe = -1, gviol = -1;
+                    json_int(rb, "gate_open", gopen);
+                    json_int(rb, "records_with_entries", rwe);
+                    json_int(rb, "gated_violations", gviol);
+                    check(gopen > 0, "objects passing the visibility gate exist");
+                    check(rwe > 0, "records holding entries exist");
+                    check(gviol == 0,
+                          "no record holds entries while the visibility gate is closed");
+                    check(rwe <= gopen,
+                          "records with entries are a subset of gate-open objects");
                 }
             }
         }
