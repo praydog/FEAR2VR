@@ -4,6 +4,8 @@
 
 #include <utility/Seh.hpp>
 
+#include "interfaces/IClientShell.hpp"
+#include <utility/Module.hpp>
 #include "CClientMgr.hpp"
 #include "regenny/regenny/CClientShell.hpp"
 #include "Modules.hpp"
@@ -265,5 +267,130 @@ std::optional<bool> CClientShell::local_player_raw_pair_agrees(unsigned index) {
     }
     return mgr->object_from_handle(r.handle) == r.object;
 }
+
+namespace {
+
+// IClientShell vtable slots, established from the binary rather than from the reference SDK's
+// declaration order -- see the header for the anchor.
+constexpr size_t kSlotImplementationName = 1;
+constexpr size_t kSlotPreUpdate = 2;
+constexpr size_t kSlotPostUpdate = 3;
+constexpr size_t kSlotUpdate = 4;
+
+uintptr_t seh_vtable_slot(const void* iface, size_t slot) {
+    uintptr_t out = 0;
+    KANANLIB_SEH_TRY {
+        const auto* vt = *reinterpret_cast<void* const* const*>(iface);
+        if (vt != nullptr) {
+            out = reinterpret_cast<uintptr_t>(vt[slot]);
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+    }
+    return out;
+}
+
+// Slot 1 is `return "CGameClientShell";` -- a pure return of a constant, so calling it has no side
+// effects and needs no particular thread.
+const char* seh_call_impl_name(uintptr_t fn, const void* iface) {
+    const char* out = nullptr;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<const char*(__thiscall*)(const void*)>(fn)(iface);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+    }
+    return out;
+}
+
+int64_t seh_copy_name(const char* src, char* dst, size_t cap) {
+    int64_t n = -1;
+    KANANLIB_SEH_TRY {
+        size_t i = 0;
+        for (; i + 1 < cap && src[i] != '\0'; ++i) {
+            dst[i] = src[i];
+        }
+        dst[i] = '\0';
+        n = static_cast<int64_t>(i);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        n = -1;
+    }
+    return n;
+}
+
+// Only addresses inside gameclient.dll are handed out: an implementation slot pointing anywhere
+// else means the layout assumption is wrong, and hooking it would be worse than refusing.
+bool in_game_client(uintptr_t fn) {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0 || fn == 0) {
+        return false;
+    }
+    const auto size = utility::get_module_size(gc->handle);
+    if (!size.has_value()) {
+        return false;
+    }
+    return fn >= gc->base && fn < gc->base + *size;
+}
+
+uintptr_t resolve_checked(size_t slot) {
+    if (!GameClientShell::available()) {
+        return 0;
+    }
+    auto* iface = interfaces::IClientShell::get();
+    if (iface == nullptr) {
+        return 0;
+    }
+    const auto fn = seh_vtable_slot(iface, slot);
+    return in_game_client(fn) ? fn : 0;
+}
+
+}  // namespace
+
+std::optional<std::string> GameClientShell::implementation_name() {
+    auto* iface = interfaces::IClientShell::get();
+    if (iface == nullptr) {
+        return std::nullopt;
+    }
+    const auto fn = seh_vtable_slot(iface, kSlotImplementationName);
+    if (!in_game_client(fn)) {
+        return std::nullopt;
+    }
+    const char* raw = seh_call_impl_name(fn, iface);
+    if (raw == nullptr) {
+        return std::nullopt;
+    }
+    char buf[64]{};
+    const int64_t n = seh_copy_name(raw, buf, sizeof(buf));
+    if (n <= 0) {
+        return std::nullopt;
+    }
+    return std::string(buf, static_cast<size_t>(n));
+}
+
+bool GameClientShell::available() {
+    const auto name = implementation_name();
+    return name.has_value() && *name == "CGameClientShell";
+}
+
+uintptr_t GameClientShell::pre_update_fn() { return resolve_checked(kSlotPreUpdate); }
+
+bool GameClientShell::pre_update_is_empty() {
+    const auto fn = pre_update_fn();
+    if (fn == 0) {
+        return false;
+    }
+    bool empty = false;
+    KANANLIB_SEH_TRY {
+        empty = *reinterpret_cast<const uint8_t*>(fn) == 0xC3u;  // lone retn
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        empty = false;
+    }
+    return empty;
+}
+uintptr_t GameClientShell::update_fn() { return resolve_checked(kSlotUpdate); }
+uintptr_t GameClientShell::post_update_fn() { return resolve_checked(kSlotPostUpdate); }
 
 } // namespace sdk

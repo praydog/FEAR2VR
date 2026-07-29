@@ -963,6 +963,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A SLOT MAP CAN BE RE-VERIFIED AT RUNTIME, SO DO THAT INSTEAD OF TRUSTING THE READ.** The
+  IClientShell anchor rests on slot 1 returning the literal "CGameClientShell". That is not just
+  static evidence -- slot 1 is a pure return of a constant, so the SDK can CALL it and compare the
+  string on every run. A wrong slot map, or a different game build, then refuses to hand out hook
+  addresses rather than returning something arbitrary to detour.
+  
+  Pair it with containment: every anchor is checked to land inside gameclient.dll, since an
+  implementation slot pointing elsewhere means the layout assumption is wrong. And where a slot has a
+  fingerprint, assert it -- slot 2 being a lone `retn` is a check that a shifted vtable would fail.
+  Label such a check for what it is: a property of the shipped game code, not an invariant.
+
 - **A REFERENCE HEADER GIVES DECLARATION ORDER, NOT SLOT INDICES. Anchor the shift with evidence.**
   The reference declares IClientShell as PreUpdate / PostUpdate / Update over an IBase with exactly
   ONE virtual, which puts the triple at slots 1/2/3. FEAR2 calls 2/4/3. The tempting move is to assume

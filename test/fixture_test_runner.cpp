@@ -1050,6 +1050,31 @@ int main(int argc, char** argv) {
         json_int(body, "wb_inside", wbin);
         json_int(body, "wb_bounds_probed", wbbp);
         json_int(body, "wb_bounds_ok", wbbok);
+        // ---- THE GAME DLL'S PER-FRAME HOOK ANCHORS ------------------------------------
+        //
+        // CClientShell::Update dispatches IClientShell slots 2, 4, 3 every frame -- PreUpdate,
+        // Update, PostUpdate on gameclient.dll's CGameClientShell. Those are the hook sites for a mod
+        // that needs to run inside the game's frame rather than bracketing it, so the slot map has to
+        // stay true against the live build rather than being trusted from a one-off read.
+        //
+        // THE IDENTITY CHECK IS THE LOAD-BEARING ONE: slot 1 is IBase::_InterfaceImplementation and
+        // returns a literal, so calling it verifies the whole +2 anchor rather than assuming it.
+        int64_t gok = -1, ganch = -1, gpre = -1;
+        json_int(body, "gcs_ok", gok);
+        json_int(body, "gcs_anchors", ganch);
+        json_int(body, "gcs_pre_empty", gpre);
+        check(gok == 1, "IClientShell slot 1 reports \"CGameClientShell\" -- the slot map holds");
+        check(ganch == 3,
+              "all three per-frame anchors resolve INSIDE gameclient.dll");
+
+        // A slot-specific fingerprint, and the only one available: PreUpdate is a lone `retn` in this
+        // build, which the reference SDK explains by noting it exists for organisation only. Asserted
+        // because a shifted vtable would put something else at slot 2 -- but it is a property of the
+        // shipped game code, so a build that fills it in would fail this without anything being wrong.
+        check(gpre == 1, "slot 2 is an EMPTY function, the expected PreUpdate fingerprint");
+        printf("[fixture] game shell: identity verified, 3 anchors in gameclient.dll, PreUpdate "
+               "empty\n");
+
         // ---- THE LOCAL PLAYER'S TWO FORMS ---------------------------------------------
         //
         // The shell keeps the player as a HANDLE and as a resolved POINTER, and re-resolves the

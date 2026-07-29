@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 
 // Forward declaration rather than the generated header: this class only hands out
@@ -157,6 +158,60 @@ public:
 
     // How many local player slots are filled (0..4). Single-player reports 1.
     static std::optional<unsigned> local_player_count();
+};
+
+// ---- THE GAME DLL'S SHELL --------------------------------------------------------------
+//
+// CClientShell above is the ENGINE's per-frame driver. This is the other side of that call: the
+// IClientShell implementation living in gameclient.dll, whose class calls itself
+// "CGameClientShell". CClientShell::Update dispatches three of its vtable slots every frame, and
+// those are the hook sites for a mod that needs to run INSIDE the game's own frame rather than
+// bracketing it.
+//
+// WHY THE SLOT MAP IS TRUSTWORTHY: it is not taken from the reference SDK's declaration order,
+// which does not line up. Slot 1 is IBase::_InterfaceImplementation and returns the literal
+// "CGameClientShell", so slot 0 is an implementation-only leading slot the published interface does
+// not contain -- which is what fixes the +2 offset. Corroborated by slot 2 being a single `retn`
+// (the reference notes PreUpdate exists for organisation only) and slot 4 being much the largest.
+//
+// AND IT IS RE-VERIFIED AT RUNTIME rather than assumed: available() calls slot 1 and compares the
+// string. That call is a pure return of a constant, so it is safe to make, and it means a wrong slot
+// map or a different game build refuses to hand out addresses instead of returning something
+// arbitrary to hook.
+class GameClientShell {
+public:
+    // Slot 1's string, which is the interface's own name for its implementation. nullopt when the
+    // interface is unresolved or a read faulted.
+    static std::optional<std::string> implementation_name();
+
+    // Does this build match the mapped slot layout? True only when slot 1 reports
+    // "CGameClientShell". Check once at startup; every accessor below already checks it.
+    static bool available();
+
+    // ---- PER-FRAME HOOK ANCHORS ----------------------------------------------
+    //
+    // Runtime addresses of the three slots CClientShell::Update calls, in call order:
+    // PreUpdate (slot 2), Update (slot 4), PostUpdate (slot 3). All inside gameclient.dll.
+    //
+    // 0 when unavailable, so a caller cannot accidentally hook a null or an engine-side address.
+    // NOTE PreUpdate is EMPTY in this build -- a single `retn` -- so hooking it gets you a
+    // reliable per-frame callback with nothing of the game's own to preserve.
+    static uintptr_t pre_update_fn();
+
+    // IS PreUpdate ACTUALLY EMPTY in this build? True when its first byte is a lone `retn` (0xC3).
+    //
+    // Two uses, and both are real. For a consumer: hooking an empty function means there is no game
+    // behaviour to preserve, so a detour can do its work and return without calling the original.
+    // For validation: an empty body is the one slot-specific fingerprint available here, so this
+    // doubles as a check that slot 2 really is PreUpdate rather than something a shifted vtable put
+    // in its place.
+    //
+    // NOT AN INVARIANT -- it is a property of the shipped game code, which the reference SDK
+    // explains ("the only benefit to having code in PreUpdate() is purely organizational"). A build
+    // that fills it in would report false without anything being wrong.
+    static bool pre_update_is_empty();
+    static uintptr_t update_fn();
+    static uintptr_t post_update_fn();
 };
 
 } // namespace sdk
