@@ -304,6 +304,40 @@ public:
     static constexpr size_t kKeyboardDeviceSize = 0x304;
     static constexpr size_t kMouseDeviceSize = 0x30;
 
+    // ---- THE DEVICE VTABLE: 11 SLOTS ----------------------------------------------------
+    //
+    //    0  ~Device(bool deleting)          6  returns 0.0f  (constant stub, meaning unestablished)
+    //    1  ObjectChanged(id) -> bool       7  returns 1.0f  (constant stub)
+    //    2  Poll()  -- shifts the banks     8  returns true   (constant stub)
+    //    3  GetObjectValue(id) -> float     9  nullsub
+    //    4  GetPreviousObjectValue(id)     10  Reset()
+    //    5  returns 1.0f (constant stub)
+    //
+    // AN EARLIER PASS RECORDED TEN SLOTS, ending at the nullsub -- which is exactly where a dump stops
+    // looking, not where the table ends. Slot 10 is Reset, and the engine itself drives it:
+    // LTInput_ResetDeviceState calls vtable+40 on all six slots, from the input translator's
+    // WM_CANCELMODE and WM_NCACTIVATE handlers. For the mouse it is the very function its constructor
+    // calls, so "reset" and "construct" are the same operation.
+    //
+    // THE EXTENT HAS THREE DIFFERENT TERMINATORS IN THIS BINARY, and only one of them is a code-pointer
+    // walk -- which is why that walk is the wrong tool:
+    //
+    //   * CLTInput (28) and CLTRenderer (92) end where their CLASS-NAME STRING begins. Both publish a
+    //     name through InterfaceImplementation, and the literal sits immediately after the vtable.
+    //   * The two DEVICE vtables end at the next OBJECT: the mouse's 11 slots are bounded by the
+    //     keyboard vtable starting 0x2C later -- an address proven independently, since CLTInput::Init
+    //     stores that literal -- and the keyboard's by the next named datum.
+    //   * Walking until the dwords stop being function pointers OVERRUNS BOTH, giving 27 and 16, because
+    //     .rdata packs these tables contiguously. A plausible number, arrived at by the wrong method.
+
+    static constexpr size_t kDeviceVtableSlots = 11;
+    static constexpr size_t kDeviceSlotReset = 10;
+
+    // The device's resolved vtable entries, guarded and bounds-checked into the exe. Handed over rather
+    // than driven: Reset in particular clears live input state, and choosing when to do that is the
+    // consumer's call, not this SDK's.
+    static std::vector<uintptr_t> device_vtable_entries(DeviceKind kind);
+
     // ---- THE BINDING SETS: THE ENGINE'S ACTION TABLE -----------------------------------
     //
     // CLTInput_Poll polls the devices and then walks a list of binding sets, firing the handler of every

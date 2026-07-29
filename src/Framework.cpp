@@ -4100,6 +4100,28 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE DEVICE VTABLES' EXTENT -------------------------------------------------------------
+    //
+    // 11 slots each, and every entry must be engine code. This is the check that would have caught the
+    // ten-slot reading: a table recorded one slot short still resolves fine, so nothing fails -- but a
+    // table recorded one slot LONG reads past its end into the neighbouring object, and since .rdata
+    // packs these contiguously the overrun still looks like a function pointer. Requiring exactly 11
+    // in-exe entries pins the extent from the side that can actually fail.
+    const auto kb_slots = sdk::Input::device_vtable_entries(sdk::Input::DeviceKind::Keyboard);
+    const auto ms_slots = sdk::Input::device_vtable_entries(sdk::Input::DeviceKind::Mouse);
+    json_append_double(out, "input_keyboard_vtable_slots", static_cast<double>(kb_slots.size()), 0);
+    json_append_double(out, "input_mouse_vtable_slots", static_cast<double>(ms_slots.size()), 0);
+    // The two tables are distinct objects: identical entries would mean one device is being read twice.
+    json_append_bool(out, "input_device_vtables_distinct",
+                     !kb_slots.empty() && !ms_slots.empty() && kb_slots != ms_slots);
+    // Slot 10 is Reset, and it must differ between the two -- the mouse's is its constructor's helper,
+    // the keyboard's zeroes its banks.
+    json_append_bool(out, "input_device_reset_differs",
+                     kb_slots.size() > sdk::Input::kDeviceSlotReset &&
+                         ms_slots.size() > sdk::Input::kDeviceSlotReset &&
+                         kb_slots[sdk::Input::kDeviceSlotReset] !=
+                             ms_slots[sdk::Input::kDeviceSlotReset]);
+
     // ---- THE ENGINE'S PUBLIC CLASSIFIER, AGAINST THE LOCAL MIRROR -------------------------------
     //
     // classify_object() reimplements four lines of engine code. Slot 23 IS those four lines. Comparing

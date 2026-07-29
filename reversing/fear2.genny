@@ -3582,12 +3582,22 @@ class LTInputDeviceMouse 0x30 {
 // serves them is NOT ESTABLISHED. Also note that with the set's kind byte at its initial -1, EVERY
 // lookup returns 0 -- keyboard and mouse included -- so a freshly allocated set is inert by construction.
 //
-// THE DEVICE VTABLE, each slot confirmed by who calls it rather than by position:
+// THE DEVICE VTABLE -- 11 SLOTS (0..10), each confirmed by who calls it rather than by position:
 //     slot 0  destructor (LTMem_Free)
 //     slot 1  ObjectChanged(id) -> bool    <- reached at +4 by LTInput_ObjectChanged
 //     slot 2  Poll()                       <- CLTInput_PollDevices, +8
 //     slot 3  GetObjectValue(id) -> float  <- LTInput_GetObjectValue, +12
 //     slot 4  GetPreviousObjectValue(id)   <- LTInput_GetPreviousObjectValue, +16
+//     slots 5,7 stubs returning 1.0f; slot 6 returns 0.0f; slot 8 returns true; slot 9 nullsub
+//     slot 10 Reset()                      <- LTInput_ResetDeviceState, +40, across all six slots
+//
+// AN EARLIER VERSION OF THIS SECTION SAID TEN SLOTS, ending at the nullsub -- which is where a dump stops
+// looking, not where a table ends. Slot 10 is Reset, and the engine drives it from the input translator's
+// WM_CANCELMODE and WM_NCACTIVATE handlers; for the mouse it is the same function its constructor calls, so
+// reset and construct are one operation. THE EXTENT IS BOUNDED BY THE NEXT OBJECT: the mouse's 11 slots end
+// where the keyboard vtable begins 0x2C later (an address proven independently, since CLTInput_Init stores
+// that literal), and the keyboard's at the next named datum. Walking for non-code dwords OVERRUNS BOTH,
+// giving 27 and 16, because .rdata packs the tables contiguously.
 //
 // SLOT 1 IS NOT "IS IT DOWN". It is `previous != current`: the keyboard's implementation is literally
 // `this[vk + 260] != this[vk + 4]`. So THE BINDING DISPATCH IS EDGE-TRIGGERED. The mouse's version

@@ -660,6 +660,32 @@ uintptr_t device_slot(uintptr_t device, size_t slot) {
 
 }  // namespace
 
+std::vector<uintptr_t> Input::device_vtable_entries(DeviceKind kind) {
+    std::vector<uintptr_t> out;
+    const auto dev = device(kind);
+    if (!dev.has_value() || dev->vtable == 0) {
+        return out;
+    }
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return out;
+    }
+    out.reserve(kDeviceVtableSlots);
+    for (size_t i = 0; i < kDeviceVtableSlots; ++i) {
+        uint32_t fn = 0;
+        if (!seh_copy(&fn, dev->vtable + i * sizeof(uint32_t), sizeof(fn))) {
+            break;
+        }
+        // Every entry must be engine code; one outside the image would mean this is not the class the
+        // mapping describes -- or that the table is shorter than 11 and we are reading past it.
+        if (fn < exe->base || fn >= exe->base + exe->size) {
+            break;
+        }
+        out.push_back(fn);
+    }
+    return out;
+}
+
 Input::ObjectClass Input::classify_object(int object_id) {
     // Mirrors LTInput_DeviceIndexForObject exactly, including the keyboard fallthrough.
     if (static_cast<unsigned>(object_id - 2000) <= 0x15u) {

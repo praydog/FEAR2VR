@@ -4052,6 +4052,31 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE DEVICE VTABLES' EXTENT ----------------------------------------------------
+            //
+            // Eleven slots each. An earlier pass recorded TEN, stopping at a nullsub -- which is where a
+            // dump stops looking, not where a table ends. Slot 10 is Reset, and the engine drives it
+            // itself from the input translator's WM_CANCELMODE and WM_NCACTIVATE handlers.
+            //
+            // This assertion pins the extent from the side that can fail. Recording a table one slot
+            // SHORT breaks nothing -- everything still resolves -- whereas one slot LONG reads into the
+            // neighbouring object, and because .rdata packs these tables contiguously the overrun still
+            // looks like a valid function pointer. Requiring exactly eleven in-exe entries is what makes
+            // the boundary checkable at runtime at all.
+            double kb_vt = -1.0, ms_vt = -1.0;
+            check(json_double(body, "input_keyboard_vtable_slots", kb_vt) && kb_vt == 11.0,
+                  "the keyboard device vtable has 11 entries, all engine code");
+            check(json_double(body, "input_mouse_vtable_slots", ms_vt) && ms_vt == 11.0,
+                  "and so does the mouse's");
+            bool vt_distinct = false, reset_differs = false;
+            check(json_bool(body, "input_device_vtables_distinct", vt_distinct) && vt_distinct,
+                  "the two tables are distinct objects, not one device read twice");
+            // The two Resets are genuinely different functions: the mouse's is the helper its constructor
+            // calls, the keyboard's zeroes its banks. Equal pointers would mean a shared stub, and would
+            // undermine reading slot 10 as a per-device operation.
+            check(json_bool(body, "input_device_reset_differs", reset_differs) && reset_differs,
+                  "each device has its own Reset at slot 10");
+
             // ---- THE PUBLIC CLASSIFIER, AGAINST THE LOCAL MIRROR -------------------------------
             //
             // classify_object() reimplements four lines of engine code; ILTInput slot 23 IS those four

@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A VTABLE ENDS WHERE ITS TERMINATOR SAYS, AND THIS BINARY HAS THREE OF THEM.** I published ILTInput as 12
+  slots (it has 28) and the input device vtables as 10 (they have 11). Both numbers were where a dump stopped.
+  Auditing every vtable I had published a count for turned up the second error immediately, which is the
+  argument for doing it proactively rather than waiting for a consumer to hit it. The terminators:
+    - **A class-name string.** `CLTInput` (28 slots) and `CLTRenderer` (92) both publish a name through
+      `InterfaceImplementation`, and MSVC places that literal immediately after the vtable. The string *is*
+      the boundary, and it is exact.
+    - **The next object.** The two device vtables have no name string. The mouse's 11 slots are bounded by
+      the keyboard vtable starting 0x2C later -- an address proven independently, because `CLTInput::Init`
+      stores that literal -- and the keyboard's by the next named datum.
+    - **Walking until the dwords stop being function pointers, which is WRONG HERE.** It overruns both device
+      tables, giving 27 and 16, because `.rdata` packs them contiguously. It produces a plausible number by
+      the wrong method, which is the failure mode this whole section is about.
+  A count recorded one slot SHORT breaks nothing and so hides forever; one slot LONG reads into the
+  neighbouring object and still looks like a function pointer. So assert the exact count against in-image
+  entries -- that is the only side that can fail.
+
 - **A FILTER'S REJECTIONS BOUND YOUR TABLE, AND THE RESULT LOOKS FINE -- TWICE RUNNING.** I reported the engine
   variable table as 22 entries, then as 106. It has 107. The second correction came from applying this very
   lesson and walking backward: one entry earlier sits "IP", a TWO-character name that the locating scan's
