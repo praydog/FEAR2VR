@@ -11,9 +11,11 @@ namespace sdk {
 namespace {
 
 // The resource manager singleton, from the lazy initialiser the console commands call before enumerating.
-// NOT the container base -- see the header: read live, this object's first dword is 0 where a bucket
-// sentinel's self-link would be.
 constexpr uintptr_t kManagerOffset = 0x2F24F0;
+// The hash table is a MEMBER at +0x2C, not the manager itself. The constructor proves it arithmetically:
+// it initialises something at `this + 44` and the next field it touches is at 1068 == 44 + 128*8.
+constexpr uintptr_t kTableWithinManager = 0x2C;
+constexpr uintptr_t kRecNext = 0x04;
 
 // Record offsets, each taken from a ListResourcesOfType column accessor rather than guessed.
 constexpr uintptr_t kRecName = 0x0C;
@@ -60,6 +62,77 @@ bool read_name(uintptr_t at, std::string& out) {
     return false;
 }
 
+// The one walk every public entry point shares. `visit` returns false to stop early.
+template <typename Fn>
+bool walk(Fn&& visit, Resources::Stats* stats) {
+    const uintptr_t table = Resources::table_address();
+    if (table == 0) {
+        return false;
+    }
+    size_t total = 0;
+    for (size_t b = 0; b < Resources::kBucketCount; ++b) {
+        const uintptr_t bucket = table + b * 8;
+        uint32_t self_link = 0, head = 0;
+        if (!seh_copy(&self_link, bucket, sizeof(self_link)) ||
+            !seh_copy(&head, bucket + 4, sizeof(head))) {
+            continue;
+        }
+        // THE ENGINE'S OWN EMPTINESS TEST is on the FIRST dword, while the first node comes from the
+        // SECOND. The two are different fields and conflating them is what produced a non-terminating walk.
+        if (self_link == bucket || head == 0 || head == bucket) {
+            continue;
+        }
+        if (stats != nullptr) {
+            ++stats->buckets_used;
+        }
+        uintptr_t node = head;
+        size_t chain = 0;
+        while (node != 0 && node != bucket && chain < Resources::kMaxChain &&
+               total < Resources::kMaxRecords) {
+            const auto rec = Resources::read(node);
+            if (!rec.has_value()) {
+                break;
+            }
+            ++total;
+            ++chain;
+            if (stats != nullptr) {
+                if (!rec->name.empty()) {
+                    ++stats->named;
+                }
+                if (rec->loaded) {
+                    ++stats->loaded;
+                }
+                if (rec->auto_prefetched) {
+                    ++stats->auto_prefetched;
+                }
+            }
+            if (!visit(*rec)) {
+                if (stats != nullptr) {
+                    stats->total = total;
+                }
+                return true;
+            }
+            uint32_t next = 0;
+            if (!seh_copy(&next, node + kRecNext, sizeof(next))) {
+                break;
+            }
+            node = next;
+        }
+        if (stats != nullptr) {
+            if (chain > stats->longest_chain) {
+                stats->longest_chain = chain;
+            }
+            if (chain >= Resources::kMaxChain || total >= Resources::kMaxRecords) {
+                stats->hit_cap = true;
+            }
+        }
+    }
+    if (stats != nullptr) {
+        stats->total = total;
+    }
+    return true;
+}
+
 }  // namespace
 
 uintptr_t Resources::manager_address() {
@@ -68,6 +141,60 @@ uintptr_t Resources::manager_address() {
         return 0;
     }
     return exe->base + kManagerOffset;
+}
+
+uintptr_t Resources::table_address() {
+    const uintptr_t mgr = manager_address();
+    return mgr == 0 ? 0 : mgr + kTableWithinManager;
+}
+
+std::optional<Resources::Stats> Resources::stats() {
+    Stats s{};
+    if (!walk([](const Record&) { return true; }, &s)) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+std::vector<Resources::Record> Resources::all(size_t limit) {
+    std::vector<Record> out;
+    walk(
+        [&](const Record& rec) {
+            out.push_back(rec);
+            return limit == 0 || out.size() < limit;
+        },
+        nullptr);
+    return out;
+}
+
+std::optional<Resources::Record> Resources::find(std::string_view name) {
+    std::optional<Record> found;
+    walk(
+        [&](const Record& rec) {
+            if (rec.name == name) {
+                found = rec;
+                return false;
+            }
+            return true;
+        },
+        nullptr);
+    return found;
+}
+
+std::vector<Resources::Record> Resources::search(std::string_view needle, size_t limit) {
+    std::vector<Record> out;
+    if (needle.empty()) {
+        return out;
+    }
+    walk(
+        [&](const Record& rec) {
+            if (rec.name.find(needle) != std::string::npos) {
+                out.push_back(rec);
+            }
+            return limit == 0 || out.size() < limit;
+        },
+        nullptr);
+    return out;
 }
 
 std::optional<Resources::Record> Resources::read(uintptr_t record_address) {

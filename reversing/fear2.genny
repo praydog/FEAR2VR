@@ -4199,12 +4199,35 @@ class LTInputDeviceMouse 0x30 {
 // than a boundary. An earlier hand walk had reported "7814 records" and that number was the same artefact:
 // 126 buckets against a per-bucket guard of 64.
 //
-// So the real table is at an offset INSIDE the manager, or the stride is not 8, and neither is measured.
-// RECORDED AS OPEN rather than shipped: sdk::Resources exposes read(address) for a consumer that obtains a
-// record pointer by other means, and NO enumerator. The suite asserts only what a partial mapping owes --
-// that the reader refuses a null address, and that reading the manager object itself (real memory, not a
-// record) yields NO NAME rather than binary dressed as a resource path.
+// ---- RESOLVED: THE TABLE IS AT MANAGER + 0x2C -------------------------------------------------
+//
+// THE CONSTRUCTOR SETTLES IT ARITHMETICALLY, which is what guessing could not. LTResourceMgr_ctor
+// (0x4404AD) calls an initialiser on `this + 44` and the NEXT field it touches is at 1068 -- and
+// 1068 == 44 + 128*8, exactly the size of the bucket array. So the table spans manager+0x2C..manager+0x42C
+// and nothing else can fit there.
+//
+// VERIFIED LIVE ON THE CORRECT BASE, and the contrast with the wrong one is the whole lesson:
+//
+//                        wrong base (manager+0)      right base (manager+0x2C)
+//     total records      65536  == my own cap        3458   -- stops naturally
+//     longest chain      8192   == my per-bucket cap   42   -- far below any cap
+//     buckets occupied   126 (of 128, by accident)    128   -- all of them
+//     names readable     65534 "printable"            3458  -- ALL of them
+//     first node's bytes 61 6E 69 6D, ASCII "anim"    a real path
+//
+// EVERY FIGURE ON THE LEFT EQUALLED A LIMIT I HAD CHOSEN. That is the tell, and it is why hit_cap is part of
+// the public Stats rather than an internal detail -- a caller must be able to distinguish a count from a
+// ceiling. The suite asserts hit_cap is FALSE, which is the assertion that would have failed on the wrong
+// base while every other number still looked plausible.
+//
+// Live: 3458 resources, all named, 1945 loaded, 25 auto-prefetched, 128 buckets, longest chain 42 -- a
+// well-distributed table averaging 27 per bucket.
+//
+// EXPOSED AS sdk::Resources with stats(), all(), find() and search(). find() is case-SENSITIVE on purpose:
+// the engine's own paths are consistent, and folding case would hide a caller passing the wrong separator.
+// The suite round-trips search() against find() rather than against a constant, so the two query paths check
+// each other.
 //
 // > A traversal that stops at its own cap is not a measurement. The cap being round is the tell.
 //
-// 920 checks, 0 failures.
+// 929 checks, 0 failures.

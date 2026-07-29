@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 // ONE RESOURCE-REGISTRY RECORD, and deliberately nothing more.
 //
@@ -28,22 +30,30 @@
 // with refcounts of 1, 2, 3, 5, the world file reading loaded and unresident prefabs reading not-loaded.
 // A wrong name offset would have produced binary immediately.
 //
-// WHAT IS *NOT* ESTABLISHED, AND WHY THERE IS NO ENUMERATOR HERE.
+// THE CONTAINER, AND HOW A WRONG GUESS AT IT WAS CAUGHT.
 //
-// The container is reached through a lazily-initialised manager singleton, and the engine's iterator walks
-// something as 128 two-dword buckets, treating a bucket as empty when its first dword points at itself and
-// taking the first node from its second. I took `&unk_6F24F0` -- the singleton's address -- as that table
-// base, and it is NOT: read live, its first dword is 0 rather than a self-link, and the address its second
-// dword yields begins with the ASCII bytes "anim". That is a string, not a record.
+// It is a 128-bucket hash table of intrusive circular lists at MANAGER + 0x2C -- not at the manager, which
+// is what a first version of this file assumed. THE CONSTRUCTOR SETTLES IT ARITHMETICALLY: it initialises
+// something at `this + 44`, and the next field it touches is at 1068 == 44 + 128*8, exactly the table's
+// size. A bucket is EMPTY when its first dword points at itself (the engine's own test), its first node
+// comes from its SECOND dword, and records link through +0x04 around to the sentinel.
 //
-// A walk built on that assumption did not terminate. It ran to its own 65536-record cap while reporting
-// 65534 "printable names", which is exactly the shape of a plausible-looking wrong answer -- the same
-// failure mode this project has hit on extents four times, arriving this time as a traversal instead.
+// THE WRONG GUESS LOOKED ENTIRELY RIGHT, which is why it stays written down. Taking the manager's own
+// address as the table produced a walk that ran to its 65536-record cap while reporting 65534 "printable
+// names" and a longest chain of exactly the per-bucket cap -- every figure an artefact of a bound I chose.
+// An earlier hand walk's "7814 records" was the same artefact at a smaller guard. THE TELL WAS THAT EACH
+// NUMBER EQUALLED ONE OF MY OWN LIMITS, which is why hit_cap is part of Stats rather than an internal
+// detail: a caller must be able to tell a count from a ceiling.
 //
-// So the table's real base is an offset INSIDE the manager, or the stride is not 8, and neither is measured.
-// A consumer that obtains a record pointer by other means can read it with the accessors below; one that
-// wants to enumerate the registry cannot do it through this SDK yet, and is better served knowing that than
-// being handed a walk that returns 65536 entries.
+// VERIFIED ON THE CORRECT BASE: 128 of 128 buckets occupied, and 128 of 128 first nodes carrying plausible
+// paths -- worlds\sp\m05_outershell\..., prefabs\e04\general\window_03.inst -- with refcounts of 1, 2, 3
+// and mixed load states. On the wrong base the first node's bytes read "anim": a string, not a record, and
+// the check that should have been run before building anything on it.
+//
+// NOT EXPOSED: the "Memory" column, since its accessor returns 0 unless the data pointer is set and
+// otherwise asks the loaded object, so it is derived rather than stored. Nor the manager's other
+// 1200-odd bytes -- tracking lists, a vtable at +1076, several sub-objects -- which this class does not
+// touch.
 namespace sdk {
 
 class Resources {
@@ -64,9 +74,38 @@ public:
     // instead of binary presented as a filename.
     static std::optional<Record> read(uintptr_t record_address);
 
-    // The manager singleton's address -- the object the container lives in or under. Exposed because it is
-    // the starting point for finishing the mapping, not because the layout beneath it is known.
     static uintptr_t manager_address();
+    static uintptr_t table_address();  // manager + 0x2C -- see the container note above
+
+    static constexpr size_t kBucketCount = 128;
+    // Caps, so a corrupted list cannot spin the game thread. Live figures sit far below these -- and if a
+    // walk ever REACHES one, hit_cap says so, because a count equal to a self-imposed bound is not a
+    // measurement. That is exactly how the wrong table base was caught.
+    static constexpr size_t kMaxRecords = 262144;
+    static constexpr size_t kMaxChain = 32768;
+
+    struct Stats {
+        size_t total{};
+        size_t named{};
+        size_t loaded{};
+        size_t auto_prefetched{};
+        size_t buckets_used{};
+        size_t longest_chain{};
+        bool hit_cap{};  // true means these are lower bounds, not counts
+    };
+
+    static std::optional<Stats> stats();
+
+    // Every record, or the first `limit` when non-zero, in bucket order rather than alphabetical.
+    static std::vector<Record> all(size_t limit = 0);
+
+    // Exact-name lookup, case-SENSITIVE: the engine's own paths are consistent, and folding case would hide
+    // a caller passing the wrong separator or casing.
+    static std::optional<Record> find(std::string_view name);
+
+    // Substring search -- the query a consumer actually makes, since resource paths are long and
+    // hierarchical ("which materials are loaded").
+    static std::vector<Record> search(std::string_view needle, size_t limit = 32);
 };
 
 }  // namespace sdk

@@ -4111,6 +4111,38 @@ std::string build_shader_params_json() {
     // here, and what is checked instead is that the reader REFUSES what it cannot validate: a null address,
     // and an address that is real memory but not a record.
     json_append_bool(out, "resources_manager_resolved", sdk::Resources::manager_address() != 0);
+    json_append_bool(out, "resources_table_offset_ok",
+                     sdk::Resources::table_address() == sdk::Resources::manager_address() + 0x2C);
+    const auto res_stats = sdk::Resources::stats();
+    json_append_bool(out, "resources_stats_readable", res_stats.has_value());
+    if (res_stats.has_value()) {
+        json_append_double(out, "resources_total", static_cast<double>(res_stats->total), 0);
+        json_append_double(out, "resources_named", static_cast<double>(res_stats->named), 0);
+        json_append_double(out, "resources_loaded", static_cast<double>(res_stats->loaded), 0);
+        json_append_double(out, "resources_prefetched",
+                           static_cast<double>(res_stats->auto_prefetched), 0);
+        json_append_double(out, "resources_buckets_used",
+                           static_cast<double>(res_stats->buckets_used), 0);
+        json_append_double(out, "resources_longest_chain",
+                           static_cast<double>(res_stats->longest_chain), 0);
+        // THE FIGURES ARE ONLY COUNTS IF NO CAP WAS REACHED. This flag is how the wrong table base was
+        // caught, so it is reported rather than swallowed.
+        json_append_bool(out, "resources_hit_cap", res_stats->hit_cap);
+    }
+    // A query a mod would run, plus a ROUND TRIP: whatever search() returns must be findable by its exact
+    // name, which tests the two query paths against each other rather than against a constant.
+    const auto res_worlds = sdk::Resources::search("worlds", 6);
+    json_append_double(out, "resources_world_hits", static_cast<double>(res_worlds.size()), 0);
+    size_t res_roundtrip = 0;
+    for (const auto& r : res_worlds) {
+        const auto back = sdk::Resources::find(r.name);
+        if (back.has_value() && back->address == r.address) {
+            ++res_roundtrip;
+        }
+    }
+    json_append_double(out, "resources_roundtrip", static_cast<double>(res_roundtrip), 0);
+    json_append_bool(out, "resources_absent_refused",
+                     !sdk::Resources::find("no_such_resource_anywhere.xyz").has_value());
     json_append_bool(out, "resources_null_refused", !sdk::Resources::read(0).has_value());
     // The manager object itself is NOT a record. Reading it must either fail or come back unnamed -- it
     // must never present binary as a resource path, which is the guarantee the name validator exists for.

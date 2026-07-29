@@ -4078,6 +4078,45 @@ int main(int argc, char** argv) {
             check(json_bool(body, "resources_bogus_unnamed", rs_bogus) && rs_bogus,
                   "reading a non-record address yields no name rather than binary");
 
+            // THE CONTAINER IS NOW MAPPED, at manager + 0x2C. The constructor settles that arithmetically:
+            // it initialises something at +44 and the next field it touches is at 1068 == 44 + 128*8.
+            bool rs_off = false, rs_stats = false, rs_cap = true;
+            check(json_bool(body, "resources_table_offset_ok", rs_off) && rs_off,
+                  "the hash table sits at manager + 0x2C");
+            check(json_bool(body, "resources_stats_readable", rs_stats) && rs_stats,
+                  "the registry walks");
+
+            // THE CHECK THAT DISTINGUISHES A COUNT FROM A CEILING, and the one that caught a wrong table
+            // base: a walk that stops at its own cap is not a measurement. On the wrong base this reported
+            // 65536 records with a longest chain of exactly the per-bucket cap; on the right one it stops
+            // naturally well below both.
+            check(json_bool(body, "resources_hit_cap", rs_cap) && !rs_cap,
+                  "the walk terminates on its own rather than at a cap");
+
+            double rs_total = -1.0, rs_named = -1.0, rs_loaded = -1.0, rs_buckets = -1.0, rs_chain = -1.0;
+            const bool rsn = json_double(body, "resources_total", rs_total) &&
+                             json_double(body, "resources_named", rs_named) &&
+                             json_double(body, "resources_loaded", rs_loaded) &&
+                             json_double(body, "resources_buckets_used", rs_buckets) &&
+                             json_double(body, "resources_longest_chain", rs_chain);
+            check(rsn && rs_total > 100.0, "the registry holds a substantial number of resources");
+            // EVERY record names itself. This is the record-layout check: the name reader rejects anything
+            // non-printable, so a wrong +0x0C would show up as named < total immediately.
+            check(rsn && rs_named == rs_total, "every record has a readable resource path");
+            check(rsn && rs_buckets == 128.0 && rs_chain > 0.0 && rs_chain < 1000.0,
+                  "all 128 buckets are in use and no chain is pathological");
+            // Mixed load states, so "loaded" is a real field rather than a constant.
+            check(rsn && rs_loaded > 0.0 && rs_loaded < rs_total,
+                  "some resources are loaded and some are not");
+
+            double rs_hits = -1.0, rs_rt = -1.0;
+            bool rs_absent = false;
+            check(json_double(body, "resources_world_hits", rs_hits) && rs_hits > 0.0 &&
+                      json_double(body, "resources_roundtrip", rs_rt) && rs_rt == rs_hits,
+                  "every search hit is findable again by its exact name");
+            check(json_bool(body, "resources_absent_refused", rs_absent) && rs_absent,
+                  "a name that is not in the registry yields nothing");
+
             // ---- THREE ASSET COUNTS THE ENGINE NAMED FOR ITSELF --------------------------------
             //
             // The LogModels console command writes a CSV whose header names twelve columns, and reading its
