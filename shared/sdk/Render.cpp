@@ -64,26 +64,6 @@ bool seh_copy(uintptr_t from, void* to, size_t bytes) {
     return ok;
 }
 
-std::optional<std::string> module_owning(uintptr_t address) {
-    // Deliberately NOT matched against sdk::Modules: the answers that matter are modules
-    // we do not track (the Steam overlay, d3d9.dll), so ask the OS which one owns the
-    // address rather than testing our five known ranges.
-    HMODULE owner = nullptr;
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(address), &owner) == 0 ||
-        owner == nullptr) {
-        return std::nullopt;
-    }
-    char path[MAX_PATH]{};
-    if (GetModuleFileNameA(owner, path, sizeof(path)) == 0) {
-        return std::nullopt;
-    }
-    std::string full{path};
-    const auto slash = full.find_last_of("\\/");
-    return slash == std::string::npos ? full : full.substr(slash + 1);
-}
-
 }  // namespace
 
 uintptr_t Render::adapter_info_address() {
@@ -190,7 +170,7 @@ std::optional<std::string> Render::interface_impl_owner(IUnknown* iface, size_t 
     if (!fn.ok || fn.value == 0) {
         return std::nullopt;
     }
-    return module_owning(fn.value);
+    return Modules::owning_module_name(fn.value);
 }
 
 }  // namespace sdk

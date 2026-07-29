@@ -4100,6 +4100,34 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    const auto chain = sdk::Input::wndproc_chain();
+    json_append_bool(out, "input_wndproc_readable", chain.has_value());
+    if (chain.has_value()) {
+        json_append_bool(out, "input_wndproc_saved_is_engine", chain->saved_is_engine);
+        json_append_bool(out, "input_wndproc_engine_owns_window", chain->engine_owns_window);
+        json_append_double(out, "input_wndproc_current_offset",
+                           static_cast<double>(chain->current >= input_exe_base &&
+                                                       chain->current < input_exe_base + input_exe_size
+                                                   ? chain->current - input_exe_base
+                                                   : 0),
+                           0);
+    }
+    // Whether the exe owns GWL_WNDPROC. The owner's NAME stays on the SDK (WndProcChain::current_owner)
+    // for a consumer to print: this endpoint emits bools and doubles only, and adding a string emitter
+    // for one diagnostic is not worth a new convention.
+    json_append_bool(out, "input_wndproc_owner_is_exe",
+                     chain.has_value() && chain->current >= input_exe_base &&
+                         chain->current < input_exe_base + input_exe_size);
+    const auto in_enabled = sdk::Input::input_is_enabled();
+    json_append_bool(out, "input_enabled_readable", in_enabled.has_value());
+    json_append_bool(out, "input_enabled", in_enabled.value_or(false));
+    // The published pointer must BE the array's address: the engine stores the array's own base there.
+    json_append_bool(out, "input_device_array_published_matches",
+                     sdk::Input::device_array_address() != 0 &&
+                         sdk::Input::device_array_address() == sdk::Input::published_device_array());
+    const auto eps = sdk::Input::entry_points();
+    json_append_bool(out, "input_entry_points_resolved", eps.all_resolved());
+
     const auto downs = sdk::Input::pending_key_downs();
     const auto ups = sdk::Input::pending_key_ups();
     const auto drained = sdk::Input::key_queue_is_drained();

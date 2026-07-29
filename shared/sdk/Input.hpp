@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 // FEAR 2's INPUT SUBSYSTEM, and the flag that decides whether the game simulates at all.
@@ -215,6 +216,89 @@ public:
 
         bool has(Mod m) const { return (mods & static_cast<uint16_t>(m)) != 0; }
     };
+
+    // ---- THE SUBCLASS WINDOW PROCEDURE ------------------------------------------------
+    //
+    // This is why LTClient_WndProc handles no mouse message: the engine SUBCLASSES ITS OWN WINDOW.
+    // LTInput_InstallSubclassWndProc saves the existing GWL_WNDPROC and installs
+    // LTInput_SubclassWndProc, which forwards to LTInput_TranslateWindowMessage and then chains on with
+    // CallWindowProcW. Verified live: the saved original holds LTClient_WndProc's own address.
+    //
+    // EXPECT COMPANY ON THIS WINDOW. gameoverlayrenderer.dll is loaded in any Steam session and
+    // subclasses the same window, so whatever sits in GWL_WNDPROC at a given moment is not necessarily
+    // the engine's proc. engine_owns_window reports that honestly rather than asserting a chain nobody
+    // controls; saved_is_engine is the part that IS a fact about the engine.
+
+    struct WndProcChain {
+        uintptr_t current{};         // what the window has installed right now
+        uintptr_t subclass{};        // LTInput_SubclassWndProc
+        uintptr_t saved_original{};  // g_pOriginalWndProc, as saved at install time
+        uintptr_t engine_wndproc{};  // LTClient_WndProc
+        bool engine_owns_window{};   // current == subclass: nobody has subclassed on top
+        bool saved_is_engine{};      // saved_original == engine_wndproc
+
+        // Basename of the module that owns whatever is currently installed, empty when it could not be
+        // resolved. MEASURED NOT TO BE THE EXE in a Steam session -- which is the practical reason this
+        // field exists: a mod that assumes the engine's proc is installed is wrong before it starts.
+        std::string current_owner;
+    };
+
+    static std::optional<WndProcChain> wndproc_chain();
+
+    // ---- THE OTHER GATE ---------------------------------------------------------------
+    //
+    // Input has a second switch, INDEPENDENT of the simulation gate: the translator clears it on
+    // WM_CANCELMODE (a dialog taking over) and sets it on WM_NCACTIVATE, resetting every device state
+    // on both edges. Measured 1 while the window was iconic and simulation was gated off, so a consumer
+    // diagnosing "why is there no input" must check both this and simulation_is_gated().
+
+    static std::optional<bool> input_is_enabled();
+    static uintptr_t input_enabled_address();
+
+    // The device array's address, and the pointer the engine publishes to it. Those must agree -- the
+    // published pointer is the array's own address -- which is a cheap way to detect a build whose
+    // layout differs from this mapping.
+    static uintptr_t device_array_address();
+    static uintptr_t published_device_array();
+
+    // ---- SYNTHETIC INPUT: THE ENGINE'S OWN ENTRY POINTS --------------------------------
+    //
+    // For a mod that needs to feed the engine input it did not get from the OS -- which for a VR mod is
+    // the whole point, since head pose and controller state arrive from a runtime rather than a window
+    // message. These are the functions the translator itself calls, so driving them puts synthetic input
+    // exactly where real input goes, one layer below the message pump.
+    //
+    // ALL ARE THISCALL, ecx holding the object named below. Signatures as observed:
+    //
+    //   mouse_on_move(deviceArray, hwnd, int clientX, int clientY, uint flags)
+    //       -- deviceArray is device_array_address(); stores the point and converts it to screen space.
+    //   mouse_set_incoming_button(mouseDevice, int button, char state)
+    //       -- writes the incoming button bank; the poll shifts it into current next frame.
+    //   keyboard_set_incoming_key(keyboardDevice, int vk, int isDown, int lparam)
+    //       -- writes the incoming key bank at +0x204.
+    //   mouse_on_wheel(deviceArray, hwnd, int x, int y, int delta, uint keys)
+    //   center_cursor()  -- no arguments; warps the cursor to the window centre via SetCursorPos.
+    //
+    // Note the asymmetry deliberately: the button and key writers take a DEVICE, while the move and
+    // wheel handlers take the ARRAY. That is how the engine calls them, and getting it backwards would
+    // write through a wrong base.
+    //
+    // NOT CALLED BY THIS SDK. Handing over verified addresses with their signatures is the useful part;
+    // deciding when to drive them, and on which thread, belongs to the consumer.
+
+    struct EntryPoints {
+        uintptr_t translate_window_message{};
+        uintptr_t mouse_on_move{};
+        uintptr_t mouse_set_incoming_button{};
+        uintptr_t keyboard_set_incoming_key{};
+        uintptr_t mouse_on_wheel{};
+        uintptr_t center_cursor{};
+
+        // Every address resolved and inside the exe image.
+        bool all_resolved() const;
+    };
+
+    static EntryPoints entry_points();
 
     static std::vector<KeyEvent> pending_key_downs();
     static std::vector<KeyEvent> pending_key_ups();

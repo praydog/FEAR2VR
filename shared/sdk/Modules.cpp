@@ -53,4 +53,21 @@ bool Modules::initialize() {
     return all_required;
 }
 
+std::optional<std::string> Modules::owning_module_name(uintptr_t address) {
+    HMODULE owner = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(address), &owner) == 0 ||
+        owner == nullptr) {
+        return std::nullopt;
+    }
+    char path[MAX_PATH]{};
+    if (GetModuleFileNameA(owner, path, sizeof(path)) == 0) {
+        return std::nullopt;
+    }
+    std::string full{path};
+    const auto slash = full.find_last_of("\\/");
+    return slash == std::string::npos ? full : full.substr(slash + 1);
+}
+
 } // namespace sdk

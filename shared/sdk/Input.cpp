@@ -46,6 +46,17 @@ constexpr uintptr_t kBufferedInput = 0x2E50A8;
 constexpr uintptr_t kBufferedInputEnabled = 0x2E5498;  // byte; gates the above
 
 constexpr uintptr_t kMainWnd = 0x333000;
+constexpr uintptr_t kInputEnabled = 0x2F76D4;        // device array + 0x48
+constexpr uintptr_t kOriginalWndProc = 0x2F76FC;
+constexpr uintptr_t kPublishedDeviceArray = 0x2F7700;
+constexpr uintptr_t kSubclassWndProc = 0x6D08F;
+constexpr uintptr_t kEngineWndProc = 0x66B82;
+constexpr uintptr_t kTranslateWindowMessage = 0x6CE93;
+constexpr uintptr_t kMouseOnMove = 0x6CE11;
+constexpr uintptr_t kMouseSetIncomingButton = 0x6C78A;
+constexpr uintptr_t kKeyboardSetIncomingKey = 0x6C73E;
+constexpr uintptr_t kMouseOnWheel = 0x6CE2E;
+constexpr uintptr_t kCenterCursor = 0x69199;
 constexpr uintptr_t kCLTInputDevices = 0x2F768C;  // CLTInput + 4
 constexpr uintptr_t kKeyboardVtable = 0x27807C;
 constexpr uintptr_t kMouseVtable = 0x278050;
@@ -352,6 +363,81 @@ std::optional<bool> Input::window_is_iconic() {
         return std::nullopt;
     }
     return ::IsIconic(reinterpret_cast<HWND>(hwnd)) != 0;
+}
+
+// ---- the subclass window procedure ---------------------------------------------------------------
+
+std::optional<Input::WndProcChain> Input::wndproc_chain() {
+    const uintptr_t raw = main_window();
+    if (raw == 0) {
+        return std::nullopt;
+    }
+    const auto saved = read_exe<uint32_t>(kOriginalWndProc);
+    if (!saved.has_value()) {
+        return std::nullopt;
+    }
+    WndProcChain c{};
+    c.current = static_cast<uintptr_t>(
+        ::GetWindowLongW(reinterpret_cast<HWND>(raw), GWL_WNDPROC));
+    c.subclass = exe_at(kSubclassWndProc);
+    c.saved_original = *saved;
+    c.engine_wndproc = exe_at(kEngineWndProc);
+    c.engine_owns_window = c.current != 0 && c.current == c.subclass;
+    c.saved_is_engine = c.saved_original != 0 && c.saved_original == c.engine_wndproc;
+
+    // Which module the installed proc belongs to, through the shared Modules helper -- the same one
+    // Render uses to name a COM implementation, since it is the same question.
+    if (c.current != 0) {
+        c.current_owner = Modules::owning_module_name(c.current).value_or(std::string{});
+    }
+    return c;
+}
+
+std::optional<bool> Input::input_is_enabled() {
+    const auto v = read_exe<uint32_t>(kInputEnabled);
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return *v != 0;
+}
+
+uintptr_t Input::input_enabled_address() {
+    return exe_at(kInputEnabled);
+}
+
+uintptr_t Input::device_array_address() {
+    return exe_at(kCLTInputDevices);
+}
+
+uintptr_t Input::published_device_array() {
+    return read_exe<uint32_t>(kPublishedDeviceArray).value_or(0);
+}
+
+bool Input::EntryPoints::all_resolved() const {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return false;
+    }
+    const uintptr_t lo = exe->base;
+    const uintptr_t hi = exe->base + exe->size;
+    for (const uintptr_t a : {translate_window_message, mouse_on_move, mouse_set_incoming_button,
+                              keyboard_set_incoming_key, mouse_on_wheel, center_cursor}) {
+        if (a < lo || a >= hi) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Input::EntryPoints Input::entry_points() {
+    EntryPoints e{};
+    e.translate_window_message = exe_at(kTranslateWindowMessage);
+    e.mouse_on_move = exe_at(kMouseOnMove);
+    e.mouse_set_incoming_button = exe_at(kMouseSetIncomingButton);
+    e.keyboard_set_incoming_key = exe_at(kKeyboardSetIncomingKey);
+    e.mouse_on_wheel = exe_at(kMouseOnWheel);
+    e.center_cursor = exe_at(kCenterCursor);
+    return e;
 }
 
 // ---- the window-message key queue ----------------------------------------------------------------

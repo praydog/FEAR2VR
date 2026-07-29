@@ -3311,6 +3311,28 @@ class LTSpriteObject 0x154 {
     float radius           @0x138   // CONFIRMED: the sphere radius for all other kinds, paired with LTObject.position as the centre. Live, finite and > 0 on 215/215 sphere-kind sprites.
     void* owned[6]         @0x13C   // CONFIRMED OWNED: OT_SPRITE_dtor_body (0x4150B3) runs `do { LTMem_Free(*v2++) } while(--6)` starting at this+79 dwords == +0x13C, so all six are freed unconditionally. Ends at 0x154 == the class size, which is how the count 6 and this offset corroborate each other. Live they are sparsely used -- 168 of 1344 slots non-null, and only 3 of 224 sprites fill all six -- so they are optional per-slot allocations. WHAT they hold is unmapped.
 }
+
+// CLTInput -- the engine's input manager, reached through the interface registry as ILTInput
+// (g_pILTInput_Default_6ECC88). The singleton lives at 0x6F7688 and its vtable is 0x677FA0, whose slot 1
+// is CLTInput_InterfaceImplementation and slot 3 the per-frame poll.
+//
+// THE BOUNDS OF THE FIRST TWO REGIONS ARE FIXED BY LTInput_AttachDeviceArray, which publishes the array
+// and clears it: memset(base, 0, 0x18) covers EXACTLY six device pointers, then memset(base + 0x18, 0,
+// 0x30) clears 0x30 further bytes and stops immediately before the enable flag. Those two sizes are what
+// make the device count and the enable offset facts rather than inferences -- and 6 agrees independently
+// with CLTInput_PollDevices, which loops exactly six slots calling each device's vtable slot 2.
+//
+// NOTE the +4 shift: the code passes `base = this + 4` around as its own object (g_pInputDeviceArray
+// holds 0x6F768C, verified live), so pseudocode for LTInput_TranslateWindowMessage indexes this[1] for
+// the mouse and this[18] for the flag. Those are +0x08 and +0x4C in the offsets below.
+struct CLTInput {
+    void* vtable              @0x00   // CONFIRMED 0x677FA0 live; slot 1 returns "CLTInput", slot 3 is CLTInput_Poll
+    void* devices[6]          @0x04   // CONFIRMED six slots: LTInput_AttachDeviceArray zeroes exactly 0x18 bytes here, and CLTInput_PollDevices iterates 0..5 calling each one's vtable slot 2. Live, slot 0 holds the KEYBOARD (vtable 0x67807C) and slot 1 the MOUSE (vtable 0x678050), both identified from their own code rather than slot order since this binary carries no RTTI. The other four are null without a gamepad attached.
+    uint8_t unmapped_1C[0x30] @0x1C   // Bounded, not mapped: the second memset in LTInput_AttachDeviceArray clears exactly these 0x30 bytes and stops before the flag below. What they hold is unknown.
+    uint32_t input_enabled    @0x4C   // CONFIRMED the gate LTInput_TranslateWindowMessage tests before touching any device (`this[18]`): cleared on WM_CANCELMODE, set on WM_NCACTIVATE, and every device reset on both edges. INDEPENDENT of the simulation gate -- measured 1 while the window was iconic and g_ClientGlob_bClientActive read 0, so "no input" has two separate possible causes.
+    void* poll_list_begin     @0x54   // CONFIRMED an iterator pair CLTInput_Poll walks after polling the devices (`this[21]`/`this[22]`), dereferencing each element as a float and passing it to sub_46B9A4. WHAT the list holds is unmapped.
+    void* poll_list_end       @0x58   // CONFIRMED the end sentinel of the pair above; the loop terminates when the iterator compares equal to it.
+}
 }
 
 // ==================================================================================================
@@ -3368,10 +3390,50 @@ class LTSpriteObject 0x154 {
 // THE MOUSE-LOOK LOOP, complete: LTInputDevice_Mouse_SetPositionFromClient (0x46C6E1) takes a CLIENT
 // point, stores it at +0x28/+0x2C and converts it in place with ClientToScreen; the axis getter returns
 // that minus the window centre; LTInput_CenterCursor (0x469199) warps the cursor back to the centre with
-// SetCursorPos so the next read is relative again. Textbook centre-relative mouse-look, with the
-// sampling step living outside LTClient_WndProc. WHO CALLS THE SETTER IS NOT FULLY ESTABLISHED: its only
-// caller is sub_46CE11, whose `this` is NOT CLTInput (it holds an enable flag at +0x48 and a mouse
-// pointer at +0x04), reached from sub_46CE93 <- sub_46D08F. That class is unmapped.
+// SetCursorPos so the next read is relative again. Textbook centre-relative mouse-look.
+//
+// ---- WHERE THE MESSAGES ACTUALLY ARRIVE: A SUBCLASS PROCEDURE -------------------------------------
+//
+// RESOLVED, and it explains why LTClient_WndProc handles no mouse message: THE ENGINE SUBCLASSES ITS OWN
+// WINDOW. LTInput_InstallSubclassWndProc (0x46D0C9) saves the existing GWL_WNDPROC into
+// g_pOriginalWndProc and installs LTInput_SubclassWndProc (0x46D08F), which forwards to
+// LTInput_TranslateWindowMessage (0x46CE93) and then chains on with CallWindowProcW. Verified live:
+// g_pOriginalWndProc holds 0x466B82, which IS LTClient_WndProc.
+//
+// An earlier pass recorded the translator's `this` as "NOT CLTInput ... that class is unmapped". THAT WAS
+// WRONG, and the correction came from one read: g_pInputDeviceArray (0x6F7700) holds 0x6F768C, which is
+// CLTInput+4. The object IS CLTInput, addressed from its device array, so this[1] is the mouse (not the
+// keyboard, as reading it against CLTInput's own base implied) and this[18] is the enable flag at +0x4C.
+// The contradiction I had flagged -- a mouse setter being handed what looked like the keyboard -- was
+// entirely an artefact of guessing the base instead of reading the pointer.
+//
+// THE MESSAGE TABLE, in LTInput_TranslateWindowMessage:
+//     WM_MOUSEMOVE   -> LTInputDevice_Mouse_OnMouseMove(array, hwnd, LOWORD(lParam), HIWORD(lParam), wParam)
+//     WM_*BUTTONDOWN -> LTInputDevice_Mouse_SetIncomingButton(mouse, 0|1|2, 1)   (DBLCLK identically)
+//     WM_*BUTTONUP   -> LTInput_OnMouseButtonUp(hwnd, button, x, y, flags)
+//     WM_MOUSEWHEEL  -> LTInput_OnMouseWheel(hwnd, x, y, HIWORD(wParam) delta, LOWORD(wParam))
+//     WM_KEYDOWN/UP, WM_SYSKEYDOWN/UP -> LTInput_OnKeyStateChange(hwnd, vk, isDown, lParam)
+//     WM_CHAR        -> returns 0, deliberately unhandled: characters go through the queue path instead
+//     WM_CANCELMODE  -> input_enabled = 0 and every device reset (a dialog is taking over)
+//     WM_NCACTIVATE  -> reset, then input_enabled = 1
+//
+// THE INCOMING BANKS ARE NOW PROVEN FROM BOTH DIRECTIONS, which is worth more than either alone:
+//     LTInputDevice_Keyboard_SetIncomingKey  is `this[vk + 516] = (isDown != 0)`  -> +0x204
+//     LTInputDevice_Mouse_SetIncomingButton  is `this[button + 10] = state`       -> +0x0A..0x0C
+// The poll's shift loops implied exactly those offsets by reading FROM them; these write TO them. Two
+// derivations from opposite ends of the same data path agreeing.
+//
+// THE ENGINE DOES NOT OWN GWL_WNDPROC IN PRACTICE. Measured: the installed procedure is outside the exe
+// image entirely, because gameoverlayrenderer.dll subclasses the same window in a Steam session. So the
+// suite asserts only the half that IS a fact about the engine -- that the saved original is
+// LTClient_WndProc -- and merely REPORTS who currently holds the slot. Asserting engine ownership would
+// encode "no Steam overlay is running" as a correctness requirement. A mod installing its own subclass
+// should expect company and chain properly.
+//
+// The type tags decode cleanly, and one further thing follows for anyone injecting input: the six entry
+// points above are where synthetic input belongs, one layer BELOW the message pump, which is what
+// sdk::Input::entry_points() hands over with their thiscall signatures. Note the asymmetry -- the move
+// and wheel handlers take the ARRAY, the button and key writers take a DEVICE.
 //
 // ---- THE WINDOW-MESSAGE KEY QUEUE ----------------------------------------------------------------
 //

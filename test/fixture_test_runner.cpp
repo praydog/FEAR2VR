@@ -4018,6 +4018,47 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_queue_drain_readable", b_drain_ok) && b_drain_ok,
                   "whether the engine drains the queue this frame is readable");
 
+            // ---- THE SUBCLASS WINDOW PROCEDURE ---------------------------------------------------
+            //
+            // The engine subclasses its OWN window to split input handling out of LTClient_WndProc,
+            // which is why that procedure handles no mouse message. The saved original being
+            // LTClient_WndProc is the assertable half -- a fact about the engine, checked against the
+            // live window rather than read out of the IDB.
+            bool wp_ok = false, wp_saved = false, wp_owns = true, wp_exe = true;
+            check(json_bool(body, "input_wndproc_readable", wp_ok) && wp_ok,
+                  "the window procedure chain is readable");
+            check(json_bool(body, "input_wndproc_saved_is_engine", wp_saved) && wp_saved,
+                  "the subclass saved LTClient_WndProc as its original");
+
+            // AND THE OTHER HALF IS DELIBERATELY NOT ASSERTED. gameoverlayrenderer.dll subclasses the
+            // same window in any Steam session, so whoever holds GWL_WNDPROC at a given moment is not
+            // the engine's business or ours -- measured False here, with the owner outside the exe.
+            // Asserting engine ownership would encode "no overlay is running" as a correctness
+            // requirement. Both are reported so the state is visible either way.
+            json_bool(body, "input_wndproc_engine_owns_window", wp_owns);
+            json_bool(body, "input_wndproc_owner_is_exe", wp_exe);
+            check(wp_owns == wp_exe,
+                  "engine ownership and exe ownership of GWL_WNDPROC agree with each other");
+
+            // The published pointer must BE the array's own address, which catches a build whose
+            // layout differs from this mapping without needing a second landmark.
+            bool arr_ok = false;
+            check(json_bool(body, "input_device_array_published_matches", arr_ok) && arr_ok,
+                  "g_pInputDeviceArray points at the device array itself");
+
+            // The second gate, independent of the simulation one: measured enabled while the window was
+            // iconic and simulation was gated, so a consumer must check both to explain "no input".
+            bool ie_ok = false;
+            check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
+                  "the input-enabled gate is readable, separately from the simulation gate");
+
+            // Every synthetic-input entry point resolves inside the exe. These are the addresses a mod
+            // drives to feed the engine input that did not come from a window message, so a stale one
+            // would be a hook into nothing.
+            bool ep_ok = false;
+            check(json_bool(body, "input_entry_points_resolved", ep_ok) && ep_ok,
+                  "all six input entry points resolve inside the exe image");
+
             // The load-bearing cross-check: the table's slot for PausePhysics must be the very global
             // CClientMgr__Update tests before its physics block. Static reversing found the flag first
             // and the table second, so agreement ties the two together.

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 
 #include <windows.h>
 
@@ -48,6 +50,15 @@ public:
     const Module* game_server() const { return &m_modules[2]; }   // Game\gameserver.dll (optional)
     const Module* game_database() const { return &m_modules[3]; } // gamedatabase.dll
     const Module* lt_memory() const { return &m_modules[4]; }     // ltmemory.dll
+
+    // Which module owns an arbitrary address, as a basename ("d3d9.dll"), or nullopt when the OS does
+    // not attribute it to one.
+    //
+    // DELIBERATELY NOT MATCHED AGAINST THE FIVE MODULES ABOVE: the answers that matter are modules this
+    // class does not track. Both current consumers are like that -- Render asks who implements a COM
+    // interface and gets d3d9.dll, Input asks who owns the window procedure and gets the Steam overlay.
+    // Testing our own ranges would answer "not one of ours" and throw away the useful part.
+    static std::optional<std::string> owning_module_name(uintptr_t address);
 
     // kananlib pattern scan over the live FEAR2.exe image; 0 on miss (+log
     // line so a broken signature is loud in fear2vr.log). Scanning a module is
