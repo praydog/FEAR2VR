@@ -362,3 +362,75 @@ std::optional<ObjectColor> object_color(const regenny::LTObject* obj) {
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// One 3x4 row-major matrix, copied out under the guard.
+struct Mat34Raw {
+    float m[12];
+    bool ok;
+};
+
+// The two matrices sit past LTObject's end, on LTWorldModelObject. Reading them requires
+// the object to BE one, which the caller establishes by type before we get here.
+Mat34Raw seh_read_brush_matrix(const regenny::LTObject* obj, bool inverse) {
+    Mat34Raw r{};
+    KANANLIB_SEH_TRY {
+        const auto* base = reinterpret_cast<const uint8_t*>(obj);
+        const auto* src = reinterpret_cast<const float*>(base + (inverse ? 0x10C : 0xDC));
+        for (size_t i = 0; i < 12; ++i) {
+            r.m[i] = src[i];
+        }
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    return r;
+}
+
+// Apply a row-major 3x4: out_r = dot(row_r.xyz, p) + row_r.w.
+regenny::LTVector apply_mat34(const float (&m)[12], const regenny::LTVector& p) {
+    regenny::LTVector out{};
+    out.x = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
+    out.y = m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7];
+    out.z = m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11];
+    return out;
+}
+
+// Both entry points share the same gate: the matrices only exist on the world-model
+// class and on camera, which derives from it.
+std::optional<regenny::LTVector> brush_apply(const regenny::LTObject* obj,
+                                             const regenny::LTVector& p, bool inverse) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto info = object_info(obj);
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    if (info->kind != ObjectKind::WorldModel && info->kind != ObjectKind::Camera) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_brush_matrix(obj, inverse);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    return apply_mat34(r.m, p);
+}
+
+}  // namespace
+
+std::optional<regenny::LTVector> world_to_brush(const regenny::LTObject* obj,
+                                                const regenny::LTVector& world_point) {
+    return brush_apply(obj, world_point, /*inverse=*/true);
+}
+
+std::optional<regenny::LTVector> brush_to_world(const regenny::LTObject* obj,
+                                                const regenny::LTVector& brush_point) {
+    return brush_apply(obj, brush_point, /*inverse=*/false);
+}
+
+}  // namespace sdk

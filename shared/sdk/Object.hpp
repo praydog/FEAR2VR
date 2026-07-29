@@ -27,6 +27,19 @@ enum class ObjectKind : uint8_t {
     WorldModel = 2,
     Sprite = 3,
     Light = 4,
+    // NOT THE VIEW CAMERA -- read this before building on it. FEAR 2 carries 474 live
+    // OT_CAMERA objects, and measured against the player NONE of them tracks him: the
+    // nearest sits 84.8 units away, their positions are INTEGER and grid-aligned (several
+    // share a z plane exactly), and they spread out to 16110 units. They are bulk static
+    // level furniture.
+    //
+    // Nor does the class carry a projection: OT_CAMERA adds exactly ONE field to
+    // OT_WORLDMODEL (a uint16 creation parameter), there is no FOV anywhere on it, and
+    // FEAR2.exe contains no "fov" string at all. The view's projection is not an
+    // engine-side camera-object property -- it lives in gameclient.dll.
+    //
+    // For "where is the player looking", use CClientShell::local_player() and the
+    // skeleton's `camera` socket (bone `Eye_Cam`), which IS the view anchor.
     Camera = 5,
     ParticleSystem = 6,
 };
@@ -240,5 +253,46 @@ struct Attachment {
 // no cycles over 139 lists): this reads a live mutating structure, and a torn list
 // must return a short answer rather than hang the caller's frame.
 std::vector<Attachment> attachments(const regenny::LTObject* obj);
+
+
+// ---- WORLD MODELS: the level's own solid, moving geometry ---------------------
+//
+// A world model is a brush: doors, elevators, moving platforms, breakables, the level
+// shell itself. They are the SECOND most numerous object type live (1476 of 3583), and
+// they are what a VR player collides with, rides and teleports onto -- so "where is this
+// brush, and where is a world point relative to it" is a question a mod asks constantly.
+//
+// THE ENGINE KEEPS BOTH DIRECTIONS. A world model carries its local->world rigid
+// transform AND the inverse, side by side (LTWorldModelObject.world_transform @0xDC and
+// inverse_transform @0x10C, each a row-major 3x4). That is why this API exposes two
+// functions and no matrix: a caller wanting brush-local coordinates uses the engine's own
+// inverse rather than inverting anything, which is both faster and immune to the
+// row/column mistake that inverting by hand invites.
+//
+// TWO THINGS TO EXPECT, both measured through this API over 1947 live brushes (1473
+// world models + 474 cameras, which inherit the pair because OT_CAMERA derives from
+// OT_WORLDMODEL):
+//
+//  * A ROUND TRIP IS NOT BIT-EXACT. Level coordinates run to thousands of units, and a
+//    float32 point through two 3x4 matrices loses about 0.1 units. 1920 of 1947 returned
+//    within 0.05; raising the bound to 0.5 accounts for 15 more. If you compare positions
+//    for equality, use a tolerance in that range, not zero.
+//
+//  * ABOUT 12 BRUSHES CARRY A PAIR THAT IS NOT AN INVERSE, worst case 49.8 units of
+//    round-trip error. Both matrices are individually valid -- scale 1.0 and det exactly
+//    1.0 on every one of them -- so this is not a scaled or skewed brush; the two simply
+//    disagree. If a transform matters, round-trip a probe point and check it returns
+//    before trusting the result on that object.
+//
+// Cameras are the clean case: the pair holds on 474/474.
+//
+// nullopt when `obj` is null, is not a world model or camera, or the read faulted. The
+// TYPE CHECK IS DELIBERATE: the matrices live past LTObject's end, so calling these on an
+// OT_MODEL would read a different class's fields and return a plausible wrong point.
+std::optional<regenny::LTVector> world_to_brush(const regenny::LTObject* obj,
+                                                const regenny::LTVector& world_point);
+
+std::optional<regenny::LTVector> brush_to_world(const regenny::LTObject* obj,
+                                                const regenny::LTVector& brush_point);
 
 }  // namespace sdk

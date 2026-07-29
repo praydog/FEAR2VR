@@ -1882,6 +1882,44 @@ int main(int argc, char** argv) {
                 // run SetDims), and how many there are is a property of the level.
                 check(dz >= 0 && dz <= dok, "all-zero dims are a reported fraction");
 
+                // ---- BRUSH SPACE: the engine's two matrices against each other --------
+                //
+                // World models (and cameras, which derive from them) store a local->world
+                // rigid transform AND its inverse, side by side. Neither alone can be
+                // checked -- both produce plausible coordinates when wrong -- but a ROUND
+                // TRIP through the pair must return the point it started from, because the
+                // two matrices are stored independently.
+                int64_t bt = -1, brt = -1, bex = -1, borg = -1;
+                double bworst = -1.0;
+                json_int(ab, "brush", bt);
+                json_int(ab, "brush_roundtrip", brt);
+                json_int(ab, "brush_rt_exact", bex);
+                json_int(ab, "brush_origin_ok", borg);
+                json_double(ab, "brush_worst_rt", bworst);
+                check(bt > 0, "the level carries world models to transform against");
+                // THE API CONTRACT: every object the type gate admits must answer BOTH
+                // directions. A gap here means the gate and the field offsets disagree.
+                check(brt == bt,
+                      "EVERY world model and camera answers both brush-space directions");
+                // THE ARITHMETIC, as a proportion rather than an equality -- deliberately.
+                // 12 of 1947 brushes live carry a forward/inverse pair that genuinely is
+                // NOT an inverse (worst 49.8 units), which is the engine's own data and
+                // not something a test should fail on. A transposed read or a wrong offset
+                // would break EVERY brush, so 95% still catches real breakage while
+                // tolerating the level's inconsistent handful.
+                check(bex * 100 >= bt * 95,
+                      "the brush round trip returns its point on at least 95% of brushes");
+                // REPORTED: whether a brush's local origin coincides with the object's
+                // position is the art's choice, true on 908 of 1947. Asserting it would
+                // turn a level property into a tripwire.
+                check(borg >= 0 && borg <= bt,
+                      "brushes whose origin is the object position are a reported fraction");
+                printf("[fixture] brush space: %lld brushes, %lld/%lld round-trip "
+                       "(worst %.3f), %lld origin-aligned\n",
+                       static_cast<long long>(bt), static_cast<long long>(bex),
+                       static_cast<long long>(brt), bworst,
+                       static_cast<long long>(borg));
+
                 // COLOUR AND ALPHA. The assertion is the BYTE ORDER, which is the one
                 // claim that could silently be wrong: alpha must be the high byte of the
                 // packed value, red next, then green, then blue. That is what

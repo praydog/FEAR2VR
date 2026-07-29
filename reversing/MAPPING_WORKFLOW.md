@@ -963,6 +963,28 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Write the prediction down BEFORE the measurement, so a wrong one cannot be quietly
+  reinterpreted.** The brush round-trip check reported a worst error of 49.84 units. I
+  reasoned that a near-inverse pair's error scales with distance from the brush origin, and
+  the furthest origin was 17741 units out, so probing in brush space instead of world space
+  would shrink it. Re-measured: **49.84466 -> 49.84435**. Not at all.
+
+  The real answers were two, and neither was the guess: most of the "failures" were float32
+  precision (0.07..0.1 units at level coordinates, so the 0.05 tolerance was simply too
+  tight for the type), and a residual dozen are pairs that genuinely are not inverses --
+  with scale 1.0 and det exactly 1.0, so not scaled or skewed, just inconsistent.
+
+  The comment in the code now records the refuted prediction alongside the change it
+  motivated, because the change was kept for a different reason than the one that prompted
+  it. A tolerance should be MEASURED against the type and the coordinate range, not chosen
+  because it looks strict.
+
+- **A negative result about where NOT to look is worth as much as a mapping.** `OT_CAMERA`
+  is not the view camera: 474 live instances, integer grid-aligned positions, none tracking
+  the player, nearest 84.8 units away, no FOV field on the class, and no "fov" string
+  anywhere in FEAR2.exe. That is a day a consumer does not spend. It is recorded at
+  `ObjectKind::Camera` -- where someone hunting the view will actually read it -- and not
+  only in the schema.
 - **"The value is in range" is not evidence when two index spaces overlap.** The
   attachment field at +0x20 was mapped as a NODE index because all 27 live model-parent
   values fall inside `node_count`. They also fall inside `socket_count` -- both, 27/27.

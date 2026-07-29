@@ -1044,12 +1044,37 @@ class LTWorldModelObject 0x13C {
 // On the inherited fields, cameras are the well-behaved case: 3x3 == R(rotation),
 // exact inverse and det 1.0 all hold on 474/474.
 //
-// unk_13C is a uint16 (not a dword): dump 0x46510E writes it as `this[158]`
-// through a WORD* -- 158 * 2 == 0x13C -- copying a WORD from another object's
-// +0x02. Observed values 1/6/7/9. Role unverified.
+// unk_13C is a uint16 (not a dword): dump 0x46510E -- now named OT_CAMERA_Init, the
+// ONLY vtable slot camera overrides besides its destructor -- writes it as `this[158]`
+// through a WORD* (158 * 2 == 0x13C), copying a WORD from the CREATION REQUEST's +0x02.
+// So it is a creation PARAMETER the game chooses per camera, not engine state.
+//
+// FULL DISTRIBUTION over all 474 live instances, because an earlier note here listed
+// "observed values 1/6/7/9" and MISSED the dominant one:
+//     value 10 -> 465 cameras      value 7 -> 4
+//     value  9 ->   3 cameras      value 6 -> 1      value 1 -> 1
+// Small integers with one overwhelming default. Role still unverified -- but a reader
+// deciding whether this looks like an enum, an index or a count needs the shape, and
+// "1/6/7/9" implied a spread where there is really one value and a handful of exceptions.
+//
+// AND THE CLASS SIZE IS NOW CORROBORATED THREE WAYS, which is why 0x140 can be trusted:
+// OT_CAMERA_ctor writes at byte 316; CClientMgr's OT_WORLDMODEL bank requests exactly
+// 316 bytes (so the base class ends there); the OT_CAMERA bank requests 320. One 4-byte
+// slot added at the first byte past the base, holding a uint16 plus 2 bytes the ctor
+// never touches (live residue makes +0x13E non-zero on 80 of 474 -- it is padding, not
+// a field).
+//
+// THESE ARE NOT THE VIEW CAMERA, and a VR mod needs to know that before it starts
+// looking. Measured against the player: the nearest instance is 84.8 units away and
+// none tracks him; their positions are INTEGER and grid-aligned (2259.0, 1536.0,
+// -2196.0 / 2334.0, 1516.0, -2196.0 / 2059.0, 1586.0, -2196.0 -- note the shared z),
+// spread out to 16110 units. That is bulk static level furniture, 474 of it. No FOV
+// field exists anywhere on the class either, and FEAR2.exe contains no "fov" string at
+// all, so the view's projection is not an engine-side camera-object property. Look in
+// gameclient.dll for it, not here.
 class LTCameraObject 0x140 {
-    LTWorldModelObject base @0x00    // CONFIRMED: type 5 derives from type 2, proven by the destructor chain
-    uint16_t unk_13C        @0x13C   // unverified; written as a WORD by dump 0x46510E. The ONLY field camera adds.
+    LTWorldModelObject base @0x00    // CONFIRMED: type 5 derives from type 2, proven by the destructor chain AND by the bank sizes (316 -> 320)
+    uint16_t unk_13C        @0x13C   // A CREATION PARAMETER, copied by OT_CAMERA_Init from the request's +0x02. The only field camera adds. Live 465/474 hold 10; 1, 6, 7 and 9 account for the rest. Meaning unverified -- no reader has been found yet.
 }
 
 // Node CClientMgr registers for itself in its own counter_list_head list

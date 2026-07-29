@@ -1190,11 +1190,13 @@ std::string build_objects_json() {
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
                api_standing = 0, api_standing_sane = 0, api_standing_node = 0,
                api_color_ok = 0, api_color_packed_ok = 0, api_color_default = 0,
-               api_color_translucent = 0;
+               api_color_translucent = 0, api_brush = 0, api_brush_roundtrip = 0,
+               api_brush_rt_exact = 0, api_brush_origin_ok = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
-        float api_att_worst_err = 0.0f;
+        float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
+              api_brush_worst_origin = 0.0f;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -1253,6 +1255,68 @@ std::string build_objects_json() {
                         }
                         if (s->has_node) {
                             ++api_standing_node;
+                        }
+                    }
+                    // BRUSH SPACE, both directions. A world model carries its transform
+                    // AND the engine's own inverse, so a round trip through them is a real
+                    // check on two independently-stored matrices: transform a point out
+                    // and back, and it must return. A transposed read or a wrong offset
+                    // breaks the return trip even though each direction alone would still
+                    // produce plausible coordinates.
+                    //
+                    // The ORIGIN check pins the translation column specifically: the
+                    // object's own world position must map to the brush's local origin.
+                    if (info->kind == sdk::ObjectKind::WorldModel ||
+                        info->kind == sdk::ObjectKind::Camera) {
+                        ++api_brush;
+                        // Probe in BRUSH space so the point starts near the brush's own
+                        // origin. A first version offset from the object's WORLD position
+                        // and I predicted that was inflating the error via the lever arm
+                        // from a brush origin 17741 units out. MEASURED: it changed the
+                        // worst error from 49.84466 to 49.84435, i.e. not at all. The
+                        // prediction was wrong and the brush-space probe is kept only
+                        // because it is the more direct question, not because it fixed
+                        // anything.
+                        const regenny::LTVector probe{37.0f, -11.0f, 5.0f};
+                        const auto world = sdk::brush_to_world(obj, probe);
+                        const auto back = world.has_value()
+                                              ? sdk::world_to_brush(obj, *world)
+                                              : std::optional<regenny::LTVector>{};
+                        if (back.has_value()) {
+                            ++api_brush_roundtrip;
+                            const float rx = back->x - probe.x;
+                            const float ry = back->y - probe.y;
+                            const float rz = back->z - probe.z;
+                            const float err = std::sqrt(rx * rx + ry * ry + rz * rz);
+                            if (err > api_brush_worst_rt) {
+                                api_brush_worst_rt = err;
+                            }
+                            // 0.5, NOT 0.05, and the number is measured rather than
+                            // chosen: at these coordinates a float32 point through two
+                            // 3x4 matrices loses ~0.1 units, so 23 of the 27 "failures"
+                            // at the tighter bound were just precision. A wrong offset or
+                            // a transposed read misses by thousands, so this still catches
+                            // real breakage.
+                            if (err < 0.5f) {
+                                ++api_brush_rt_exact;
+                            }
+                        }
+                        // AND A SEPARATE, WEAKER QUESTION, deliberately only counted:
+                        // does the brush's local origin coincide with the object's world
+                        // position? For a transform built straight from the object's
+                        // pos/rot it would, and for 908 of 1947 it does -- but for the
+                        // rest the brush's modelling origin sits elsewhere, so this is a
+                        // property of the level's art and NOT an invariant to assert.
+                        if (const auto o = sdk::world_to_brush(obj, info->position);
+                            o.has_value()) {
+                            const float d = std::sqrt(o->x * o->x + o->y * o->y +
+                                                      o->z * o->z);
+                            if (d > api_brush_worst_origin) {
+                                api_brush_worst_origin = d;
+                            }
+                            if (d < 0.05f) {
+                                ++api_brush_origin_ok;
+                            }
                         }
                     }
                     // COLOUR AND ALPHA. The assertable part is the PACKING: alpha must
@@ -1418,7 +1482,9 @@ std::string build_objects_json() {
                  "\"dims_ok\":%zu,\"dims_nonneg\":%zu,\"dims_zero\":%zu,"
                  "\"standing\":%zu,\"standing_sane\":%zu,\"standing_node\":%zu,"
                  "\"color_ok\":%zu,\"color_packed_ok\":%zu,\"color_default\":%zu,"
-                 "\"color_translucent\":%zu}",
+                 "\"color_translucent\":%zu,\"brush\":%zu,\"brush_roundtrip\":%zu,"
+                 "\"brush_rt_exact\":%zu,\"brush_origin_ok\":%zu,"
+                 "\"brush_worst_rt\":%.5f,\"brush_worst_origin\":%.5f}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1430,7 +1496,9 @@ std::string build_objects_json() {
                  api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean,
                  api_dims_ok, api_dims_nonneg, api_dims_zero, api_standing,
                  api_standing_sane, api_standing_node, api_color_ok, api_color_packed_ok,
-                 api_color_default, api_color_translucent);
+                 api_color_default, api_color_translucent, api_brush, api_brush_roundtrip,
+                 api_brush_rt_exact, api_brush_origin_ok, api_brush_worst_rt,
+                 api_brush_worst_origin);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {
