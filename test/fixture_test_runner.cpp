@@ -915,6 +915,22 @@ int main(int argc, char** argv) {
 
                     check(inone + iset == objs, "slot_index partitions into none-sentinel and set");
                     check(iset > 0, "objects with a real slot_index exist");
+
+                    // shared_ref, checked against ITSELF: the record stores its
+                    // own address twice and keeps a live refcount, so neither a
+                    // baseline nor a sibling structure is involved. Live only 36
+                    // objects (all OT_MODEL) carry one, which is scene-dependent,
+                    // so the population is required only loosely -- a level with
+                    // models always has some, and without the > 0 check the two
+                    // totals below would pass on an empty set.
+                    int64_t srefs = -1, srcount = -1, srself = -1;
+                    json_int(ab, "shared_refs", srefs);
+                    json_int(ab, "shared_ref_count_ok", srcount);
+                    json_int(ab, "shared_ref_self_ok", srself);
+                    check(srefs > 0, "objects carrying a shared_ref exist");
+                    check(srcount == srefs, "every shared_ref has a positive refcount");
+                    check(srself == srefs,
+                          "every shared_ref stores its own address in both self slots");
                 }
             }
         }

@@ -22,6 +22,7 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTVisPortal.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTVisTree.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTWorldClientBSP.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTObjectRef.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTMemoryPool.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrObjectBank.hpp" \

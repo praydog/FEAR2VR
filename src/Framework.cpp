@@ -467,15 +467,17 @@ std::string build_objects_json() {
     // and `listed` lets the test detect truncation instead of silently comparing
     // mismatched populations.
     if (const auto ac = mgr->check_attachments(8192); ac.has_value()) {
-        char ab[416];
+        char ab[512];
         snprintf(ab, sizeof(ab),
                  "{\"objects\":%zu,\"listed\":%zu,\"self_ptr_ok\":%zu,\"parentless\":%zu,"
                  "\"parented\":%zu,\"link_consistent\":%zu,\"children_reached\":%zu,"
                  "\"child_parent_ok\":%zu,\"owned_nonempty\":%zu,\"owned_entries\":%zu,"
-                 "\"index_none\":%zu,\"index_set\":%zu}",
+                 "\"index_none\":%zu,\"index_set\":%zu,\"shared_refs\":%zu,"
+                 "\"shared_ref_count_ok\":%zu,\"shared_ref_self_ok\":%zu}",
                  ac->objects, ac->listed, ac->self_ptr_ok, ac->parentless, ac->parented,
                  ac->link_consistent, ac->children_reached, ac->child_parent_ok,
-                 ac->owned_nonempty, ac->owned_entries, ac->index_none, ac->index_set);
+                 ac->owned_nonempty, ac->owned_entries, ac->index_none, ac->index_set,
+                 ac->shared_refs, ac->shared_ref_count_ok, ac->shared_ref_self_ok);
         out += ab;
     } else {
         out += "null";

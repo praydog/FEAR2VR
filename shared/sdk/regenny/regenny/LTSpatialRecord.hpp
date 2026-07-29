@@ -7,7 +7,8 @@ namespace regenny {
 class LTSpatialRecord {
 public:
     float volume[6]; // 0x0
-    private: char pad_18[0x18]; public:
+    private: char pad_18[0x17]; public:
+    uint8_t client_flags; // 0x2f
     uint16_t entry_count; // 0x30
     private: char pad_32[0x6]; public:
     void* object; // 0x38

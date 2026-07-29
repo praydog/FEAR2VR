@@ -511,6 +511,7 @@ class LTSpatialEntry 0x14 {
 class LTSpatialRecord 0x40 {
     float volume[6]     @0x00   // CONFIRMED: sphere shapes use [0..2] centre + [3] radius; AABB shapes use [0..2] min + [3..5] max. WHICH shape applies is a property of the owning object, not of any field here.
     uint16_t entry_count @0x30  // CONFIRMED uint16: LinkEntry increments it per entry and DetachEntries zeroes it alongside entry_list. Live it equals the walked length of entry_list on 3583/3583 records -- so it is a maintained count, not a hint. Note the upper half of this dword is a SEPARATE field (live 0x9249 on many records), which is why this is 16-bit.
+    uint8_t client_flags @0x2F  // CONFIRMED as the engine's FOURTH flag kind. LTObject_SetFlagsByType (0x44E53B) routes kind 3 here -- `if (obj->flags3 & 0x400) *(uint8_t*)(record + 0x2F) = value` -- and the reference SDK's matching enum names kind 3 OFT_Client ("client flags, not available on server objects"). So the client flags live on the RECORD, not on the object, which is why they were not found alongside flags/flags2/user_flags. Bit meanings unmapped, and note the write is gated on flags3 bit 0x400 (set on 3583/3583 live).
     void* object        @0x38   // CONFIRMED backpointer to the owning LTObject on 3583/3583. void* only to avoid a circular type reference; it is always an LTObject*.
     LTSpatialEntry* entry_list @0x3C   // CONFIRMED head of this record's association list, rebuilt by LTSpatialRecord_CollectSphere / _CollectAABB. Live totals: 3666 entries across 3583 records, 1699 of them empty. Per type -- OT_SPRITE 1215 entries over 224 objects, OT_WORLDMODEL 1821/1473, OT_PARTICLESYSTEM 336/278, OT_MODEL 294/215, and ZERO for OT_NORMAL and OT_CAMERA. GATED, and this is what makes the two zeroes different: LTObjectOwner_UpdateSpatialRecord only collects when `(flags & 1) && !(flags2 & 0x700)` -- otherwise it calls LTSpatialRecord_Release and the list stays empty. Live the gate is NECESSARY: 1884 records hold entries and every one satisfies it, with 0 counter-examples out of 3583. It is not sufficient -- 40 gated objects still hold nothing, because their volume can miss every sector. OT_NORMAL's zero is because slot 2 returns no volume at all (only 2 of its 919 even pass the gate). OT_CAMERA's zero, which an earlier pass left as "unexplained", is the gate: ZERO of the 474 cameras have flags bit 0 set. It is not geometric -- 459 of their volumes do overlap at least one sector. So cameras are renderable via flags 0x800 and world-tree linked, yet never visibility-associated.
 }
@@ -692,6 +693,33 @@ class LTWorldClientBSP 0x244 {
 // has a "pin objects that have gone outside the world" path -- so the rate is
 // recorded rather than asserted.
 
+// The refcounted record LTObject.shared_ref points at. Reached only from there,
+// and only on OT_MODEL objects (36 of 215 live).
+//
+// Size is the MAPPED EXTENT; the true size is unknown.
+//
+// What is proven is the LIFETIME MECHANISM, not the payload. The base destructor
+// calls 0x415B43 on this, which is `if (--refcount == 0) release(this)`, so it is
+// shared and counted. Live refcounts are 1 (x21), 3 (x11) and 35 (x4) -- small,
+// positive, and varied, which is what a real count looks like.
+//
+// The records are threaded among THEMSELVES through +0x00/+0x04: following those
+// from one record walks to the others. +0x08 and +0x1C both hold the record's own
+// address, and +0x0C/+0x10 are a self-pointing pair (an empty list head).
+// Nothing here identifies what resource it represents.
+class LTObjectRef 0x28 {
+    LTObjectRef* link_prev @0x00   // CONFIRMED: records point at each other through this pair
+    LTObjectRef* link_next @0x04   // CONFIRMED
+    void* self_08          @0x08   // CONFIRMED == this record's own address
+    void* unk_0C           @0x0C   // self-pointing pair with unk_10 -- an empty embedded list head
+    void* unk_10           @0x10
+    void* unk_14           @0x14   // unmapped heap pointer
+    void* unk_18           @0x18   // unmapped heap pointer
+    void* self_1C          @0x1C   // CONFIRMED == this record's own address (a second copy)
+    uint32_t unk_20        @0x20   // live 0xFFFFFFFF on every sampled record
+    uint32_t refcount      @0x24   // CONFIRMED: 0x415B43 decrements this and releases at zero. Live 1/3/35.
+}
+
 // ---- The base virtual interface (from the six object vtables) --------------
 //
 // Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's
@@ -717,8 +745,8 @@ class LTWorldClientBSP 0x244 {
 // AGENT.MD on not over-claiming from folded bodies.
 class LTObject 0xCC {
     void* vtable          @0x00 [[code]]
-    uint32_t unk_04       @0x04   // ctor 0x420408 writes all four bytes as 0xFF
-    void* unk_08          @0x08   // ctor zeroes it; the base dtor branches on it; non-zero on only 36/3583 live
+    uint32_t unk_04       @0x04   // ctor writes all four bytes as 0xFF. Live 0xFFFFFFFF on 3265/3583, with 119 distinct other values on the remaining 318 -- so it is a real field with a -1 "none" default, not padding. Meaning unmapped.
+    LTObjectRef* shared_ref @0x08   // CONFIRMED a pointer to a REFCOUNTED record: the base dtor (LTObject_dtor_body) branches on it and calls 0x415B43, which is `if (--pointee[9] == 0) release(pointee)` -- a decrement-and-release on the pointee's +0x24. Live it is non-null on exactly 36 objects, ALL of them OT_MODEL (36 of 215), and the records are threaded among themselves through their own +0x00/+0x04. Refcounts read 1 (x21), 3 (x11) and 35 (x4). WHAT the resource is remains unmapped -- only that it is shared, counted, and released with the object.
     LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal). The ctor writes it as a BYTE from its argument.
     uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287, and the ctor initialises it to 0xFFFF)
     LTVector position     @0x14   // CONFIRMED: written component-wise by SetPos (0x4201B8) and SetPosRot (0x4202B6)
@@ -758,14 +786,14 @@ class LTObject 0xCC {
     // 0x800 x474) are each 100% world-tree linked; 0x400 and 0x10000 occur on no
     // live object, so their contribution is unexercised.
     uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; LTObject_IsRenderable reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0) -- live it is the single most common bit (1924 objects across five types). ctor zeroes it. See the bit survey above for what else is known, and note that everything there is a rate, not an invariant.
-    uint32_t unk_40       @0x40   // ctor zeroes it
+    uint32_t user_flags   @0x40   // CONFIRMED as the engine's THIRD flag kind, and the naming comes from FEAR2's own indexing rather than from guesswork: LTObject_SetFlagsByType (0x44E53B) switches on a kind argument and routes 0 -> vtable slot 8 (SetFlags, +0x3C), 1 -> slot 9 (SetFlags2, +0x44), 2 -> here, 3 -> the byte at spatial_record+0x2F. The reference SDK's matching enum is OFT_Flags / OFT_Flags2 / OFT_User / OFT_Client, so kind 2 is the USER flags word. LTObject_SetUserFlags notifies with change code 8, the same code SetFlags uses. Live: 866 objects read 0, and the rest spread over 68 distinct values (0x4000 x506, 3 x471, 0x4001 x409, 0x21 x357). Bit meanings unverified. NOTE `flags3` at +0x46 is NOT part of this family -- the dispatcher never touches it.
     uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.
     uint16_t flags3        @0x46  // CONFIRMED 16-bit and distinct from flags2 (SetPos reads it as a separate WORD). Live values: 0x400 x3529, 0x420 x53, 0x490 x1. Bit 0x400 is set on 3583/3583, which is exactly why SetPos's "Object going outside world" branch never runs -- it is gated on that bit being CLEAR, so do not treat the record fields that branch touches as validated. Bit 0x20 is set by LTObject_DetachFromParent. Bit 0x80 means NO CULL VOLUME: LTObject_GetCullVolume_AABB tests the byte here as SIGNED (`(char)this[70] < 0`) and bails when negative, and the single object with that bit set -- the level geometry -- is exactly the single object whose spatial_record volume is all zeros.
     LTVector aabb_min     @0x48   // CONFIRMED == position - dims on 3583/3583 live objects. Written by 0x42015D from SetPos, SetPosRot and SetDims.
     LTVector aabb_max     @0x54   // CONFIRMED == position + dims on 3583/3583 live objects
     float radius          @0x60   // CONFIRMED, and TWO-STATE. SetDims computes sqrt(dot(dims,dims)) and adds the double at 0x66FBB8, which is exactly 0.1 -- but the ctor zeroes both this and dims, so an object SetDims never ran on sits at radius 0 WITH dims 0, not at 0.1. Live partition: 2126 sized (radius == |dims| + 0.1), 1457 pristine (both zero), 0 in neither. My first pass claimed the single formula held on 3583/3583 -- that was wrong, produced by a check with a 1.0-wide acceptance window; the fixture's tighter assertion caught it. Do NOT re-widen the tolerance to make one formula fit.
     LTVector dims         @0x64   // CONFIRMED half-extents: SetDims (0x420358) stores its argument here and derives the AABB as position +/- it. All three components are >= 0 and bounded on 3583/3583.
-    float unk_70          @0x70   // ctor zeroes it
+    float unk_70          @0x70   // ctor zeroes it and live it is still exactly 0.0 on 3583/3583, so nothing in a loaded level writes it. Do not read that as "unused": it means unexercised at the states sampled.
     CClientMgrListLink child_list @0x74   // CONFIRMED: head of THIS object's list of attached children. LTObject_DetachAllChildren (0x4205BC) walks it from +0x78 and detaches every entry. Reusing CClientMgrListLink is correct here on FIELD ORDER (prev@0x00 / next@0x04, verified by that walk) -- unlike LTWorldTreeLink, which is reversed. The type name is narrower than the concept: this is the engine's generic intrusive link, used by CClientMgr's buckets AND here.
     CClientMgrListLink parent_link @0x7C  // CONFIRMED: THIS object's link into its PARENT's child_list. LTObject_SetParent (0x4205D8) inserts it at parent+0x74 and LTObject_DetachFromParent (0x420585) removes it, then sets flags3 bit 0x20. Live biconditional: parent == nullptr on 3582/3582 objects whose link is self-pointing, and the one parented object's link IS present in its parent's child_list (1/1).
     void* self               @0x84   // CONFIRMED == this object's own address on 3583/3583. Not vestigial: it exists so a child_list walker can recover the OBJECT from a bare parent_link -- LTObject_DetachAllChildren reads link[2], which is exactly this field at parent_link + 0x08.

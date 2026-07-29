@@ -5,6 +5,9 @@
 #include "LTVector.hpp"
 #include "LTWorldTreeLink.hpp"
 namespace regenny {
+class LTObjectRef;
+}
+namespace regenny {
 class LTSpatialRecord;
 }
 namespace regenny {
@@ -14,7 +17,7 @@ public:
     // Metadata: code
     void* vtable; // 0x0
     uint32_t unk_04; // 0x4
-    void* unk_08; // 0x8
+    regenny::LTObjectRef* shared_ref; // 0x8
     private: char pad_c[0x4]; public:
     regenny::LTObjectType type; // 0x10
     private: char pad_11[0x1]; public:
@@ -25,7 +28,7 @@ public:
     void* owner; // 0x34
     regenny::LTSpatialRecord* spatial_record; // 0x38
     uint32_t flags; // 0x3c
-    uint32_t unk_40; // 0x40
+    uint32_t user_flags; // 0x40
     uint16_t flags2; // 0x44
     uint16_t flags3; // 0x46
     regenny::LTVector aabb_min; // 0x48

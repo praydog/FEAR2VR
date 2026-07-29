@@ -463,6 +463,12 @@ public:
         size_t owned_entries;    // total owned_list entries
         size_t index_none;       // slot_index == 0xFFFFFFFF
         size_t index_set;        // slot_index is a real index
+        // shared_ref: a refcounted record the base destructor releases. Checked
+        // against ITSELF -- the record stores its own address twice and a
+        // positive count -- so no baseline and no sibling structure is involved.
+        size_t shared_refs;          // objects with a non-null shared_ref
+        size_t shared_ref_count_ok;  // refcount is positive and sane
+        size_t shared_ref_self_ok;   // both self-pointer copies equal the record's address
     };
 
     // nullopt on fault or a walk that failed to terminate.

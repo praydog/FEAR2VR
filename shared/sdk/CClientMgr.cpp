@@ -11,6 +11,7 @@
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
+#include "regenny/regenny/LTObjectRef.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
 #include "regenny/regenny/LTSpatialEntry.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
@@ -1002,6 +1003,22 @@ int64_t seh_check_attachments(const regenny::CClientMgrListLink* head, size_t ma
                     ++out->index_none;
                 } else {
                     ++out->index_set;
+                }
+
+                // shared_ref, validated against itself: the record keeps its own
+                // address in two places and a live refcount. Nothing external is
+                // consulted, so this cannot drift with the scene.
+                if (const auto* ref = o->shared_ref) {
+                    ++out->shared_refs;
+                    const uint32_t c = ref->refcount;
+                    if (c != 0 && c < 100000u) {
+                        ++out->shared_ref_count_ok;
+                    }
+                    const auto ra = reinterpret_cast<uintptr_t>(ref);
+                    if (reinterpret_cast<uintptr_t>(ref->self_08) == ra &&
+                        reinterpret_cast<uintptr_t>(ref->self_1C) == ra) {
+                        ++out->shared_ref_self_ok;
+                    }
                 }
                 ++seen;
             }
