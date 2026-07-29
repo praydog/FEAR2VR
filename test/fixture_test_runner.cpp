@@ -3848,6 +3848,12 @@ int main(int argc, char** argv) {
                       "distant translation residual stays well under the scaled allowance");
             }
 
+            // Finite input whose OUTPUT overflows -- the same class of hole the projection builders
+            // had. invert_transform's optional must mean "usable transform", not "input looked fine".
+            bool rop = false;
+            check(json_bool(body, "rejects_overflow_pose", rop) && rop,
+                  "invert_transform rejects a pose whose rotated position overflows");
+
             // A NaN tolerance must be refused. Unvalidated, it accepts anything.
             bool nan_ok = false;
             check(json_bool(body, "rejects_nan_tolerance", nan_ok) && nan_ok,
@@ -3949,16 +3955,20 @@ int main(int argc, char** argv) {
             check(json_bool(body, "sc_fov_present", fov_present) &&
                       json_bool(body, "sc_proj_agrees_hvp", agrees),
                   "the fov and projection-agreement fields are present and parse");
+            // THE IDENTITY NOW HOLDS IN EVERY PASS, so it is asserted unconditionally rather than
+            // only for the perspective case. This is the one matrix identity in this block that runs
+            // against the LIVE record: m[0][0] * half_x equals the nonzero element of the w row,
+            // because every builder divides the half-extent into its own overall scale. Reading the
+            // screen-ortho builder is what made this checkable at all.
+            check(agrees,
+                  "m[0][0] * half_x equals the projection's own scale -- ties the matrix to "
+                  "k_vHalfViewPlane in whichever pass is live");
             if (affine) {
                 check(!fov_present,
                       "fov_y_radians() refuses an affine projection (the precondition holds)");
-                check(!agrees,
-                      "the projection/half-plane identity refuses an affine projection too");
             } else if (persp) {
                 // A perspective snapshot: the identity m[0][0]*half_x == m[3][2] applies, tying the
                 // matrix to the scalar pair the engine publishes separately.
-                check(agrees,
-                      "the perspective projection's scale agrees with the stored half-extents");
                 check(fov_present, "a perspective projection yields a field of view");
             }
         }

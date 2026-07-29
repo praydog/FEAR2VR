@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A CHECK THAT ONLY FIRES IN AN UNREACHABLE STATE IS NOT A CHECK.** The projection/half-plane identity
+  was written for the perspective case and returned false for everything else -- and the engine leaves its
+  camera record in the affine screen pass between frames, so the check could never run against the live
+  game. Reading the third builder showed the identity actually generalises: every builder divides the
+  half-extent into its own overall scale, so m[0][0]*half_x equals whichever w-row element is nonzero.
+  Same predicate, now verified on the running process. Worth asking of any gated check: is the gate ever
+  open where I can observe it?
+  
+- **"2/width" WAS A COINCIDENCE, NOT THE FORMULA.** The screen ortho builder divides by the HALF-extent:
+  1/half_x. That equals 2/width only because the screen pass's half-extents are exactly half the viewport
+  -- separately verified, but a different fact, and the coincidence hid the general rule for two passes.
+
 - **TWO COPIES OF THE SAME FORMULA MEANS ONE OF THEM IS WRONG.** Decompiling LTRotation_ToMatrix3x4
   exposed that our existing `rotation_matrix()` hardcoded a factor of 2 where the engine divides by the
   squared norm -- identical for unit quaternions, wrong for everything else, and the header advertised

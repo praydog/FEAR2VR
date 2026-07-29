@@ -3542,6 +3542,14 @@ std::string build_shader_params_json() {
                 !sdk::SceneCamera::affines_are_inverse(*fwd, *inv, 1e-4f, nan_value);
         }
     }
+    // Finite input, overflowing output: FLT_MAX positions make the dot products infinite.
+    regenny::LTNodeTransform huge_pose = probe_pose;
+    huge_pose.position.x = std::numeric_limits<float>::max();
+    huge_pose.position.y = std::numeric_limits<float>::max();
+    huge_pose.position.z = std::numeric_limits<float>::max();
+    const bool rejects_overflow_pose =
+        !sdk::SceneCamera::invert_transform(huge_pose).has_value();
+
     const auto near_err = sdk::SceneCamera::view_inverse_round_trip_error(probe_pose);
     const auto far_err = sdk::SceneCamera::view_inverse_round_trip_error(distant_pose);
     const bool view_from_pose_built =
@@ -3576,6 +3584,7 @@ std::string build_shader_params_json() {
     json_append_double(out, "far_rot_err", far_err.has_value() ? far_err->rotation : -1.0, 8);
     json_append_double(out, "far_trans_err", far_err.has_value() ? far_err->translation : -1.0, 8);
     json_append_bool(out, "rejects_nan_tolerance", rejects_nan_tolerance);
+    json_append_bool(out, "rejects_overflow_pose", rejects_overflow_pose);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

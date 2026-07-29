@@ -1602,6 +1602,35 @@ class CClientMgrCounterNode 0x40 {
 // matrix: it stores 16 floats to [ecx+0x00..0x3C] in argument order. Row-major with translation in
 // the last column, which a live read of the screen pass independently confirmed.
 //
+// THE THIRD BUILDER: LTMatrix_BuildScreenOrthoProjection (0x610658), the mode-2 stored matrix.
+// eax = the half-extent pair, and it emits a 3x4:
+//
+//     [ 1/halfX      0         0   -1 ]
+//     [ 0        -1/halfY      0    1 ]
+//     [ 0            0         1    0 ]
+//
+// IT REPRODUCES THE LIVE MEASUREMENT EXACTLY, not approximately: with the record's half-extents at
+// (2560, 720), 1/2560 = 0.00039063 and -1/720 = -0.00138889 -- the values read out of the running
+// game to eight decimals, biases included. LTMatrix3x4_SetRowMajor12 (0x4207A7) stores its twelve
+// arguments in order, which is why the builder's argument list reads directly as the matrix.
+//
+// AND IT CORRECTS AN IDENTITY THIS FILE HAD SLIGHTLY WRONG. The x scale is 1/halfX, NOT 2/width.
+// Those agree only because the screen pass's half-extents happen to be exactly half the viewport --
+// separately true, but a different fact. Every one of the three builders divides the HALF-EXTENT into
+// its scale, never the viewport.
+//
+// WHICH YIELDS ONE IDENTITY COVERING ALL THREE PASSES: m[0][0] * halfX equals whichever element of
+// the w row is nonzero, because that element IS the matrix's overall scale.
+//
+//     perspective   m[0][0] = 1/halfX       product 1     = m[3][2]
+//     affine        m[0][0] = (f-n)/halfX   product f-n   = m[3][3]
+//     screen ortho  m[0][0] = 1/halfX       product 1     = m[3][3]
+//
+// That matters for more than tidiness. The earlier version of the check handled only the perspective
+// case and returned false otherwise, so it could NEVER run on a live snapshot -- the engine leaves
+// this record in its screen pass between frames. Generalised, it is now the one matrix identity in
+// the suite verified against the running game rather than against a matrix we built.
+//
 // THE PERSPECTIVE PATH IS NOT REACHABLE BY SAMPLING. 4000 consecutive reads of the record all found
 // mode 2: the engine leaves it in the affine screen pass between frames, since the UI draws last.
 // The 3D pass does write this record -- k_vHalfViewPlane still holds (2.2651, 0.6371) from one --

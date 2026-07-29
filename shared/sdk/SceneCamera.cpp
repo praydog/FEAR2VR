@@ -224,12 +224,25 @@ std::optional<float> SceneCameraSnapshot::fov_y_radians() const {
 }
 
 bool SceneCameraSnapshot::projection_agrees_with_half_view_plane(float tolerance) const {
-    if (!is_perspective_projection() || !std::isfinite(half_view_plane_x) ||
-        !std::isfinite(half_view_plane_y)) {
+    if (!std::isfinite(half_view_plane_x) || !std::isfinite(half_view_plane_y) ||
+        half_view_plane_x == 0.0f || half_view_plane_y == 0.0f) {
         return false;
     }
-    return near_equal(projection[0] * half_view_plane_x, projection[14], tolerance) &&
-           near_equal(projection[5] * half_view_plane_y, projection[14], tolerance);
+    // Whichever element of the w row is nonzero is the matrix's overall scale, and every builder
+    // divides the half-extent into exactly that. Perspective puts it at m[3][2], the two affine
+    // forms at m[3][3].
+    const float scale = is_perspective_projection() ? projection[14] : projection[15];
+    if (!std::isfinite(scale) || scale == 0.0f) {
+        return false;
+    }
+    // The y row carries a sign the x row does not: the screen ortho builder emits -1/half_y, so
+    // compare magnitudes there rather than demanding the sign match.
+    const float x_product = projection[0] * half_view_plane_x;
+    const float y_product = projection[5] * half_view_plane_y;
+    const float y_magnitude = y_product < 0.0f ? -y_product : y_product;
+    const float scale_magnitude = scale < 0.0f ? -scale : scale;
+    return near_equal(x_product, scale, tolerance) &&
+           near_equal(y_magnitude, scale_magnitude, tolerance);
 }
 
 // Largest absolute coefficient of the W ROW, m[3][0..3], or 0 when any entry of the matrix is
@@ -386,11 +399,21 @@ std::optional<regenny::LTNodeTransform> SceneCamera::invert_transform(
     if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {
         return std::nullopt;
     }
+    // COMPUTE THEN CHECK, the same rule the projection builders needed: three dot products over
+    // finite inputs near the top of float range still overflow, and returning has_value() with an
+    // infinite position would make this optional mean "the input looked fine" rather than "here is a
+    // usable transform".
+    const float ix = -(r->m[0] * px + r->m[1] * py + r->m[2] * pz);
+    const float iy = -(r->m[4] * px + r->m[5] * py + r->m[6] * pz);
+    const float iz = -(r->m[8] * px + r->m[9] * py + r->m[10] * pz);
+    if (!std::isfinite(ix) || !std::isfinite(iy) || !std::isfinite(iz)) {
+        return std::nullopt;
+    }
     regenny::LTNodeTransform out{};
     out.rotation = conjugate;
-    out.position.x = -(r->m[0] * px + r->m[1] * py + r->m[2] * pz);
-    out.position.y = -(r->m[4] * px + r->m[5] * py + r->m[6] * pz);
-    out.position.z = -(r->m[8] * px + r->m[9] * py + r->m[10] * pz);
+    out.position.x = ix;
+    out.position.y = iy;
+    out.position.z = iz;
     return out;
 }
 

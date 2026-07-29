@@ -116,10 +116,23 @@ struct SceneCameraSnapshot {
     std::optional<float> fov_x_radians() const;
     std::optional<float> fov_y_radians() const;
 
-    // Does the projection's x scale agree with the stored half-extent? For a perspective pass
-    // m[0][0] * half_x must equal m[3][2]. Ties the MATRIX to the SCALAR pair the engine
-    // publishes as k_vHalfViewPlane, two regions written at different moments, so it is both an
-    // offset check and the evidence behind fov_x_radians(). False for a non-perspective pass.
+    // Does the projection's x scale agree with the stored half-extent?
+    //
+    // HOLDS IN EVERY PASS, which took reading all three builders to see. Each divides the half-extent
+    // into its own overall scale, so m[0][0] * half_x equals whichever element of the w row is
+    // nonzero:
+    //
+    //     perspective   m[0][0] = 1/half_x        so the product is 1     = m[3][2]
+    //     affine        m[0][0] = (f-n)/half_x    so the product is f-n   = m[3][3]
+    //     screen ortho  m[0][0] = 1/half_x        so the product is 1     = m[3][3]
+    //
+    // An earlier version only handled the perspective case and returned false for everything else,
+    // which meant it could never be exercised on a live snapshot -- the engine leaves this record in
+    // its screen pass between frames. Now it is checkable against the running game.
+    //
+    // Ties the MATRIX to the SCALAR pair the engine publishes as k_vHalfViewPlane -- two regions
+    // written at different moments -- so it is an offset check, a coherence check, and the evidence
+    // behind fov_x_radians() all at once.
     bool projection_agrees_with_half_view_plane(float tolerance = 0.02f) const;
 
     // Does the stored view-projection actually equal projection * view?
@@ -271,6 +284,10 @@ public:
     // What is NOT preserved for non-unit input is the scaling: composing the two QUATERNIONS gives
     // |q|^2 rather than 1. If you intend to keep composing quaternions, normalise first;
     // pose_rotation_is_unit() reports whether the engine's own pose already is.
+    //
+    // nullopt when the rotated position overflows, not merely when the input looks wrong: the three
+    // dot products can produce an infinity from finite inputs near the top of float range, and this
+    // optional is meant to guarantee a usable transform.
     static std::optional<regenny::LTNodeTransform> invert_transform(
         const regenny::LTNodeTransform& transform);
 
