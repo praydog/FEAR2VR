@@ -1041,7 +1041,9 @@ std::string build_objects_json() {
                api_socket_named_node = 0, api_socket_roundtrip = 0,
                api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
-               api_node_xform_clean_sane = 0, api_camera_node_clean = 0;
+               api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
+               api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
+               api_standing = 0, api_standing_sane = 0, api_standing_node = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -1080,6 +1082,27 @@ std::string build_objects_json() {
                     // own IsServerObject test, so it must match handle presence.
                     if (const auto a = sdk::is_server_object(obj); a.value_or(false)) {
                         ++api_addressable;
+                    }
+                    // DIMS and GROUND CONTACT, both through the public API. A dim is a
+                    // half-extent, so no component may be negative -- that one is an
+                    // invariant. Ground contact is per-scene, so it is counted.
+                    if (const auto d = sdk::object_dims(obj); d.has_value()) {
+                        ++api_dims_ok;
+                        if (d->x >= 0.0f && d->y >= 0.0f && d->z >= 0.0f) {
+                            ++api_dims_nonneg;
+                        }
+                        if (d->x == 0.0f && d->y == 0.0f && d->z == 0.0f) {
+                            ++api_dims_zero;
+                        }
+                    }
+                    if (const auto s = sdk::standing_on(obj); s.has_value()) {
+                        ++api_standing;
+                        if (s->object != nullptr && std::isfinite(s->surface_height)) {
+                            ++api_standing_sane;
+                        }
+                        if (s->has_node) {
+                            ++api_standing_node;
+                        }
                     }
                     // ATTACHMENTS, walked the way a mod would: for every object, ask
                     // what rides on it, and for the ones mounted on a bone resolve the
@@ -1182,7 +1205,7 @@ std::string build_objects_json() {
                 }
             }
         }
-        char ab[1152];
+        char ab[1408];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
@@ -1192,14 +1215,18 @@ std::string build_objects_json() {
                  "\"socket_total\":%zu,\"socket_ok\":%zu,\"socket_named_node\":%zu,"
                  "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu,"
                  "\"node_xform_ok\":%zu,\"node_xform_stale\":%zu,\"node_xform_clean\":%zu,"
-                 "\"node_xform_clean_sane\":%zu,\"camera_node_clean\":%zu}",
+                 "\"node_xform_clean_sane\":%zu,\"camera_node_clean\":%zu,"
+                 "\"dims_ok\":%zu,\"dims_nonneg\":%zu,\"dims_zero\":%zu,"
+                 "\"standing\":%zu,\"standing_sane\":%zu,\"standing_node\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
                  api_att_socketed, api_att_socket_named, api_socket_total, api_socket_ok,
                  api_socket_named_node, api_socket_roundtrip, api_socket_camera,
                  api_socket_eyes, api_node_xform_ok, api_node_xform_stale,
-                 api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean);
+                 api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean,
+                 api_dims_ok, api_dims_nonneg, api_dims_zero, api_standing,
+                 api_standing_sane, api_standing_node);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

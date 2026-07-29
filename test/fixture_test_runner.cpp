@@ -1781,6 +1781,36 @@ int main(int argc, char** argv) {
                       "sdk::is_server_object matches handle presence exactly (the "
                       "engine's CLTClient::IsServerObject is that same comparison)");
 
+                // DIMS. The assertable part is what a half-extent MEANS: no component
+                // can be negative. That holds on every object and would break if the
+                // offset moved onto a neighbouring signed field.
+                int64_t dok = -1, dnn = -1, dz = -1;
+                json_int(ab, "dims_ok", dok);
+                json_int(ab, "dims_nonneg", dnn);
+                json_int(ab, "dims_zero", dz);
+                check(dok == aobj, "object_dims answers for every live object");
+                check(dnn == dok, "EVERY object's dims are non-negative half-extents");
+                // REPORTED: all-zero is a legitimate state (sphere-culled objects never
+                // run SetDims), and how many there are is a property of the level.
+                check(dz >= 0 && dz <= dok, "all-zero dims are a reported fraction");
+
+                // GROUND CONTACT. How many objects stand on something is entirely
+                // scene-dependent -- live exactly one does -- so the count is reported
+                // and only its INTERNAL CONSISTENCY is required: whenever the API
+                // reports contact, it must name an object and a finite surface height.
+                int64_t so = -1, sos = -1, son = -1;
+                json_int(ab, "standing", so);
+                json_int(ab, "standing_sane", sos);
+                json_int(ab, "standing_node", son);
+                check(so >= 0 && so <= aobj, "ground contact is a reported count");
+                check(sos == so,
+                      "every reported ground contact names an object and a finite height");
+                check(son >= 0 && son <= so, "surface nodes are a subset of contacts");
+                printf("[fixture] dims: %lld answered, %lld all-zero; ground contacts: %lld "
+                       "(%lld with a surface node)\n",
+                       static_cast<long long>(dok), static_cast<long long>(dz),
+                       static_cast<long long>(so), static_cast<long long>(son));
+
                 // ATTACHMENTS. The load-bearing assertion is the LAST one: every
                 // attachment that reports a socket must resolve that socket to a bone
                 // NAME through the model API. That crosses two subsystems -- the

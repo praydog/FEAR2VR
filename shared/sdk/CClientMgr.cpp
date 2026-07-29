@@ -1763,33 +1763,34 @@ int64_t seh_check_attachments(const regenny::CClientMgrListLink* head, size_t ma
                     ++out->self_ptr_ok;
                 }
 
-                const auto* plink = &o->parent_link;
+                const auto* plink = &o->standing_on_link;
                 const bool self_linked = plink->prev == plink && plink->next == plink;
-                const bool has_parent = o->parent != nullptr;
+                const bool has_parent = o->standing_on != nullptr;
                 if (has_parent) {
                     ++out->parented;
                 } else {
                     ++out->parentless;
                 }
-                // The biconditional: an object is detached exactly when its
-                // parent_link is self-pointing. Written as `== !` rather than
+                // The biconditional: an object stands on nothing exactly when its
+                // standing_on_link is self-pointing. Written as `== !` rather than
                 // `!=` because the intent is an equivalence, not a difference.
                 if (has_parent == !self_linked) {
                     ++out->link_consistent;
                 }
 
-                // Walk MY children. Each entry is a parent_link; the owning
-                // object is recovered through `self`, which sits one field past
-                // the link -- that is exactly why the engine keeps it.
+                // Walk the objects standing on ME. Each entry is a standing_on_link;
+                // the owning object is recovered through `self`, which sits one field
+                // past the link -- that is exactly why the engine keeps it.
                 {
-                    const auto* h = &o->child_list;
+                    const auto* h = &o->objects_standing_on;
                     const regenny::CClientMgrListLink* c = h->next;
                     for (size_t k = 0; c != h && k < cap; ++k) {
                         ++out->children_reached;
                         const auto* child = *reinterpret_cast<const regenny::LTObject* const*>(
                             reinterpret_cast<uintptr_t>(c) + sizeof(regenny::CClientMgrListLink));
+                        // Each object in the list must name ME as what it stands on.
                         if (child != nullptr &&
-                            reinterpret_cast<uintptr_t>(child->parent) == addr) {
+                            reinterpret_cast<uintptr_t>(child->standing_on) == addr) {
                             ++out->child_parent_ok;
                         }
                         c = c->next;

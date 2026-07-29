@@ -963,6 +963,34 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **You can map a MECHANISM perfectly and still name the CONCEPT wrong. Only a consumer
+  settles it.** LTObject+0x74/0x7C/0x88/0x8C were mapped several passes ago as
+  `child_list` / `parent_link` / `parent` / `attach_extra`, all marked CONFIRMED, and
+  every structural claim in those comments was TRUE: the setter does link 0x7C into the
+  other object's 0x74 list and write 0x88/0x8C as a pair, the live biconditional between
+  0x88 and the link's self-pointing state did hold 3582/3582, and `self` at +0x84 really
+  is the walker's way back to the object.
+
+  The concept was still wrong. It is the STANDING-ON relation, not parent/child:
+  ILTPhysics::GetStandingOn reads 0x88 as an object, gates on its type being a
+  worldmodel, computes the surface height as `pos.y + dims.y` from it, and takes a plane
+  from the node at 0x8C. Live the one non-null case points at the level geometry
+  (dims 13375 x 9149 x 10200) with a floor plane of normal (0,1,0) at distance 1406.
+  FEAR 2 keeps real attachments somewhere else entirely, at +0xB4.
+
+  Two things follow:
+  1. **A writer tells you the shape; only a READER tells you the meaning.** Every earlier
+     claim came from the setter and the teardown -- functions that move bytes without
+     revealing why. The interpretation arrived with the first function that CONSUMED the
+     field for something, and it arrived immediately.
+  2. **"CONFIRMED" should scope to the claim, not the field.** Those comments would have
+     been right if they had said "the setter writes this pair and links that list";
+     wrapping the same evidence in a borrowed name is what made them wrong. Prefer
+     naming after the observed operation until a consumer names the concept for you.
+
+  Also note this rescued a standing puzzle: 0x8C had defeated two guesses (a socket
+  index, then an LTAttachment record). Both failed because they were the right shape
+  family in the wrong subsystem, which is a specific and recognisable kind of stuck.
 - **A reimplemented PRIMITIVE gets re-validated free in every later subsystem, so
   reimplement rather than call.** `String_HashI` was reversed several passes ago for
   skeleton node-name hashes -- `h = 0; h = g_HashCharTable[c] + 919*h` over a 256-byte

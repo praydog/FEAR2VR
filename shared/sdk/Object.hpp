@@ -117,6 +117,41 @@ std::optional<bool> is_renderable(const regenny::LTObject* obj);
 // caller need not check both.
 std::optional<bool> is_server_object(const regenny::LTObject* obj);
 
+// The object's COLLISION HALF-EXTENTS, as the engine reports them.
+//
+// ILTPhysics::GetObjectDims hands out exactly this field, and the engine derives an
+// object's AABB as `position +/- dims`. Live all three components are non-negative on
+// 3583/3583 objects -- which a half-extent must be -- with 1902 objects at all-zero
+// (never sized) and a maximum of 13375 belonging to the level's own worldmodel.
+//
+// A VR mod wants this for the player's collision volume: how tall the body is, and how
+// much room it needs. Note ALL-ZERO IS A REAL STATE, not a failure: sphere-culled
+// objects never run SetDims, so they legitimately report nothing.
+std::optional<regenny::LTVector> object_dims(const regenny::LTObject* obj);
+
+// What this object is STANDING ON, and the surface it is standing on.
+//
+// The engine keeps a pair: the object beneath (usually the level's worldmodel) and a
+// world node describing the actual surface. ILTPhysics::GetStandingOn reads both, gates
+// on the lower object's type, and reports the surface height as `pos.y + dims.y`.
+//
+// For a VR mod this is ground contact -- whether the player is supported, by what, and
+// how high the floor is. Live only one object in the sampled scene stands on anything,
+// and it stands on the level geometry with a floor plane of normal (0,1,0).
+struct StandingOn {
+    // The object beneath. Never null in a returned value -- nullopt is returned instead
+    // when nothing is being stood on, so a caller cannot mistake one for the other.
+    const regenny::LTObject* object;
+    // The surface height directly under this object, computed the engine's own way.
+    float surface_height;
+    // Whether a surface NODE was recorded too. The engine takes the plane from it; when
+    // false it falls back to a flat (0,1,0) assumption, exactly as this does.
+    bool has_node;
+};
+
+// nullopt when the object is null, stands on nothing, or the read faulted.
+std::optional<StandingOn> standing_on(const regenny::LTObject* obj);
+
 // ---- ATTACHMENTS -------------------------------------------------------------
 //
 // What is riding on this object, and where. For a VR mod this is the question behind

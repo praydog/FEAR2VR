@@ -236,3 +236,75 @@ std::vector<Attachment> attachments(const regenny::LTObject* obj) {
 }
 
 } // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+struct StandRaw {
+    float dims[3];
+    const void* standing_on;
+    const void* node;
+    float surface_height;
+    bool dims_ok;
+    bool ok;
+};
+
+// Both the object's own dims and, if it stands on something, that object's position and
+// dims -- in ONE guard, because the surface height is computed from two of its fields
+// and reading them separately could straddle a move.
+StandRaw seh_stand(const regenny::LTObject* obj) {
+    StandRaw r{};
+    KANANLIB_SEH_TRY {
+        r.dims[0] = obj->dims.x;
+        r.dims[1] = obj->dims.y;
+        r.dims[2] = obj->dims.z;
+        r.dims_ok = true;
+        const auto* under = obj->standing_on;
+        if (under != nullptr) {
+            r.standing_on = under;
+            r.node = obj->standing_on_node;
+            // The engine's own expression for the surface height.
+            r.surface_height = under->position.y + under->dims.y;
+        }
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+}  // namespace
+
+std::optional<regenny::LTVector> object_dims(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const StandRaw r = seh_stand(obj);
+    if (!r.ok || !r.dims_ok) {
+        return std::nullopt;
+    }
+    regenny::LTVector out{};
+    out.x = r.dims[0];
+    out.y = r.dims[1];
+    out.z = r.dims[2];
+    return out;
+}
+
+std::optional<StandingOn> standing_on(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const StandRaw r = seh_stand(obj);
+    if (!r.ok || r.standing_on == nullptr) {
+        return std::nullopt;
+    }
+    StandingOn out{};
+    out.object = static_cast<const regenny::LTObject*>(r.standing_on);
+    out.surface_height = r.surface_height;
+    out.has_node = r.node != nullptr;
+    return out;
+}
+
+}  // namespace sdk
