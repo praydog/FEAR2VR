@@ -4052,6 +4052,67 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE BINDING SETS: THE ENGINE'S ACTION TABLE -----------------------------------
+            //
+            // Walked as an ARRAY, which is what the iterator primitives say it is: the container holds a
+            // begin and an end pointer, advance adds 4, and dereference yields the element address. An
+            // earlier pass probed the begin value as a {next, prev, value} node, found nothing, and
+            // recorded the layout unestablished -- the model was wrong, not the data.
+            double bs_sets = -1.0, bs_records = -1.0, bs_owner = -1.0, bs_first = -1.0, bs_kind = -99.0;
+            const bool bs = json_double(body, "input_binding_sets", bs_sets) &&
+                            json_double(body, "input_binding_records", bs_records) &&
+                            json_double(body, "input_binding_owner_ok", bs_owner) &&
+                            json_double(body, "input_binding_first_count", bs_first) &&
+                            json_double(body, "input_binding_first_kind", bs_kind);
+            check(bs && bs_sets == 1.0, "exactly one binding set is registered");
+            check(bs && bs_records == 108.0 && bs_first == bs_records,
+                  "it holds 108 records, and the walk reaches every one the header claims");
+
+            // THE LOAD-BEARING CHECK. Every record stores the address of its own set header, so a wrong
+            // stride or a wrong records base yields records whose owner does not match. This is an
+            // invariant the DATA supplies, unlike a count that merely agrees with itself.
+            check(bs && bs_owner == bs_records,
+                  "every record's owner back-pointer equals its own set header");
+
+            // kind 0, not the -1 the allocator writes: a set that still holds -1 is inert, because every
+            // object lookup returns 0 for keyboard and mouse alike.
+            double bs_inert = -1.0;
+            check(bs && bs_kind == 0.0 && json_double(body, "input_binding_inert_sets", bs_inert) &&
+                      bs_inert == 0.0,
+                  "the set carries a real device kind rather than the inert -1");
+
+            double bs_bound = -1.0, bs_handlers = -1.0;
+            check(json_double(body, "input_binding_bound", bs_bound) && bs_bound > 0.0,
+                  "some records are bound to an input object");
+            check(json_double(body, "input_binding_with_handler", bs_handlers) && bs_handlers > 0.0,
+                  "and some carry a handler function");
+            // Records exist that have a handler but no binding, and vice versa is possible too, so these
+            // are two independent populations rather than one -- checked so a future change that
+            // conflated them shows up.
+            check(bs_handlers <= bs_records && bs_bound <= bs_records,
+                  "neither population exceeds the record count");
+
+            // THE CENSUS CLOSES ARITHMETICALLY against the records themselves: every bound record
+            // contributes its primary, and each alternate adds one more. No constant is hard-coded, so
+            // this holds whatever the user's key configuration happens to be.
+            double c_kb = -1.0, c_mouse = -1.0, c_joy = -1.0, c_alt = -1.0;
+            const bool cen = json_double(body, "input_bind_keyboard", c_kb) &&
+                             json_double(body, "input_bind_mouse", c_mouse) &&
+                             json_double(body, "input_bind_joystick", c_joy) &&
+                             json_double(body, "input_bind_with_alternate", c_alt);
+            check(cen && (c_kb + c_mouse + c_joy) == (bs_bound + c_alt),
+                  "the bound-object census accounts for every primary and alternate");
+
+            // Measured 0, and a non-zero value would be a genuine asymmetry rather than a mapping error:
+            // the game would have registered a binding on an object whose device index
+            // LTInput_ObjectChanged rejects outright, so it could never fire. Asserted so that surprise
+            // surfaces instead of passing quietly.
+            check(cen && c_joy == 0.0,
+                  "no record is bound to a joystick object the dispatch path cannot fire");
+
+            // Deliberately NOT asserted: which action codes are bound to which keys. That is the user's
+            // key configuration, not a property of the engine.
+
             // ---- THE ENGINE'S OBJECT NAMESPACE, AGAINST THE RAW BANKS -------------------------
             //
             // THE STRONGEST CHECK IN THIS SECTION, because the two sides are genuinely independent:

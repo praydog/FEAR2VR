@@ -57,6 +57,18 @@ constexpr uintptr_t kMouseSetIncomingButton = 0x6C78A;
 constexpr uintptr_t kKeyboardSetIncomingKey = 0x6C73E;
 constexpr uintptr_t kMouseOnWheel = 0x6CE2E;
 constexpr uintptr_t kCenterCursor = 0x69199;
+
+// The binding-set list. CLTInput+0x50 is the container the iterators validate against; +0x54 and +0x58
+// are its begin and end pointers, and the elements are 4-byte binding-set pointers.
+constexpr uintptr_t kBindingListBegin = 0x2F76DC;  // CLTInput + 0x54
+constexpr uintptr_t kBindingListEnd = 0x2F76E0;    // CLTInput + 0x58
+
+// Binding set header and record offsets, all confirmed live -- the record's owner field points back at
+// its own set header, which is what makes the stride and base checkable rather than assumed.
+constexpr uintptr_t kSetRecords = 0x00;
+constexpr uintptr_t kSetRecordCount = 0x18;
+constexpr uintptr_t kSetKind = 0x1C;
+constexpr size_t kRecordStride = 0x20;
 constexpr uintptr_t kCLTInputDevices = 0x2F768C;  // CLTInput + 4
 constexpr uintptr_t kKeyboardVtable = 0x27807C;
 constexpr uintptr_t kMouseVtable = 0x278050;
@@ -363,6 +375,69 @@ std::optional<bool> Input::window_is_iconic() {
         return std::nullopt;
     }
     return ::IsIconic(reinterpret_cast<HWND>(hwnd)) != 0;
+}
+
+// ---- the binding sets ----------------------------------------------------------------------------
+
+std::vector<Input::BindingSet> Input::binding_sets() {
+    std::vector<BindingSet> out;
+    const auto begin = read_exe<uint32_t>(kBindingListBegin);
+    const auto end = read_exe<uint32_t>(kBindingListEnd);
+    if (!begin.has_value() || !end.has_value() || *begin == 0 || *end < *begin) {
+        return out;
+    }
+    // Stride 4: the iterator's advance adds 4 and its dereference yields the element address.
+    const size_t count = (*end - *begin) / sizeof(uint32_t);
+    for (size_t i = 0; i < count && i < kMaxBindingRecords; ++i) {
+        uint32_t set_ptr = 0;
+        if (!seh_copy(&set_ptr, *begin + i * sizeof(uint32_t), sizeof(set_ptr)) || set_ptr == 0) {
+            continue;
+        }
+        BindingSet set{};
+        set.address = set_ptr;
+        uint32_t records = 0, record_count = 0;
+        int8_t kind = 0;
+        if (!seh_copy(&records, set_ptr + kSetRecords, sizeof(records)) ||
+            !seh_copy(&record_count, set_ptr + kSetRecordCount, sizeof(record_count)) ||
+            !seh_copy(&kind, set_ptr + kSetKind, sizeof(kind))) {
+            continue;
+        }
+        set.records = records;
+        set.record_count = record_count;
+        set.kind = kind;  // signed, so the inert -1 survives
+        const size_t n = record_count > kMaxBindingRecords ? kMaxBindingRecords : record_count;
+        set.entries.reserve(n);
+        for (size_t r = 0; r < n && records != 0; ++r) {
+            uint32_t raw[8]{};
+            if (!seh_copy(raw, records + r * kRecordStride, sizeof(raw))) {
+                break;
+            }
+            BindingRecord rec{};
+            rec.action_code = raw[0];
+            rec.handler = raw[1];
+            rec.userdata = raw[2];
+            rec.owner = raw[3];
+            rec.primary = static_cast<int32_t>(raw[4]);
+            rec.alternate = static_cast<int32_t>(raw[5]);
+            rec.primary_modifier = static_cast<int32_t>(raw[6]);
+            rec.alternate_modifier = static_cast<int32_t>(raw[7]);
+            set.entries.push_back(rec);
+        }
+        out.push_back(std::move(set));
+    }
+    return out;
+}
+
+std::vector<Input::BindingRecord> Input::bound_actions() {
+    std::vector<BindingRecord> out;
+    for (const auto& set : binding_sets()) {
+        for (const auto& rec : set.entries) {
+            if (rec.is_bound()) {
+                out.push_back(rec);
+            }
+        }
+    }
+    return out;
 }
 
 // ---- the engine's object namespace ---------------------------------------------------------------

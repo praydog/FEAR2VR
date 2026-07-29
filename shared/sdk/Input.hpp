@@ -240,6 +240,59 @@ public:
     // why the engine routes those through a threshold accumulator instead.
     static std::optional<bool> object_changed(int object_id);
 
+    // ---- THE BINDING SETS: THE ENGINE'S ACTION TABLE -----------------------------------
+    //
+    // CLTInput_Poll polls the devices and then walks a list of binding sets, firing the handler of every
+    // record whose object CHANGED. This is the action layer, and enumerating it tells a consumer which
+    // actions the engine knows and what they are bound to.
+    //
+    // THE LIST IS AN ARRAY, not a linked list -- established by reading the iterator primitives rather
+    // than by probing memory. The container at CLTInput+0x50 holds a begin pointer at +0x54 and an end
+    // pointer at +0x58; the constructor validates begin <= p <= end, advance adds 4, and dereference
+    // yields the element address. So the elements are 4-byte binding-set pointers in contiguous storage.
+    // (An earlier reading of this project probed +0x54 as a {next, prev, value} node, found nothing
+    // recognisable, and correctly recorded the layout as unestablished. The model was wrong, not the
+    // data.)
+    //
+    // MEASURED: one set, 108 records, kind 0.
+
+    struct BindingRecord {
+        uint32_t action_code{};  // +0x00 -- and it IS the action code, not a context word: the dispatcher
+                                 // calls handler(action_code, userdata). Live values run 0, 1, 3, ...
+        uintptr_t handler{};     // +0x04 -- 0 when no handler is installed
+        uint32_t userdata{};     // +0x08 -- second argument to the handler
+        uintptr_t owner{};       // +0x0C -- back-pointer to the owning set header
+        int32_t primary{};       // +0x10 -- object id, -1 when unbound
+        int32_t alternate{};     // +0x14 -- second object id, -1 when unbound
+        int32_t primary_modifier{};    // +0x18 -- -1 when none; with a modifier the record goes through
+        int32_t alternate_modifier{};  // +0x1C    the threshold evaluator instead of the change test
+
+        bool is_bound() const { return primary != -1 || alternate != -1; }
+        bool has_handler() const { return handler != 0; }
+    };
+
+    struct BindingSet {
+        uintptr_t address{};
+        uintptr_t records{};      // +0x00
+        uint32_t record_count{};  // +0x18
+        int32_t kind{};           // +0x1C, as a SIGNED byte widened
+
+        // A set allocated but never given a device kind is INERT: with kind -1 every object lookup
+        // returns 0, keyboard and mouse included, so none of its records can ever fire.
+        bool is_inert() const { return kind == -1; }
+
+        std::vector<BindingRecord> entries;
+    };
+
+    // A cap, so a corrupt count cannot spin. Well above the 108 measured.
+    static constexpr size_t kMaxBindingRecords = 4096;
+
+    static std::vector<BindingSet> binding_sets();
+
+    // The actions that are actually bound to something, across every set -- the question a consumer
+    // asking "what does this game respond to" actually has.
+    static std::vector<BindingRecord> bound_actions();
+
     // ---- THE WINDOW-MESSAGE KEY QUEUE -------------------------------------------------
     //
     // Filled by LTInput_QueueKeyDown / LTInput_QueueKeyUp straight out of the window procedure, as

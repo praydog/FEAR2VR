@@ -4100,6 +4100,79 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE BINDING SETS -----------------------------------------------------------------------
+    //
+    // THE OWNER BACK-POINTER IS THE LOAD-BEARING CHECK: every record carries the address of its own set
+    // header, so if the stride or the records base were wrong, the walk would produce records whose owner
+    // does not match. That is an invariant the data itself supplies, unlike a count someone wrote down.
+    const auto sets = sdk::Input::binding_sets();
+    size_t set_records = 0, owner_ok = 0, n_bound = 0, with_handler = 0, inert_sets = 0;
+    for (const auto& set : sets) {
+        if (set.is_inert()) {
+            ++inert_sets;
+        }
+        for (const auto& rec : set.entries) {
+            ++set_records;
+            if (rec.owner == set.address) {
+                ++owner_ok;
+            }
+            if (rec.is_bound()) {
+                ++n_bound;
+            }
+            if (rec.has_handler()) {
+                ++with_handler;
+            }
+        }
+    }
+    json_append_double(out, "input_binding_sets", static_cast<double>(sets.size()), 0);
+    json_append_double(out, "input_binding_records", static_cast<double>(set_records), 0);
+    json_append_double(out, "input_binding_owner_ok", static_cast<double>(owner_ok), 0);
+    json_append_double(out, "input_binding_bound", static_cast<double>(n_bound), 0);
+    json_append_double(out, "input_binding_with_handler", static_cast<double>(with_handler), 0);
+    json_append_double(out, "input_binding_inert_sets", static_cast<double>(inert_sets), 0);
+    json_append_double(out, "input_binding_first_count",
+                       static_cast<double>(sets.empty() ? 0 : sets.front().record_count), 0);
+    json_append_double(out, "input_binding_first_kind",
+                       static_cast<double>(sets.empty() ? -99 : sets.front().kind), 0);
+    json_append_double(out, "input_bound_actions",
+                       static_cast<double>(sdk::Input::bound_actions().size()), 0);
+
+    // WHAT the bound records are bound TO, by the engine's own classifier. Worth counting rather than
+    // assuming: if any bind a 2000-range object, then the game registers joystick bindings that
+    // LTInput_ObjectChanged can never fire, which is a real asymmetry rather than a mapping error.
+    size_t bind_kb = 0, bind_mouse = 0, bind_joy = 0, bind_mods = 0, bind_alts = 0;
+    uint32_t first_action = 0xFFFFFFFFu;
+    int32_t first_primary = -1;
+    for (const auto& rec : sdk::Input::bound_actions()) {
+        for (const int32_t id : {rec.primary, rec.alternate}) {
+            if (id == -1) {
+                continue;
+            }
+            switch (sdk::Input::classify_object(id)) {
+            case sdk::Input::ObjectClass::Keyboard: ++bind_kb; break;
+            case sdk::Input::ObjectClass::Mouse: ++bind_mouse; break;
+            default: ++bind_joy; break;
+            }
+        }
+        if (rec.alternate != -1) {
+            ++bind_alts;
+        }
+        if (rec.primary_modifier != -1 || rec.alternate_modifier != -1) {
+            ++bind_mods;
+        }
+        if (first_action == 0xFFFFFFFFu) {
+            first_action = rec.action_code;
+            first_primary = rec.primary;
+        }
+    }
+    json_append_double(out, "input_bind_keyboard", static_cast<double>(bind_kb), 0);
+    json_append_double(out, "input_bind_mouse", static_cast<double>(bind_mouse), 0);
+    json_append_double(out, "input_bind_joystick", static_cast<double>(bind_joy), 0);
+    json_append_double(out, "input_bind_with_alternate", static_cast<double>(bind_alts), 0);
+    json_append_double(out, "input_bind_with_modifier", static_cast<double>(bind_mods), 0);
+    json_append_double(out, "input_bind_first_action", static_cast<double>(first_action), 0);
+    json_append_double(out, "input_bind_first_primary", static_cast<double>(first_primary), 0);
+
     // ---- THE OBJECT NAMESPACE, CROSS-CHECKED AGAINST THE RAW BANKS ----------------------------
     //
     // Two genuinely independent paths to the same state: object_value() calls the device's own vtable

@@ -3330,9 +3330,9 @@ struct CLTInput {
     void* devices[6]          @0x04   // CONFIRMED six slots: LTInput_AttachDeviceArray zeroes exactly 0x18 bytes here, and CLTInput_PollDevices iterates 0..5 calling each one's vtable slot 2. Live, slot 0 holds the KEYBOARD (vtable 0x67807C) and slot 1 the MOUSE (vtable 0x678050), both identified from their own code rather than slot order since this binary carries no RTTI. The other four are null without a gamepad attached.
     uint8_t unmapped_1C[0x30] @0x1C   // Bounded, not mapped: the second memset in LTInput_AttachDeviceArray clears exactly these 0x30 bytes and stops before the flag below. What they hold is unknown.
     uint32_t input_enabled    @0x4C   // CONFIRMED the gate LTInput_TranslateWindowMessage tests before touching any device (`this[18]`): cleared on WM_CANCELMODE, set on WM_NCACTIVATE, and every device reset on both edges. INDEPENDENT of the simulation gate -- measured 1 while the window was iconic and g_ClientGlob_bClientActive read 0, so "no input" has two separate possible causes.
-    void* binding_list_base   @0x50   // CONFIRMED the container both CLTInput_Poll and LTInput_DestroyBindingSet pass as the second argument when constructing iterators over the registered BINDING SETS. Live 0.
-    void* binding_list_a      @0x54   // The two dwords the iterators are constructed FROM (`this[21]`, `this[22]`). THAT MUCH IS CONFIRMED -- which of them is begin and which is end is NOT: an earlier version of this file labelled them poll_list_begin/poll_list_end and marked it CONFIRMED, which was a guess. Reading the +0x54 value as a {next, prev, value} node yielded no recognisable structure, so the node layout is unestablished too. The elements are BINDING SET POINTERS, not floats: LTInput_DispatchBindingSet's parameter is typed float by IDA only because the container deref is float-typed, and its body immediately reads *(u32*)(p + 24) as a record count.
-    void* binding_list_b      @0x58   // The second of the pair above; same caveat.
+    void* binding_list_unk50  @0x50   // CONFIRMED the container address the iterator constructor validates against, but this dword itself is never read by any of the four iterator primitives. Live 0.
+    void* binding_list_begin  @0x54   // CONFIRMED BEGIN, and NOT a linked-list node -- established by reading the iterator primitives rather than by probing. The constructor (0x46D384) validates `container[1] <= p <= container[2]`, i.e. this dword is the lower bound; the advance (0x621381) adds 4; the dereference (0x622E62) returns the element ADDRESS and requires it below container[2]. So this is a contiguous ARRAY of 4-byte binding-set pointers. Live: begin and end 4 apart, i.e. exactly ONE set registered.
+    void* binding_list_end    @0x58   // CONFIRMED END (one past the last element), the upper bound both the deref and the advance check against. TWO EARLIER READINGS OF THIS PAIR WERE WRONG IN OPPOSITE DIRECTIONS: first labelled begin/end and marked CONFIRMED on no evidence, then downgraded to "unestablished" after probing the begin value as a {next, prev, value} node and finding nothing recognisable. The probe failed because the model was a linked list and the data is an array. Reading the four primitives settled it; guessing the shape twice did not.
 }
 }
 
@@ -3567,10 +3567,12 @@ struct CLTInput {
 //     +0x18  record count
 //     +0x1C  device kind byte, initialised to -1
 //
-// A RECORD (32 bytes):
-//     +0x00  handler context arg 0
-//     +0x04  handler function pointer, called as handler(ctx0, ctx1)
-//     +0x08  handler context arg 1
+// A RECORD (32 bytes), every field confirmed against live data:
+//     +0x00  ACTION CODE -- not a generic context word. The dispatcher calls handler(actionCode,
+//            userdata), so the code is the handler's first argument, which matches the reference tree's
+//            InputMgr::AddAction(name, actionCode). Live values run 0, 1, 3, ... 130.
+//     +0x04  handler function pointer, called as handler(actionCode, userdata); 0 when none
+//     +0x08  handler userdata
 //     +0x0C  back-pointer to the owning set header
 //     +0x10  primary object id    (-1 = empty)
 //     +0x14  alternate object id  (-1 = empty)
@@ -3594,4 +3596,25 @@ struct CLTInput {
 // 1000-1002 agree with the button bank, 1005/1006 are bit-identical to the mapped axis floats, and
 // 1003/1004 equal the reproduced look delta whenever the window geometry makes one meaningful.
 //
-// 843 checks, 0 failures.
+// ---- MEASURED LIVE, with a level loaded --------------------------------------------------------
+//
+//     1 binding set, kind 0 (a real kind, not the inert -1), holding 108 records
+//     108 of 108 records' owner back-pointer equals their own set header
+//     84 records carry a handler; 20 are bound to an input object -- two INDEPENDENT populations, since
+//        the first three records live have a null handler AND no binding
+//     bound objects: 21 keyboard, 2 mouse, 0 joystick; 3 records use their alternate; 0 use a modifier
+//     first bound record: action code 130 on object 38, which classifies keyboard -- VK_UP
+//
+// THE OWNER BACK-POINTER IS WHAT MAKES THE WALK CHECKABLE: a wrong stride or records base yields records
+// whose owner does not match the set they came from, and the suite asserts 108 of 108. The census closes
+// arithmetically too -- keyboard + mouse + joystick counts equal bound records plus alternates -- without
+// hard-coding either number, so it holds whatever the user's key configuration is.
+//
+// ZERO JOYSTICK BINDINGS, consistent with LTInput_ObjectChanged rejecting device indices 2..5. Asserted at
+// zero deliberately: a non-zero value would mean the game had registered a binding that cannot fire, which
+// is a real asymmetry worth surfacing rather than passing quietly.
+//
+// WHICH action codes map to which keys is NOT asserted -- that is the user's configuration, not a property
+// of the engine.
+//
+// 852 checks, 0 failures.
