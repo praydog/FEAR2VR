@@ -1074,7 +1074,7 @@ int main(int argc, char** argv) {
         // holding real work, but not from another empty slot, and it is a property of the shipped
         // game code rather than an invariant: a build that filled it in would fail this with nothing
         // being wrong.
-        check(gpre == 1, "slot 2's entry byte is retn -- it returns immediately");
+        check(gpre == 1, "slot 2's entry byte is retn -- its entry returns immediately");
 
         // AND THE PART THAT MAKES A REORDERING DETECTABLE: each of the three still has its mapped
         // prologue, and no two of those shapes match -- slot 2 is retn+int3 padding, slot 3 opens a

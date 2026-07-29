@@ -884,7 +884,7 @@ std::string build_targets_json() {
     // gameclient.dll -- an implementation slot pointing anywhere else would mean the layout
     // assumption is wrong.
     int gcs_ok = sdk::GameClientShell::available() ? 1 : 0;
-    int gcs_pre_empty = sdk::GameClientShell::pre_update_is_empty() ? 1 : 0;
+    int gcs_pre_empty = sdk::GameClientShell::pre_update_entry_returns_immediately() ? 1 : 0;
     int gcs_shapes = sdk::GameClientShell::slots_match_mapped_shapes() ? 1 : 0;
     int gcs_in_module = 0;
     char gcs_name[64]{};

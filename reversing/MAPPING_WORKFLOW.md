@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A NAME IS THE CLAIM MOST PEOPLE READ. Retract it there first.** After narrowing the prose about
+  `*fn == 0xC3` to "the entry returns immediately", the function was still called
+  `pre_update_is_empty()` -- so the overclaim survived in the one place every consumer sees, while the
+  correction sat in a comment they might not. Renamed to `pre_update_entry_returns_immediately()`.
+  When a claim gets narrowed, check the identifier, not just the sentence.
+  
+  Two smaller versions of the same sweep: the class-level prose and the genny slot map both still said
+  "a single `retn`" after the accessor's doc had stopped saying it, and a retraction that leaves the
+  old wording anywhere is only half done. And int3 padding after the retn is strong evidence a body
+  ends there -- it is what MSVC puts between functions -- but it is still evidence, so it is now
+  written that way rather than as "genuinely no further body".
+
 - **"RE-VERIFIED AT RUNTIME" MUST NAME WHICH PART IS RE-VERIFIED.** Calling IClientShell slot 1 and
   matching "CGameClientShell" re-checks WHERE THE INTERFACE STARTS -- the string proves slot 1 is
   IBase's single virtual, hence slot 0 is implementation-only, hence the +2. It does not touch WHICH

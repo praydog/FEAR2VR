@@ -171,7 +171,7 @@ public:
 // WHY THE SLOT MAP IS TRUSTWORTHY: it is not taken from the reference SDK's declaration order,
 // which does not line up. Slot 1 is IBase::_InterfaceImplementation and returns the literal
 // "CGameClientShell", so slot 0 is an implementation-only leading slot the published interface does
-// not contain -- which is what fixes the +2 offset. Corroborated by slot 2 being a single `retn`
+// not contain -- which is what fixes the +2 offset. Corroborated by slot 2 returning immediately
 // (the reference notes PreUpdate exists for organisation only) and slot 4 being much the largest.
 //
 // WHAT available() DOES AND DOES NOT RE-CHECK, precisely. It calls slot 1 and compares the string,
@@ -198,32 +198,34 @@ public:
     // PreUpdate (slot 2), Update (slot 4), PostUpdate (slot 3). All inside gameclient.dll.
     //
     // 0 when unavailable, so a caller cannot accidentally hook a null or an engine-side address.
-    // NOTE PreUpdate is EMPTY in this build -- a single `retn` -- so hooking it gets you a
+    // NOTE slot 2's entry returns IMMEDIATELY in this build, so hooking PreUpdate gets you a
     // reliable per-frame callback with nothing of the game's own to preserve.
     static uintptr_t pre_update_fn();
+    static uintptr_t update_fn();
+    static uintptr_t post_update_fn();
 
-    // Does PreUpdate RETURN IMMEDIATELY? True when its first byte is `retn` (0xC3).
+    // Does PreUpdate's ENTRY return immediately? True when its first byte is `retn` (0xC3).
     //
-    // That is what the byte proves and all it proves -- the ENTRY POINT returns at once. It says
-    // nothing about bytes further in, which may be unreachable code, padding or another block
-    // entirely; this is not a claim that the function is one byte long.
+    // NAMED FOR WHAT THE BYTE PROVES. An earlier version of this was called pre_update_is_empty(),
+    // which claimed the function's extent -- something one byte cannot establish, since bytes
+    // further in could be unreachable code, padding, or another block entirely.
     //
-    // Still useful to a consumer, and that is the point: a detour on a function whose entry returns
-    // immediately has no game behaviour to preserve, so it can do its work and return without
-    // calling the original. As validation it is weaker than it looks -- it distinguishes slot 2 from
-    // a slot holding real work, but not from another empty slot.
+    // Useful to a consumer exactly as stated: a detour on a function whose entry returns at once has
+    // no game behaviour to preserve, so it can do its work and return without calling the original.
+    // As validation it distinguishes slot 2 from a slot holding real work, but not from any other
+    // function that returns immediately.
     //
     // NOT AN INVARIANT -- it is a property of the shipped game code, which the reference SDK
     // explains ("the only benefit to having code in PreUpdate() is purely organizational"). A build
     // that fills it in would report false without anything being wrong.
-    static bool pre_update_is_empty();
+    static bool pre_update_entry_returns_immediately();
 
     // Do slots 2, 3 and 4 still have the PROLOGUES they had when this map was made? This is the
     // per-slot evidence available at runtime, and what makes a reordering of the three detectable
     // rather than silently accepted:
     //
-    //   slot 2  `retn` followed by 0xCC int3 padding -- returns at once, and the padding is the
-    //           compiler's filler, so there is genuinely no further body
+    //   slot 2  `retn` followed by 0xCC -- returns at once, and int3 is what MSVC places BETWEEN
+    //           functions, so the body very likely ends there. Strong evidence, not proof of extent
     //   slot 3  `sub esp, 0x128` then pushes -- a large fixed frame, no frame pointer
     //   slot 4  `push ebp; mov ebp, esp; and esp, 0xFFFFFFC0` -- a frame pointer AND 64-byte stack
     //           alignment, which a function gets for holding aligned SSE locals. Fitting for the
@@ -235,8 +237,6 @@ public:
     // could legitimately change a prologue. Use it as a gate before hooking, and expect a false
     // negative on a different build rather than a wrong hook.
     static bool slots_match_mapped_shapes();
-    static uintptr_t update_fn();
-    static uintptr_t post_update_fn();
 };
 
 } // namespace sdk

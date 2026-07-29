@@ -411,7 +411,7 @@ bool GameClientShell::slots_match_mapped_shapes() {
     return true;
 }
 
-bool GameClientShell::pre_update_is_empty() {
+bool GameClientShell::pre_update_entry_returns_immediately() {
     const auto fn = pre_update_fn();
     if (fn == 0) {
         return false;
