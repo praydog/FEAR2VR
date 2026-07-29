@@ -28,6 +28,7 @@
 #include "sdk/Engine.hpp"
 #include "sdk/EngineVars.hpp"
 #include "sdk/Input.hpp"
+#include "sdk/Common.hpp"
 #include "sdk/Physics.hpp"
 #include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
@@ -4101,6 +4102,55 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_readable", sdk::Input::main_window() != 0);
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
+
+    // ---- ILTCommon: THE SLOT MAP, AND ITS SERVER TWIN -----------------------------------------
+    //
+    // The structural fact worth checking is the PAIRING: CLTCommonServer aligns with the client slot for
+    // slot, and ten slots share the identical function address. That is what makes the layout credible,
+    // since one table's ordering could be coincidence while two independently resolved tables agreeing
+    // cannot be.
+    const uintptr_t cmn = sdk::Common::instance();
+    json_append_bool(out, "common_instance", cmn != 0);
+    const auto cmn_class = sdk::Common::class_name();
+    json_append_bool(out, "common_class_is_cltcommonclient",
+                     cmn_class.has_value() && *cmn_class == "CLTCommonClient");
+    size_t cmn_slots_ok = 0;
+    for (size_t i = 0; i < sdk::Common::kSlotCount; ++i) {
+        if (sdk::Common::slot_address(static_cast<sdk::Common::Slot>(i)).has_value()) {
+            ++cmn_slots_ok;
+        }
+    }
+    json_append_double(out, "common_slots_resolved", static_cast<double>(cmn_slots_ok), 0);
+    json_append_bool(out, "common_slot_past_end_refused",
+                     !sdk::Common::slot_address(
+                          static_cast<sdk::Common::Slot>(sdk::Common::kSlotCount)).has_value());
+
+    // The client and server tables must agree on the ten shared implementations. Compared through the
+    // catalogue, so this needs no hardcoded addresses beyond the two vtables it already knows.
+    const uintptr_t cmn_client_vt = sdk::Vtables::address("CLTCommonClient");
+    const uintptr_t cmn_server_vt = sdk::Vtables::address("CLTCommonServer");
+    size_t cmn_shared = 0, cmn_differ = 0;
+    if (cmn_client_vt != 0 && cmn_server_vt != 0) {
+        for (size_t i = 0; i < sdk::Common::kSlotCount; ++i) {
+            const auto a = sdk::Vtables::vtable_of(cmn_client_vt + i * sizeof(uint32_t));
+            const auto b = sdk::Vtables::vtable_of(cmn_server_vt + i * sizeof(uint32_t));
+            if (!a.has_value() || !b.has_value()) {
+                continue;
+            }
+            if (*a == *b) {
+                ++cmn_shared;
+            } else {
+                ++cmn_differ;
+            }
+        }
+    }
+    json_append_double(out, "common_shared_slots", static_cast<double>(cmn_shared), 0);
+    json_append_double(out, "common_differing_slots", static_cast<double>(cmn_differ), 0);
+
+    const auto low_violence = sdk::Common::is_low_violence();
+    json_append_bool(out, "common_low_violence_readable", low_violence.has_value());
+    json_append_bool(out, "common_low_violence", low_violence.value_or(false));
+    json_append_bool(out, "common_null_object_refused", !sdk::Common::object_type(0).has_value());
 
     // ---- ILTPhysics: THE SLOT MAP, EXERCISED --------------------------------------------------
     //

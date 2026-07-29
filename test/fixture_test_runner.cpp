@@ -4052,6 +4052,43 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- ILTCommon, AND ITS SERVER TWIN ------------------------------------------------
+            //
+            // FEAR 2 REORDERED this interface relative to the reference -- slot 2 is the reference's 16th
+            // method, slot 10 its 1st -- so unlike ILTPhysics no name here could be taken from position.
+            // What replaces that evidence is the server twin: CLTCommonServer is also 19 slots and aligns
+            // slot for slot, sharing the identical function address on eleven of them.
+            bool cm_inst = false, cm_cls = false;
+            check(json_bool(body, "common_instance", cm_inst) && cm_inst,
+                  "ILTCommon.Client resolves through the registry");
+            check(json_bool(body, "common_class_is_cltcommonclient", cm_cls) && cm_cls,
+                  "and the instance names itself CLTCommonClient through its own getter");
+            double cm_slots = -1.0;
+            check(json_double(body, "common_slots_resolved", cm_slots) && cm_slots == 19.0,
+                  "all 19 slots resolve to engine code");
+            bool cm_past = false;
+            check(json_bool(body, "common_slot_past_end_refused", cm_past) && cm_past,
+                  "and slot 19 is refused rather than read past the table");
+
+            // THE PAIRING ITSELF. Eleven slots identical, eight overridden, and the two must account for
+            // every slot -- which is what makes this a structural claim rather than two counts.
+            double cm_shared = -1.0, cm_differ = -1.0;
+            const bool cmp = json_double(body, "common_shared_slots", cm_shared) &&
+                             json_double(body, "common_differing_slots", cm_differ);
+            check(cmp && (cm_shared + cm_differ) == cm_slots,
+                  "client and server tables are comparable on every slot");
+            check(cmp && cm_shared == 11.0 && cm_differ == 8.0,
+                  "eleven slots share one implementation; eight are overridden per side");
+
+            // Reported, not pinned: whether this install is censored is a property of the copy, and the
+            // value would encode one machine's Steam entitlement into the suite.
+            bool lv_ok = false;
+            check(json_bool(body, "common_low_violence_readable", lv_ok) && lv_ok,
+                  "the low-violence flag reads through slot 16");
+            bool cm_null = false;
+            check(json_bool(body, "common_null_object_refused", cm_null) && cm_null,
+                  "object queries refuse a null handle");
+
             // ---- ILTPhysics: THE SLOT MAP, EXERCISED -------------------------------------------
             //
             // Ten of the 18 slots were named from strings the functions reference themselves; the other

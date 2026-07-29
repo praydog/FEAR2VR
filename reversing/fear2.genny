@@ -3937,3 +3937,60 @@ class LTInputDeviceMouse 0x30 {
 // than misplaced, which is why this map is recorded slot by slot instead of "it matches ILTPhysics".
 //
 // 895 checks, 0 failures.
+
+// ==================================================================================================
+// ILTCommon (CLTCommonClient) -- 19 SLOTS, AND WHY THE REFERENCE WAS NO HELP HERE
+// ==================================================================================================
+//
+//      0  abstract_base_dtor  (shared)         10  GetObjectType         (ref 1)
+//      1  InterfaceImplementation              11  Parse     -- ConParse via TokenizeA
+//      2  SetObjectFilenames    (ref 16)       12  ParseAlt  -- same shape via TokenizeB
+//      3  GetObjectFlags        (ref 17)       13  CreatePooledObject
+//      4  SetObjectFlags        (ref 18)       14  GetPolyTextureFlags   (ref 12)
+//      5  GetAttachmentObjects  (ref 19)       15  GetPolyOcclusionIndex -- NOT IN THE REF
+//      6  GetAttachments        (ref 20)       16  IsLowViolence         -- NOT IN THE REF
+//      7  GetAttachedModelNodeTransform        17  Stub_ReturnTrue (ICF-shared)
+//      8  GetAttachmentTransform (ref 22)      18  GetILTModel
+//      9  GetAttachedModelSocketTransform
+//
+// THE ALIGNMENT TRICK THAT MAPPED ILTPhysics FAILS HERE, and that is the finding. Slot 2 is the reference's
+// SIXTEENTH method, slot 10 its FIRST, slot 14 its TWELFTH. There is no monotonic drift to exploit because
+// FEAR 2 REORDERED this interface rather than trimming it. So no name below was taken from a position --
+// every one rests on a string the function references or on what it demonstrably does. The reference
+// supplied a vocabulary, nothing more.
+//
+// WHAT REPLACED THAT EVIDENCE: THE SERVER TWIN. CLTCommonServer is also 19 slots and aligns slot for slot,
+// with ELEVEN sharing the identical function address -- the CLTCommonShared implementations plus the shared
+// abstract destructor at slot 0 -- and EIGHT overridden per side (1-6, 13, 18). One table's ordering could
+// be coincidence; two independently resolved tables agreeing slot by slot could not. The suite asserts the
+// split and that the two counts account for every slot.
+//
+// (A first count of the shared slots by hand said ten. It missed slot 0. Comparing the tables in code
+// caught it, which is the small version of the lesson this project keeps relearning.)
+//
+// THE NODE/SOCKET PAIR was the only genuinely ambiguous case, and position could not have resolved it.
+// Slots 7 and 9 forward to ONE implementation differing by a single bool, and that flag selects which
+// ILTModel method runs: slot 14 -- GetNodeTransform, which calls LTModelObject_GetNodeTransform, already
+// named in an earlier pass -- when set, and slot 3 (GetSocketTransform) when clear. They are told apart by
+// what they CALL. That also named ILTModel slot 14 as a by-product.
+//
+// TWO SLOTS HAVE NO REFERENCE COUNTERPART: 15 (GetPolyOcclusionIndex, from its own string) and 16, which
+// calls ISteamApps' second method -- BIsLowViolence in that interface's published order -- making it the
+// censored-build check. Live it reads false. That last name rests on the Steam SDK's layout rather than on
+// anything in this binary, and is flagged as such.
+//
+// SLOT 13 IS DELIBERATELY NOT NAMED CreateMessage. It pool-allocates an object, initialises four dwords and
+// a vtable, and hands it back through an out-parameter, which is exactly the shape of the reference's
+// CreateMessage. But the allocated class publishes no name, its methods reference no strings, and its
+// vtable is referenced only by its own constructor -- so there is nothing to confirm it with. And since this
+// interface is REORDERED, reference correspondence carries no weight on its own. CreatePooledObject until
+// something proves more.
+//
+// EXPOSED AS sdk::Common. The attachment group (slots 6-9) is what a VR mod needs -- placing a weapon or a
+// hand on a model node or socket is exactly this -- but it is handed over as VERIFIED ADDRESSES rather than
+// wrapped calls, because the shared implementation's out-parameter POSITION is not pinned. Calling an engine
+// function with a wrong argument shape is not a wrong answer; it is a corrupted stack on the game's own
+// thread. object_type() and is_low_violence() are wrapped and called by the suite, since they take shapes
+// that are established.
+//
+// 903 checks, 0 failures.
