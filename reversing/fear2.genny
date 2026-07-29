@@ -1576,7 +1576,12 @@ class LTAnimRecordTable 0x10 {
 // parent frames and their difference is geometrically meaningless, so it is only interpretable
 // once the answer is already known. One confounded measurement and one question-begging one. What would settle it is composing +0x08
 // down the hierarchy and comparing against an engine-produced transform, or finding a caller
-// of the bind getter that composes its output.
+// of the bind getter that composes its output. A THIRD attempt also failed: composing with
+// rotations and measuring both forms against the object's own bounding radius passes on BOTH
+// hypotheses (raw fits 147/147 at 0.265 of the radius, composed 144/147 at 0.421), when a
+// wrongly-composed model-space pose should have blown past the bounds. Note also that the bind
+// getter has NO callers inside FEAR2.exe -- only its two vtable slots -- so whatever composes
+// its output lives in gameclient.dll, which is where this question has to be answered.
 //
 // TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
 // its rigid inverse, the way LTWorldModelObject's pair is. If they were,

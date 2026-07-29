@@ -963,6 +963,31 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **POPULATION STATISTICS CANNOT SETTLE A COORDINATE CONVENTION. Find the consumer.** Three
+  measurements were tried on whether `LTModelNode`'s bind pose is local or model-space, and all three
+  failed in different ways:
+  
+  |            | result | why it failed |
+  |---|---|---|
+  | depth vs magnitude | 12.9 -> 57.2 | mixed asset scale; depth bands are different models |
+  | parent delta | 38.6 vs 57.2 | question-begging -- undefined if the pairs ARE local |
+  | fit to bounding radius | raw 147/147, composed 144/147 | BOTH hypotheses pass |
+  
+  The third was the best-designed of them -- an independent yardstick from elsewhere in the engine
+  rather than another statistic about the poses -- and it still did not discriminate, because a
+  composed skeleton that stays inside the model's bounds is consistent with either reading. It is
+  also weaker than it looks: helper bones can legitimately sit outside mesh bounds, and the
+  quaternion order used to compose is itself unvalidated, so a mistake there could flatter either
+  answer.
+  
+  THE PATTERN IS THE LESSON. A convention is a fact about CODE, so it is settled by finding code that
+  depends on it -- a caller that composes the value, or an engine-produced result in a known space to
+  compare against. `ILTModel_GetBindPoseNodeTransform` has no callers inside FEAR2.exe at all, only
+  its two vtable slots, which localises the answer to gameclient.dll and is itself worth knowing.
+  
+  Three cheap failures beat one confident guess, and recording WHICH approaches failed is most of
+  their value -- the next reader does not repeat them.
+
 - **A PREDICATE'S PROMISE MUST COVER ONLY WHAT IT COMPARES.** `shares_node_data()` compares one
   pointer -- the node RECORD array -- but its comment offered "bind poses, the hierarchy, socket
   offsets". Sockets come from a separate `asset->sockets` pointer resolved independently, so record

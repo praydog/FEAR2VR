@@ -225,10 +225,23 @@ public:
     //                        all. A number that is only interpretable if one hypothesis is already
     //                        true cannot choose between them.
     //
-    // So one measurement is confounded and the other is question-begging. What would settle it is
-    // composing +0x08 down the recorded hierarchy and comparing against an engine-produced
-    // transform, or finding a caller of the bind getter that combines its output with parent
-    // transforms. Until then: do not compose these, and do not assume they are already composed.
+    //   bounds fit           composing down the hierarchy (rotations included) and comparing both
+    //                        forms against the object's own bounding radius -- an independent
+    //                        yardstick from elsewhere in the engine. BOTH FIT: raw on 147 of 147 at
+    //                        mean 0.265 of the radius, composed on 144 of 147 at 0.421. If the raw
+    //                        values were already model-space, composing should have blown them well
+    //                        past the bounds, and it did not. No discrimination.
+    //
+    // THREE MEASUREMENTS, NONE DECISIVE: one confounded by asset scale, one question-begging, one
+    // that both hypotheses pass. The bounds test is also weaker than it looks -- helper bones can
+    // legitimately sit outside mesh bounds, and the composition's own quaternion convention here is
+    // unvalidated, so a wrong order could flatter either answer.
+    //
+    // That pattern is itself the finding: population statistics cannot settle a coordinate
+    // convention. What would settle it is a CONSUMER -- the bind getter has no callers inside
+    // FEAR2.exe, only its two vtable slots, so its callers live in gameclient.dll -- or an
+    // engine-produced bind-space transform to compare against. Until then: do not compose these,
+    // and do not assume they are already composed.
     std::optional<BindPose> bind_pose(size_t node_index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------

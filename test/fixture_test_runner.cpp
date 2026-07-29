@@ -3014,6 +3014,26 @@ int main(int argc, char** argv) {
                        bmshal, bmdeep, static_cast<long long>(bdepth), bedgemean,
                        static_cast<long long>(bedge));
 
+                // A THIRD attempt, against an INDEPENDENT yardstick: the object's own bounding
+                // radius. Both forms fit it, so this does not discriminate either -- reported to
+                // record that the approach was tried and to stop the next reader repeating it.
+                // Corroboration at best: helper bones may sit outside mesh bounds, and the
+                // composition convention used to produce the second number is itself unvalidated.
+                int64_t spp = -1, sraw = -1, scomp = -1;
+                double srr = -1.0, scr = -1.0;
+                json_int(ab, "space_probed", spp);
+                json_int(ab, "space_raw_fits", sraw);
+                json_int(ab, "space_comp_fits", scomp);
+                json_double(ab, "space_raw_ratio", srr);
+                json_double(ab, "space_comp_ratio", scr);
+                check(spp > 0, "sized skeletons were available to measure against their bounds");
+                check(sraw >= 0 && sraw <= spp && scomp >= 0 && scomp <= spp,
+                      "both bound-fit counts are within the probed population");
+                printf("[fixture] bind space, bounds test also inconclusive: raw fits %lld/%lld "
+                       "(%.2f of radius), composed %lld/%lld (%.2f)\n",
+                       static_cast<long long>(sraw), static_cast<long long>(spp), srr,
+                       static_cast<long long>(scomp), static_cast<long long>(spp), scr);
+
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
 
                 // EYE GEOMETRY, from asset data -- no bone cache, so no staleness and nothing to
