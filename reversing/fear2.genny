@@ -1189,7 +1189,10 @@ class CClientMgrCounterNode 0x40 {
 //   `mov ecx, offset g_Renderer`  takes the renderer OBJECT's address, used as `this`
 // 90 functions read it. Heaviest: 0x6152D4 (24 refs) and 0x615CC1 (10).
 //
-// D3D9 DEVICE SLOT OFFSETS, now an enum in the IDB (D3D9DeviceSlot) so call sites read as names:
+// D3D9 DEVICE VTABLE OFFSETS, an enum in the IDB named D3D9DeviceVtableOffset so call sites read as names.
+// THE VALUES ARE BYTE OFFSETS, NOT SLOT INDICES -- index = offset / 4, so Clear is offset 0xAC and index 43.
+// The distinction is worth labouring because getting index and offset arithmetic mixed up is exactly what put
+// this mapping +3 slots out on the first attempt:
 //   0x40 Reset   0x44 Present   0x94/0x98 Set/GetRenderTarget   0x9C/0xA0 Set/GetDepthStencilSurface
 //   0xA4 BeginScene   0xA8 EndScene   0xAC Clear   0xB0/0xB4 Set/GetTransform
 //   0xBC/0xC0 Set/GetViewport   0x148 DrawIndexedPrimitive   0x170 SetVertexShader

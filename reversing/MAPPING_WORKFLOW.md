@@ -974,7 +974,9 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   underneath: the regex captured `THIS_` as a method name from `STDMETHOD_(ret,Name)(THIS_ ...)`, and the
   first-three check was what finally exposed the base error. Correct: Present 0x44, BeginScene 0xA4,
   EndScene 0xA8, Clear 0xAC, SetTransform 0xB0, SetViewport 0xBC, SetVertexShaderConstantF 0x178. Now an enum
-  in the IDB (D3D9DeviceSlot) so call sites read as names instead of numbers.
+  in the IDB, named D3D9DeviceVtableOffset because the values are BYTE OFFSETS and not slot indices --
+  index = offset / 4, Clear being offset 0xAC and index 43. Naming it "Slot" while storing offsets would have
+  set up the same index/offset confusion that caused the +3 error in the first place.
   
   The confirmation is worth more than the parse: sub_615CC1 calls seven distinct offsets which decode as one
   coherent family -- Set/GetRenderTarget, Set/GetDepthStencilSurface, Clear, Set/GetViewport. A wrong base
