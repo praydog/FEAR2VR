@@ -1439,7 +1439,7 @@ class CClientMgrCounterNode 0x40 {
 //
 //     +0x00   u32 pass mode        2 = the engine's screen/2D pass
 //     +0x04   i32 viewport left, then top, right, bottom at +0x08/+0x0C/+0x10
-//     +0x14   view transform source, LTTransform_Copy's destination
+//     +0x14   CAMERA POSE, an LTNodeTransform: LTVector position + LTRotation rotation
 //     +0x30   half view-plane x, y -> published as k_vHalfViewPlane
 //     +0x38   projection CENTRE OFFSET x, y
 //     +0x40   depth min, max       -> fed to the projection builder
@@ -1471,7 +1471,17 @@ class CClientMgrCounterNode 0x40 {
 //   - The half view-plane read (2560, 720) -- exactly half the viewport, in pixels, which is the
 //     independent confirmation of the units established last pass.
 //
-// THE PROJECTION BRANCHES ON THE MODE: 0 -> sub_610560(depthMin), 1 -> sub_6105DA(depthMin,
+// THE POSE LAYOUT COMES FROM THE COPY ROUTINE, not from guessing at 28 bytes. LTTransform_Copy
+// (0x407CC1) does three fld/fstp into +0x00/+0x04/+0x08, then `lea ecx, [esi+0Ch]` and calls
+// LTRotation_Copy -- so position at 0x00, rotation at 0x0C, 0x1C total. That is exactly the
+// already-generated regenny::LTNodeTransform, so the SDK reuses it rather than declaring another
+// 7-float type.
+//
+// AND THE QUATERNION IS w-LAST, which the screen pass settles for free: the pose reads position
+// (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
+// That agrees with regenny::LTRotation's x,y,z,w.
+//
+// // THE PROJECTION BRANCHES ON THE MODE: 0 -> sub_610560(depthMin), 1 -> sub_6105DA(depthMin,
 // depthMax), otherwise the stored matrix via sub_610658/sub_60C2FE.
 //
 // EXPOSED AS sdk::SceneCamera, and the shape of that class is dictated by a hazard: THE RENDER
@@ -1485,10 +1495,18 @@ class CClientMgrCounterNode 0x40 {
 // check: a tear confined to the view, derived or trailing matrices satisfies it, and no invariant
 // here proves the whole record came from one pass.
 //
-// is_orthographic_projection() also settles the precondition that made an FOV accessor
-// impossible last pass. [3][3] is 1 for orthographic and 0 for row-major perspective, so a
-// consumer can now establish FROM THE DATA -- not by trusting `mode` -- whether it is looking at
-// a perspective pass, and therefore whether half_view_plane may be read as tan(fov/2).
+// is_orthographic_projection() improves the precondition that made an FOV accessor impossible
+// last pass, without completing it. [3][3] is 1 for orthographic and 0 for row-major perspective,
+// so a consumer can rule out the screen pass FROM THE DATA rather than by trusting `mode`. That is
+// NECESSARY BUT NOT SUFFICIENT: a false answer only rejects this ortho shape, and says nothing
+// about whether the projection is a standard unit-depth perspective matrix or where its extents
+// are taken. tan(fov/2) stays provisional until sub_610560 / sub_6105DA are read.
+//
+// THE POSE INVARIANTS NEED A GATE, and finding out why is worth recording. The camera pose's
+// quaternion being unit-length is the project's usual offset proof, and it holds in any PASS --
+// but not in any STATE. This is static data, so before the first pass configures it the whole
+// record is zeroes, and a zero quaternion has magnitude 0, not 1. The suite therefore gates the
+// pose checks on a valid viewport rect, which is the builder's own evidence that it ran.
 //
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //

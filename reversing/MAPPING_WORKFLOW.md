@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A ZERO QUATERNION IS NOT A UNIT QUATERNION, SO THE OFFSET PROOF NEEDS A STATE GATE.** Unit-length
+  rotation is this project's standard evidence that a transform offset is right, and it holds in every
+  render PASS. It does not hold in every STATE: the scene camera record is static data, all zeroes until
+  the first pass configures it, and magnitude 0 fails the check. Asserting it unconditionally would break
+  the suite in the no-world state. Gate on something the writer sets -- a valid viewport rect.
+  
+- **PREFER THE GENERATED TYPE, AND PIN IT WITH static_assert.** The camera pose is exactly
+  `regenny::LTNodeTransform` (position 0x00, rotation 0x0C, 0x1C), which LTTransform_Copy confirms from
+  the engine side. Reusing it beats a local 7-float struct, but a raw memcpy then depends on the schema
+  staying packed at that size -- so assert the sizes and the non-overlap of adjacent fields, and let a
+  regenerated schema fail at compile time instead of shifting every later field silently.
+
 - **A RECORD THE RENDER THREAD OWNS MUST BE COPIED IN ONE READ.** The scene camera's 360 bytes are
   rewritten per pass. Reading mode, then the viewport, then the matrices can splice two passes together
   with no access violation and a completely plausible result. One guarded memcpy bounds that window; it

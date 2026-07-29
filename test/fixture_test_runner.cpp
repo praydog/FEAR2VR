@@ -3758,6 +3758,22 @@ int main(int argc, char** argv) {
                   "matrix to the rect");
         }
 
+        // THE OFFSET PROOF: a quaternion read at the wrong offset is overwhelmingly unlikely to
+        // normalise, so this is what defends the +0x14 pose location. LTTransform_Copy is what
+        // established that layout -- three floats, then LTRotation_Copy at +0x0C.
+        //
+        // GATED ON A CONFIGURED RECORD, not on the mode, and the gate is load-bearing: this is
+        // static data, so before any pass has run it is all zeroes, and a zero quaternion has
+        // magnitude 0 rather than 1. Asserting unconditionally would fail in the no-world state
+        // this suite can legitimately run in. A valid viewport rect is the builder's own signal
+        // that it has configured the record.
+        if (json_has(body, "\"sc_viewport_valid\":true")) {
+            check(json_has(body, "\"sc_pose_rot_unit\":true"),
+                  "the camera pose's rotation is a unit quaternion (proves the +0x14 offset)");
+            check(json_has(body, "\"sc_pose_pos_finite\":true"),
+                  "the camera pose's position is finite");
+        }
+
         // The engine's screen pass, whose shape is known: identity view, and half-view-plane
         // extents that are literally half the viewport in PIXELS. That second identity is what
         // established the units of k_vHalfViewPlane, so it is worth defending. Gated on the mode
@@ -3765,6 +3781,9 @@ int main(int argc, char** argv) {
         if (sc_mode == 2) {
             check(json_has(body, "\"sc_view_identity\":true"),
                   "the screen pass's view matrix is identity");
+            // The screen pass zeroes the pose, so its shape is exactly known here.
+            check(json_has(body, "\"sc_pose_qw\":1.0000"),
+                  "the screen pass's camera pose carries the identity rotation (w = 1)");
             double hx = 0.0, hy = 0.0;
             if (json_double(body, "sc_hvp_x", hx) && json_double(body, "sc_hvp_y", hy)) {
                 const double want_x = static_cast<double>(sc_w) / 2.0;

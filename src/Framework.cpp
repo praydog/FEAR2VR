@@ -3321,7 +3321,10 @@ std::string build_shader_params_json() {
                  "\"sc_viewport_valid\":%s,\"sc_view_identity\":%s,\"sc_ortho\":%s,"
                  "\"sc_ortho_matches_viewport\":%s,\"sc_proj_off_x\":%.4f,"
                  "\"sc_proj_off_y\":%.4f,\"sc_hvp_x\":%.4f,\"sc_hvp_y\":%.4f,"
-                 "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,",
+                 "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,"
+                 "\"sc_pose_rot_unit\":%s,\"sc_pose_pos_finite\":%s,"
+                 "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
+                 "\"sc_pose_qw\":%.4f,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
                  static_cast<long long>(scam->viewport_height()),
                  scam->viewport_valid() ? "true" : "false",
@@ -3330,7 +3333,11 @@ std::string build_shader_params_json() {
                  scam->projection_matches_viewport_ortho() ? "true" : "false",
                  scam->proj_center_offset_x, scam->proj_center_offset_y,
                  scam->half_view_plane_x, scam->half_view_plane_y,
-                 scam->depth_min, scam->depth_max);
+                 scam->depth_min, scam->depth_max,
+                 scam->pose_rotation_is_unit() ? "true" : "false",
+                 scam->pose_position_is_finite() ? "true" : "false",
+                 scam->pose.position.x, scam->pose.position.y, scam->pose.position.z,
+                 scam->pose.rotation.w);
     } else {
         snprintf(sc, sizeof(sc), "\"scene_camera\":false,");
     }

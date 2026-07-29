@@ -17,6 +17,7 @@ constexpr uintptr_t kRecordOffset = 0x32E790;
 
 // Field offsets within the record, all from sub_610BA1's and sub_610DA2's own accesses.
 constexpr size_t kMode = 0x00;
+constexpr size_t kPose = 0x14;  // LTNodeTransform: position 0x00, rotation 0x0C
 constexpr size_t kViewportLeft = 0x04;
 constexpr size_t kHalfViewPlane = 0x30;      // 48
 constexpr size_t kProjCenterOffset = 0x38;   // 56
@@ -27,6 +28,18 @@ constexpr size_t kViewProjection = 0xB8;     // 184
 constexpr size_t kDerived = 0xF8;            // 248
 constexpr size_t kTrailing = 0x138;          // 312, 12 floats
 constexpr size_t kRecordSize = 0x168;        // 360 -- through the trailing floats
+
+// The snapshot memcpy's correctness rests on these generated types staying packed at the sizes
+// the engine uses. If the schema is regenerated differently, every field after the pose shifts
+// silently -- so fail at compile time instead.
+static_assert(sizeof(regenny::LTNodeTransform) == 0x1C,
+              "camera pose layout: LTVector position at 0x00 + LTRotation at 0x0C");
+static_assert(sizeof(regenny::LTRotation) == 0x10, "quaternion is 4 floats, w last");
+static_assert(sizeof(regenny::LTMatrix3x4) == 0x30, "view matrix is 12 floats");
+static_assert(kPose + sizeof(regenny::LTNodeTransform) <= kHalfViewPlane,
+              "the pose must not overlap the half view-plane pair");
+static_assert(kView + sizeof(regenny::LTMatrix3x4) <= kProjection,
+              "the view matrix must not overlap the projection");
 
 uintptr_t exe_at(uintptr_t offset) {
     const auto* exe = Modules::get().exe();
@@ -102,7 +115,7 @@ bool SceneCameraSnapshot::view_is_identity(float tolerance) const {
     // Row-major 3x4: the leading 3x3 is identity and the translation column is zero.
     for (size_t row = 0; row < 3; ++row) {
         for (size_t col = 0; col < 4; ++col) {
-            const float got = view[row * 4 + col];
+            const float got = view.m[row * 4 + col];
             if (!std::isfinite(got)) {
                 return false;
             }
@@ -113,6 +126,20 @@ bool SceneCameraSnapshot::view_is_identity(float tolerance) const {
         }
     }
     return true;
+}
+
+bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {
+    const float x = pose.rotation.x, y = pose.rotation.y, z = pose.rotation.z, w = pose.rotation.w;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {
+        return false;
+    }
+    const float magnitude = std::sqrt(x * x + y * y + z * z + w * w);
+    return std::fabs(magnitude - 1.0f) <= tolerance;
+}
+
+bool SceneCameraSnapshot::pose_position_is_finite() const {
+    return std::isfinite(pose.position.x) && std::isfinite(pose.position.y) &&
+           std::isfinite(pose.position.z);
 }
 
 bool SceneCameraSnapshot::is_orthographic_projection() const {
@@ -148,6 +175,7 @@ std::optional<SceneCameraSnapshot> SceneCamera::snapshot() {
 
     SceneCameraSnapshot out{};
     out.mode = static_cast<uint32_t>(int_at(raw, kMode));
+    std::memcpy(&out.pose, raw + kPose, sizeof(out.pose));
     out.viewport_left = int_at(raw, kViewportLeft);
     out.viewport_top = int_at(raw, kViewportLeft + 4);
     out.viewport_right = int_at(raw, kViewportLeft + 8);
@@ -158,7 +186,7 @@ std::optional<SceneCameraSnapshot> SceneCamera::snapshot() {
     out.proj_center_offset_y = float_at(raw, kProjCenterOffset + 4);
     out.depth_min = float_at(raw, kDepthRange);
     out.depth_max = float_at(raw, kDepthRange + 4);
-    out.view = floats_at<12>(raw, kView);
+    std::memcpy(&out.view, raw + kView, sizeof(out.view));
     out.projection = floats_at<16>(raw, kProjection);
     out.view_projection = floats_at<16>(raw, kViewProjection);
     out.derived = floats_at<16>(raw, kDerived);
