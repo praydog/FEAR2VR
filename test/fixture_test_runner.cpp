@@ -4052,6 +4052,32 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE RESOURCE RECORD, AND A WALK THAT IS NOT SHIPPED ---------------------------
+            //
+            // The registry's field offsets are solid: ListResourcesOfType's row writer calls one accessor
+            // per CSV column and every accessor is a pure field read, so "Resource, Loaded,
+            // AutoPrefetched, RefCount, Memory" maps onto +0x0C, +0x18, +0x16 bit 1 and +0x10 with nothing
+            // inferred. A hand walk corroborated it with thousands of real paths at +0x0C.
+            //
+            // THE CONTAINER IS NOT MAPPED, and this suite deliberately asserts nothing about it. A walk
+            // built on taking the manager singleton's address as the bucket table ran to its own 65536-entry
+            // cap while reporting 65534 "printable names" -- a plausible-looking wrong answer, and the same
+            // failure this project has hit on extents four times, arriving as a traversal instead. Probing
+            // the memory showed why: the object's first dword is 0 where a bucket sentinel's self-link
+            // would be, and the address its second dword yields begins with the ASCII bytes "anim".
+            //
+            // So what is checked is what a partial mapping owes a consumer: that the reader REFUSES what it
+            // cannot validate rather than dressing it up.
+            bool rs_mgr = false, rs_null = false, rs_bogus = false;
+            check(json_bool(body, "resources_manager_resolved", rs_mgr) && rs_mgr,
+                  "the resource manager singleton resolves");
+            check(json_bool(body, "resources_null_refused", rs_null) && rs_null,
+                  "the record reader refuses a null address");
+            // THE ONE THAT MATTERS: the manager object is real memory and is NOT a record. Reading it must
+            // never yield a name, because a name is exactly what a consumer would trust.
+            check(json_bool(body, "resources_bogus_unnamed", rs_bogus) && rs_bogus,
+                  "reading a non-record address yields no name rather than binary");
+
             // ---- THREE ASSET COUNTS THE ENGINE NAMED FOR ITSELF --------------------------------
             //
             // The LogModels console command writes a CSV whose header names twelve columns, and reading its

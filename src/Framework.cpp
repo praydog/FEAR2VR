@@ -30,6 +30,7 @@
 #include "sdk/Input.hpp"
 #include "sdk/Common.hpp"
 #include "sdk/Physics.hpp"
+#include "sdk/Resources.hpp"
 #include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
@@ -4102,6 +4103,20 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_readable", sdk::Input::main_window() != 0);
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
+
+    // ---- ONE RESOURCE RECORD, READ THROUGH THE VERIFIED OFFSETS ---------------------------------
+    //
+    // The registry's field offsets come from ListResourcesOfType's column accessors, every one a pure field
+    // read. The CONTAINER layout is not established -- see Resources.hpp -- so there is no enumeration
+    // here, and what is checked instead is that the reader REFUSES what it cannot validate: a null address,
+    // and an address that is real memory but not a record.
+    json_append_bool(out, "resources_manager_resolved", sdk::Resources::manager_address() != 0);
+    json_append_bool(out, "resources_null_refused", !sdk::Resources::read(0).has_value());
+    // The manager object itself is NOT a record. Reading it must either fail or come back unnamed -- it
+    // must never present binary as a resource path, which is the guarantee the name validator exists for.
+    const auto res_bogus = sdk::Resources::read(sdk::Resources::manager_address());
+    json_append_bool(out, "resources_bogus_unnamed",
+                     !res_bogus.has_value() || res_bogus->name.empty());
 
     // ---- THE THREE COUNTS THE ENGINE NAMED FOR ITSELF -------------------------------------------
     //

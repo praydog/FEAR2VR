@@ -4153,3 +4153,58 @@ class LTInputDeviceMouse 0x30 {
 // node and socket counts they belong with.
 //
 // 917 checks, 0 failures.
+
+// ==================================================================================================
+// THE ENGINE'S CSV HEADERS NAME ITS STRUCTS -- AND ONE OF THEM CAUGHT ME MID-MISTAKE
+// ==================================================================================================
+//
+// The LogModels find generalises: this binary contains EIGHT tabular header strings, each written by a
+// console command's own dump routine, each naming the fields the routine then emits.
+//
+//     "Filename, Offset, Size, Uncompressed Size, Four CC, Version"           -- ListArchiveFiles
+//     "Resource, Loaded, AutoPrefetched, RefCount, Memory"                    -- ListResourcesOfType
+//     "Resource, Count, Total, Peak"                                          -- ListTrackedResources
+//     "Model, References, Total Memory, ... Weight Sets, Child Models"        -- LogModels (mapped)
+//     plus four allocator-statistics headers (Category, File, Line, Memory, Allocations, Peak ...)
+//
+// ---- THE RESOURCE RECORD: FIELD OFFSETS ESTABLISHED --------------------------------------------
+//
+// ListResourcesOfType's row writer calls ONE ACCESSOR PER COLUMN, and every accessor is a pure field read,
+// so the mapping needs nothing inferred:
+//
+//     +0x0C  const char* name        accessor is `return this[3]`
+//     +0x10  refcount                `return this[4]`
+//     +0x16  flags byte, BIT 1       `return (byte[22] >> 1) & 1`  -- AutoPrefetched
+//     +0x18  loaded data pointer     `return this[6] != 0`         -- non-null MEANS loaded
+//
+// "Memory" is not a field: its accessor returns 0 unless the data pointer is set and otherwise asks the
+// loaded object, so it is derived. Corroborated live: following these links by hand produced thousands of
+// real paths at +0x0C -- worlds\sp\m05_outershell\..., prefabs\e03\general\gurney.inst,
+// materials\interface\mapicons\... -- with refcounts 1, 2, 3, 5, the world file loaded and unresident
+// prefabs not. A wrong name offset produces binary immediately, so that is the check.
+//
+// ---- THE CONTAINER IS NOT MAPPED, AND THE WRONG ANSWER LOOKED RIGHT ---------------------------
+//
+// The engine's iterator walks something as 128 two-dword buckets: a bucket is empty when its FIRST dword
+// points at itself, and the first node comes from its SECOND. The manager singleton is a lazily-initialised
+// global at 0x6F24F0, and I took that address as the table base.
+//
+// IT IS NOT. Read live, the object's first dword is 0 -- not a self-link -- and the address its second dword
+// yields starts with the bytes 61 6E 69 6D, ASCII "anim". A string, not a record.
+//
+// A walk built on that assumption RAN TO ITS OWN 65536-RECORD CAP while reporting 65534 "printable names",
+// with a longest chain of exactly the per-bucket cap. Every figure looked plausible and every one was an
+// artefact of my own limits -- the identical failure this project has hit FOUR TIMES on extents (the
+// variable table twice, ILTInput's vtable, the device vtables), arriving this time as a TRAVERSAL rather
+// than a boundary. An earlier hand walk had reported "7814 records" and that number was the same artefact:
+// 126 buckets against a per-bucket guard of 64.
+//
+// So the real table is at an offset INSIDE the manager, or the stride is not 8, and neither is measured.
+// RECORDED AS OPEN rather than shipped: sdk::Resources exposes read(address) for a consumer that obtains a
+// record pointer by other means, and NO enumerator. The suite asserts only what a partial mapping owes --
+// that the reader refuses a null address, and that reading the manager object itself (real memory, not a
+// record) yields NO NAME rather than binary dressed as a resource path.
+//
+// > A traversal that stops at its own cap is not a measurement. The cap being round is the tell.
+//
+// 920 checks, 0 failures.
