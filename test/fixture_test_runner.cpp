@@ -3881,6 +3881,21 @@ int main(int argc, char** argv) {
             check(json_bool(body, "mismatch_detected", mdet) && mdet,
                   "and every one detects a deliberately inconsistent snapshot at a sane tolerance");
 
+            // THE BEHIND-CAMERA CONTRACT, where it actually means something. w is a view-space depth
+            // only under perspective; in the affine passes it is the constant m[3][3], positive for
+            // every input, so the live record can never exercise the refusal. On a synthetic
+            // perspective matrix a point in front projects with w equal to its depth, and one behind
+            // is refused.
+            bool ppf = false, prb = false, pwd = false, awnd = false;
+            check(json_bool(body, "persp_projects_front", ppf) && ppf,
+                  "under perspective a point in front projects, with w equal to its view depth");
+            check(json_bool(body, "persp_rejects_behind", prb) && prb,
+                  "and a point behind the camera is refused rather than given a plausible pixel");
+            check(json_bool(body, "persp_w_is_depth", pwd) && pwd,
+                  "w_is_view_space_depth is true for a perspective projection");
+            check(json_bool(body, "affine_w_is_not_depth", awnd) && awnd,
+                  "and false for an affine one, where w is a constant carrying no distance");
+
             // And the same for the half-plane identity, which fails closed by the shape of its
             // comparison rather than by an explicit guard -- so the refusal is asserted, not argued.
             bool inan = false;

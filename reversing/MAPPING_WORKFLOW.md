@@ -963,6 +963,19 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A PREDICATE MUST CLASSIFY THE MATRIX ITS SIBLING ACTUALLY USES.** `w_is_view_space_depth()` was written
+  as `return is_perspective_projection()`, which reads the `projection` field -- but `project_point()`
+  transforms through `world_to_screen`. Two different matrices, one question. A synthetic snapshot carrying
+  only a world_to_screen reported "no depth" while project_point cheerfully produced depth-bearing w from
+  it. The suite caught it because the probe set the field project_point reads rather than the one the
+  predicate happened to read.
+  
+- **HOMOGENEOUS w MEANS DEPTH ONLY UNDER PERSPECTIVE.** I documented ScreenPoint::depth as "larger is
+  further away" and the w <= 0 refusal as "behind the camera". Both hold only when m[3][2] is nonzero. In
+  this engine's affine passes w is the constant m[3][3] -- positive for every input -- so the refusal tests
+  nothing and w carries no distance. Renamed the field to `w`, added w_is_view_space_depth(), and moved the
+  behind-camera assertion onto a synthetic perspective matrix, since the live record can never exercise it.
+
 - **AN UNIDENTIFIED OPERAND MAY BE SITTING IN A REGISTER SET LONG EARLIER.** +0xF8's affine operand looked
   like an uninitialised local in the decompiler for several passes. It was filled by a thiscall whose `this`
   came from a `lea ecx` a hundred bytes earlier -- one write, no intervening calls, so ecx survived. Hex-Rays

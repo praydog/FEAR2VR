@@ -257,16 +257,45 @@ std::optional<SceneCameraSnapshot::ScreenPoint> SceneCameraSnapshot::project_poi
     const float y = m[4] * world_x + m[5] * world_y + m[6] * world_z + m[7];
     const float w = m[12] * world_x + m[13] * world_y + m[14] * world_z + m[15];
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || w <= 0.0f) {
-        return std::nullopt;  // on or behind the camera plane: no honest pixel exists
+        // Under perspective this is "on or behind the camera plane". Under an affine projection w is
+        // the constant m[3][3], so reaching here means that constant is non-positive -- degenerate
+        // either way, and in neither case is there an honest pixel.
+        return std::nullopt;
     }
     ScreenPoint out{};
     out.x = x / w;
     out.y = y / w;
-    out.depth = w;
+    out.w = w;
     if (!std::isfinite(out.x) || !std::isfinite(out.y)) {
         return std::nullopt;
     }
     return out;
+}
+
+bool SceneCameraSnapshot::w_is_view_space_depth() const {
+    // CLASSIFIES world_to_screen, NOT projection, because that is the matrix project_point transforms
+    // through. The first version asked is_perspective_projection() -- which reads `projection` -- and a
+    // snapshot carrying only a world_to_screen answered "not perspective" while project_point happily
+    // produced depth-bearing w values from it. Two matrices, one question, and the predicate has to
+    // describe the one its sibling uses.
+    //
+    // Same scale-invariant test as the projection classifier: m[3][2] nonzero relative to its own w row.
+    float scale = 0.0f;
+    for (size_t i = 0; i < 16; ++i) {
+        if (!std::isfinite(world_to_screen[i])) {
+            return false;
+        }
+    }
+    for (size_t i = 12; i < 16; ++i) {
+        const float magnitude = std::fabs(world_to_screen[i]);
+        if (magnitude > scale) {
+            scale = magnitude;
+        }
+    }
+    if (scale <= 0.0f) {
+        return false;
+    }
+    return std::fabs(world_to_screen[14]) > scale * 1e-6f;
 }
 
 bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {

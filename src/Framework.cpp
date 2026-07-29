@@ -3364,9 +3364,10 @@ std::string build_shader_params_json() {
         if (p.has_value()) {
             projects_identity = fabsf(p->x - 123.0f) < 0.01f && fabsf(p->y + 45.0f) < 0.01f;
         }
-        // w comes from row 3, which in the screen pass is (0,0,0,1) -- so w is 1 regardless of the
-        // point and nothing is "behind" the camera. Only assert the refusal where w can go non-positive.
-        rejects_behind_camera = !scam->is_perspective_projection() ||
+        // In the screen pass w is the constant m[3][3], so nothing is "behind" the camera and the
+        // refusal cannot be exercised here at all -- see the synthetic perspective probe below, which
+        // is where that contract is actually tested.
+        rejects_behind_camera = !scam->w_is_view_space_depth() ||
                                 !scam->project_point(0.0f, 0.0f, -1.0f).has_value();
     }
     // Sized with headroom and CHECKED: an earlier 448 silently truncated once the projection
@@ -3677,6 +3678,32 @@ std::string build_shader_params_json() {
         }
     }
 
+    // THE BEHIND-CAMERA CONTRACT, on a synthetic PERSPECTIVE snapshot -- the only place it means
+    // anything. A point in front must project; one behind must be refused. The live record cannot test
+    // this: in its affine screen pass w is a positive constant, so every point "passes".
+    bool perspective_projects_front = false;
+    bool perspective_rejects_behind = false;
+    bool perspective_w_is_depth = false;
+    bool affine_w_is_not_depth = false;
+    {
+        sdk::SceneCameraSnapshot ps{};
+        const auto pm = sdk::SceneCamera::make_perspective_projection(1.0f, 1.0f, 1.0f);
+        if (pm.has_value()) {
+            ps.world_to_screen = *pm;  // project directly through the perspective matrix
+            perspective_w_is_depth = ps.w_is_view_space_depth();
+            const auto front = ps.project_point(0.0f, 0.0f, 10.0f);
+            const auto behind = ps.project_point(0.0f, 0.0f, -10.0f);
+            perspective_projects_front = front.has_value() && front->w > 9.9f && front->w < 10.1f;
+            perspective_rejects_behind = !behind.has_value();
+        }
+        sdk::SceneCameraSnapshot as{};
+        const auto am = sdk::SceneCamera::make_affine_projection(1.0f, 1.0f, 1.0f, 100.0f);
+        if (am.has_value()) {
+            as.world_to_screen = *am;
+            affine_w_is_not_depth = !as.w_is_view_space_depth();
+        }
+    }
+
     // A NaN tolerance must REJECT here too. Asserted rather than argued, since "it fails closed" is a
     // claim about the comparison's shape and a later rewrite could invert it silently.
     const bool identity_rejects_nan_tolerance =
@@ -3724,6 +3751,10 @@ std::string build_shader_params_json() {
     json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
     json_append_bool(out, "tolerance_guards_hold", tolerance_guard_failures == 0);
     json_append_bool(out, "mismatch_detected", mismatch_detect_failures == 0);
+    json_append_bool(out, "persp_projects_front", perspective_projects_front);
+    json_append_bool(out, "persp_rejects_behind", perspective_rejects_behind);
+    json_append_bool(out, "persp_w_is_depth", perspective_w_is_depth);
+    json_append_bool(out, "affine_w_is_not_depth", affine_w_is_not_depth);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

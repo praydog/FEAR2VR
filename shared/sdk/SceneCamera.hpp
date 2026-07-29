@@ -181,19 +181,33 @@ struct SceneCameraSnapshot {
     // and it holds in every pass rather than only a perspective one.
     bool world_to_screen_is_coherent(float tolerance = 1e-3f) const;
 
-    // Project a world-space point to PIXELS. Returns nullopt when the matrix is unusable or the point
-    // lands on or behind the camera plane (w <= 0), which is the case a caller must not paper over --
-    // a point behind the viewer otherwise projects to a plausible-looking pixel on screen.
+    // Project a point to PIXELS through world_to_screen. Returns nullopt when the matrix is unusable,
+    // the result is not finite, or w <= 0 (nothing meaningful to divide by).
     //
     // This is the reason the matrix is worth mapping: an overlay, a reticle, a debug marker or a
-    // stereo-disparity check all need world -> pixel, and doing it through the engine's own composed
+    // stereo-disparity check all need point -> pixel, and going through the engine's own composed
     // matrix means agreeing with what the engine drew rather than approximating it.
+    //
+    // WHAT `w` MEANS DEPENDS ON THE PASS, and the earlier version of this comment got that wrong by
+    // calling it depth unconditionally. Under a PERSPECTIVE projection w comes from m[3][2]*z, so it is
+    // a view-space depth and the w <= 0 rejection really is "on or behind the camera plane". In the
+    // affine passes m[3][2] is zero and w is just the constant m[3][3] -- positive for every input, so
+    // the rejection tests nothing and w says nothing about distance. Ask
+    // w_is_view_space_depth() before reading it as one.
     struct ScreenPoint {
         float x{};
         float y{};
-        float depth{};  // the w that was divided out; larger is further away
+        float w{};  // the homogeneous divisor; a view-space depth ONLY under perspective
     };
     std::optional<ScreenPoint> project_point(float world_x, float world_y, float world_z) const;
+
+    // Is this pass's w a view-space depth, i.e. can ScreenPoint::w be read as distance and can
+    // project_point's refusal be read as "behind the camera"?
+    //
+    // Classifies WORLD_TO_SCREEN, the matrix project_point transforms through -- not `projection`.
+    // Those are different matrices and asking the wrong one was a real bug: a snapshot holding only a
+    // world_to_screen reported "no depth" while project_point produced depth-bearing w from it.
+    bool w_is_view_space_depth() const;
 
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
