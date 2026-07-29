@@ -1178,6 +1178,41 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- IClientShell: THE GAME DLL'S PER-FRAME ENTRY POINTS ----
+//
+// TWO DIFFERENT VTABLES ARE IN PLAY AND THIS NOTE IS ABOUT THE OTHER ONE. The class below,
+// CClientShell, is the ENGINE-side object; its own vtable lives in FEAR2.exe and its `vtable`
+// field is at +0x00. Nothing here describes those slots.
+//
+// The slots below belong to ICLIENTSHELL, the interface the GAME DLL implements. CClientShell::Update
+// (0x40CC5E) does NOT reach it through any field of the class below -- it dispatches through the
+// GLOBAL g_pIClientShell_Default_6ECD3C (0x6ECD3C), whose object is gameclient.dll's
+// CGameClientShell. So "slot 2" here means IClientShell slot 2, never CClientShell slot 2.
+//
+// Update calls three of those slots every frame, at vtable offsets 8, 16 and 12 -- slots 2, 4, 3, in
+// THAT order. The implementations are in gameclient.dll (see that IDB, where they are named), and
+// the slot map rests on evidence rather than on matching the reference SDK's declaration order,
+// which does NOT line up:
+//
+//   slot 0  an IMPLEMENTATION-ONLY leading slot. The reference's IBase declares exactly one
+//           virtual, so this one is not in the published interface -- and it is what explains the
+//           +2 shift between the reference's order and the real indices. Its body looks like an
+//           MSVC vector-deleting destructor but that is not proven, so it stays unnamed.
+//   slot 1  _InterfaceImplementation -- returns the literal "CGameClientShell", which is what
+//           anchors slot 1 to IBase and therefore slot 0 to the gap.
+//   slot 2  PreUpdate  -- a single `retn`. Empty, which matches the reference's own remark that
+//           the only benefit of code in PreUpdate is organizational.
+//   slot 3  PostUpdate -- 0x1A2 bytes.
+//   slot 4  Update     -- 0x940 bytes, by far the largest of the triple.
+//
+// So the call order 2 -> 4 -> 3 is Pre -> Update -> Post, the natural sequence, and it matches the
+// reference's note that "Update() is called immediately after PreUpdate()" even though the header
+// declares them Pre/Post/Update. The odd call order is explained by the odd declaration order.
+//
+// FOR A MOD: these are the GAME-side per-frame hook points, distinct from the ENGINE-side
+// CClientShell::Update that the fear2vr framework currently detours.
+
+
 // The CLIENT SHELL, reached from CClientMgr.client_shell (+0x1434). Mapped from the
 // ENGINE'S OWN ACCESSORS rather than by staring at bytes: 25 functions reach the shell
 // through that displacement, and the small ones are each a getter for one field, which

@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A REFERENCE HEADER GIVES DECLARATION ORDER, NOT SLOT INDICES. Anchor the shift with evidence.**
+  The reference declares IClientShell as PreUpdate / PostUpdate / Update over an IBase with exactly
+  ONE virtual, which puts the triple at slots 1/2/3. FEAR2 calls 2/4/3. The tempting move is to assume
+  a +2 shift because it makes the call order come out as Pre -> Update -> Post, which is "obviously
+  right" -- and that is exactly the reasoning this log keeps catching.
+  
+  What settled it was reading the vtable: slot 1 returns the literal "CGameClientShell", which IS
+  IBase's `_InterfaceImplementation`, so slot 0 is an implementation-only leading slot that the
+  published interface does not contain. The +2 is then a fact about the binary, not a fit to a
+  hypothesis. Corroborated twice more: slot 2 is a single `retn`, matching the reference's own remark
+  that PreUpdate exists for organisation only, and slot 4 is 0x940 bytes against slot 3's 0x1A2.
+  
+  Note also what was NOT named: slot 0 has an MSVC vector-deleting-destructor shape, and it keeps its
+  auto name, because the +2 anchor needs only that the slot EXISTS, not what it does.
+  
+- **NAME THE DISPATCH PATH WHEN TWO VTABLES SHARE A CLASS NAME.** "CClientShell slot 2" is ambiguous
+  in this project: the ENGINE has a CClientShell whose vtable is in FEAR2.exe, and the GAME DLL has a
+  CGameClientShell implementing IClientShell. CClientShell::Update reaches the second through the
+  GLOBAL g_pIClientShell_Default_6ECD3C -- not through any field of the first -- so recording which
+  object the dispatch goes through is what stops a slot number meaning two things.
+
 - **IF A DOC COMMENT PROMISES AN INVARIANT, THE FUNCTION MUST ENFORCE IT.** `local_player()` said the
   handle and the pointer "are the same object" while only checking both were non-empty. The obvious
   fix was to add a checker beside it -- but an optional check a caller must remember is not a
