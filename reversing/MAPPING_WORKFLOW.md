@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHEN IDA HAS NO XREF, FOLLOW THE POINTER VARIABLE.** These wrappers name themselves for their error
+  reports -- 'CLTClient::GetObjectPos' and so on -- but IDA recorded a data xref for only 15 of the 52
+  such strings, so a plain xref walk finds almost nothing. The reason is an indirection: the code pushes the
+  address of a POINTER VARIABLE whose value is the string, not the string itself. The chain that works is
+  string -> .rdata/.data dword equal to the string address -> code referencing that dword, and it reached 37
+  of the remaining 37.
+  
+  Search by raw little-endian address bytes, but treat every hit as a CANDIDATE: the same bytes occur in
+  displacements and embedded data, so require the hit to sit inside a decoded instruction, and remember a
+  shared string can name a callee rather than its caller.
+  
+  Disambiguating them was the useful part. Seven names had two candidate functions each. In five cases
+  exactly ONE was in CLTClient_vftable and the other sat in a different block, which names the vtable entry
+  and leaves the twin alone -- sharing an error string does not make a function that method. In the other two
+  BOTH were in the vtable, at adjacent slots (21/22 and 23/24), so the class has two entry points for one
+  operation. Those keep neutral _slotNN suffixes: overloads look like that, but so does one method inherited
+  from each of two interfaces, and arity cannot separate them since both pop two dwords.
+
 - **THE HARNESS CRASHED ON A LEGITIMATE GAME STATE, AND HID ITS OWN LOG WHILE DOING IT.** Two independent
   faults, and the second is what made the first hard to find:
   * `wpath.compare(wpath.size() - wname.size() - 4, ...)` underflows when no world is loaded -- both strings

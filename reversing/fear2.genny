@@ -1260,8 +1260,20 @@ class CClientMgrCounterNode 0x40 {
 // quantised: accurate in aggregate, useless per frame. CGameClientShell_Update calls it and compares
 // against a stored double, which makes that a ~2 Hz periodic branch rather than a per-frame one.
 //
-// The other 103 slots are unnamed. NOT attempted: matching them against the reference iltclient.h
-// declaration order -- CGameClientShell's slot map already showed that order does not transfer.
+// NINE MORE SLOTS NAMED (2026-07) from the binary's own error strings, reached through the pointer-variable
+// indirection IDA does not xref -- see MAPPING_WORKFLOW.md:
+//   20 ForceCurrentObjectPos   31 GetObjectShadowLOD   35 SetObjectShadowLOD
+//   50 SetLightIntensityScale  51 GetLightIntensityScale
+//   21/22 GetObjectTransform, 23/24 SetObjectTransform -- TWO ENTRY POINTS EACH for one operation, kept as
+//         _slotNN because what the pairing is stays open: overloads look like this, and so does one method
+//         inherited from each of two interfaces. Both of each pair pop two dwords, so arity cannot separate
+//         them; their bodies differ (direct object+0x14 read versus LTTransform_Copy), which is a difference
+//         and not an identification.
+// Five other names have a same-string twin OUTSIDE this vtable, in the 0x449000-0x44AFFF block; those twins
+// are left unnamed, since sharing an error string does not make a function that method.
+//
+// The rest are unnamed. NOT attempted: matching them against the reference iltclient.h declaration order --
+// CGameClientShell's slot map already showed that order does not transfer.
 
 // ---- CAPIHolder IN gameclient.dll: HOW THE GAME DLL GETS ITS INTERFACES ----
 //
