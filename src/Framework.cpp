@@ -376,6 +376,56 @@ std::string build_targets_json() {
         }
     }
 
+    // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
+    // from A then A must be reachable from B, because both come from the same portal read
+    // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
+    // conversion, breaks the pairing while each side still looks like a valid index.
+    int portal_total = 0, portal_both_sectors = 0, portal_on_plane = 0;
+    int sectors_with_neighbours = 0, neighbour_edges = 0, symmetric_edges = 0;
+    int player_neighbours = -1;
+    {
+        portal_total = static_cast<int>(sdk::VisTree::portal_count().value_or(0));
+        for (int i = 0; i < portal_total; ++i) {
+            const auto pr = sdk::VisTree::portal(static_cast<size_t>(i));
+            if (!pr.has_value()) {
+                continue;
+            }
+            if (pr->sector_a.has_value() && pr->sector_b.has_value() &&
+                *pr->sector_a != *pr->sector_b) {
+                ++portal_both_sectors;
+            }
+            // The centre must lie ON the portal's own plane -- the geometric check that
+            // pins the record layout, asked through the public struct this time.
+            const float cd = pr->plane.normal.x * pr->center.x +
+                             pr->plane.normal.y * pr->center.y +
+                             pr->plane.normal.z * pr->center.z - pr->plane.distance;
+            if (cd > -0.5f && cd < 0.5f) {
+                ++portal_on_plane;
+            }
+        }
+        const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < nsec; ++i) {
+            const auto ns = sdk::VisTree::sector_neighbours(static_cast<size_t>(i));
+            if (!ns.empty()) {
+                ++sectors_with_neighbours;
+            }
+            for (const size_t n : ns) {
+                ++neighbour_edges;
+                const auto back = sdk::VisTree::sector_neighbours(n);
+                for (const size_t b : back) {
+                    if (b == static_cast<size_t>(i)) {
+                        ++symmetric_edges;
+                        break;
+                    }
+                }
+            }
+        }
+        if (player_sector >= 0) {
+            player_neighbours = static_cast<int>(
+                sdk::VisTree::sector_neighbours(static_cast<size_t>(player_sector)).size());
+        }
+    }
+
     // THE MUZZLE, asked mechanically: not "which attachment is the weapon" but "what
     // mounted on me carries a socket called flash". Live that resolves the shotgun and
     // skips the engine\default.mdl placeholder beside it.
@@ -497,7 +547,9 @@ std::string build_targets_json() {
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
              // Where the player is in the world's own spatial terms.
              "\"sector_total\":%d,\"sector_candidates\":%d,\"sector_brute\":%d,\"sec_read_ok\":%d,\"sec_with_planes\":%d,\"sec_plane_total\":%d,"
-             "\"player_sector\":%d,\"brute_sector\":%d,"
+             "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
+             "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
+             "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
              // THE D3D9 SIDE. Both interfaces, and for each the module that IMPLEMENTS
              // its methods -- which differs: the factory is a Steam-overlay proxy while
              // the device is the real runtime.
@@ -566,7 +618,9 @@ std::string build_targets_json() {
              muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
              sector_total, sector_candidates, sector_brute,
              sec_read_ok, sec_with_planes, sec_plane_total, player_sector,
-             brute_sector,
+             brute_sector, portal_total, portal_both_sectors, portal_on_plane,
+             sectors_with_neighbours, neighbour_edges, symmetric_edges,
+             player_neighbours,
              reinterpret_cast<uintptr_t>(sdk::Render::d3d9()),
              sdk::Render::interface_impl_owner(sdk::Render::d3d9())
                  .value_or(std::string{"(none)"}).c_str(),

@@ -136,6 +136,52 @@ public:
     // the playable volume -- exactly what a teleport check wants to know.
     static std::optional<Sector> sector_containing(const regenny::LTVector& point,
                                                    float slop = 0.0f);
+
+    // ---- PORTALS: how sectors CONNECT ---------------------------------------
+    //
+    // The other half of the visibility graph, and the other thing reachable only through
+    // check(). A portal is the opening between two sectors -- a doorway, a window, an arch
+    // -- carrying its own plane, a bounding circle and the quad describing it.
+    //
+    // FOR A MOD THIS IS REACHABILITY. "Which rooms connect to this one" is what a teleport
+    // validator, an audio-propagation pass or a navigation heuristic needs, and that is
+    // sector_neighbours() below. Live: 344 portals joining 262 of the 263 sectors --
+    // exactly one sector connects to nothing.
+    struct Portal {
+        size_t index;  // into the portal table; stable for the level's lifetime
+        // The portal's plane. Its centre and all its vertices lie ON this plane, which is
+        // what pins the record's layout.
+        SectorPlane plane;
+        regenny::LTVector center;
+        float radius;  // bounding circle about `center`, in the plane
+        // THE TWO SECTORS IT JOINS, as INDICES rather than pointers -- the conversion is
+        // the fiddly part a caller should not repeat: a pointer is only a sector if it is
+        // an aligned, in-range entry of the sector array. nullopt when it is not, which is
+        // how a torn or partially-built portal reports itself instead of yielding a
+        // plausible index.
+        std::optional<size_t> sector_a;
+        std::optional<size_t> sector_b;
+        // The quad. vertex_count is 4 on every live portal and the array holds exactly 4,
+        // so a larger value is CLAMPED rather than trusted -- reading past the record is
+        // the failure that prevents.
+        size_t vertex_count;
+        regenny::LTVector vertices[4];
+    };
+
+    // The engine's own portal total.
+    static std::optional<size_t> portal_count();
+
+    // Portal by index. nullopt when the tree is unresolved, `index` is out of range, or the
+    // read faulted.
+    static std::optional<Portal> portal(size_t index);
+
+    // Every portal touching `sector_index`, in table order. Empty for the one sector that
+    // has none, and for an out-of-range index.
+    static std::vector<Portal> sector_portals(size_t sector_index);
+
+    // THE REACHABILITY QUERY: the sectors directly connected to this one. Deduplicated, and
+    // `sector_index` itself is never included even if a malformed portal named it twice.
+    static std::vector<size_t> sector_neighbours(size_t sector_index);
 };
 
 

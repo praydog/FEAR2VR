@@ -963,6 +963,24 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **When a record names two peers, SYMMETRY is the assertion -- not that each name is
+  valid.** The portal table joins sectors through a `sector_a`/`sector_b` pair of pointers,
+  converted to indices by an alignment-and-range test. Checking "both indices are in range"
+  is nearly worthless: a wrong offset lands on a neighbouring array entry and produces a
+  perfectly valid index. What no wrong offset survives is reading the SAME portal from both
+  ends and requiring the two answers to agree -- if B is reachable from A then A must be
+  reachable from B, because both edges come from one record.
+
+  Live: 344 portals, 688 directed edges, 688 symmetric. The arithmetic closes exactly (two
+  per portal), which also confirms the pointer-to-index conversion works in both directions.
+
+  The generalisation is the same one the `entry_count`, `name_hash` and handle/pointer
+  checks share: a structure that says one thing twice hands you a free oracle. A pair of
+  peer pointers is that shape, and the oracle is a round trip through the graph.
+
+  Note the bound rather than the equality, though: `sector_neighbours` deduplicates, so two
+  doors between the same pair of rooms collapse to one edge. `edges <= 2 * portals` is the
+  invariant; `edges == 2 * portals` is a property of this level's art and is REPORTED.
 - **Build the brute-force oracle BEFORE the clever query, then keep it as the test.**
   Extracting point-location out of `VisTree::check` needed a KD descent, and the structure
   does not state two things it depends on: which child holds which side of a split, and

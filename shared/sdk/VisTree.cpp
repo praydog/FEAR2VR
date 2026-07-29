@@ -134,73 +134,6 @@ int64_t seh_read_and_walk(const regenny::LTVisTree* tree, VisTree::TreeCheck* ou
     return result;
 }
 
-// Validates the portal table. The plane checks are what make this strong: a
-// portal's own `center` and all of its vertices must satisfy its own plane
-// equation, so a wrong offset anywhere in the record breaks the arithmetic
-// rather than merely looking odd.
-//
-// POD-only for the guard; on a fault the counters keep whatever they reached, and
-// the caller compares them against portal_count so a partial walk shows up as a
-// shortfall rather than as success.
-void seh_check_portals(const regenny::LTVisTree* tree, VisTree::TreeCheck* out) {
-    KANANLIB_SEH_TRY {
-        const auto* table = tree->portals;
-        const uint32_t count = tree->portal_count;
-        const auto* sectors = tree->sectors;
-        const uint32_t sector_count = tree->sector_count;
-        out->portal_count = count;
-        if (table == nullptr || count == 0 || count > 65536u || sectors == nullptr) {
-            return;
-        }
-        const auto ba = reinterpret_cast<uintptr_t>(sectors);
-        const auto span = static_cast<uintptr_t>(sector_count) * sizeof(regenny::LTVisSector);
-        for (uint32_t i = 0; i < count; ++i) {
-            const auto* p = table[i];
-            if (p == nullptr) {
-                continue;
-            }
-            const float nx = p->plane_normal.x, ny = p->plane_normal.y, nz = p->plane_normal.z;
-            const float d = p->plane_distance;
-            const float len2 = nx * nx + ny * ny + nz * nz;
-            if (len2 > 0.98f && len2 < 1.02f) {
-                ++out->portal_unit_normal;
-            }
-            const float cd = nx * p->center.x + ny * p->center.y + nz * p->center.z - d;
-            if (cd > -0.5f && cd < 0.5f) {
-                ++out->portal_center_on_plane;
-            }
-
-            const auto a = reinterpret_cast<uintptr_t>(p->sector_a);
-            const auto b = reinterpret_cast<uintptr_t>(p->sector_b);
-            const bool a_ok =
-                a >= ba && a - ba < span && (a - ba) % sizeof(regenny::LTVisSector) == 0;
-            const bool b_ok =
-                b >= ba && b - ba < span && (b - ba) % sizeof(regenny::LTVisSector) == 0;
-            if (a_ok && b_ok && a != b) {
-                ++out->portal_sectors_ok;
-            }
-
-            // vertex_count is 4 on every live portal and the array holds exactly
-            // 4, so anything larger would read past the record -- clamp rather
-            // than trust the field.
-            const uint32_t vc = p->vertex_count > 4u ? 4u : p->vertex_count;
-            bool all = vc != 0;
-            for (uint32_t v = 0; v < vc; ++v) {
-                const float vd =
-                    nx * p->vertices[v].x + ny * p->vertices[v].y + nz * p->vertices[v].z - d;
-                if (vd < -0.5f || vd > 0.5f) {
-                    all = false;
-                }
-            }
-            if (all) {
-                ++out->portal_verts_on_plane;
-            }
-        }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 } // namespace
 
 const regenny::LTVisTree* VisTree::get() {
@@ -223,7 +156,42 @@ std::optional<VisTree::TreeCheck> VisTree::check(size_t max_nodes) {
         return std::nullopt;
     }
     out.nodes_walked = static_cast<size_t>(walked);
-    seh_check_portals(tree, &out);
+    // AGGREGATES the public portal accessor rather than re-walking the table. The pointer
+    // to index conversion, the vertex clamp and the plane arithmetic all live on
+    // VisTree::portal() now, where a consumer can use them; this counts.
+    const size_t pcount = portal_count().value_or(0);
+    out.portal_count = pcount;
+    for (size_t i = 0; i < pcount; ++i) {
+        const auto p = portal(i);
+        if (!p.has_value()) {
+            continue;
+        }
+        const float nx = p->plane.normal.x, ny = p->plane.normal.y, nz = p->plane.normal.z;
+        const float len2 = nx * nx + ny * ny + nz * nz;
+        if (len2 > 0.98f && len2 < 1.02f) {
+            ++out.portal_unit_normal;
+        }
+        const float cd =
+            nx * p->center.x + ny * p->center.y + nz * p->center.z - p->plane.distance;
+        if (cd > -0.5f && cd < 0.5f) {
+            ++out.portal_center_on_plane;
+        }
+        if (p->sector_a.has_value() && p->sector_b.has_value() &&
+            *p->sector_a != *p->sector_b) {
+            ++out.portal_sectors_ok;
+        }
+        bool all = p->vertex_count != 0;
+        for (size_t v = 0; v < p->vertex_count; ++v) {
+            const float vd = nx * p->vertices[v].x + ny * p->vertices[v].y +
+                             nz * p->vertices[v].z - p->plane.distance;
+            if (vd < -0.5f || vd > 0.5f) {
+                all = false;
+            }
+        }
+        if (all) {
+            ++out.portal_verts_on_plane;
+        }
+    }
     return out;
 }
 
@@ -686,6 +654,176 @@ std::optional<VisTree::Sector> VisTree::sector_containing(const regenny::LTVecto
         }
     }
     return std::nullopt;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD mirror of one portal, copied out under one guard. The sector pointers arrive as
+// raw addresses and are converted to indices outside, where the arithmetic is readable.
+struct PortalRaw {
+    float n[3];
+    float d;
+    float c[3];
+    float radius;
+    uintptr_t sector_a;
+    uintptr_t sector_b;
+    uint32_t vertex_count;
+    float verts[4][3];
+    // The sector array's geometry, read in the same guard so the index conversion below
+    // cannot be done against a stale base.
+    uintptr_t sector_base;
+    uint32_t sector_count;
+    bool ok;
+};
+
+PortalRaw seh_read_portal(const regenny::LTVisTree* tree, size_t index) {
+    PortalRaw r{};
+    KANANLIB_SEH_TRY {
+        const auto* table = tree->portals;
+        if (table == nullptr || index >= tree->portal_count) {
+            return r;
+        }
+        const auto* p = table[index];
+        if (p == nullptr) {
+            return r;
+        }
+        r.sector_base = reinterpret_cast<uintptr_t>(tree->sectors);
+        r.sector_count = tree->sector_count;
+        r.n[0] = p->plane_normal.x;
+        r.n[1] = p->plane_normal.y;
+        r.n[2] = p->plane_normal.z;
+        r.d = p->plane_distance;
+        r.c[0] = p->center.x;
+        r.c[1] = p->center.y;
+        r.c[2] = p->center.z;
+        r.radius = p->radius;
+        r.sector_a = reinterpret_cast<uintptr_t>(p->sector_a);
+        r.sector_b = reinterpret_cast<uintptr_t>(p->sector_b);
+        // CLAMP, do not trust: the array holds exactly 4, so a larger count would read
+        // past the record.
+        r.vertex_count = p->vertex_count > 4u ? 4u : p->vertex_count;
+        for (uint32_t v = 0; v < r.vertex_count; ++v) {
+            r.verts[v][0] = p->vertices[v].x;
+            r.verts[v][1] = p->vertices[v].y;
+            r.verts[v][2] = p->vertices[v].z;
+        }
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    return r;
+}
+
+// A pointer is a sector only if it is an ALIGNED, IN-RANGE entry of the array. Both tests
+// matter: an arbitrary address inside the span that is not on a stride boundary is not a
+// sector, and treating it as one would hand back a plausible neighbouring index.
+std::optional<size_t> sector_index_of(uintptr_t ptr, uintptr_t base, uint32_t count) {
+    if (base == 0 || ptr < base) {
+        return std::nullopt;
+    }
+    const uintptr_t off = ptr - base;
+    if (off % sizeof(regenny::LTVisSector) != 0) {
+        return std::nullopt;
+    }
+    const uintptr_t idx = off / sizeof(regenny::LTVisSector);
+    if (idx >= count) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(idx);
+}
+
+}  // namespace
+
+std::optional<size_t> VisTree::portal_count() {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    size_t n = 0;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        n = tree->portal_count;
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok ? std::optional<size_t>{n} : std::nullopt;
+}
+
+std::optional<VisTree::Portal> VisTree::portal(size_t index) {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_portal(tree, index);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    Portal out{};
+    out.index = index;
+    out.plane.normal.x = r.n[0];
+    out.plane.normal.y = r.n[1];
+    out.plane.normal.z = r.n[2];
+    out.plane.distance = r.d;
+    out.center.x = r.c[0];
+    out.center.y = r.c[1];
+    out.center.z = r.c[2];
+    out.radius = r.radius;
+    out.sector_a = sector_index_of(r.sector_a, r.sector_base, r.sector_count);
+    out.sector_b = sector_index_of(r.sector_b, r.sector_base, r.sector_count);
+    out.vertex_count = r.vertex_count;
+    for (size_t v = 0; v < r.vertex_count; ++v) {
+        out.vertices[v].x = r.verts[v][0];
+        out.vertices[v].y = r.verts[v][1];
+        out.vertices[v].z = r.verts[v][2];
+    }
+    return out;
+}
+
+std::vector<VisTree::Portal> VisTree::sector_portals(size_t sector_index) {
+    std::vector<Portal> out;
+    const auto total = portal_count();
+    if (!total.has_value()) {
+        return out;
+    }
+    for (size_t i = 0; i < *total; ++i) {
+        const auto p = portal(i);
+        if (!p.has_value()) {
+            continue;
+        }
+        if (p->sector_a == sector_index || p->sector_b == sector_index) {
+            out.push_back(*p);
+        }
+    }
+    return out;
+}
+
+std::vector<size_t> VisTree::sector_neighbours(size_t sector_index) {
+    std::vector<size_t> out;
+    for (const auto& p : sector_portals(sector_index)) {
+        // The far side of this portal, whichever end we came in on.
+        const auto other = p.sector_a == sector_index ? p.sector_b : p.sector_a;
+        if (!other.has_value() || *other == sector_index) {
+            continue;
+        }
+        bool dup = false;
+        for (const size_t s : out) {
+            if (s == *other) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            out.push_back(*other);
+        }
+    }
+    return out;
 }
 
 }  // namespace sdk

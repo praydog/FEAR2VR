@@ -623,6 +623,46 @@ int main(int argc, char** argv) {
         printf("[fixture] sectors: %lld of %lld carry planes (%lld planes total)\n",
                static_cast<long long>(swith), static_cast<long long>(stot),
                static_cast<long long>(splanes));
+
+        // ---- PORTALS AND CONNECTIVITY ------------------------------------------------
+        //
+        // The load-bearing property is SYMMETRY. Both directions of an edge come from ONE
+        // portal read from opposite ends, so a wrong sector_a/sector_b offset -- or a broken
+        // pointer-to-index conversion -- breaks the pairing while each side still looks like
+        // a perfectly valid sector index. No count check can see that; the symmetry can.
+        int64_t ptot = -1, pboth = -1, ponp = -1, swn = -1, edges = -1, sym = -1, pnb = -2;
+        json_int(body, "portal_total", ptot);
+        json_int(body, "portal_both_sectors", pboth);
+        json_int(body, "portal_on_plane", ponp);
+        json_int(body, "sectors_with_neighbours", swn);
+        json_int(body, "neighbour_edges", edges);
+        json_int(body, "symmetric_edges", sym);
+        json_int(body, "player_neighbours", pnb);
+        check(ptot > 0, "the world has visibility portals");
+        check(pboth == ptot,
+              "EVERY portal resolves both of its sectors, and they are distinct");
+        // The geometric invariant that pins the record's layout, asked through the public
+        // struct: a portal's centre lies on the portal's own plane.
+        check(ponp == ptot, "EVERY portal's centre lies on its own plane");
+        check(sym == edges,
+              "sector connectivity is SYMMETRIC -- every neighbour names you back");
+        // A BOUND, not an equality: each portal contributes one edge per direction, and
+        // sector_neighbours deduplicates, so two doors between the same pair collapse to one
+        // edge. Live the two are equal (688 == 2*344) because this level has no duplicate
+        // pair, but that is the art's business and not an invariant.
+        check(edges > 0 && edges <= 2 * ptot,
+              "the neighbour edge count is bounded by two per portal");
+        check(swn > 0 && swn <= stot,
+              "connected sectors are a reported fraction of all sectors");
+        printf("[fixture] portals: %lld joining %lld of %lld sectors, %lld edges "
+               "(%lld symmetric)\n",
+               static_cast<long long>(ptot), static_cast<long long>(swn),
+               static_cast<long long>(stot), static_cast<long long>(edges),
+               static_cast<long long>(sym));
+        if (psec >= 0 && pnb >= 0) {
+            printf("[fixture] the player's sector has %lld neighbour(s)\n",
+                   static_cast<long long>(pnb));
+        }
         // REPORTED: HAL vs REF is the machine's business, but a fallback to the reference
         // rasteriser is worth seeing in the log -- the engine itself warns about it.
         printf("[fixture] presenting %lldx%lld fmt %lld x%lld, swap %lld, depth %lld, "
