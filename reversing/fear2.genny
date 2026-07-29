@@ -1180,6 +1180,38 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
+// WHICH DEVICE METHODS THE ENGINE ACTUALLY CALLS, typed rather than pattern-matched. Extracted by tracking
+// the two-hop the engine emits -- `mov R, g_Renderer` (device), `mov R2, [R]` (its vtable),
+// `call [R2+off]` -- across all 90 functions that read the global. Because the receiver is pinned to
+// g_Renderer, an unrelated object's member offset cannot masquerade as a D3D method, which is what ruined two
+// earlier displacement scans.
+//
+//   SetRenderState        66 calls / 22 fns    <- dominates everything else
+//   SetSamplerState        9 / 3               SetSetIndices 0x1A0: 7 / 4
+//   Clear                  8 / 5               GetRenderState 6 / 6      SetVertexDeclaration 6 / 6
+//   CreateTexture          4 / 3               CreateIndexBuffer 4 / 3   UpdateTexture 4 / 1
+//   CreateOffscreenPlainSurface 4 / 4          SetRenderTarget 4 / 3     SetViewport 4 / 3
+//   DrawIndexedPrimitive   4 / 4               SetStreamSource 3 / 3     CreateQuery 3 / 2
+//   Set/GetDepthStencilSurface 3 each          CreateVertexBuffer 3 / 3
+//   GetRenderTarget, GetDeviceCaps, SetClipPlane, GetRenderTargetData, StretchRect, DrawPrimitive 2 each
+//   TestCooperativeLevel, SetGammaRamp, CreateVolumeTexture, CreateCubeTexture,
+//   CreateDepthStencilSurface, GetFrontBufferData, ColorFill, GetViewport, GetClipPlane,
+//   GetSamplerState, SetScissorRect, CreateVertexDeclaration 1 each
+//
+// THE ABSENCES MATTER MORE THAN THE COUNTS. Through this pattern the engine never calls Present,
+// BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF. Those exist in a D3D9
+// device and this game plainly presents frames, so they are reached from a device pointer held SOMEWHERE
+// ELSE -- cached in a member or a local rather than reloaded from the global. Finding that cache is what a
+// stereo path needs, and it is the open question this pass leaves.
+//
+// TOOL CALIBRATION, because the tracker is candidate generation and not proof: run against sub_615CC1, whose
+// seven device methods were read by hand from its decompilation first, the linear tracker recovers all seven
+// with NO false positives. A stricter variant that clears tracked registers at calls and branches LOSES one
+// true positive (SetDepthStencilSurface), since this function reloads g_Renderer per call -- so the
+// conservative form under-reports and was not adopted. Register aliases, spills and clobbers can still
+// produce misses elsewhere, which makes these counts a floor rather than a census.
+
+//
 // g_Renderer (exe+0x32E118, absolute 0x0072E118) holds the IDirect3DDevice9 POINTER. shared/sdk/Render.cpp
 // already records the renderer object at that address with the device at +0x00, so the dword there IS the
 // device -- and the code agrees: consumers do `(**(g_Renderer))(g_Renderer, ...)`.

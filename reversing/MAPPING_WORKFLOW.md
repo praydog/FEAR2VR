@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **DISPLACEMENT SCANNING FAILED TWICE; TYPING THE RECEIVER WORKED FIRST TIME.** Searching for
+  `call [reg+0x178]` found nothing, so I widened it to ANY instruction touching 0x170/0x178/0x1A0 -- and got
+  LTModelObject_MarkNodeSubtreeDirty "referencing SetVertexShaderConstantF". Offsets that size are ordinary
+  member offsets; the search cannot distinguish a D3D device from a model object.
+  
+  What works is tracking the engine's actual two-hop from the global: `mov R, g_Renderer`, `mov R2, [R]`,
+  `call [R2+off]`. The receiver is then pinned by construction, and the result is a typed usage map -- 36
+  distinct device methods, SetRenderState dominating at 66 calls across 22 functions.
+  
+  CALIBRATED BEFORE BEING TRUSTED, against the one function whose methods were read by hand: the linear
+  tracker recovers 7 of 7 with no false positives. A stricter version clearing registers at calls and branches
+  LOSES SetDepthStencilSurface, because that function reloads the global per call -- so "more conservative"
+  was measurably worse, and the counts are a floor rather than a census.
+  
+- **THE INTERESTING RESULT IS AN ABSENCE.** No Present, BeginScene, EndScene, SetTransform, SetVertexShader or
+  SetVertexShaderConstantF is reached through g_Renderer. The game obviously presents frames, so a device
+  pointer is cached elsewhere -- in a member or local rather than reloaded -- and that cache is what a stereo
+  path has to find. Recorded as the open question instead of concluding the calls do not exist, which is the
+  error the earlier zero-hit scan invited.
+
 - **`call dword ptr [reg+OFFSET]` IS NOT A D3D CALL SITE FINDER.** Small displacements are ordinary member
   offsets for any object, so scanning for them produced pure noise -- the first run had Present "called from"
   CClientMgr_StartShell and CLTModelClient_SetMaterialFilename appearing under both SetTransform and
