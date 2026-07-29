@@ -123,6 +123,37 @@ public:
     // ILTClient lookup searches. Same record type, same walk, different base.
     static std::vector<ConVar> console_source_vars();
 
+    // Write a variable's float, by storing into the record's first field -- which is what the engine reads.
+    // Returns false when the name is in neither table or the store faulted.
+    //
+    // THIS CHANGES GAME BEHAVIOUR, and the two caveats are real. The engine samples most of these once per
+    // frame, so a write takes effect on the next one; but a few are read only at level load, and writing
+    // those does nothing until the next load. And a VarTrack on the game side caches nothing -- it reads the
+    // record each time -- so a write is visible to the game without telling it anything.
+    static bool write_console_var(const char* name, float value);
+
+    // ---- THE CAMERA AND COMFORT TUNABLES ---------------------------------------------
+    //
+    // The console SOURCE table is where CPlayerCamera::Init puts the entire camera tuning surface, and for a
+    // VR mod this is the comfort layer: head bob, view sway, damage kick, weapon lag and the FOV all live
+    // here as plain floats with no engine call needed to change them.
+    //
+    // FovY IS THE FIELD OF VIEW, and it is worth stating plainly because this project previously recorded
+    // that "no FOV field exists anywhere on the camera class, and FEAR2.exe contains no fov string". Both
+    // were true and both were about the ENGINE. The FOV is a game-side console variable.
+    //
+    // The catalogue below is curated rather than complete -- 535 variables exist and most are irrelevant --
+    // and every entry was read live. `vr_suggested` is the value a VR consumer most likely wants, and it is
+    // ADVICE, not a measurement: nothing here has been verified to produce a comfortable result, only to be
+    // the knob that controls the named behaviour.
+    struct CameraTunable {
+        const char* name;
+        float live_default;  // read live from this build
+        float vr_suggested;  // advice for a stereo consumer; see the caveat above
+        const char* what;
+    };
+    static const std::vector<CameraTunable>& camera_tunables();
+
     // Both tables, source first. What a consumer wanting "every tunable this build has" should call; names
     // present in both appear twice, deliberately, since the two records are distinct objects.
     static std::vector<ConVar> all_console_vars();

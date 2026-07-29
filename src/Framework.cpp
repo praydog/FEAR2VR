@@ -4238,7 +4238,7 @@ std::string build_shader_params_json() {
     json_append_bool(out, "pmgr_player_read", pm_player.has_value());
     if (pm_player.has_value()) {
         json_append_bool(out, "pmgr_rotation_unit", pm_player->pose.rotation_is_unit());
-        json_append_bool(out, "pmgr_has_anchor", pm_player->view_anchor != 0);
+        json_append_bool(out, "pmgr_has_camera_object", pm_player->camera_object != 0);
         json_append_bool(out, "pmgr_has_model", pm_player->model_object != 0);
         // TWO CO-LOCATED PLAYER MODELS, not one. The holder's model and the shell's share asset, dims and
         // position -- which is what an earlier pass mistook for identity -- and differ by the engine's own
@@ -4261,20 +4261,20 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pmgr_models_co_located", same_position);
         json_append_bool(out, "pmgr_holder_model_client_only",
                          sdk::PlayerMgr::is_server_backed(pm_player->model_object).value_or(true) == false);
-        json_append_bool(out, "pmgr_anchor_client_only",
-                         sdk::PlayerMgr::is_server_backed(pm_player->view_anchor).value_or(true) == false);
+        json_append_bool(out, "pmgr_camera_client_only",
+                         sdk::PlayerMgr::is_server_backed(pm_player->camera_object).value_or(true) == false);
         // The anchor is transform-only: no flags, no dims. That is what makes it a view anchor rather than
         // a thing in the world, and it is asserted rather than described.
-        const auto anchor_flags = sdk::mem::read_u32(pm_player->view_anchor + 0x3C);
+        const auto anchor_flags = sdk::mem::read_u32(pm_player->camera_object + 0x3C);
         std::array<float, 3> anchor_dims{};
         const bool dims_ok =
-            sdk::mem::copy(anchor_dims.data(), pm_player->view_anchor + 0x64, sizeof(anchor_dims));
-        json_append_bool(out, "pmgr_anchor_no_flags", anchor_flags.value_or(1u) == 0u);
-        json_append_bool(out, "pmgr_anchor_no_dims",
+            sdk::mem::copy(anchor_dims.data(), pm_player->camera_object + 0x64, sizeof(anchor_dims));
+        json_append_bool(out, "pmgr_camera_no_flags", anchor_flags.value_or(1u) == 0u);
+        json_append_bool(out, "pmgr_camera_no_dims",
                          dims_ok && anchor_dims[0] == 0.0f && anchor_dims[1] == 0.0f &&
                              anchor_dims[2] == 0.0f);
-        json_append_bool(out, "pmgr_anchor_rot_matches",
-                         sdk::PlayerMgr::anchor_rotation_matches_pose(0).value_or(false));
+        json_append_bool(out, "pmgr_camera_rot_matches",
+                         sdk::PlayerMgr::camera_rotation_matches_pose(0).value_or(false));
         if (const auto eye = sdk::PlayerMgr::eye_offset(0)) {
             json_append_double(out, "pmgr_eye_offset_y", (*eye)[1], 3);
             json_append_double(out, "pmgr_eye_offset_len",
@@ -4287,6 +4287,52 @@ std::string build_shader_params_json() {
     json_append_bool(out, "pmgr_bounds_refused",
                      !sdk::PlayerMgr::slot(4).has_value() && !sdk::PlayerMgr::player(4).has_value() &&
                          !sdk::PlayerMgr::read_pose(0).has_value());
+
+    // ---- THE CAMERA TUNABLES, AND THE WRITE PATH -------------------------------------------------
+    //
+    // Every catalogued name must still resolve AND still hold the value the catalogue records. That second
+    // half is the part worth having: it turns the catalogue from documentation into something the suite
+    // maintains, so a retuned build or a mistyped transcription fails here rather than misleading a consumer.
+    const auto& tunables = sdk::Engine::camera_tunables();
+    size_t tun_found = 0, tun_default_ok = 0;
+    for (const auto& t : tunables) {
+        const auto v = sdk::Engine::console_var(t.name);
+        if (!v.has_value()) {
+            continue;
+        }
+        ++tun_found;
+        if (std::fabs(v->value - t.live_default) < 0.0005f) {
+            ++tun_default_ok;
+        }
+    }
+    json_append_double(out, "tun_total", static_cast<double>(tunables.size()), 0);
+    json_append_double(out, "tun_found", static_cast<double>(tun_found), 0);
+    json_append_double(out, "tun_default_ok", static_cast<double>(tun_default_ok), 0);
+
+    // FovY is the field of view, and its value must be a plausible one rather than merely present.
+    const auto fovy = sdk::Engine::console_var("FovY");
+    json_append_double(out, "tun_fovy", fovy.has_value() ? fovy->value : -1.0, 3);
+
+    // THE WRITE PATH, round-tripped on a variable with no observable effect: DebugPlayerCamSize only matters
+    // while DebugPlayerCam is on, and that is off. Written, read back through a SEPARATE lookup, then
+    // restored -- so the check exercises the store rather than a cached copy of it.
+    bool tun_write_ok = false, tun_restore_ok = false;
+    if (const auto before = sdk::Engine::console_var("DebugPlayerCamSize")) {
+        const float original = before->value;
+        if (sdk::Engine::write_console_var("DebugPlayerCamSize", original + 0.25f)) {
+            if (const auto after = sdk::Engine::console_var("DebugPlayerCamSize")) {
+                tun_write_ok = std::fabs(after->value - (original + 0.25f)) < 0.0005f;
+            }
+        }
+        sdk::Engine::write_console_var("DebugPlayerCamSize", original);
+        if (const auto back = sdk::Engine::console_var("DebugPlayerCamSize")) {
+            tun_restore_ok = std::fabs(back->value - original) < 0.0005f;
+        }
+    }
+    json_append_bool(out, "tun_write_roundtrip", tun_write_ok);
+    json_append_bool(out, "tun_write_restored", tun_restore_ok);
+    json_append_bool(out, "tun_write_absent_refused",
+                     !sdk::Engine::write_console_var("NoSuchTunableHere", 1.0f));
 
     // TWO REPRESENTATIONS OF ONE VARIABLE, compared by VALUE. sdk::EngineVars derives a variable's typed
     // storage from the engine's built-in DESCRIPTOR table; sdk::Engine::console_var reads the live RUNTIME

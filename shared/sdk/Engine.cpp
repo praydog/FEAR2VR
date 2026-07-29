@@ -296,6 +296,40 @@ std::vector<Engine::ConVar> Engine::all_console_vars() {
     return out;
 }
 
+bool Engine::write_console_var(const char* name, float value) {
+    const auto v = console_var(name);
+    if (!v.has_value() || v->address == 0) {
+        return false;
+    }
+    // The record's first field IS the float the engine reads, so this is the whole write.
+    return mem::write<float>(v->address, value);
+}
+
+const std::vector<Engine::CameraTunable>& Engine::camera_tunables() {
+    // Live defaults from this build. Where the reference's CPlayerCamera::Init differs the reference value is
+    // named in the comment, because the difference is FEAR 2's own retuning and worth not losing.
+    static const std::vector<CameraTunable> s_tunables = {
+        {"FovY", 65.0f, 65.0f, "vertical field of view in degrees; reference default was 70"},
+        {"FovAspectRatioScale", 1.0f, 1.0f, "scales the horizontal FOV derived from the aspect ratio"},
+        {"HeadBob", 1.0f, 0.0f, "master head-bob switch; ~40 HeadBob* parameters hang off it"},
+        {"HeadBobSpeedScale", 1.0f, 0.0f, "how fast the bob cycles with movement"},
+        {"DisableCameraShake", 0.0f, 1.0f, "one switch for every shake source"},
+        {"CamDamage", 1.0f, 0.0f, "camera kick on taking damage (Cam*Damage* set the magnitudes)"},
+        {"CameraSwayXFreq", 13.0f, 0.0f, "idle view sway, horizontal frequency"},
+        {"CameraSwayYFreq", 5.0f, 0.0f, "idle view sway, vertical frequency"},
+        {"CameraSwayXSpeed", 3.0f, 0.0f, "horizontal sway amplitude; reference default was 12"},
+        {"CameraSwayYSpeed", 1.0f, 0.0f, "vertical sway amplitude; reference default was 1.5"},
+        {"CameraSmoothingEnabled", 0.0f, 0.0f, "positional smoothing; already off in this build"},
+        {"WeaponLagEnabled", 0.0f, 0.0f, "weapon trails the view; already off in this build"},
+        {"WeaponLagFactor", 0.33f, 0.0f, "how far the weapon lags when enabled"},
+        {"CameraClipDist", 30.0f, 30.0f, "near clip distance -- lowering it risks geometry entering the eye"},
+        {"PitchClamp", 2.0f, 2.0f, "look-pitch limit; a headset supplies its own pitch"},
+        {"YawClamp", 6.0f, 6.0f, "look-yaw limit"},
+        {"CameraMovementMult", 0.3f, 0.0f, "how much movement drives camera offset"},
+    };
+    return s_tunables;
+}
+
 std::optional<Engine::ConVar> Engine::console_var(const char* name) {
     if (name == nullptr) {
         return std::nullopt;

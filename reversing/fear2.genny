@@ -4584,3 +4584,67 @@ class LTInputDeviceMouse 0x30 {
 // whatever moved in between.
 //
 // 980 checks, 0 failures.
+
+// ---- THE HOLDER IS CPlayerCamera, AND FovY IS WHERE THE FIELD OF VIEW LIVES ------------------------
+//
+// The object at g_pPlayerMgr -> first occupied slot -> +252 has been described for two passes as "a transform
+// holder", with its object at +188 called a view anchor and explicitly NOT called the camera because no code
+// path said so. One now does.
+//
+// SLOT 1 OF THE HOLDER'S OWN VTABLE IS THE CLASS INITIALISER, and what it initialises is the entire camera
+// tuning surface -- CameraClipDist, CameraCollisionUseObject, CameraSwayXFreq/YFreq/XSpeed/YSpeed, FovY,
+// FovAspectRatioScale, ChaseCam*, CamDamage*, HeadBob*, CameraLeashLen -- into a long run of {record, client}
+// VarTrack pairs. The reference gives that job to CPlayerCamera::Init, and the identification rests on
+// DEFAULTS as well as names:
+//
+//     CameraClipDist     30      == 30      CameraSwayXFreq   13   == 13
+//     ChaseCamDistBack   180     == 180     CameraLeashLen    30   == 30
+//     CameraSwayYFreq    5       == 5
+//     FovY               70      -> 65      CameraSwayXSpeed  12   -> 3     CameraSwayYSpeed 1.5 -> 1
+//
+// Five bit-equal, three retuned for FEAR 2. Matching names alone would be weak; five exact defaults are not,
+// and the three differences are what a sequel's retuning looks like rather than a wrong class. This is also
+// the reference behaving exactly as a reference should -- supplying vocabulary and defaults to test against,
+// while FEAR 2 supplies the answer.
+//
+// SO: the holder is the PLAYER CAMERA, its pose at +300/+324 is the CAMERA's pose, and the transform-only
+// object at +188 is what the reference calls m_hCamera -- the one it drives with SetObjectPos and hands to
+// RenderCamera. Renamed through the SDK from view_anchor to camera_object.
+//
+// IT IS OT_NORMAL, NOT OT_CAMERA, which resolves an older puzzle recorded in this file: all 474 OT_CAMERA
+// objects in a live level measured as static furniture with none tracking the player. None does, because the
+// player camera is not one of them.
+//
+// STILL NOT PROVEN: that the engine renders FROM this object's transform on the frame path. The scene camera
+// record holds the identity whenever read from outside a render pass, so that needs a hook. What is
+// established is who owns and drives the object.
+//
+// ---- 535 TUNABLES, AND THE FOV WAS NEVER IN THE EXECUTABLE ----------------------------------------
+//
+// This file previously recorded, of LTCameraObject, that "no FOV field exists anywhere on the class either,
+// and FEAR2.exe contains no fov string". Both true, both about the ENGINE. FovY is a GAME-SIDE console
+// variable in the 535-entry source table, live 65.0.
+//
+// The same table is the whole VR comfort layer, and every value here was read live:
+//
+//     HeadBob 1.0                 master switch, with ~40 HeadBob* parameters beneath it (per-axis
+//                                 offset/rotation amplitude, wave bounds and flags, for camera AND weapon)
+//     CameraSwayXFreq 13 / YFreq 5 / XSpeed 3 / YSpeed 1      idle view sway
+//     CamDamage 1.0               damage kick; Cam*Damage{Min,Max}{Pitch,Roll,Yaw} set the magnitudes
+//     CameraMeleeDamage*          a separate, larger kick for melee
+//     DisableCameraShake 0.0      one switch covering every shake source
+//     WeaponLagEnabled 0.0        already off in this build; WeaponLagFactor 0.33 when on
+//     CameraClipDist 30.0         near clip
+//     PitchClamp 2.0 / YawClamp 6.0 / PitchInterp / SmoothPitchTime    look constraints
+//     GPadAimLag* / MousePitchMult / KeyboardYawMult                   input shaping
+//
+// EXPOSED AS sdk::Engine::camera_tunables() -- curated, not complete -- with each entry carrying the value
+// read live. The suite checks BOTH halves: every name resolves AND every value still matches, so a retuned
+// build or a mistyped transcription fails there rather than misleading a consumer. Writing is
+// Engine::write_console_var, a four-byte store into the record's first field, round-tripped through a fresh
+// lookup and restored in the suite on DebugPlayerCamSize -- inert because DebugPlayerCam is off.
+//
+// The vr_suggested column is ADVICE and is labelled as such in the header: nothing has been verified to
+// produce a comfortable result, only to be the knob that controls the named behaviour.
+//
+// 987 checks, 0 failures.

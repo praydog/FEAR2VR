@@ -4252,14 +4252,14 @@ int main(int argc, char** argv) {
             // no dims means it has no extent -- which is the whole basis for calling it a view anchor, so it
             // is asserted rather than described in a comment.
             bool pm_af = false, pm_ad = false, pm_ac = false, pm_ar = false;
-            check(json_bool(body, "pmgr_anchor_no_flags", pm_af) && pm_af,
-                  "the view anchor has no object flags at all");
-            check(json_bool(body, "pmgr_anchor_no_dims", pm_ad) && pm_ad,
-                  "the view anchor has zero dimensions");
-            check(json_bool(body, "pmgr_anchor_client_only", pm_ac) && pm_ac,
-                  "the view anchor is client-created");
-            check(json_bool(body, "pmgr_anchor_rot_matches", pm_ar) && pm_ar,
-                  "the anchor's rotation is bit-identical to the game-side pose");
+            check(json_bool(body, "pmgr_camera_no_flags", pm_af) && pm_af,
+                  "the camera object has no object flags at all");
+            check(json_bool(body, "pmgr_camera_no_dims", pm_ad) && pm_ad,
+                  "the camera object has zero dimensions");
+            check(json_bool(body, "pmgr_camera_client_only", pm_ac) && pm_ac,
+                  "the camera object is client-created");
+            check(json_bool(body, "pmgr_camera_rot_matches", pm_ar) && pm_ar,
+                  "the camera object's rotation is bit-identical to the camera pose");
 
             // The eye offset a VR mod needs, and its shape is the check: the anchor sits ABOVE the model by
             // most of the offset's length, which is what an eye height looks like and what a mis-offset
@@ -4268,7 +4268,7 @@ int main(int argc, char** argv) {
             const bool pme = json_double(body, "pmgr_eye_offset_y", pm_eye_y) &&
                              json_double(body, "pmgr_eye_offset_len", pm_eye_len);
             check(pme && pm_eye_y > 40.0 && pm_eye_y < 120.0,
-                  "the view anchor sits an eye height above the model's origin");
+                  "the camera object sits an eye height above the model's origin");
             check(pme && pm_eye_len > pm_eye_y && pm_eye_len < pm_eye_y * 1.5,
                   "that offset is mostly vertical rather than pointing off sideways");
 
@@ -4306,6 +4306,39 @@ int main(int argc, char** argv) {
                   "a runtime-created variable is found in the live table");
             check(json_bool(body, "cvar_runtime_in_table", cv_rt_table) && !cv_rt_table,
                   "that same variable is absent from the built-in descriptor table");
+
+            // ---- THE CAMERA TUNABLES, AND A WRITE THAT ROUND-TRIPS ---------------------------------
+            //
+            // The catalogue records each variable's live value as well as its name, and BOTH are checked. The
+            // value half is what turns documentation into something maintained: a retuned build, a mistyped
+            // transcription, or a name that silently resolves to a different variable fails here instead of
+            // misleading a consumer who trusted the comment.
+            double tun_total = -1.0, tun_found = -1.0, tun_def = -1.0;
+            const bool tn = json_double(body, "tun_total", tun_total) &&
+                            json_double(body, "tun_found", tun_found) &&
+                            json_double(body, "tun_default_ok", tun_def);
+            check(tn && tun_total > 10.0, "the camera tunable catalogue is populated");
+            check(tn && tun_found == tun_total,
+                  "every catalogued camera tunable resolves in the live console");
+            check(tn && tun_def == tun_total,
+                  "every catalogued tunable still holds the value the catalogue records");
+
+            // FovY is the field of view -- a game-side console variable, not an engine field, which is why
+            // earlier passes found no FOV anywhere in the executable. A plausible value, not just presence.
+            double tun_fovy = -1.0;
+            check(json_double(body, "tun_fovy", tun_fovy) && tun_fovy > 30.0 && tun_fovy < 130.0,
+                  "FovY holds a plausible field of view in degrees");
+
+            // THE WRITE PATH. Round-tripped through a SEPARATE lookup so the check exercises the store rather
+            // than a cached copy, then restored -- and the restore is asserted too, because a test that
+            // leaves the game retuned is a test that breaks the next one.
+            bool tun_w = false, tun_r = false, tun_abs = false;
+            check(json_bool(body, "tun_write_roundtrip", tun_w) && tun_w,
+                  "writing a console variable is visible through a fresh lookup");
+            check(json_bool(body, "tun_write_restored", tun_r) && tun_r,
+                  "and the original value is put back");
+            check(json_bool(body, "tun_write_absent_refused", tun_abs) && tun_abs,
+                  "writing a name that does not exist is refused rather than silently dropped");
 
             // ---- TWO CONSOLE-VARIABLE TABLES, AND NEITHER CONTAINS THE OTHER -----------------------
             //

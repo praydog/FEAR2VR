@@ -13,7 +13,7 @@
 // at +0x14 and rotation at +0x20. The GAME keeps its own pose in a holder hanging off its player object, at
 // +300 and +324, and that holder is also what owns the two engine objects that matter:
 //
-//     holder +188  ->  a VIEW ANCHOR   (engine LTObject, OT_NORMAL)
+//     holder +188  ->  the CAMERA OBJECT (engine LTObject, OT_NORMAL) -- see below
 //     holder +300      position        LTVector
 //     holder +324      rotation        LTRotation, unit quaternion
 //     holder +600  ->  the PLAYER MODEL (engine LTObject, OT_MODEL)
@@ -37,7 +37,17 @@
 // server-backed one participates in replication. A VR mod that repoints "the player model" without checking
 // which it holds will get one of those two behaviours by accident.
 //
-// WHAT THE VIEW ANCHOR IS, measured:
+// THE OBJECT AT +188 IS THE PLAYER CAMERA'S ENGINE OBJECT, and that is now supported by a code path rather
+// than by co-location. The holder's own vtable slot 1 is the class initialiser, and what it initialises is the
+// entire camera tuning surface: CameraClipDist, CameraSwayXFreq/YFreq/XSpeed/YSpeed, FovY,
+// FovAspectRatioScale, ChaseCam*, CamDamage*, HeadBob*, CameraLeashLen. The reference gives that job to
+// CPlayerCamera::Init, and five of its defaults are bit-equal to FEAR 2's live values (CameraClipDist 30,
+// ChaseCamDistBack 180, CameraSwayYFreq 5, CameraSwayXFreq 13, CameraLeashLen 30) while three were retuned
+// (FovY 70 -> 65, CameraSwayXSpeed 12 -> 3, CameraSwayYSpeed 1.5 -> 1). Names alone would be weak evidence;
+// names plus five exact defaults are not, and the three differences are what a sequel's retuning looks like.
+//
+// The reference's CPlayerCamera owns exactly one engine object, m_hCamera, which it drives with SetObjectPos
+// and hands to RenderCamera. That is this object. Its measured properties fit:
 //   * engine class vtbl_LTObject_OT_NORMAL -- the plainest object type there is
 //   * dims (0, 0, 0) and flags 0x00000000 -- it CANNOT render and CANNOT collide, so carrying a transform is
 //     the only thing it does
@@ -46,11 +56,13 @@
 //   * its rotation is BIT-IDENTICAL to the holder's, while its position differs in the low bits: the rotation
 //     is copied wholesale, the position is maintained by a separate path or lags a frame
 //
-// IT IS NOT CALLED THE CAMERA HERE. Every measurement above is consistent with a view anchor and not one of
-// them is a code path that says so, and this project has already recorded several names taken from
-// plausibility that later turned out wrong. A consumer that wants to attach a VR camera should start here --
-// it is the only transform-only object tracking the player's eye -- while knowing that "the engine renders
-// from this" is unverified.
+// IT IS OT_NORMAL, NOT OT_CAMERA, and that resolves an older puzzle: this project measured all 474 OT_CAMERA
+// objects in a live level as static furniture with none tracking the player. None does, because the player
+// camera is not one of them.
+//
+// WHAT IS STILL NOT PROVEN is that the engine RENDERS from this object's transform on the frame path. The
+// scene camera record holds the identity whenever it is read from outside a render pass, so that link needs a
+// hook to observe. Everything above is about who owns and drives the object.
 //
 // WHICH SLOT IS "THE PLAYER". The manager holds four slots and the game's own console commands take the FIRST
 // OCCUPIED one, walking past nulls rather than assuming slot 0. Live, slot 0 is filled and 1..3 are null --
@@ -69,7 +81,7 @@ public:
 
     // Player-object and holder layout.
     static constexpr uintptr_t kHolder = 252;
-    static constexpr uintptr_t kViewAnchor = 188;
+    static constexpr uintptr_t kCameraObject = 188;
     static constexpr uintptr_t kPosition = 300;
     static constexpr uintptr_t kRotation = 324;
     static constexpr uintptr_t kModelObject = 600;
@@ -88,7 +100,7 @@ public:
         uintptr_t object{};       // the game-side player object -- the slot's contents
         uintptr_t holder{};       // object + 252
         Pose pose{};              // the game's pose, from the holder
-        uintptr_t view_anchor{};  // engine LTObject, transform-only; 0 when absent
+        uintptr_t camera_object{};  // the camera's engine LTObject, transform-only; 0 when absent
 
         // The CLIENT-ONLY player model -- not the object CClientShell::local_player returns. See the note
         // above: two co-located models exist and only the handle tells them apart.
@@ -136,17 +148,17 @@ public:
     // four floats from somewhere else.
     static bool quaternion_is_unit(const std::array<float, 4>& q, float tolerance = 0.001f);
 
-    // The view anchor's offset from the model's origin -- the eye offset, and the number a VR mod needs to
-    // reconcile a headset pose with the body. Computed from the two ENGINE objects' positions rather than
+    // The camera object's offset from the model's origin -- the eye offset, and the number a VR mod needs
+    // to reconcile a headset pose with the body. Computed from the two ENGINE objects' positions rather than
     // from the holder, so it measures the same thing the engine would.
     //
     // nullopt when either object is missing. Live it reads (-8.911, 70.948, -0.177).
     static std::optional<std::array<float, 3>> eye_offset(unsigned index);
 
-    // Do the anchor's rotation and the holder's pose agree exactly? Live this is true bit-for-bit, and it is
+    // Do the camera object's rotation and the holder's pose agree exactly? Live this is true bit-for-bit, and it is
     // the cheapest way for a consumer to tell whether the anchor it is about to read has been refreshed this
     // frame -- the position lags, the rotation does not.
-    static std::optional<bool> anchor_rotation_matches_pose(unsigned index);
+    static std::optional<bool> camera_rotation_matches_pose(unsigned index);
 };
 
 }  // namespace sdk

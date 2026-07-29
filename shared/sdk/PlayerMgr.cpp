@@ -157,9 +157,9 @@ std::optional<PlayerMgr::Player> PlayerMgr::player(unsigned index) {
     // Both engine objects are validated as engine objects rather than trusted: a non-null field whose vtable
     // is not in the exe is not an LTObject, and reporting it as one would send a caller reading LTObject
     // offsets into whatever it actually is.
-    if (const auto anchor = mem::read_ptr(*holder + kViewAnchor)) {
+    if (const auto anchor = mem::read_ptr(*holder + kCameraObject)) {
         if (is_engine_object(*anchor)) {
-            p.view_anchor = *anchor;
+            p.camera_object = *anchor;
         }
     }
     if (const auto model = mem::read_ptr(*holder + kModelObject)) {
@@ -180,13 +180,13 @@ std::optional<PlayerMgr::Player> PlayerMgr::local_player() {
 
 std::optional<std::array<float, 3>> PlayerMgr::eye_offset(unsigned index) {
     const auto p = player(index);
-    if (!p.has_value() || p->view_anchor == 0 || p->model_object == 0) {
+    if (!p.has_value() || p->camera_object == 0 || p->model_object == 0) {
         return std::nullopt;
     }
 
     std::array<float, 3> anchor{};
     std::array<float, 3> model{};
-    if (!mem::copy(anchor.data(), p->view_anchor + kObjectPosition, sizeof(anchor)) ||
+    if (!mem::copy(anchor.data(), p->camera_object + kObjectPosition, sizeof(anchor)) ||
         !mem::copy(model.data(), p->model_object + kObjectPosition, sizeof(model))) {
         return std::nullopt;
     }
@@ -201,14 +201,14 @@ std::optional<std::array<float, 3>> PlayerMgr::eye_offset(unsigned index) {
     return out;
 }
 
-std::optional<bool> PlayerMgr::anchor_rotation_matches_pose(unsigned index) {
+std::optional<bool> PlayerMgr::camera_rotation_matches_pose(unsigned index) {
     const auto p = player(index);
-    if (!p.has_value() || p->view_anchor == 0) {
+    if (!p.has_value() || p->camera_object == 0) {
         return std::nullopt;
     }
 
     std::array<float, 4> anchor{};
-    if (!mem::copy(anchor.data(), p->view_anchor + kObjectRotation, sizeof(anchor))) {
+    if (!mem::copy(anchor.data(), p->camera_object + kObjectRotation, sizeof(anchor))) {
         return std::nullopt;
     }
 
