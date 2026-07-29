@@ -157,6 +157,31 @@ std::optional<uint32_t> EngineVars::read_raw(std::string_view name) {
     return value;
 }
 
+std::optional<std::string> EngineVars::read_string(std::string_view name) {
+    const auto entry = find(name);
+    if (!entry.has_value() || entry->type != static_cast<uint32_t>(Type::StringPtr)) {
+        return std::nullopt;
+    }
+    uintptr_t text = 0;
+    if (!seh_copy(&text, entry->address, sizeof(text)) || text == 0) {
+        return std::nullopt;  // unset, which is every observed case
+    }
+    // Deliberately NOT reusing the name reader: that one rejects anything but identifier characters,
+    // which is right for a setting's NAME and wrong for its value -- an IP address contains dots.
+    std::string out;
+    for (size_t i = 0; i < 512; ++i) {
+        char ch = 0;
+        if (!seh_copy(&ch, text + i, sizeof(ch))) {
+            return std::nullopt;
+        }
+        if (ch == '\0') {
+            return out;
+        }
+        out.push_back(ch);
+    }
+    return std::nullopt;  // no terminator within a sane bound
+}
+
 std::optional<int32_t> EngineVars::read_int(std::string_view name) {
     const auto entry = find(name);
     if (!entry.has_value() || !entry->is_int()) {

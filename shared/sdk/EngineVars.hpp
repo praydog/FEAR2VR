@@ -24,8 +24,12 @@
 //
 //     2 = int32     PhysicsClientUpdateRate 45, PhysicsMaxSteps 2, SoundMaxHardwareSounds 128
 //     1 = float     MaxFinalizeTimeMS reads 1077936128 as an int and exactly 3.0 as a float
-//     0 = UNKNOWN   3 entries, including "IP" -- whose storage reads all zeros on a single-player
-//                   session, so string-buffer and integer-zero remain indistinguishable
+//     0 = STRING POINTER, on measured evidence plus naming. The SIZE is measured: every type-0 slot
+//                   has another variable's storage exactly 4 bytes later, so it cannot be an inline
+//                   character buffer -- 4 bytes holds a pointer. The MEANING comes from the three names,
+//                   all of which take a textual value: IP, ShowUpdateTimesOfClass, SoundTrack3DSoundCue.
+//                   All three read null on this session, consistent with "unset", which is also why
+//                   read_string has never been exercised against a real value.
 //
 // The type-1 case is the decisive one: a value that is nonsense as an integer and exact as a float is
 // a float. Type 0 is left explicitly unresolved rather than folded into one of the others.
@@ -44,10 +48,18 @@ namespace sdk {
 class EngineVars {
 public:
     enum class Type : uint32_t {
-        Unknown = 0,  // one entry, undecidable from its value; do NOT assume
+        // A 4-byte slot (measured: the next variable's storage is 4 bytes away) holding a char* on the
+        // evidence of all three names taking textual values. Null on every sample seen so far.
+        StringPtr = 0,
         Float = 1,
         Int32 = 2,
     };
+
+    // How many entries carry each type. Static facts about this build's table, so a consumer can detect a
+    // different one without walking it itself.
+    static constexpr size_t kStringEntryCount = 3;
+    static constexpr size_t kFloatEntryCount = 11;
+    static constexpr size_t kInt32EntryCount = 93;
 
     struct Entry {
         std::string name;
@@ -93,7 +105,13 @@ public:
     static std::optional<int32_t> read_int(std::string_view name);
     static std::optional<float> read_float(std::string_view name);
 
-    // The raw four bytes, for the Unknown-typed entry or for a caller doing its own interpretation.
+    // A string setting, dereferencing the char* the slot holds. nullopt when the name is absent, the
+    // type is not StringPtr, the read faulted, or THE POINTER IS NULL -- which is the state all three
+    // string settings are in on an ordinary single-player session, and therefore the reason this path has
+    // never been exercised against a real value. Treat a non-null result as the first such observation.
+    static std::optional<std::string> read_string(std::string_view name);
+
+    // The raw four bytes, for a caller doing its own interpretation.
     static std::optional<uint32_t> read_raw(std::string_view name);
 };
 

@@ -3384,9 +3384,31 @@ std::string build_shader_params_json() {
         !sdk::EngineVars::read_int("MaxFinalizeTimeMS").has_value() &&
         !sdk::EngineVars::read_float("PhysicsClientUpdateRate").has_value();
     size_t vars_in_exe = 0;
+    size_t vars_string = 0, vars_float = 0, vars_int = 0, vars_spaced = 0;
     for (const auto& v : engine_vars) {
         if (v.address != 0 && v.type <= 2) {
             ++vars_in_exe;
+        }
+        if (v.type == 0) {
+            ++vars_string;
+        } else if (v.type == 1) {
+            ++vars_float;
+        } else if (v.type == 2) {
+            ++vars_int;
+        }
+    }
+    // THE MEASURED BASIS FOR "type 0 is a POINTER, not a buffer": every string entry has another
+    // variable's storage exactly 4 bytes above it, so its slot is 4 bytes wide. Recomputed here rather
+    // than asserted from a note, so the claim is checked against the live table on every run.
+    for (const auto& v : engine_vars) {
+        if (v.type != 0) {
+            continue;
+        }
+        for (const auto& other : engine_vars) {
+            if (other.address == v.address + 4) {
+                ++vars_spaced;
+                break;
+            }
         }
     }
     const auto end_fn = sdk::SceneCamera::renderer_fn(Slot::EndPass);
@@ -3962,6 +3984,10 @@ std::string build_shader_params_json() {
     json_append_double(out, "pass_endtarget_off", static_cast<double>(anchor_offset(end_target_fn)), 0);
     json_append_double(out, "engine_var_count", static_cast<double>(engine_vars.size()), 0);
     json_append_double(out, "engine_var_wellformed", static_cast<double>(vars_in_exe), 0);
+    json_append_double(out, "engine_var_strings", static_cast<double>(vars_string), 0);
+    json_append_double(out, "engine_var_floats", static_cast<double>(vars_float), 0);
+    json_append_double(out, "engine_var_ints", static_cast<double>(vars_int), 0);
+    json_append_double(out, "engine_var_strings_4byte", static_cast<double>(vars_spaced), 0);
     json_append_bool(out, "engine_var_pause_physics_found", pause_physics.has_value());
     // Reported as an exe-relative OFFSET, like the vtable anchors: an absolute address would encode
     // this machine's load base into the suite.

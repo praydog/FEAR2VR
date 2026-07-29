@@ -3912,6 +3912,24 @@ int main(int argc, char** argv) {
             check(json_double(body, "engine_var_wellformed", var_ok) && var_ok == var_count,
                   "every entry has an in-exe storage address and a known type tag");
 
+            // THE TYPE CENSUS, which must account for every entry -- a slice or a mis-masked tag shows up
+            // as a total that does not reach 107.
+            double n_str = -1.0, n_flt = -1.0, n_int = -1.0, n_spaced = -1.0;
+            const bool census = json_double(body, "engine_var_strings", n_str) &&
+                                json_double(body, "engine_var_floats", n_flt) &&
+                                json_double(body, "engine_var_ints", n_int);
+            check(census && n_str == 3.0 && n_flt == 11.0 && n_int == 93.0,
+                  "the type census is 3 string / 11 float / 93 int");
+            check(census && (n_str + n_flt + n_int) == var_count,
+                  "and it accounts for every entry walked");
+
+            // THE MEASURED BASIS FOR CALLING TYPE 0 A POINTER: each string entry has another variable's
+            // storage exactly 4 bytes above it, so the slot is 4 bytes wide and cannot be an inline
+            // character buffer. Recomputed from the live table each run rather than trusted from a note --
+            // this is the evidence the read_string accessor rests on, and it is cheap to keep checking.
+            check(json_double(body, "engine_var_strings_4byte", n_spaced) && n_spaced == n_str,
+                  "every string setting's slot is 4 bytes wide (a pointer, not a buffer)");
+
             // The load-bearing cross-check: the table's slot for PausePhysics must be the very global
             // CClientMgr__Update tests before its physics block. Static reversing found the flag first
             // and the table second, so agreement ties the two together.
