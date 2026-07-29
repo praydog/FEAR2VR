@@ -997,6 +997,43 @@ int main(int argc, char** argv) {
                static_cast<long long>(dtype),
                dtype == D3DDEVTYPE_HAL ? "" : "  <- NOT hardware");
 
+        // ---- THE WORLD'S EXTENT, and MY CODE vs THE ENGINE'S ---------------------------
+        //
+        // The engine keeps the world bounds TWICE: in the LTWorldClientBSP instance and in
+        // file-scope globals. Its own out-of-bounds test (IWorldClientBSP vtable slot 16) reads
+        // the GLOBALS and ignores `this`, so a mod testing containment against the instance can
+        // disagree with the test the engine actually applies when deciding an object has gone
+        // outside the world.
+        int64_t wbp = -1, wba = -1, wbout = -1, wbin = -1, wbbp = -1, wbbok = -1;
+        json_int(body, "wb_probed", wbp);
+        json_int(body, "wb_agree", wba);
+        json_int(body, "wb_outside", wbout);
+        json_int(body, "wb_inside", wbin);
+        json_int(body, "wb_bounds_probed", wbbp);
+        json_int(body, "wb_bounds_ok", wbbok);
+        check(wbbp == 1, "the world bounds were readable by both routes");
+        check(wbbok == wbbp, "the instance bounds and the engine's globals hold the SAME extent");
+
+        // THE ENGINE ANSWERS THE SAME QUESTION. Not a second implementation of mine -- the
+        // shipped function, reached through its vtable. This is the only check in the suite where
+        // the reference is the game's own code executing.
+        check(wbp == 15, "all fifteen probe points were classified by both routes");
+        check(wba == wbp,
+              "is_point_outside_world() agrees with the ENGINE'S OWN function on every point");
+
+        // AND THE SPLIT PINS THE BOUNDARY CONVENTION. The probe set is fixed and built from the
+        // bounds themselves: the centre, the six face points lying EXACTLY on a bound, the six
+        // points one unit beyond each face, and the two extreme corners. The engine compares
+        // strictly (min > p, max < p), so the surface is INSIDE -- giving 9 inside and 6 outside.
+        // An inclusive comparison would flip the six faces and two corners to 3 and 12, so these
+        // exact counts are a test of the CONVENTION rather than of the level.
+        check(wbin == 9, "points exactly ON a bound are INSIDE -- the comparison is strict");
+        check(wbout == 6, "only the six points beyond a face are outside");
+        printf("[fixture] world extent: both copies agree; %lld/%lld points match the engine's "
+               "own test (%lld in, %lld out)\n",
+               static_cast<long long>(wba), static_cast<long long>(wbp),
+               static_cast<long long>(wbin), static_cast<long long>(wbout));
+
         // counter_node_registered: sdk::CClientMgr::counter_node_registered()
         // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely
         // through the generated schema (&own_counter_node->self_link ==

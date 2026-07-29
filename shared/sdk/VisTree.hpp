@@ -478,6 +478,45 @@ public:
     // faulted / failed to terminate.
     static std::optional<WorldTreeCheck> check(size_t max_nodes = 8192);
 
+    // ---- THE WORLD'S EXTENT, WHICH THE ENGINE KEEPS TWICE -------------------
+    //
+    // LTWorldClientBSP holds the world extent TWICE: bounds_min/max at +0x04 and a second pair
+    // at +0x22C. Its own out-of-bounds test -- IWorldClientBSP vtable slot 16 -- reads THE SECOND
+    // PAIR and ignores `this` entirely, referencing it by absolute address because the object is
+    // a static singleton. A decompile of that function shows bare addresses that look like
+    // globals; they are this instance's own fields (0x6F6BD8 + 0x22C is the 0x6F6E04 it cites).
+    //
+    // That matters to a mod rather than being trivia. A teleport, a play-space bound, or a
+    // spawn check written against the instance fields can disagree with the test the engine
+    // actually applies, and the engine is the one that decides whether an object "goes outside
+    // world". So both are exposed, the engine's predicate is reproduced from the globals it
+    // really uses, and bounds_agree() answers whether the two copies are currently the same.
+    // Live they are identical, which is why the distinction is documented rather than dramatic.
+    struct Bounds {
+        regenny::LTVector min;
+        regenny::LTVector max;
+    };
+
+    // The bounds stored IN THE INSTANCE, at +0x04 and +0x10.
+    static std::optional<Bounds> bounds();
+
+    // The SECOND pair, at +0x22C -- the one the engine's own test consults.
+    static std::optional<Bounds> engine_bounds();
+
+    // Do the two copies match? false means a mod's own containment test and the engine's will
+    // disagree, and the engine's is the one that counts.
+    static std::optional<bool> bounds_agree();
+
+    // IS THIS POINT OUTSIDE THE WORLD, reproducing IWorldClientBSP_IsPointOutsideWorld exactly:
+    // strict `min > p` or `max < p` on any axis, against the GLOBALS. Note the boundary is
+    // INSIDE -- a point exactly on min or max is not outside.
+    static std::optional<bool> is_point_outside_world(const regenny::LTVector& point);
+
+    // The same question asked of THE ENGINE, through vtable slot 16. Costs a call and exists so
+    // a caller can confirm the reimplementation above still matches the shipped code -- and so
+    // this SDK can be checked against the engine rather than against itself.
+    static std::optional<bool> is_point_outside_world_engine(const regenny::LTVector& point);
+
     // ---- THE SPATIAL INDEX: WHAT IS NEAR A POINT? ---------------------------
     //
     // The world tree is an X/Z quadtree (the ground plane, not an octree) that every

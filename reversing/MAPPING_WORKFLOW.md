@@ -963,6 +963,48 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A BARE ADDRESS IN A DECOMPILE MAY BE A STATIC OBJECT'S FIELD.** `IsPointOutsideWorld` reads
+  six floats at `0x6F6E04..0x6F6E18` and Hex-Rays renders them as `flt_...` globals. They are
+  `g_pIWorldClientBSP`'s own fields: the singleton is at a fixed `0x6F6BD8`, and
+  `0x6F6BD8 + 0x22C` is exactly `0x6F6E04`, so the compiler folded `this->bounds_min_2` into a
+  constant. That is also why the function is `__stdcall` and ignores `this` while being a vtable
+  slot.
+
+  I read them off the module base as globals. It WORKS -- the object is static -- and it says
+  something false about the layout. Whenever an absolute address turns up inside a method,
+  subtract the singleton's address before believing it is a global; if the difference is a small
+  sane offset, it is a field.
+
+  This was the SECOND near-duplicate of an existing correct note in one session (the vtable slot
+  numbering was the first). Both times the schema already had it, recorded more precisely than my
+  rediscovery. GREP THE SCHEMA FOR THE OFFSET BEFORE WRITING IT UP.
+
+- **Never derive a probe's INPUTS from the code the probe is testing.** My first run built fifteen
+  probe points from `engine_bounds()` and compared my predicate against the engine's. Every point
+  disagreed and the engine called all fifteen outside -- which reads as "the engine disagrees with
+  me" when the truth was that `engine_bounds()` was broken and the engine was correctly rejecting
+  fifteen nonsense coordinates.
+
+  One bug produced a symptom that pointed at the wrong component entirely. Build probe inputs from
+  an INDEPENDENT source (here the instance bounds), so a failure implicates the thing under test
+  rather than poisoning the comparison.
+
+- **A "module accessor" that returns a descriptor is not a base address.** `Modules::exe()` hands
+  back a `const Module*`; `reinterpret_cast<uintptr_t>(exe)` compiles, yields a plausible
+  in-process address, and read six floats of unrelated memory. The fix is `exe->base`.
+
+  What caught it was printing THE VALUES, not the verdict. "The two bounds disagree" is not
+  actionable; `[-13167.474, ...]` against `[-2.3e+29, 0.0, ...]` names the bug instantly -- the
+  second is not stale data, it is not data. When two things disagree, print both before theorising.
+
+- **Calling the engine's own function is the best oracle there is, when it is safe.**
+  `IsPointOutsideWorld` is a pure comparison with no allocation, no locking and no side effects,
+  and it is reachable through vtable slot 16 -- so no hardcoded address is needed, and the call
+  site matches the engine's own. 15/15 agreement with the reimplementation.
+
+  And CHOOSE POINTS WHERE A MISTAKE WOULD SHOW: the six face points and two corners lie EXACTLY on
+  a bound, so they classify as inside only because the comparison is strict. An inclusive `>=`
+  flips eight of the fifteen. A centre-and-far-away probe set would have passed either way.
 - **A vtable's base comes from the CONSTRUCTOR'S STORE, never from scanning backwards.** I
   walked back from a known slot while the preceding dword looked like a function and concluded
   `GetVisTree` was slot 13, one below the schema's recorded 14 -- and was about to "correct" a

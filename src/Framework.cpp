@@ -864,6 +864,71 @@ std::string build_targets_json() {
             }
         }
     }
+    // MY REIMPLEMENTATION vs THE ENGINE'S OWN FUNCTION, called through vtable slot 16. This is
+    // the strongest kind of check available: not a second walk of my own, but the shipped code
+    // answering the same question.
+    //
+    // The probe points are chosen where a mistake would actually show. Points exactly ON each
+    // bound test the strict-versus-inclusive boundary the engine uses (min > p, max < p, so the
+    // surface is INSIDE); points one unit outside each of the six faces test each comparison
+    // separately, which a single corner probe would conflate.
+    int wb_probed = 0, wb_agree = 0, wb_outside = 0, wb_inside = 0;
+    int wb_bounds_ok = 0, wb_bounds_probed = 0;
+    float wb_inst[6]{}, wb_glob[6]{};
+    {
+        // DIAGNOSTIC: the actual numbers each path sees, because "they disagree" is not
+        // actionable without them.
+        if (const auto ib = sdk::WorldBSP::bounds(); ib.has_value()) {
+            wb_inst[0] = ib->min.x; wb_inst[1] = ib->min.y; wb_inst[2] = ib->min.z;
+            wb_inst[3] = ib->max.x; wb_inst[4] = ib->max.y; wb_inst[5] = ib->max.z;
+        }
+        if (const auto gb = sdk::WorldBSP::engine_bounds(); gb.has_value()) {
+            wb_glob[0] = gb->min.x; wb_glob[1] = gb->min.y; wb_glob[2] = gb->min.z;
+            wb_glob[3] = gb->max.x; wb_glob[4] = gb->max.y; wb_glob[5] = gb->max.z;
+        }
+        if (const auto ag = sdk::WorldBSP::bounds_agree(); ag.has_value()) {
+            ++wb_bounds_probed;
+            if (*ag) {
+                ++wb_bounds_ok;
+            }
+        }
+        // PROBE POINTS COME FROM THE INSTANCE BOUNDS, deliberately NOT from engine_bounds():
+        // deriving the inputs from the code under test makes a failure cascade. The first run of
+        // this had a broken engine_bounds(), so every probe point was nonsense and the ENGINE
+        // correctly called all fifteen outside -- which read as the engine disagreeing with me.
+        if (const auto b = sdk::WorldBSP::bounds(); b.has_value()) {
+            const float cx = (b->min.x + b->max.x) * 0.5f;
+            const float cy = (b->min.y + b->max.y) * 0.5f;
+            const float cz = (b->min.z + b->max.z) * 0.5f;
+            const regenny::LTVector pts[] = {
+                {cx, cy, cz},                                  // centre: inside
+                {b->min.x, cy, cz},   {b->max.x, cy, cz},      // exactly on x faces
+                {cx, b->min.y, cz},   {cx, b->max.y, cz},      // exactly on y faces
+                {cx, cy, b->min.z},   {cx, cy, b->max.z},      // exactly on z faces
+                {b->min.x - 1.0f, cy, cz}, {b->max.x + 1.0f, cy, cz},
+                {cx, b->min.y - 1.0f, cz}, {cx, b->max.y + 1.0f, cz},
+                {cx, cy, b->min.z - 1.0f}, {cx, cy, b->max.z + 1.0f},
+                {b->min.x, b->min.y, b->min.z},                // the min corner itself
+                {b->max.x, b->max.y, b->max.z},                // the max corner itself
+            };
+            for (const auto& pt : pts) {
+                const auto mine = sdk::WorldBSP::is_point_outside_world(pt);
+                const auto theirs = sdk::WorldBSP::is_point_outside_world_engine(pt);
+                if (!mine.has_value() || !theirs.has_value()) {
+                    continue;
+                }
+                ++wb_probed;
+                if (*mine == *theirs) {
+                    ++wb_agree;
+                }
+                if (*theirs) {
+                    ++wb_outside;
+                } else {
+                    ++wb_inside;
+                }
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -1056,6 +1121,10 @@ std::string build_targets_json() {
              "\"rch_probed\":%d,\"rch_1hop_ok\":%d,\"rch_mono_ok\":%d,"
              "\"rch_sym_probed\":%d,\"rch_sym_ok\":%d,\"rch_comp_ok\":%d,"
              "\"rch_comp_size\":%d,\"rch_hops_ok\":%d,"
+             "\"wb_probed\":%d,\"wb_agree\":%d,\"wb_outside\":%d,\"wb_inside\":%d,"
+             "\"wb_bounds_probed\":%d,\"wb_bounds_ok\":%d,"
+             "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
+             "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -1140,6 +1209,9 @@ std::string build_targets_json() {
              poly_probed, poly_len_ok, poly_on_plane, poly_trunc, poly_verts,
              rch_probed, rch_1hop_ok, rch_mono_ok, rch_sym_probed, rch_sym_ok,
              rch_comp_ok, rch_comp_size, rch_hops_ok,
+             wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
+             wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
+             wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

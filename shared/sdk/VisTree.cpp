@@ -14,6 +14,7 @@
 #include "regenny/regenny/LTSpatialEntry.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
 
+#include "Modules.hpp"
 #include "Object.hpp"
 
 #include "interfaces/IWorldClientBSP.hpp"
@@ -2066,6 +2067,127 @@ std::vector<size_t> VisTree::sector_component(size_t sector_index) {
         return {};
     }
     return sectors_within(sector_index, *total);
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// IWorldClientBSP vtable slot 16, confirmed from the constructor's own `mov [esi], offset
+// vtbl_IWorldClientBSP` rather than by scanning backwards for function-shaped dwords -- that
+// scan is off by one for every unrecognised slot it stops at, and it was, here.
+constexpr size_t kSlotIsPointOutsideWorld = 16;
+
+int64_t seh_read_bounds(uintptr_t min_addr, uintptr_t max_addr, float* out) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        const auto* mn = reinterpret_cast<const float*>(min_addr);
+        const auto* mx = reinterpret_cast<const float*>(max_addr);
+        for (size_t i = 0; i < 3; ++i) {
+            out[i] = mn[i];
+            out[3 + i] = mx[i];
+        }
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+// Calls the engine's predicate through the vtable. __stdcall taking the point; the function
+// ignores `this`, but it is still reached as a virtual so the call site matches the engine's.
+int64_t seh_call_outside(const void* iface, const float* point) {
+    int64_t r = -1;
+    KANANLIB_SEH_TRY {
+        const auto* vt = *reinterpret_cast<void* const* const*>(iface);
+        auto fn = reinterpret_cast<int(__stdcall*)(const float*)>(vt[kSlotIsPointOutsideWorld]);
+        if (fn == nullptr) {
+            return -1;
+        }
+        r = fn(point) != 0 ? 1 : 0;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r = -1;
+    }
+    return r;
+}
+
+std::optional<WorldBSP::Bounds> bounds_from(uintptr_t mn, uintptr_t mx) {
+    float v[6]{};
+    if (seh_read_bounds(mn, mx, v) < 0) {
+        return std::nullopt;
+    }
+    WorldBSP::Bounds b{};
+    b.min.x = v[0];
+    b.min.y = v[1];
+    b.min.z = v[2];
+    b.max.x = v[3];
+    b.max.y = v[4];
+    b.max.z = v[5];
+    return b;
+}
+
+}  // namespace
+
+std::optional<WorldBSP::Bounds> WorldBSP::bounds() {
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    return bounds_from(reinterpret_cast<uintptr_t>(&bsp->bounds_min),
+                       reinterpret_cast<uintptr_t>(&bsp->bounds_max));
+}
+
+std::optional<WorldBSP::Bounds> WorldBSP::engine_bounds() {
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    // THE SECOND PAIR IS AN INSTANCE FIELD, not a global. The engine's test references it by
+    // absolute address only because this object is a static singleton, so the compiler folded
+    // `this->bounds_min_2` into a constant -- and 0x6F6BD8 + 0x22C is exactly the 0x6F6E04 the
+    // decompiler shows. Reading it as a module-relative global happens to work and says the
+    // wrong thing about the layout, so it is read as what it is.
+    return bounds_from(reinterpret_cast<uintptr_t>(&bsp->bounds_min_2),
+                       reinterpret_cast<uintptr_t>(&bsp->bounds_max_2));
+}
+
+std::optional<bool> WorldBSP::bounds_agree() {
+    const auto a = bounds();
+    const auto b = engine_bounds();
+    if (!a.has_value() || !b.has_value()) {
+        return std::nullopt;
+    }
+    // Exact equality on purpose: these are two copies of one assignment, not two computations,
+    // so any difference at all means one of them is stale.
+    return a->min.x == b->min.x && a->min.y == b->min.y && a->min.z == b->min.z &&
+           a->max.x == b->max.x && a->max.y == b->max.y && a->max.z == b->max.z;
+}
+
+std::optional<bool> WorldBSP::is_point_outside_world(const regenny::LTVector& point) {
+    const auto b = engine_bounds();
+    if (!b.has_value()) {
+        return std::nullopt;
+    }
+    // STRICT comparisons, matching the engine: a point exactly on a bound is INSIDE.
+    return b->min.x > point.x || b->min.y > point.y || b->min.z > point.z ||
+           b->max.x < point.x || b->max.y < point.y || b->max.z < point.z;
+}
+
+std::optional<bool> WorldBSP::is_point_outside_world_engine(const regenny::LTVector& point) {
+    auto* iface = interfaces::IWorldClientBSP::get();
+    if (iface == nullptr) {
+        return std::nullopt;
+    }
+    const float p[3] = {point.x, point.y, point.z};
+    const int64_t r = seh_call_outside(iface, p);
+    if (r < 0) {
+        return std::nullopt;
+    }
+    return r != 0;
 }
 
 }  // namespace sdk
