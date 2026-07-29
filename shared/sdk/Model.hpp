@@ -162,6 +162,33 @@ public:
     // across assets, so a case-sensitive search would miss half the weapons.
     std::optional<size_t> find_socket(const char* name) const;
 
+    // ---- THE BIND POSE, ALSO FROM ASSET DATA ------------------------------------
+    //
+    // The skeleton's rest pose: where every bone sits before any animation. Like socket offsets and
+    // unlike the node caches, this is ASSET data -- no dirty flag, no evaluation, no game thread.
+    //
+    // THE EVIDENCE FOR "ASSET DATA" IS THE READ ADDRESS, not observed sameness. The engine's own
+    // getter indexes `asset->node_records`, and so does this accessor, so the bytes live in the
+    // asset's array and every object bound to that asset reads the same memory. Note what that does
+    // NOT establish: nothing here proves the array is never written. Values matching across
+    // instances would be true of a per-object copy too, so it is the address that carries the
+    // argument.
+    //
+    // WHICH FIELD IT IS was settled by its reader, not by inspection: the record holds TWO
+    // (vector, quaternion) pairs and an earlier pass could only record that they are not each
+    // other's inverse. ILTModel_GetBindPoseNodeTransform computes
+    // `(node_index << 6) + asset->node_records + 8` and copies from there, so the pair at +0x08 is
+    // the bind pose and the one at +0x24 is something else still unidentified.
+    struct BindPose {
+        regenny::LTVector position;
+        regenny::LTRotation rotation;
+    };
+
+    // nullopt when the index is out of range or the read faulted. Note the pose is relative to the
+    // node's PARENT, as a rest pose is -- compose up the chain with parent_of() for a model-space
+    // position.
+    std::optional<BindPose> bind_pose(size_t node_index) const;
+
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------
     //
     // A stereo renderer needs to know where a character's eyes are and how far apart. That is

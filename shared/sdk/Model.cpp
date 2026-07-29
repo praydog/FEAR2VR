@@ -221,8 +221,8 @@ bool seh_read_node(const void* records, uint32_t count, size_t index, NodeRaw* o
             out->parent = nd->parent_index;
             out->first_child_offset = nd->first_child_offset;
             out->child_count = nd->child_count;
-            out->pos_a = nd->position_a;
-            out->rot_a = nd->rotation_a;
+            out->pos_a = nd->bind_position;
+            out->rot_a = nd->bind_rotation;
             out->pos_b = nd->position_b;
             out->rot_b = nd->rotation_b;
             ok = true;
@@ -1261,6 +1261,48 @@ int64_t ModelSkeleton::engine_iface_gate_byte() {
         v = -1;
     }
     return v;
+}
+
+namespace {
+
+int64_t seh_read_bind_pose(const void* records, size_t index, float* out) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        const auto* n = static_cast<const regenny::LTModelNode*>(records) + index;
+        out[0] = n->bind_position.x;
+        out[1] = n->bind_position.y;
+        out[2] = n->bind_position.z;
+        out[3] = n->bind_rotation.x;
+        out[4] = n->bind_rotation.y;
+        out[5] = n->bind_rotation.z;
+        out[6] = n->bind_rotation.w;
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<ModelSkeleton::BindPose> ModelSkeleton::bind_pose(size_t node_index) const {
+    if (m_records == nullptr || node_index >= m_count) {
+        return std::nullopt;
+    }
+    float v[7]{};
+    if (seh_read_bind_pose(m_records, node_index, v) < 0) {
+        return std::nullopt;
+    }
+    BindPose out{};
+    out.position.x = v[0];
+    out.position.y = v[1];
+    out.position.z = v[2];
+    out.rotation.x = v[3];
+    out.rotation.y = v[4];
+    out.rotation.z = v[5];
+    out.rotation.w = v[6];
+    return out;
 }
 
 std::optional<ModelSkeleton::EyeGeometry> ModelSkeleton::eye_geometry() const {

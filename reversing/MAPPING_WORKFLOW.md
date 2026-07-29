@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **IDENTICAL VALUES ACROSS INSTANCES DO NOT ESTABLISH OWNERSHIP OR IMMUTABILITY.** I asserted that
+  the bind pose is asset-owned because 171 objects sharing an asset reported bit-identical poses,
+  and reasoned that a per-object field "would have diverged". It would not: a per-object field
+  initialised from the same asset stays bit-identical forever if nothing writes it. Worse, in this
+  case both reads land on the SAME memory -- our accessor indexes `asset->node_records` -- so the
+  agreement was close to tautological rather than evidence.
+  
+  WHAT DOES CARRY THE ARGUMENT IS THE ADDRESS: the engine's own
+  `ILTModel_GetBindPoseNodeTransform` indexes `asset->node_records + 8`, and so does the accessor,
+  so the bytes live in the asset's array. That is a fact about storage, from code.
+  
+  And note what still is NOT established: that the array is never written. Proving immutability
+  needs a mutation-isolation test -- write through one instance, observe a sibling -- which is not
+  something to do to a live game, so the claim is scoped to provenance and stops there.
+  
+  This is the second form of one mistake this session. Earlier, `engine_bounds()` read past the end
+  of an object and returned CORRECT values because the address coincided, and every value check
+  passed. Both directions of the same confusion: **a value comparison cannot tell you where a value
+  came from.** Ask what the check would still report if the layout claim were wrong -- if the
+  answer is "the same thing", the check is about something else.
+
 - **PREFER THE STALENESS-FREE SOURCE when one exists.** Socket offsets live in the ASSET, not in a
   per-object cache, so eye and camera geometry can be measured with no evaluation, no engine call,
   no dirty flag and no game-thread requirement -- and the answer is identical on every instance of

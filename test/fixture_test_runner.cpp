@@ -2948,6 +2948,43 @@ int main(int argc, char** argv) {
                 // REPORTED, not required: which sockets exist is a property of the
                 // loaded art, so a level without characters legitimately has none.
                 check(scam >= 0 && scam <= st, "camera sockets are a reported count");
+                // ---- THE BIND POSE IS ASSET DATA ------------------------------------------
+                //
+                // Which field is the bind pose was settled by its reader:
+                // ILTModel_GetBindPoseNodeTransform reads `(node << 6) + node_records + 8`, so it
+                // is the pair at +0x08 and not the other pair in the same record.
+                //
+                // WHERE THE OWNERSHIP EVIDENCE ACTUALLY COMES FROM: the ADDRESS, not the values.
+                // The engine's reader indexes `asset->node_records`, and so does this SDK's
+                // accessor, so the storage is the asset's array by construction.
+                //
+                // The cross-instance check below is therefore WEAKER than it looks and is not
+                // claimed as proof of immutability: identical values would also hold for a
+                // per-object field initialised from the same asset, and here the two reads land on
+                // the SAME memory, so agreement is close to tautological. What it does verify is
+                // that two independently built views of two different objects resolve to the same
+                // asset array -- a check of the resolution path, which has broken before.
+                //
+                // Proving immutability would need a mutation-isolation test, which is out of scope:
+                // writing to engine data to see whether a sibling changes is not something this
+                // suite should do to a live game.
+                int64_t bnodes = -1, bunit = -1, bfin = -1, bshared = -1, bsharedok = -1;
+                json_int(ab, "bind_nodes", bnodes);
+                json_int(ab, "bind_unit", bunit);
+                json_int(ab, "bind_finite", bfin);
+                json_int(ab, "bind_shared", bshared);
+                json_int(ab, "bind_shared_ok", bsharedok);
+                check(bnodes > 0, "bind poses were read, so the checks are not vacuous");
+                check(bunit == bnodes, "EVERY bind rotation is unit-length");
+                check(bfin == bnodes, "EVERY bind position is finite");
+                check(bshared > 0,
+                      "models sharing an asset exist, so the invariance check has something to do");
+                check(bsharedok == bshared,
+                      "objects sharing an asset resolve to the same bind pose data (resolution path)");
+                printf("[fixture] bind pose: %lld nodes across distinct assets, all unit and "
+                       "finite; %lld shared instances all identical\n",
+                       static_cast<long long>(bnodes), static_cast<long long>(bshared));
+
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
 
                 // EYE GEOMETRY, from asset data -- no bone cache, so no staleness and nothing to

@@ -1073,10 +1073,10 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                                 topo_ok = false;
                             }
                             children += nd.child_count;
-                            const float ma = nd.rotation_a.x * nd.rotation_a.x +
-                                             nd.rotation_a.y * nd.rotation_a.y +
-                                             nd.rotation_a.z * nd.rotation_a.z +
-                                             nd.rotation_a.w * nd.rotation_a.w;
+                            const float ma = nd.bind_rotation.x * nd.bind_rotation.x +
+                                             nd.bind_rotation.y * nd.bind_rotation.y +
+                                             nd.bind_rotation.z * nd.bind_rotation.z +
+                                             nd.bind_rotation.w * nd.bind_rotation.w;
                             const float mb = nd.rotation_b.x * nd.rotation_b.x +
                                              nd.rotation_b.y * nd.rotation_b.y +
                                              nd.rotation_b.z * nd.rotation_b.z +
@@ -1087,7 +1087,7 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                             if (mb > 0.99f && mb < 1.01f) {
                                 ++*rot_b_unit;
                             }
-                            const float* pv = &nd.position_a.x;
+                            const float* pv = &nd.bind_position.x;
                             bool fin = true;
                             for (int c = 0; c < 3; ++c) {
                                 const float v = pv[c];

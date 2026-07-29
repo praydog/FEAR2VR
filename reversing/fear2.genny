@@ -1557,6 +1557,9 @@ class LTAnimRecordTable 0x10 {
 // on 34/34, and sum(child_count) == node_count - 1 on 34/34 -- which is the
 // defining property of a tree with one root and no cycles.
 //
+// ONE OF THE TWO POSES IS NOW NAMED: +0x08 is the BIND POSE, because that is where
+// ILTModel_GetBindPoseNodeTransform reads from. The other is still unidentified.
+//
 // TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
 // its rigid inverse, the way LTWorldModelObject's pair is. If they were,
 // `pos_b == -(rot_a^-1 * pos_a)` and `rot_b == conjugate(rot_a)` would hold
@@ -1574,9 +1577,9 @@ class LTModelNode 0x40 {
     uint8_t child_count    @0x04   // CONFIRMED: the reader stores the low byte of a dword read from the file, and live the counts sum to node_count - 1 on 34/34 -- one root, no cycles. Paired with first_child_offset it fully describes the child set, and the recursive walk at 0x4290A8 uses exactly that pair.
     uint8_t unk_05         @0x05   // CONFIRMED read as a single byte straight from the file
     uint16_t unk_06        @0x06
-    LTVector position_a    @0x08   // CONFIRMED finite and sane on 660/660
-    LTRotation rotation_a  @0x14   // CONFIRMED unit-length on 660/660, so a real quaternion
-    LTVector position_b    @0x24   // CONFIRMED finite and sane on 660/660. NOT the inverse of position_a -- see the class comment.
+    LTVector bind_position @0x08   // CONFIRMED THE BIND POSE, by its own reader: ILTModel_GetBindPoseNodeTransform (0x42C958) computes `(node_index << 6) + asset->node_records + 8` and copies from there -- stride 0x40, offset +0x08, i.e. exactly this pair. That settles which of this record's two poses is the bind pose, which an earlier pass could only record as unmapped. Being ASSET data it is staleness-free and identical on every instance of the model, unlike the per-object node caches. CONFIRMED finite and sane on 660/660
+    LTRotation bind_rotation @0x14 // CONFIRMED the bind pose's rotation, the second half of the pair ILTModel_GetBindPoseNodeTransform reads. CONFIRMED unit-length on 660/660, so a real quaternion
+    LTVector position_b    @0x24   // CONFIRMED finite and sane on 660/660. NOT the inverse of the bind pose -- see the class comment -- and NOT the bind pose itself, since its reader takes +0x08. What this second pose is remains unmapped; no reader has been found.
     LTRotation rotation_b  @0x30   // CONFIRMED unit-length on 660/660. Ends at 0x40 == the record stride.
 }
 

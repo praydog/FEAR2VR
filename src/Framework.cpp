@@ -1,5 +1,7 @@
 #include "Framework.hpp"
 
+#include <array>
+#include <unordered_map>
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
@@ -2111,6 +2113,8 @@ std::string build_objects_json() {
                api_socket_named_node = 0, api_socket_roundtrip = 0,
                api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
                api_eye_geom = 0, api_eye_level = 0, api_eye_left_neg = 0, api_eye_vs_camera = 0,
+               api_bind_nodes = 0, api_bind_unit = 0, api_bind_finite = 0, api_bind_shared = 0,
+               api_bind_shared_ok = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2130,6 +2134,9 @@ std::string build_objects_json() {
                api_aabb_ok = 0, api_aabb_ordered = 0, api_aabb_asked = 0,
                api_aabb_current = 0, api_rad_ok = 0, api_rad_sized = 0,
                api_rad_unsized = 0, api_rad_sane = 0;
+        // Per-asset bind poses, keyed by the shared asset pointer: the first object of an
+        // asset records them, every later one must match.
+        std::unordered_map<uintptr_t, std::vector<std::array<float, 7>>> bind_seen;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -2562,6 +2569,70 @@ std::string build_objects_json() {
                         if (sk->find_socket("camera").has_value()) {
                             ++api_socket_camera;
                         }
+                        // THE BIND POSE IS ASSET DATA, so every object sharing an asset must
+                        // report the SAME bind pose for the same node. That is the check which
+                        // distinguishes asset data from a per-object cache -- had the offset been a
+                        // per-instance field, instances would diverge -- and it needs no reference
+                        // values of any kind, only two objects and the engine's own sharing.
+                        {
+                            // asset_id() is exactly the intended use: "two models with the
+                            // same value share node indices", so it keys the per-asset cache.
+                            const auto asset = sk->asset_id();
+                            if (asset != 0) {
+                                auto it = bind_seen.find(asset);
+                                if (it == bind_seen.end()) {
+                                    // First sighting: record this asset's bind poses.
+                                    std::vector<std::array<float, 7>> poses;
+                                    for (size_t ni = 0; ni < sk->node_count(); ++ni) {
+                                        if (const auto bp = sk->bind_pose(ni); bp.has_value()) {
+                                            poses.push_back(std::array<float, 7>{
+                                                bp->position.x, bp->position.y, bp->position.z,
+                                                bp->rotation.x, bp->rotation.y, bp->rotation.z,
+                                                bp->rotation.w});
+                                            ++api_bind_nodes;
+                                            const float qn =
+                                                bp->rotation.x * bp->rotation.x +
+                                                bp->rotation.y * bp->rotation.y +
+                                                bp->rotation.z * bp->rotation.z +
+                                                bp->rotation.w * bp->rotation.w;
+                                            if (qn > 0.98f && qn < 1.02f) {
+                                                ++api_bind_unit;
+                                            }
+                                            if (std::isfinite(bp->position.x) &&
+                                                std::isfinite(bp->position.y) &&
+                                                std::isfinite(bp->position.z)) {
+                                                ++api_bind_finite;
+                                            }
+                                        }
+                                    }
+                                    bind_seen.emplace(asset, std::move(poses));
+                                } else {
+                                    // Seen this asset before: the poses must match exactly.
+                                    ++api_bind_shared;
+                                    bool same = true;
+                                    for (size_t ni = 0; ni < sk->node_count(); ++ni) {
+                                        const auto bp = sk->bind_pose(ni);
+                                        if (!bp.has_value() || ni >= it->second.size()) {
+                                            same = false;
+                                            break;
+                                        }
+                                        const auto& r = it->second[ni];
+                                        // EXACT equality: two reads of one immutable array, not two
+                                        // computations, so any difference at all is meaningful.
+                                        if (bp->position.x != r[0] || bp->position.y != r[1] ||
+                                            bp->position.z != r[2] || bp->rotation.x != r[3] ||
+                                            bp->rotation.y != r[4] || bp->rotation.z != r[5] ||
+                                            bp->rotation.w != r[6]) {
+                                            same = false;
+                                            break;
+                                        }
+                                    }
+                                    if (same) {
+                                        ++api_bind_shared_ok;
+                                    }
+                                }
+                            }
+                        }
                         if (sk->find_socket("socket_left_eye").has_value() &&
                             sk->find_socket("socket_right_eye").has_value()) {
                             ++api_socket_eyes;
@@ -2634,6 +2705,11 @@ std::string build_objects_json() {
         .u("socket_named_node", api_socket_named_node)
         .u("socket_roundtrip", api_socket_roundtrip)
         .u("socket_camera", api_socket_camera)
+        .u("bind_nodes", api_bind_nodes)
+        .u("bind_unit", api_bind_unit)
+        .u("bind_finite", api_bind_finite)
+        .u("bind_shared", api_bind_shared)
+        .u("bind_shared_ok", api_bind_shared_ok)
         .u("socket_eyes", api_socket_eyes)
         .u("eye_geom", api_eye_geom)
         .u("eye_level", api_eye_level)

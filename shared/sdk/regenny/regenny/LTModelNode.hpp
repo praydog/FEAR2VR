@@ -12,8 +12,8 @@ public:
     uint8_t child_count; // 0x4
     uint8_t unk_05; // 0x5
     uint16_t unk_06; // 0x6
-    regenny::LTVector position_a; // 0x8
-    regenny::LTRotation rotation_a; // 0x14
+    regenny::LTVector bind_position; // 0x8
+    regenny::LTRotation bind_rotation; // 0x14
     regenny::LTVector position_b; // 0x24
     regenny::LTRotation rotation_b; // 0x30
 }; // Size: 0x40
