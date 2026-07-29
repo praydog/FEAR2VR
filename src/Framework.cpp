@@ -22,6 +22,7 @@
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
+#include "sdk/Render.hpp"
 #include "sdk/VisTree.hpp"
 #include "sdk/interfaces/All.hpp"
 
@@ -402,6 +403,11 @@ std::string build_targets_json() {
     const std::optional<size_t> shell_count =
         client_mgr != nullptr ? client_mgr->start_shell_list_count() : std::optional<size_t>{};
 
+    // Zero when D3D is not up, which is a real state rather than a fault -- the record is
+    // static storage and reads as zeros before Direct3DCreate9 has run.
+    const auto dmode =
+        sdk::Render::display_mode().value_or(sdk::Render::DisplayMode{});
+
     const int written = snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"exe_base\":\"0x%08" PRIXPTR "\",\"exe_size\":\"0x%08" PRIXPTR "\","
              "\"client_mgr_update\":\"0x%08" PRIXPTR "\",\"client_shell_update\":\"0x%08" PRIXPTR "\","
@@ -438,7 +444,11 @@ std::string build_targets_json() {
              "\"lhand\":[%.2f,%.2f,%.2f],\"rhand\":[%.2f,%.2f,%.2f],"
              // The muzzle, and the engine-vs-us agreement on where the weapon sits.
              "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
-             "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f}",
+             "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
+             // The D3D9 side: is the factory up, WHO owns its vtable (the Steam overlay
+             // proxies it), and the display mode the engine recorded at init.
+             "\"d3d9\":\"0x%08" PRIXPTR "\",\"d3d9_vtable_owner\":\"%s\","
+             "\"display_w\":%u,\"display_h\":%u,\"display_hz\":%u,\"display_fmt\":%u}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -489,7 +499,10 @@ std::string build_targets_json() {
              muzzle_ok ? "true" : "false",
              muzzle_clean ? "true" : "false",
              muzzle[0], muzzle[1], muzzle[2],
-             muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand);
+             muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
+             reinterpret_cast<uintptr_t>(sdk::Render::d3d9()),
+             sdk::Render::d3d9_vtable_owner().value_or(std::string{"(none)"}).c_str(),
+             dmode.width, dmode.height, dmode.refresh_hz, dmode.format);
     // A truncated payload is not valid JSON, so say so in JSON the caller CAN parse
     // rather than handing back a half-written object.
     if (written < 0 || static_cast<size_t>(written) >= sizeof(buf)) {

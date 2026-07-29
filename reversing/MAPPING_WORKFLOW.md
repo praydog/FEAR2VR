@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **"Its vtable is in that DLL" identifies the LIBRARY, not the CLASS.** Hunting the D3D9
+  device, I scanned live globals for pointers whose first word lands inside `d3d9.dll` and
+  found two holding the same object -- "found the device". They were Scaleform GFx texture
+  slots, registered by name as `tGFxTexture1`/`tGFxTexture2`; an `IDirect3DTexture9` vtable
+  is in `d3d9.dll` too. The scan was sound and the conclusion did not follow from it.
+
+  What caught it was reading the ONE function that referenced each global instead of
+  stopping at the scan result. A module-range test narrows a pointer to a library's worth
+  of classes -- for `d3d9.dll` that is textures, surfaces, buffers, queries, the device and
+  the factory. Narrow further with something class-specific (who writes it, what it is
+  named, how many exist) before naming it.
+
+- **A proxy in front of an interface is worth detecting, not just noting.** The engine's
+  `IDirect3D9` vtable does NOT live in `d3d9.dll` on this machine -- it is in
+  `gameoverlayrenderer.dll`, because the Steam overlay hands the game a proxy. Any mod that
+  identifies D3D objects by comparing a vtable against `d3d9.dll`'s range, or patches a
+  vtable slot expecting the runtime's code behind it, is wrong on most machines. So the SDK
+  exposes `Render::d3d9_vtable_owner()` rather than a bool: the fixture asserts the vtable
+  belongs to SOME loaded module (the mechanical claim) and REPORTS which one, since that
+  depends on the machine and hard-coding either answer is the bug.
 - **Write the prediction down BEFORE the measurement, so a wrong one cannot be quietly
   reinterpreted.** The brush round-trip check reported a worst error of 49.84 units. I
   reasoned that a near-inverse pair's error scales with distance from the brush origin, and

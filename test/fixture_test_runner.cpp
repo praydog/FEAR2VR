@@ -480,6 +480,54 @@ int main(int argc, char** argv) {
         check(main_hwnd != 0 && IsWindow(reinterpret_cast<HWND>(main_hwnd)),
               "main_hwnd is a live window (IsWindow, host-side)");
 
+        // ---- DIRECT3D 9 ---------------------------------------------------------------
+        //
+        // The engine's IDirect3D9 factory, and the module that owns its vtable. A running
+        // game with a level loaded has D3D up, so a null factory is a real failure here.
+        uint32_t d3d9 = 0;
+        check(json_hex(body, "d3d9", d3d9) && d3d9 != 0,
+              "the engine's IDirect3D9 factory is non-null");
+        // THE MECHANICAL PART: the vtable of a genuine COM interface lands inside a LOADED
+        // MODULE. A stale or misidentified pointer would have a first word that belongs to
+        // no module at all, and this resolves it through the OS rather than through our own
+        // module list -- which is the point, since the answer is usually a module we do not
+        // track.
+        const size_t owp = body.find("\"d3d9_vtable_owner\":\"");
+        check(owp != std::string::npos,
+              "the factory's vtable owner is reported");
+        if (owp != std::string::npos) {
+            const size_t s = owp + 21;
+            const size_t e = body.find('"', s);
+            const std::string owner = e == std::string::npos ? std::string{} : body.substr(s, e - s);
+            check(!owner.empty() && owner != "(none)",
+                  "the factory's vtable belongs to a loaded module");
+            // REPORTED, not asserted: WHICH module depends on the machine. With the Steam
+            // overlay active it is gameoverlayrenderer.dll rather than d3d9.dll, and a mod
+            // that hard-codes either is wrong on the other kind of machine. Printing it
+            // means a future failure elsewhere can be correlated with what is in front of
+            // D3D.
+            printf("[fixture] D3D9 factory 0x%08X, vtable owned by %s%s\n", d3d9,
+                   owner.c_str(),
+                   owner == "d3d9.dll" ? "" : "  <- PROXIED, not the runtime");
+        }
+        // The display mode the engine recorded from GetAdapterDisplayMode. The bounds come
+        // from the ENGINE's own mode filter, not from our expectations: its enumeration
+        // rejects anything below 640x480 and only accepts formats 21/22 for a display, so
+        // a desktop outside those could not have got this far.
+        int64_t dw = -1, dh = -1, dhz = -1, dfmt = -1;
+        json_int(body, "display_w", dw);
+        json_int(body, "display_h", dh);
+        json_int(body, "display_hz", dhz);
+        json_int(body, "display_fmt", dfmt);
+        check(dw >= 640 && dh >= 480,
+              "the recorded display mode meets the engine's own minimum resolution");
+        check(dfmt == 21 || dfmt == 22,
+              "the display format is one the engine's mode filter accepts");
+        check(dhz > 0 && dhz < 1000, "the refresh rate is a sane value");
+        printf("[fixture] display mode: %lldx%lld @ %lldHz fmt %lld\n",
+               static_cast<long long>(dw), static_cast<long long>(dh),
+               static_cast<long long>(dhz), static_cast<long long>(dfmt));
+
         // counter_node_registered: sdk::CClientMgr::counter_node_registered()
         // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely
         // through the generated schema (&own_counter_node->self_link ==
