@@ -4185,6 +4185,34 @@ int main(int argc, char** argv) {
             check(json_bool(body, "console_handler_outside_exe", cs_hout) && cs_hout,
                   "a game-registered handler is NOT inside the executable");
 
+            // PROVENANCE, and this is the sharpest check in the block: the count of entries whose flags
+            // bit is CLEAR is derived by walking the live list, while the static count is a field the
+            // engine publishes for its descriptor table. Two unrelated routes to the same 34. A wrong
+            // flags offset, a wrong static count or a walk that strayed into the runtime entries would
+            // separate them.
+            //
+            // The bit's meaning comes from RegisterConsoleProgram passing a literal 1, not from its name.
+            double cs_builtin = -1.0, cs_runtime = -1.0;
+            const bool csp = json_double(body, "console_builtin", cs_builtin) &&
+                             json_double(body, "console_runtime", cs_runtime);
+            check(csp && cs_builtin == cs_static,
+                  "the entries flagged built-in number exactly the engine's published static count");
+            check(csp && cs_runtime > 0.0 && cs_builtin + cs_runtime == cs_live,
+                  "every command is either built-in or runtime-registered, and both groups exist");
+
+            // The engine's own console API through ILTClient. Each slot must resolve INTO the executable,
+            // since CLTClient implements them -- and the three must be distinct functions, because a
+            // vtable read yielding one address three times would satisfy every other check here.
+            bool cs_fv = false, cs_sv = false, cs_rp = false, cs_sd = false;
+            check(json_bool(body, "console_api_find_var", cs_fv) && cs_fv,
+                  "ILTClient's find-console-variable resolves inside the exe");
+            check(json_bool(body, "console_api_set_var", cs_sv) && cs_sv,
+                  "ILTClient's set-console-variable resolves inside the exe");
+            check(json_bool(body, "console_api_register", cs_rp) && cs_rp,
+                  "ILTClient's register-console-program resolves inside the exe");
+            check(json_bool(body, "console_api_slots_distinct", cs_sd) && cs_sd,
+                  "the three console API slots are three different functions");
+
             // The three commands that make this worth mapping for a VR mod. None appear in any static
             // table, so finding them is the proof that walking the list reaches past the engine's 34.
             double cs_player = -1.0;

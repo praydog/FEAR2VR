@@ -5,6 +5,7 @@
 
 #include "Memory.hpp"
 #include "Modules.hpp"
+#include "interfaces/Registry.hpp"
 
 namespace sdk {
 
@@ -274,6 +275,11 @@ std::optional<Console::Stats> Console::stats() {
             } else {
                 ++s.from_modules;
             }
+            if (cmd->registered_at_runtime()) {
+                ++s.runtime;
+            } else {
+                ++s.builtin;
+            }
             names.push_back(cmd->name);
         } else {
             ++s.unreadable_names;
@@ -290,6 +296,57 @@ std::optional<Console::Stats> Console::stats() {
     names.erase(std::unique(names.begin(), names.end()), names.end());
     s.distinct_names = names.size();
     return s;
+}
+
+uintptr_t Console::client_interface() {
+    return reinterpret_cast<uintptr_t>(interfaces::Registry::get().resolve("ILTClient.Default"));
+}
+
+uintptr_t Console::client_vtable_slot(size_t slot) {
+    const auto iface = client_interface();
+    if (iface == 0) {
+        return 0;
+    }
+    const auto vtable = mem::read_ptr(iface);
+    if (!vtable.has_value() || *vtable == 0) {
+        return 0;
+    }
+    return mem::read_ptr(*vtable + slot * sizeof(void*)).value_or(0);
+}
+
+namespace {
+
+// A console method must live inside the executable: ILTClient is implemented by CLTClient in FEAR2.exe, so
+// a slot pointing anywhere else means the vtable is not the one this mapping describes.
+uintptr_t checked_console_slot(size_t slot) {
+    const auto fn = Console::client_vtable_slot(slot);
+    return Console::address_in_exe(fn) ? fn : 0;
+}
+
+}  // namespace
+
+std::optional<Console::FindVariableFn> Console::find_variable_fn() {
+    const auto fn = checked_console_slot(kSlotFindVariable);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    return reinterpret_cast<FindVariableFn>(fn);
+}
+
+std::optional<Console::SetVariableFloatFn> Console::set_variable_float_fn() {
+    const auto fn = checked_console_slot(kSlotSetVariableFloat);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    return reinterpret_cast<SetVariableFloatFn>(fn);
+}
+
+std::optional<Console::RegisterProgramFn> Console::register_program_fn() {
+    const auto fn = checked_console_slot(kSlotRegisterProgram);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    return reinterpret_cast<RegisterProgramFn>(fn);
 }
 
 }  // namespace sdk

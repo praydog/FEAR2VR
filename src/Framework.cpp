@@ -4200,6 +4200,28 @@ std::string build_shader_params_json() {
     }
     json_append_double(out, "console_static_in_live", static_cast<double>(con_static_in_live), 0);
 
+    // PROVENANCE: flags 0 is a built-in descriptor, flags 1 arrived through RegisterConsoleProgram. The
+    // built-in count must equal the static table's published count exactly -- two different routes to the
+    // same 34 -- and the runtime group must be non-empty or nothing registered at all.
+    if (con_stats.has_value()) {
+        json_append_double(out, "console_builtin", static_cast<double>(con_stats->builtin), 0);
+        json_append_double(out, "console_runtime", static_cast<double>(con_stats->runtime), 0);
+    }
+
+    // The engine's own console API, resolved through ILTClient rather than called. Each must land inside the
+    // exe: CLTClient implements them, so a slot pointing elsewhere means the vtable is not the mapped one.
+    json_append_bool(out, "console_api_find_var", sdk::Console::find_variable_fn().has_value());
+    json_append_bool(out, "console_api_set_var", sdk::Console::set_variable_float_fn().has_value());
+    json_append_bool(out, "console_api_register", sdk::Console::register_program_fn().has_value());
+    // The three slots must be DISTINCT functions -- a vtable read that produced one address three times
+    // would satisfy every check above and still be wrong.
+    const auto con_s1 = sdk::Console::client_vtable_slot(sdk::Console::kSlotFindVariable);
+    const auto con_s2 = sdk::Console::client_vtable_slot(sdk::Console::kSlotSetVariableFloat);
+    const auto con_s3 = sdk::Console::client_vtable_slot(sdk::Console::kSlotRegisterProgram);
+    json_append_bool(out, "console_api_slots_distinct",
+                     con_s1 != 0 && con_s2 != 0 && con_s3 != 0 && con_s1 != con_s2 && con_s2 != con_s3 &&
+                         con_s1 != con_s3);
+
     // The game-registered commands a VR mod actually reaches for. None of these are in the engine's table,
     // so finding them proves the walk sees past the static 34.
     size_t con_player_cmds = 0;

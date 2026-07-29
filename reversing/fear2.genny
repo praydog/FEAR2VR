@@ -4374,3 +4374,64 @@ class LTInputDeviceMouse 0x30 {
 // > earlier for a different reason: that an entry address, dereferenced, yields the function.
 //
 // Migrations of shared plumbing need the suite pointed at SEMANTICS, not at compilation. 946 checks.
+
+// ---- WHO REGISTERS THE OTHER 84 COMMANDS, AND A COMMAND THAT LIES ---------------------------------
+//
+// Last pass established that the console dispatches against a list of 118 while the engine's table holds 34.
+// The call path is now proven rather than inferred, and it runs through ILTClient:
+//
+//     slot 69 (vtbl+276)  CLTClient_GetConsoleVariable(name)          -> ConVarTable_Find
+//     slot 73 (vtbl+292)  CLTClient_SetConsoleVariableFloat(name, f)  -> ConVarTable_SetFloat, 60 on null
+//     slot 77 (vtbl+308)  CLTClient_RegisterConsoleProgram(name, fn)  -> LTConsole_CreateEntry(.., .., .., 1)
+//
+// Slot 77 calls the SAME registrar the engine's own startup uses. gameclient.dll's
+// GameClient_RegisterConsoleCommands makes 50-odd of those calls in one function.
+//
+// AND THE LITERAL 1 IS A FALSIFIABLE PREDICTION THAT HELD. It is the entry's flags argument, so runtime
+// registrations should carry 1 where the static descriptors carry 0. Live the partition is exact:
+//
+//     flags 0, handler in exe   34   <- the static table's PUBLISHED count, reached by a different route
+//     flags 1, handler in a DLL  77
+//     flags 1, handler in exe     7   <- the engine registering through its OWN public API
+//
+// So the bit records HOW an entry arrived, and the handler's module records WHO implements it: different
+// questions, and the seven in the third row are why they must not be conflated. Two independent routes to
+// the same 34 is the strongest check available on the flags offset AND the walk.
+//
+// SLOT 73 IS THE WRITE PATH A MOD WANTS: it reaches variables by NAME, including any the built-in table
+// does not carry, where sdk::EngineVars can only reach the 107 static entries.
+//
+// A CALLING-CONVENTION FINDING. The game invokes all three through the vtable as __thiscall with the
+// interface in ECX, but every implementation takes its arguments from the STACK and never reads the incoming
+// ECX -- each ecx touch is a push/pop stack idiom, and slot 69 ends in `retn 4`. They work on the global
+// source table, not on interface state, so they are effectively __stdcall(args) and need no `this`.
+//
+// ---- THE GAME-SIDE PLAYER POSE, AND SetPlayerOrientation IS A NO-OP -------------------------------
+//
+// ConsoleCmd_GetPlayerPos gives the game's own route to the player:
+//
+//     g_pPlayerMgr -> +80..+96 : FOUR player slots, walked by SkipNullIterator_Begin (skips nulls)
+//         first OCCUPIED slot -> player object
+//             +252 -> a transform holder (vtables at +0x00/+0x10/+0x24 -- multiple bases, no RTTI)
+//                 +300  LTVector   position
+//                 +324  LTRotation rotation
+//
+// CONFIRMED LIVE: slot 0 filled, 1..3 null -- the same four-slot shape the engine's shell uses -- position
+// (2183.03, 1572.06, -2233.77) and a rotation of norm 1.000000. Twelve zero bytes sit between them.
+//
+// THESE ARE NOT LTObject OFFSETS: the engine keeps position at +0x14 and rotation at +0x20. The game
+// maintains its own pose representation beside the engine's, so "the player's position" has two answers and
+// a consumer must say which it means. GetPlayerPos also ADDS a vector from ILTClient slot 86 before
+// printing, so even its own output is not the raw field.
+//
+// SetPlayerOrientation CANNOT SET THE PLAYER'S ORIENTATION. It requires three arguments, atof's them into a
+// forward vector, pairs that with up = (0,1,0), calls Client_RotationFromForwardUp to build the quaternion --
+// and hands the result to nullsub_1, a three-byte `retn 4` with 26 callers. Computed and discarded. Its usage
+// string "SetPlayerOrientationFn x y z" makes it look usable; head tracking must find another path.
+//
+// > A console command's NAME is a claim about the build that shipped it, not about the code that remains.
+// > Five more (RebindFX, AIDebug, ReportMemory, ForceSpectatorClipMode, PrintCollisionProperties) are
+// > registered with shared_empty_stub outright -- which is also what explains the five identical handler
+// > addresses seen when the live list was first walked.
+//
+// 952 checks, 0 failures.

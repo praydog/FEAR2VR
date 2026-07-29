@@ -52,6 +52,10 @@ public:
     // walks both.
     static constexpr size_t kDescriptorEntrySize = 12;
 
+    // Set on entries created through ILTClient::RegisterConsoleProgram; clear on the engine's built-in
+    // descriptors. See Command::registered_at_runtime for the measurement.
+    static constexpr uint32_t kFlagRuntimeRegistered = 1;
+
     // A live registry object, from the registrar's own LTMem_Alloc(0x18):
     //     +0x00 const char* name
     //     +0x04 void*       target        (handler for a command)
@@ -87,6 +91,16 @@ public:
 
         // Convenience for the common case, since "is this the engine or the game" is the usual question.
         bool from_exe{};
+
+        // WHERE THIS COMMAND CAME FROM, and it is a measured partition rather than a reading of the bit's
+        // name. RegisterConsoleProgram passes a literal 1 as the entry's flags, while the engine's static
+        // descriptors carry a tag of 0. Live that predicts the split exactly: 34 entries with flags 0, all
+        // inside the exe -- precisely the published static count -- and 84 with flags 1.
+        //
+        // The 84 are not all the game's: 77 have handlers in game DLLs and SEVEN are in the exe, which is
+        // the engine registering through its own public API rather than through the table. So this bit says
+        // HOW an entry arrived, and from_exe says WHO implements it; they are different questions.
+        bool registered_at_runtime() const { return (flags & kFlagRuntimeRegistered) != 0; }
 
         // The handler, typed. Reading the warning on CommandHandler is the price of using it.
         CommandHandler as_handler() const { return reinterpret_cast<CommandHandler>(handler); }
@@ -136,6 +150,8 @@ public:
         size_t unreadable_names{};     // nodes walked whose name pointer did not yield a name
         size_t inconsistent_nodes{};   // link.owner did not point at the object containing the link
         size_t nodes_walked{};         // including the ones rejected above
+        size_t builtin{};              // flags == 0: the engine's static descriptors
+        size_t runtime{};              // flags == 1: registered through RegisterConsoleProgram
         bool hit_cap{};                // true means these are lower bounds, not counts
     };
 
@@ -158,6 +174,60 @@ public:
     // Read one live object into a Command, or nullopt when it does not read as one. The name is validated
     // rather than trusted, so a wrong address yields nullopt instead of a Command holding binary.
     static std::optional<Command> read_object(uintptr_t object);
+
+    //
+    // THE ENGINE'S OWN CONSOLE API, which is what a mod actually wants: not just to READ the registry but to
+    // set a variable by name and to add its own command.
+    //
+    // These are ILTClient methods, and the slots are not positional guesses -- gameclient.dll calls exactly
+    // these three, and each implementation in the exe was read to confirm what it does:
+    //
+    //   slot 69 (vtbl+276)  ConVarTable_Find(&source, name)              -- find a variable by name
+    //   slot 73 (vtbl+292)  set(&source, name, float)                    -- set one, returns 60 on a null name
+    //   slot 77 (vtbl+308)  CLTClient_RegisterConsoleProgram(name, fn)   -- add a command
+    //
+    // Slot 77 closes the loop on the count asymmetry: its body calls the SAME LTConsole_CreateEntry that
+    // builds the live objects this class walks, with flags 1. So the 118-versus-34 gap is a proven call
+    // path, not an inference from two numbers. It refuses a duplicate name with error 62 and reports
+    // LT_INVALIDPARAMS (60) for a null one.
+    //
+    // A CALLING-CONVENTION FINDING THAT MATTERS TO A CALLER. The game invokes these through the vtable as
+    // __thiscall, passing the interface in ECX -- but all three implementations take their arguments from
+    // the STACK and never read the incoming ECX (every ecx touch is a push/pop stack idiom, and slot 69
+    // ends in `retn 4`). They ignore the instance entirely, because they operate on a global source table
+    // rather than on interface state. So the signatures below are __stdcall and need no `this`.
+    //
+    // THREADING IS STILL THE CALLER'S PROBLEM. Reading a variable is a table lookup; SETTING one and
+    // REGISTERING a command both mutate engine-owned structures -- the registrar allocates through
+    // LTMem_Alloc and links into a list the console walks. Doing that from an injected thread while the
+    // game thread reads the same list is a race this SDK cannot make safe, which is why these are handed
+    // over as typed pointers rather than wrapped in tidy methods.
+    //
+    static constexpr size_t kSlotFindVariable = 69;
+    static constexpr size_t kSlotSetVariableFloat = 73;
+    static constexpr size_t kSlotRegisterProgram = 77;
+
+    using FindVariableFn = void*(__stdcall*)(const char* name);
+    using SetVariableFloatFn = int(__stdcall*)(const char* name, float value);
+    using RegisterProgramFn = int(__stdcall*)(const char* name, CommandHandler handler);
+
+    // Documented error codes, from the implementations' own early-outs.
+    static constexpr int kInvalidParams = 60;
+    static constexpr int kAlreadyExists = 62;
+
+    // The live ILTClient instance, via the interface registry. 0 when it has not been resolved yet.
+    static uintptr_t client_interface();
+
+    // One slot of the live ILTClient vtable, or 0. Exposed because a consumer wanting a method this class
+    // does not name should read it the same way rather than recomputing the chase.
+    static uintptr_t client_vtable_slot(size_t slot);
+
+    // The three above, typed. nullopt when the interface is unresolved or the slot does not point into the
+    // executable -- a slot leading elsewhere would mean the layout assumption is wrong, and handing that
+    // back as a callable is worse than refusing.
+    static std::optional<FindVariableFn> find_variable_fn();
+    static std::optional<SetVariableFloatFn> set_variable_float_fn();
+    static std::optional<RegisterProgramFn> register_program_fn();
 };
 
 }  // namespace sdk
