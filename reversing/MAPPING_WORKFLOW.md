@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE MOST USEFUL PREDICATE IS THE ONE I WROTE IN THE REPORTER FIRST.** The 16-coefficient recomposition
+  check -- does the stored view-projection equal projection * view? -- went into Framework.cpp, where only
+  the endpoint could use it. It is the strongest coherence check on that record, spanning three regions the
+  render thread writes separately, so a consumer wants it more than the suite does. Now
+  `SceneCameraSnapshot::view_projection_is_coherent()`. Recurring lesson: if a CHECK needs more than one
+  line of logic, that logic belongs in the class, and noticing this on the third occurrence is late.
+  
+- **A PYTHON SLICE BETWEEN TWO MARKERS SILENTLY INSERTS AT POSITION 0 WHEN THEY ARE OUT OF ORDER.**
+  `s[s.index(a):s.index(b)]` gives "" if b precedes a, and `str.replace("", new, 1)` prepends -- so an edit
+  meant for line 3319 landed above the includes and referenced an undeclared variable. Assert the slice is
+  non-empty, or anchor edits on the edit tool with real line numbers instead of marker arithmetic.
+
 - **WHICH OPERAND IS AFFINE IS READABLE FROM THE TERM COUNT.** Two multiplies here look alike until you
   count products: three-term sums with a bare `A[r][3]` added to column 3 mean B's fourth row is the
   implicit (0,0,0,1); four-term sums with B's row 3 COPIED to the output mean A's is. The engine stores

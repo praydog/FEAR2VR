@@ -128,6 +128,22 @@ bool SceneCameraSnapshot::view_is_identity(float tolerance) const {
     return true;
 }
 
+bool SceneCameraSnapshot::view_projection_is_coherent(float tolerance) const {
+    const auto recomposed = SceneCamera::compose_view_projection(projection, view);
+    for (size_t i = 0; i < 16; ++i) {
+        const float want = view_projection[i];
+        if (!std::isfinite(want) || !std::isfinite(recomposed[i])) {
+            return false;
+        }
+        // Relative, because the coefficients of a projection span several orders of magnitude.
+        const float allow = std::fabs(want) * tolerance + 1e-5f;
+        if (std::fabs(recomposed[i] - want) > allow) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {
     const float x = pose.rotation.x, y = pose.rotation.y, z = pose.rotation.z, w = pose.rotation.w;
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {

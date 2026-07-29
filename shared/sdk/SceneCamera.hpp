@@ -121,6 +121,19 @@ struct SceneCameraSnapshot {
     // offset check and the evidence behind fov_x_radians(). False for a non-perspective pass.
     bool projection_agrees_with_half_view_plane(float tolerance = 0.02f) const;
 
+    // Does the stored view-projection actually equal projection * view?
+    //
+    // THE STRONGEST COHERENCE CHECK AVAILABLE ON THIS RECORD, and the reason to prefer it over
+    // projection_matches_viewport_ortho(): it spans THREE regions the render thread writes at
+    // different moments -- the view matrix at +0x48, the projection at +0x78 and the product at
+    // +0xB8 -- so a snapshot that spliced passes together fails it. It also fails if our
+    // transcription of the engine's multiply is wrong, which is why the suite asserts it.
+    //
+    // Its discriminating power is pass-dependent, and a caller should know that: while the view
+    // matrix is identity, the product is just the projection and the comparison cannot detect a
+    // transposed multiply. Pair it with view_is_identity() when that distinction matters.
+    bool view_projection_is_coherent(float tolerance = 1e-4f) const;
+
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
     // engine gave me a real viewpoint" from "this is the 2D overlay pass" wants this rather than

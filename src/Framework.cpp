@@ -3316,28 +3316,15 @@ std::string build_shader_params_json() {
     // exactly this code rather than a copy of it.
     const auto scam = sdk::SceneCamera::snapshot();
 
-    // RECOMPOSING THE ENGINE'S OWN OUTPUT. The record holds the projection (+0x78), the view
-    // (+0x48) and the view-projection the engine built from them (+0xB8). Running our transcription
-    // of LTMatrix_Mul4x4ByAffine over the first two must reproduce the third.
+    // Recomposition through the snapshot's own view_projection_is_coherent(): the engine's
+    // projection (+0x78) and view (+0x48), run through our transcription of
+    // LTMatrix_Mul4x4ByAffine, must reproduce the view-projection it stored at +0xB8.
     //
-    // This is real corroboration, unlike the synthetic probes: the inputs and the expected output
-    // are all the engine's. Its strength depends on the pass, though -- while the view matrix is
-    // identity the comparison cannot distinguish a transposed implementation, so it is reported
-    // together with whether the view was identity at the time.
-    bool compose_matches_record = false;
-    if (scam.has_value()) {
-        const auto recomposed =
-            sdk::SceneCamera::compose_view_projection(scam->projection, scam->view);
-        compose_matches_record = true;
-        for (size_t i = 0; i < 16; ++i) {
-            const float want = scam->view_projection[i];
-            const float got = recomposed[i];
-            const float allow = fabsf(want) * 1e-4f + 1e-5f;
-            if (!(fabsf(got - want) <= allow)) {
-                compose_matches_record = false;
-            }
-        }
-    }
+    // Reported, NOT reimplemented here. The 16-coefficient comparison used to live in this
+    // reporter, which meant a consumer wanting the same coherence check could not reach it -- and
+    // it is the most useful check on this record, spanning three regions the render thread writes
+    // at different moments.
+    const bool compose_matches_record = scam.has_value() && scam->view_projection_is_coherent();
     // Sized with headroom and CHECKED: an earlier 448 silently truncated once the projection
     // classifiers were added, and a half-written object is invalid JSON that fails downstream as
     // "missing field" rather than as "the report is broken".
