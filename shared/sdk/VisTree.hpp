@@ -252,24 +252,21 @@ public:
     // Objects the index holds along the path covering `point`, nearest node last. Empty
     // when no world is loaded, the point is outside the tree, or a read faulted.
     //
-    // A KNOWN LIMIT, narrowed by measurement across four passes. Every indexed
-    // NON-worldmodel is found by a query at its own position (669 of 669), which is what
-    // proves the descent. 235 of 1473 indexed WORLDMODELS are not. What has been RULED OUT:
+    // A KNOWN LIMIT WITH A KNOWN CAUSE: STALE INDEX ENTRIES. Live, 370 of 2142 indexed
+    // objects are parked at a node that is NOT the one their current bounds would choose,
+    // and every object this query fails to find (235, all worldmodels) is among them.
     //
-    //   * result truncation           raising the cap 256 -> 4096 recovered 3, not 235
-    //   * position outside its AABB   zero of the 235
-    //   * a split-boundary tie        branching on |p - split| <= 0.01 changed nothing
-    //   * not being in this tree      tree_slot() finds all 235
-    //   * parked at an internal node  all 235 sit at LEAVES, max depth 5, same as the hits
+    // The engine relinks only from LTObject_SetPos, SetPosRot, SetDims_Notify and SetFlags,
+    // so anything moved by another route keeps the node it was linked at -- and doors, lifts
+    // and platforms are worldmodels. Ask index_is_current() before trusting a proximity
+    // result for something that moves; the staleness is the engine's, not this SDK's.
     //
-    // So they are in the tree the descent walks, at leaves, and the descent reaches a
-    // DIFFERENT leaf. The remaining untested explanation is a stale link: the engine relinks
-    // from LTObject_SetPos / SetPosRot / SetDims / SetFlags, so a brush moved by any other
-    // route keeps the node it was linked at. Doors, lifts and platforms are worldmodels.
-    //
-    // Practically: a proximity query is reliable for models, sprites, particles and cameras,
-    // and incomplete for level brushes -- prefer cull_volume() or find_models() when what you
-    // want is a specific worldmodel.
+    // Four other explanations were measured and REFUTED before this one was confirmed, and
+    // they are recorded so nobody re-runs them: result truncation (raising the cap 256 ->
+    // 4096 recovered 3, not 235), a position outside the object's own AABB (zero of the
+    // 235), a split-boundary tie between the engine's `split <= aabb_min` and a point's
+    // `p > split` (branching on it changed nothing), and absence from this tree (tree_slot
+    // finds all 235, every one at a leaf).
     //
     // These are ENGINE POINTERS, valid for this frame only -- the one place this SDK hands
     // them out, because a proximity query whose results were copies could not be used to
@@ -299,6 +296,27 @@ public:
         bool leaf;        // child_offset == 0
     };
     static std::optional<TreeSlot> tree_slot(const regenny::LTObject* obj);
+
+    // WHERE THE ENGINE WOULD LINK THIS OBJECT NOW, by descending its own rule
+    // (LTWorldTree_FindNodeForObject) with the object's CURRENT world AABB.
+    //
+    // The box descent is not the point descent: a box whose span crosses a split STOPS at
+    // that node instead of choosing a child, which is why objects sit at internal nodes at
+    // all. This reproduces that exactly.
+    //
+    // nullopt when no world is loaded, the object is null, or a read faulted.
+    static std::optional<TreeSlot> slot_for_current_bounds(const regenny::LTObject* obj);
+
+    // IS THE OBJECT'S INDEX ENTRY CURRENT? True when the node it is actually parked in is
+    // the node its current bounds would choose.
+    //
+    // A MOD SHOULD ASK THIS BEFORE TRUSTING A PROXIMITY RESULT for something that moves. The
+    // engine relinks from LTObject_SetPos, SetPosRot, SetDims and SetFlags only, so anything
+    // moved by another route keeps the node it was linked at -- and its neighbours, as the
+    // index sees them, are wherever it used to be.
+    //
+    // nullopt when either slot could not be determined (unlinked object, no world, fault).
+    static std::optional<bool> index_is_current(const regenny::LTObject* obj);
 };
 
 } // namespace sdk

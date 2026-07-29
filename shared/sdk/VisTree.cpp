@@ -1062,3 +1062,119 @@ std::optional<WorldBSP::TreeSlot> WorldBSP::tree_slot(const regenny::LTObject* o
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// The ENGINE'S BOX DESCENT, transcribed instruction-for-instruction from
+// LTWorldTree_FindNodeForObject (0x46462F). Reproduced rather than approximated because the
+// whole point is to compare against what the engine chose:
+//
+//   if (split_x < aabb_max.x) {
+//       if (split_x > aabb_min.x) stop;            // spans the x split
+//       if (split_z < aabb_max.z) {
+//           if (split_z > aabb_min.z) stop;        // spans the z split
+//           k = 3;                                 // +x +z
+//       } else k = 2;                              // +x -z
+//   } else {
+//       if (split_z >= aabb_max.z) k = 0;          // -x -z
+//       else { if (split_z > aabb_min.z) stop; k = 1; }   // -x +z
+//   }
+//
+// Note the asymmetry between the two halves is the ENGINE'S, not a transcription slip: the
+// low-x branch tests `>=` against aabb_max.z where the high-x branch tests `<`.
+int64_t seh_slot_for_bounds(const regenny::LTWorldTreeNode* root, const regenny::LTObject* obj,
+                            uintptr_t* node_out, float* sx, float* sz, bool* leaf) {
+    int64_t depth = -1;
+    KANANLIB_SEH_TRY {
+        const float min_x = obj->aabb_min.x, min_z = obj->aabb_min.z;
+        const float max_x = obj->aabb_max.x, max_z = obj->aabb_max.z;
+        const auto* node = root;
+        size_t d = 0;
+        while (node != nullptr && d < 64) {
+            const uint16_t co = node->child_offset;
+            size_t k = 0;
+            bool stop = co == 0;
+            if (!stop) {
+                if (node->split_x < max_x) {
+                    if (node->split_x > min_x) {
+                        stop = true;
+                    } else if (node->split_z < max_z) {
+                        if (node->split_z > min_z) {
+                            stop = true;
+                        } else {
+                            k = 3;
+                        }
+                    } else {
+                        k = 2;
+                    }
+                } else if (node->split_z >= max_z) {
+                    k = 0;
+                } else if (node->split_z > min_z) {
+                    stop = true;
+                } else {
+                    k = 1;
+                }
+            }
+            if (stop) {
+                *node_out = reinterpret_cast<uintptr_t>(node);
+                *sx = node->split_x;
+                *sz = node->split_z;
+                *leaf = node->child_offset == 0;
+                depth = static_cast<int64_t>(d);
+                break;
+            }
+            node = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                reinterpret_cast<uintptr_t>(node) +
+                sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
+            ++d;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        depth = -1;
+    }
+    return depth;
+}
+
+}  // namespace
+
+std::optional<WorldBSP::TreeSlot> WorldBSP::slot_for_current_bounds(
+    const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    const auto* root = seh_world_tree_root(bsp);
+    if (root == nullptr) {
+        return std::nullopt;
+    }
+    uintptr_t node = 0;
+    float sx = 0.0f, sz = 0.0f;
+    bool leaf = false;
+    const int64_t d = seh_slot_for_bounds(root, obj, &node, &sx, &sz, &leaf);
+    if (d < 0) {
+        return std::nullopt;
+    }
+    TreeSlot out{};
+    out.node = node;
+    out.depth = static_cast<size_t>(d);
+    out.split_x = sx;
+    out.split_z = sz;
+    out.leaf = leaf;
+    return out;
+}
+
+std::optional<bool> WorldBSP::index_is_current(const regenny::LTObject* obj) {
+    const auto actual = tree_slot(obj);
+    const auto wanted = slot_for_current_bounds(obj);
+    if (!actual.has_value() || !wanted.has_value()) {
+        return std::nullopt;
+    }
+    return actual->node == wanted->node;
+}
+
+}  // namespace sdk

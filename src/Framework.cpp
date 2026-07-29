@@ -1347,7 +1347,8 @@ std::string build_objects_json() {
                api_tree_self_found = 0,
                api_tree_nonwm = 0, api_tree_nonwm_found = 0, api_tree_wm_missed = 0,
                api_tree_miss_slot_found = 0, api_tree_miss_max_depth = 0,
-               api_tree_miss_at_leaf = 0, api_tree_hit_slot_probed = 0;
+               api_tree_miss_at_leaf = 0, api_tree_hit_slot_probed = 0, api_tree_miss_stale = 0,
+               api_tree_cur_asked = 0, api_tree_cur_ok = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -1515,6 +1516,13 @@ std::string build_objects_json() {
                         ++api_tree_asked;
                         if (*linked) {
                             ++api_tree_linked;
+                            if (const auto cur = sdk::WorldBSP::index_is_current(obj);
+                                cur.has_value()) {
+                                ++api_tree_cur_asked;
+                                if (*cur) {
+                                    ++api_tree_cur_ok;
+                                }
+                            }
                             const auto nearby = sdk::WorldBSP::objects_near(info->position, 4096);
                             if (!nearby.empty()) {
                                 ++api_tree_nonempty;
@@ -1548,6 +1556,14 @@ std::string build_objects_json() {
                                     ++api_tree_wm_missed;
                                     // WHERE is it actually parked? Compare the node the
                                     // engine chose against what the descent visits.
+                                    // THE SURVIVING CANDIDATE, tested: is the entry
+                                    // STALE? Descend the engine's own box rule with the
+                                    // object's CURRENT bounds and compare against the node
+                                    // it is actually parked in.
+                                    if (const auto cur = sdk::WorldBSP::index_is_current(obj);
+                                        cur.has_value() && !*cur) {
+                                        ++api_tree_miss_stale;
+                                    }
                                     if (const auto sl = sdk::WorldBSP::tree_slot(obj);
                                         sl.has_value()) {
                                         ++api_tree_miss_slot_found;
@@ -1746,7 +1762,10 @@ std::string build_objects_json() {
                 }
             }
         }
-        char ab[1408];
+        // Grown as the object API gained accessors. The truncation guard below is what makes
+        // that safe: it reported `{"error":"truncated"}` the moment this overflowed rather
+        // than emitting half an object, which is how the overflow was noticed at all.
+        char ab[2560];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
@@ -1772,7 +1791,7 @@ std::string build_objects_json() {
                  "\"tree_self_found\":%zu,\"tree_nonwm\":%zu,"
                  "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu,"
                  "\"miss_slot_found\":%zu,\"miss_max_depth\":%zu,\"miss_at_leaf\":%zu,"
-                 "\"hit_max_depth\":%zu}",
+                 "\"miss_stale\":%zu,\"cur_asked\":%zu,\"cur_ok\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1792,7 +1811,8 @@ std::string build_objects_json() {
                  api_cull_sane, api_cull_compared, api_cull_current,
                  api_tree_asked, api_tree_linked, api_tree_nonempty, api_tree_self_found,
                  api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed,
-                 api_tree_miss_slot_found, api_tree_miss_max_depth, api_tree_miss_at_leaf);
+                 api_tree_miss_slot_found, api_tree_miss_max_depth, api_tree_miss_at_leaf,
+                 api_tree_miss_stale, api_tree_cur_asked, api_tree_cur_ok);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

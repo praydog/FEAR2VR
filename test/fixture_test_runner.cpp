@@ -2118,33 +2118,50 @@ int main(int argc, char** argv) {
                 // to them keeps it exact instead of weakening it to a percentage.
                 check(tnwf == tnw && tnw > 0,
                       "EVERY indexed non-worldmodel finds ITSELF at its own position");
-                // REPORTED, and an OPEN QUESTION rather than a tolerated failure: 235 of
-                // 1473 linked worldmodels are not found this way. Two explanations were
-                // measured and refuted -- buffer truncation (256 -> 4096 recovered 3) and a
-                // position outside the object's own AABB (zero of the 235). Asserting a
-                // percentage here would bury a fact that is not understood.
+                // REPORTED with its cause now established (see the currency check below):
+                // these objects' index entries are STALE, so a descent by current position
+                // reaches a different node than the one they are parked in. The count itself
+                // is scene state -- how many brushes have moved -- so it is bounded, not
+                // fixed.
                 check(twm >= 0 && twm < tlink,
                       "unlocated worldmodels are a reported minority");
                 printf("[fixture] spatial index: %lld of %lld objects indexed; self-located "
-                       "%lld/%lld non-worldmodels, %lld worldmodels UNEXPLAINED\n",
+                       "%lld/%lld non-worldmodels, %lld worldmodels via STALE entries\n",
                        static_cast<long long>(tlink), static_cast<long long>(task),
                        static_cast<long long>(tnwf), static_cast<long long>(tnw),
                        static_cast<long long>(twm));
-                // AND WHERE THE MISSES ACTUALLY SIT, which is what turned this from a guess
-                // into a bounded fact: tree_slot() finds ALL of them, every one at a LEAF,
-                // at the same maximum depth as the objects that do self-locate. So they are
-                // genuinely in the tree the descent walks -- the descent simply reaches a
-                // different leaf. That rules out "not indexed" and "parked at an internal
-                // node the descent skips", which were the two structural explanations.
-                int64_t msf = -1, mmd = -1, mal = -1;
+                // AND THE CAUSE, now confirmed rather than open. tree_slot() found all 235
+                // in the tree, all at leaves, at the same depth as the hits -- so they are
+                // genuinely in the structure the descent walks. index_is_current() then
+                // settled it: descending the ENGINE'S OWN box rule with each object's CURRENT
+                // bounds lands on a DIFFERENT node than the one it is parked in. The entries
+                // are STALE. The engine relinks only from SetPos/SetPosRot/SetDims/SetFlags,
+                // so a brush moved by any other route keeps its old node.
+                int64_t msf = -1, mmd = -1, mal = -1, mst = -1, cask = -1, cok2 = -1;
                 json_int(ab, "miss_slot_found", msf);
                 json_int(ab, "miss_max_depth", mmd);
                 json_int(ab, "miss_at_leaf", mal);
+                json_int(ab, "miss_stale", mst);
+                json_int(ab, "cur_asked", cask);
+                json_int(ab, "cur_ok", cok2);
                 check(msf == twm,
                       "EVERY unlocated object is still findable in the tree by slot search");
                 check(mal == twm, "EVERY unlocated object is parked at a LEAF, not an internal node");
                 check(mmd >= 0 && mmd < 32, "slot depths are inside the tree's own bound");
-                printf("[fixture] unlocated worldmodels: %lld, all at leaves, max depth %lld\n",
+                // THE EXPLANATION AS AN ASSERTION: no miss is unaccounted for.
+                check(mst == twm,
+                      "EVERY unlocated object has a STALE index entry -- its parked node is "
+                      "not the node its current bounds would choose");
+                // The converse deliberately does NOT hold and is only reported: a stale entry
+                // can still sit on the path a point descent takes, so staleness is the larger
+                // population.
+                check(cask == tlink && cok2 <= cask,
+                      "index currency answers for every indexed object");
+                check(cask - cok2 >= twm,
+                      "stale entries are at least as many as the unlocated ones");
+                printf("[fixture] index currency: %lld of %lld entries STALE; all %lld "
+                       "unlocated objects are among them (max depth %lld)\n",
+                       static_cast<long long>(cask - cok2), static_cast<long long>(cask),
                        static_cast<long long>(twm), static_cast<long long>(mmd));
                 check(bt > 0, "the level carries world models to transform against");
                 // THE API CONTRACT: every object the type gate admits must answer BOTH

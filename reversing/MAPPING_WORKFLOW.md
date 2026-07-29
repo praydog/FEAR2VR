@@ -963,6 +963,34 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **RESOLVED, and the accessor is what resolved it.** The 235 worldmodels a proximity query
+  could not find have STALE index entries: `index_is_current()` -- which descends the
+  engine's own box rule with an object's CURRENT bounds and compares against the node it is
+  actually parked in -- reports all 235 as mismatched, out of 370 stale entries in 2142. The
+  engine relinks only from SetPos/SetPosRot/SetDims/SetFlags, so a brush moved by any other
+  route keeps its old node.
+
+  Five hypotheses were needed. Four were guesses and all four were refuted by measurement;
+  the fifth was found by building the primitive that could MEASURE the question rather than
+  narrow it. Both primitives that came out of it -- `tree_slot()` and `index_is_current()` --
+  are consumer API, and the second is the one a mod actually needs: do not trust a proximity
+  result for something that moves without asking whether its entry is current.
+
+  Note also which assertion is which. `every unlocated object is stale` HOLDS (235 == 235)
+  and is asserted. The converse does NOT -- 370 are stale but only 235 are unlocated, because
+  a stale node can still lie on the path a point descent takes -- so that direction is a
+  bound and a report.
+
+- **A printf format list and its arguments can go out of step in ways that CANCEL.** Scripted
+  edits to a 60-argument `snprintf` left three missing arguments in one place and one extra
+  `%zu` in another. The two shifts partially offset, so most fields still printed
+  plausible-looking numbers and only the tail was obviously wrong -- `tree_linked` read 669,
+  which is a real count from elsewhere in the same struct.
+
+  What caught it was checking FIELDS WITH KNOWN VALUES first (objects 3583, attachments 362,
+  brushes 1947) before reading the new ones. Do that whenever a varargs call is edited: a
+  format/argument list has no type checking across it, so the only cheap guard is a handful of
+  values you already know the answer to.
 - **When guesses keep failing, stop guessing and build the accessor that MEASURES.** Four
   hypotheses about the 235 worldmodels that a spatial query cannot find were tested and
   refuted: truncation (raising the cap recovered 3), a position outside the object's own AABB
