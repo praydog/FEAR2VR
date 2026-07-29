@@ -1,5 +1,7 @@
 #include "Model.hpp"
 
+#include <cmath>
+
 #include <windows.h>
 
 #include <utility/Seh.hpp>
@@ -1160,6 +1162,25 @@ ModelSkeleton::socket_world_transform(size_t socket_index) const {
     out.scale = r.s;
     out.stale = local->stale;
     return out;
+}
+
+std::optional<bool>
+ModelSkeleton::socket_world_transform_is_usable(size_t socket_index) const {
+    const auto wt = socket_world_transform(socket_index);
+    if (!wt.has_value()) {
+        return std::nullopt;
+    }
+    if (wt->stale) {
+        return false;
+    }
+    if (!std::isfinite(wt->position.x) || !std::isfinite(wt->position.y) ||
+        !std::isfinite(wt->position.z)) {
+        return false;
+    }
+    const float n = wt->rotation.x * wt->rotation.x + wt->rotation.y * wt->rotation.y +
+                    wt->rotation.z * wt->rotation.z + wt->rotation.w * wt->rotation.w;
+    // A tolerance, not an equality: the product of two unit quaternions accumulates rounding.
+    return n > 0.98f && n < 1.02f;
 }
 
 std::optional<ModelSkeleton::ResolvedHandle>

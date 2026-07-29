@@ -1595,7 +1595,32 @@ int main(int argc, char** argv) {
         // transcribed multiply; it cannot catch a sign convention, which is why the
         // distance bound below matters more.
         check(sxu == sxo, "EVERY composed socket rotation is unit-length");
-        check(sxf == sxo, "EVERY composed socket position is finite");
+        // NOT "every transform is finite" -- that over-reached and this suite carried it until a
+        // game restart exposed it. 7 of 702 live socket transforms have non-finite positions, and
+        // every one is STALE: a model whose bone cache the engine has never evaluated holds
+        // whatever its allocation held. Requiring finiteness of never-written memory is asserting
+        // something the engine never promised.
+        //
+        // THE CONTRACT THAT DOES HOLD, and the one a consumer relies on: if the SDK reports a
+        // transform CLEAN, it is finite. Zero clean transforms are non-finite.
+        int64_t nfs = -1, nfc = -1, usable = -1, usable_probed = -1;
+        json_int(body, "sock_nf_stale", nfs);
+        json_int(body, "sock_nf_clean", nfc);
+        check(nfc == 0, "EVERY socket transform the SDK reports CLEAN has a finite position");
+        check(sxf + nfs + nfc == sxo,
+              "the finite, stale-garbage and clean-garbage counts partition every transform");
+        check(nfs >= 0, "the stale non-finite count is reported");
+
+        // And the one-call consumer form must agree with the pieces: usable exactly when clean,
+        // finite and unit. Checked as a relationship so the helper cannot drift from the parts.
+        json_int(body, "sock_usable", usable);
+        json_int(body, "sock_usable_probed", usable_probed);
+        check(usable_probed == sxo, "the usability helper answered for every transform");
+        check(usable == sxc,
+              "socket_world_transform_is_usable() is true for EXACTLY the clean transforms");
+        printf("[fixture] sockets: %lld composed, %lld usable; %lld non-finite and ALL stale\n",
+               static_cast<long long>(sxo), static_cast<long long>(usable),
+               static_cast<long long>(nfs));
         // THE REGRESSION GUARD, and it caught a real bug. A socket must land within
         // model scale of its object. The first implementation composed the object's
         // transform onto bones that were ALREADY in world space -- true on the 22 models

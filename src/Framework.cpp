@@ -1434,6 +1434,8 @@ std::string build_models_json() {
     size_t piece_counts = 0, piece_named = 0, piece_roundtrip = 0;
     size_t sock_xform_ok = 0, sock_xform_stale = 0, sock_xform_unit = 0;
     size_t sock_xform_finite = 0, sock_xform_clean = 0;
+    size_t sock_xform_nonfinite_stale = 0, sock_xform_nonfinite_clean = 0;
+    size_t sock_usable = 0, sock_usable_probed = 0;
     size_t sock_camera_measured = 0, sock_camera_above = 0;
     float sock_xform_max_dist = 0.0f, sock_camera_max_height = 0.0f;
     for (size_t si = 0; si < *taken; ++si) {
@@ -1536,9 +1538,29 @@ std::string build_models_json() {
                     if (qn > 0.98f && qn < 1.02f) {
                         ++sock_xform_unit;
                     }
-                    if (std::isfinite(wt->position.x) && std::isfinite(wt->position.y) &&
-                        std::isfinite(wt->position.z)) {
+                    // THE CONSUMER PATH: one call that answers "can I apply this pose?".
+                    if (sdk::ModelSkeleton::from_object(obj).has_value()) {
+                        const auto usable = sk2->socket_world_transform_is_usable(si);
+                        if (usable.has_value()) {
+                            ++sock_usable_probed;
+                            if (*usable) {
+                                ++sock_usable;
+                            }
+                        }
+                    }
+                    const bool finite_pos =
+                        std::isfinite(wt->position.x) && std::isfinite(wt->position.y) &&
+                        std::isfinite(wt->position.z);
+                    if (finite_pos) {
                         ++sock_xform_finite;
+                    } else if (wt->stale) {
+                        // Non-finite AND stale: the bone cache was never evaluated, so the
+                        // numbers are whatever the allocation held.
+                        ++sock_xform_nonfinite_stale;
+                    } else {
+                        // Non-finite while CLEAN would be a real problem -- a transform the SDK
+                        // says is usable but is not.
+                        ++sock_xform_nonfinite_clean;
                     }
                     // A CLEAN transform is the only one worth measuring geometrically.
                     // Two numbers come out: the distance from the object (bounded by
@@ -1631,6 +1653,8 @@ std::string build_models_json() {
              "\"piece_counts\":%zu,\"piece_named\":%zu,\"piece_roundtrip\":%zu,"
              "\"sock_xform_ok\":%zu,\"sock_xform_stale\":%zu,\"sock_xform_unit\":%zu,"
              "\"sock_xform_finite\":%zu,\"sock_xform_clean\":%zu,"
+             "\"sock_nf_stale\":%zu,\"sock_nf_clean\":%zu,"
+             "\"sock_usable\":%zu,\"sock_usable_probed\":%zu,"
              "\"sock_xform_max_dist\":%.2f,\"sock_camera_measured\":%zu,"
              "\"sock_camera_above\":%zu,\"sock_camera_max_height\":%.2f}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
@@ -1640,6 +1664,8 @@ std::string build_models_json() {
              anim_nodes_named, anim_nodes_ordered, anim_named, piece_answers, piece_hidden,
              piece_counts, piece_named, piece_roundtrip, sock_xform_ok, sock_xform_stale,
              sock_xform_unit, sock_xform_finite, sock_xform_clean,
+             sock_xform_nonfinite_stale, sock_xform_nonfinite_clean, sock_usable,
+             sock_usable_probed,
              static_cast<double>(sock_xform_max_dist), sock_camera_measured,
              sock_camera_above, static_cast<double>(sock_camera_max_height));
     if (want < 0 || static_cast<size_t>(want) >= sizeof(sum)) {

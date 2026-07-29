@@ -963,6 +963,36 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **AN OVER-STRONG ASSERTION IS A LATENT FAILURE, and only a state change finds it.** "EVERY
+  composed socket position is finite" passed for many runs and failed the moment the game was
+  restarted. Nothing had changed in the code. 7 of 702 live socket transforms now had non-finite
+  positions -- and all 7 were STALE, with zero clean ones affected.
+
+  The assertion was wrong, not the engine. A model whose bone cache the engine has never
+  evaluated holds whatever its allocation held, so requiring finiteness of never-written memory
+  asserts something nobody promised. The contract that DOES hold is `clean => finite`, which is
+  also the one a consumer depends on, and it is strictly more useful: it says "if the SDK reports
+  this pose usable, it is".
+
+  Generalise: when an assertion covers a population that includes a NOT-YET-INITIALISED subset,
+  scope it to the subset the engine has actually written and assert the IMPLICATION instead.
+  Then partition the population so the excluded rows still have to add up --
+  `finite + nonfinite_stale + nonfinite_clean == total` -- rather than quietly ignoring them.
+
+  A suite that only ever runs against one uninterrupted session cannot find this class of bug.
+  Restarting the fixture is a test input.
+
+- **The fourth varargs misalignment, and the first one a value check caught.** Adding two `%zu`
+  fields whose arguments failed to land printed `3221225472` and `1080106038` -- float bit
+  patterns from further down the argument list. Recognising THAT is the skill: an unsigned counter
+  reading in the billions when the population is 702 is not a big number, it is somebody else's
+  float.
+
+  The cause was a `str.replace` whose pattern assumed a line break the file did not have, so the
+  format string gained specifiers and the argument list gained nothing. Scripted edits to a
+  60-argument `snprintf` MUST assert that both halves applied; the `JsonFields` builder added
+  earlier exists precisely so new fields cannot drift, and I reached past it again because the
+  surrounding code is still one big format string.
 - **THE NEXT GLOBAL OBJECT'S ADDRESS BOUNDS THE CLASS. Check it before mapping a far field.**
   `LTWorldClientBSP` stood at `0x244` with a bounds pair at `+0x22C`, mapped because
   `IsPointOutsideWorld` reads `0x6F6E04` and `0x6F6BD8 + 0x22C` lands on it exactly. The

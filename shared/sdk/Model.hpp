@@ -240,7 +240,32 @@ public:
 
     // In WORLD space: the above, composed once more with the owning object's own
     // position/rotation/scale. This is what a mod attaches something to.
+    // NOTE A STALE RESULT IS NOT AN ERROR and is returned as-is: `stale` means the engine has
+    // never evaluated this model's bone cache, so the numbers are whatever the allocation held
+    // and CAN be non-finite -- measured at 7 of 702 live transforms, all stale. Use
+    // socket_world_transform_is_usable() unless you specifically want the raw read.
     std::optional<SocketTransform> socket_world_transform(size_t socket_index) const;
+
+    // IS THAT TRANSFORM SAFE TO USE? The question every consumer of the above actually has --
+    // attaching a hand, a weapon, a camera or a tracked controller to a socket needs to know
+    // whether the pose can be applied, not merely whether a struct came back.
+    //
+    // Three things must hold, and they are checked HERE rather than at each call site because
+    // getting them wrong is silent: a NaN position propagates into a matrix and the object
+    // vanishes rather than erroring.
+    //
+    //   * not stale     -- the engine's bone cache has actually been evaluated for this model
+    //   * finite        -- position components are neither NaN nor infinity
+    //   * unit rotation -- the composed quaternion still has length 1
+    //
+    // MEASURED, so the staleness test is not defensive padding: of 702 live socket transforms,
+    // 7 had non-finite positions and EVERY ONE of them was stale -- zero clean transforms were
+    // non-finite. A model whose cache was never evaluated holds whatever its allocation held, so
+    // `stale` is the flag that separates "the engine has posed this" from "these are old bytes".
+    //
+    // nullopt when the transform cannot be composed at all; false when it composed into
+    // something unusable.
+    std::optional<bool> socket_world_transform_is_usable(size_t socket_index) const;
 
     // The same, BY NAME -- which is how a consumer actually asks. Every caller of the
     // index form was going to write find_socket() immediately above it, so this saves the
