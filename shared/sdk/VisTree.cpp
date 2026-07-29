@@ -10,6 +10,7 @@
 #include "regenny/regenny/LTVisTreeNode.hpp"
 #include "regenny/regenny/LTWorldTreeLink.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
+#include "regenny/regenny/LTObject.hpp"
 
 #include "interfaces/IWorldClientBSP.hpp"
 
@@ -824,6 +825,116 @@ std::vector<size_t> VisTree::sector_neighbours(size_t sector_index) {
         }
     }
     return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// The guarded root read, POD-only: MSVC refuses __try in any function holding a type that
+// unwinds, and objects_near's vectors are exactly that.
+const regenny::LTWorldTreeNode* seh_world_tree_root(const regenny::LTWorldClientBSP* bsp) {
+    const regenny::LTWorldTreeNode* r = nullptr;
+    KANANLIB_SEH_TRY {
+        r = bsp->world_tree_root;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r = nullptr;
+    }
+    return r;
+}
+
+// Descends the X/Z quadtree collecting object addresses from every node on the path.
+//
+// THE CONVENTION IS THE ENGINE'S, from LTWorldTree_FindNodeForObject: child index is
+// (x > split_x ? 2 : 0) + (z > split_z ? 1 : 0), children laid out contiguously at
+// `node + stride * (child_offset + k)`. A point is a degenerate box, so the straddle tests
+// that keep a real object at a parent never fire here -- but objects PARKED at those
+// parents are exactly why every node on the path is harvested, not just the leaf.
+int64_t seh_objects_near(const regenny::LTWorldTreeNode* root, float px, float pz,
+                         uintptr_t* out, size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* node = root;
+        size_t n = 0;
+        size_t hops = 0;
+        while (node != nullptr && hops < 64) {
+            ++hops;
+            // Harvest this node's list. The head self-points when empty, and every element
+            // is an LTObject's world_tree_link, so the object is `link - offsetof`.
+            const auto* head = &node->objects;
+            size_t guard = 0;
+            for (const auto* l = node->objects.next; l != head && l != nullptr && guard < 4096;
+                 l = l->next) {
+                ++guard;
+                if (n >= max_out) {
+                    break;
+                }
+                out[n++] = reinterpret_cast<uintptr_t>(l) -
+                           offsetof(regenny::LTObject, world_tree_link);
+            }
+            const uint16_t co = node->child_offset;
+            if (co == 0) {
+                break;  // leaf
+            }
+            const size_t k = (px > node->split_x ? 2u : 0u) + (pz > node->split_z ? 1u : 0u);
+            node = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                reinterpret_cast<uintptr_t>(node) +
+                sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<const regenny::LTObject*> WorldBSP::objects_near(const regenny::LTVector& point,
+                                                             size_t max_results) {
+    std::vector<const regenny::LTObject*> out;
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return out;
+    }
+    const auto* root = seh_world_tree_root(bsp);
+    if (root == nullptr) {
+        return out;
+    }
+    if (max_results == 0 || max_results > 4096) {
+        max_results = 256;
+    }
+    std::vector<uintptr_t> addrs(max_results);
+    const int64_t n = seh_objects_near(root, point.x, point.z, addrs.data(), max_results);
+    if (n <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        out.push_back(reinterpret_cast<const regenny::LTObject*>(addrs[static_cast<size_t>(i)]));
+    }
+    return out;
+}
+
+std::optional<bool> WorldBSP::is_linked(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    bool linked = false;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        // Self-pointing means unlinked -- that is what the engine's remove leaves behind.
+        linked = obj->world_tree_link.next != &obj->world_tree_link;
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok ? std::optional<bool>{linked} : std::nullopt;
 }
 
 }  // namespace sdk

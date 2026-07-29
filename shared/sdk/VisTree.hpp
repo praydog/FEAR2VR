@@ -10,6 +10,12 @@
 #include "regenny/regenny/LTVisTree.hpp"
 #include "regenny/regenny/LTWorldClientBSP.hpp"
 
+// Forward declaration rather than the generated header: objects_near() hands out pointers
+// and a caller that dereferences one includes LTObject itself.
+namespace regenny {
+class LTObject;
+}
+
 namespace sdk {
 
 // The engine's visibility tree: a KD-tree over convex sectors, which is what
@@ -221,6 +227,50 @@ public:
     // nullopt when the interface is unresolved, no world is loaded, or a walk
     // faulted / failed to terminate.
     static std::optional<WorldTreeCheck> check(size_t max_nodes = 8192);
+
+    // ---- THE SPATIAL INDEX: WHAT IS NEAR A POINT? ---------------------------
+    //
+    // The world tree is an X/Z quadtree (the ground plane, not an octree) that every
+    // renderable object is bucketed into. "What is around me" is the query behind grab
+    // detection, interaction prompts and proximity triggers, and it was reachable only
+    // through check() until this pass.
+    //
+    // THE DESCENT IS THE ENGINE'S OWN, transcribed from LTWorldTree_FindNodeForObject
+    // (0x46462F) rather than guessed:
+    //
+    //   child index = (x > split_x ? 2 : 0) + (z > split_z ? 1 : 0)
+    //
+    // and -- the part that decides the API's shape -- an object whose AABB STRADDLES a
+    // split is linked at that node instead of being pushed into a child. So objects live
+    // at internal nodes as well as leaves, and a point query must collect along the WHOLE
+    // path from the root. (Same shape as the vis tree; there it was learned the hard way.)
+    //
+    // NOT EVERY OBJECT IS IN THE INDEX: live 2142 of 3583 are linked and 1441 sit
+    // self-pointing. A proximity query cannot find the unlinked ones, so ask is_linked()
+    // before concluding something is not near you.
+
+    // Objects the index holds along the path covering `point`, nearest node last. Empty
+    // when no world is loaded, the point is outside the tree, or a read faulted.
+    //
+    // A KNOWN LIMIT, measured and not yet explained. Every indexed NON-worldmodel is found
+    // by a query at its own position (669 of 669), which is what proves the descent. But 235
+    // of 1473 indexed WORLDMODELS are not. Two explanations were tested and refuted: result
+    // truncation (raising the cap from 256 to 4096 recovered 3 of them) and a position lying
+    // outside the object's own AABB (zero of the 235). So a proximity query is reliable for
+    // models, sprites, particles and cameras, and incomplete for level brushes -- prefer
+    // brush_transform()/cull_volume() when what you want is a specific worldmodel.
+    //
+    // These are ENGINE POINTERS, valid for this frame only -- the one place this SDK hands
+    // them out, because a proximity query whose results were copies could not be used to
+    // call anything. Resolve to a handle via CClientMgr if you need to keep one.
+    static std::vector<const regenny::LTObject*> objects_near(const regenny::LTVector& point,
+                                                              size_t max_results = 256);
+
+    // Is this object in the spatial index at all? An unlinked object's world_tree_link
+    // self-points, which is what the engine's own remove leaves behind.
+    //
+    // nullopt when `obj` is null or the read faulted -- distinct from a definite `false`.
+    static std::optional<bool> is_linked(const regenny::LTObject* obj);
 };
 
 } // namespace sdk

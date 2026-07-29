@@ -963,6 +963,30 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **SELF-LOCATION is the oracle for any spatial index.** Extracting a proximity query from
+  `WorldBSP::check` needed a quadtree descent, and the reusable trick is that an index must
+  be able to find the thing it indexed: the engine linked each object at the node covering
+  its AABB, an object's position lies inside its own AABB, so a descent toward that position
+  must pass through that node. Every linked object has to find ITSELF. No wrong quadrant
+  mapping survives that, and neither does harvesting only the leaf -- both still return
+  plausible-looking neighbours.
+
+  Live: 669 of 669 non-worldmodels self-locate. The convention itself was not guessed --
+  `LTWorldTree_FindNodeForObject` states it, `child = (x > split_x ? 2 : 0) + (z > split_z ?
+  1 : 0)` -- but the oracle is what proves the transcription, including that objects whose
+  AABB STRADDLES a split stay at the parent, so every node on the path must be harvested.
+
+- **Two refuted hypotheses in a row is a signal to scope the claim, not to keep guessing.**
+  235 of 1473 worldmodels do NOT self-locate. Guess one, truncation: raising the result cap
+  256 -> 4096 recovered 3. Guess two, a position outside its own AABB (plausible, since a
+  brush's origin often is not its geometry's centre -- an earlier pass measured that):
+  ZERO of the 235. Both measured, both wrong.
+
+  So the assertion was scoped to the population where the invariant holds WITHOUT exception
+  (non-worldmodels, 669/669) and the shortfall is REPORTED with the two refutations written
+  next to it, in the header a consumer reads and in the fixture output. A percentage-based
+  assertion would have buried a fact that is not understood; an exact claim over a smaller
+  population keeps it visible for the pass that explains it.
 - **When a record names two peers, SYMMETRY is the assertion -- not that each name is
   valid.** The portal table joins sectors through a `sector_a`/`sector_b` pair of pointers,
   converted to indices by an alignment-and-range test. Checking "both indices are in range"

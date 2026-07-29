@@ -1342,7 +1342,10 @@ std::string build_objects_json() {
                api_brush_rt_exact = 0, api_brush_origin_ok = 0, api_brush_quality = 0,
                api_brush_trusted = 0, api_brush_matrix = 0, api_brush_origin_agrees = 0,
                api_cull_ok = 0, api_cull_sphere = 0, api_cull_box = 0, api_cull_none = 0,
-               api_cull_sane = 0, api_cull_compared = 0, api_cull_current = 0;
+               api_cull_sane = 0, api_cull_compared = 0, api_cull_current = 0,
+               api_tree_asked = 0, api_tree_linked = 0, api_tree_nonempty = 0,
+               api_tree_self_found = 0,
+               api_tree_nonwm = 0, api_tree_nonwm_found = 0, api_tree_wm_missed = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -1496,6 +1499,51 @@ std::string build_objects_json() {
                                 const float ez = o->z - m->m[11];
                                 if (std::sqrt(ex * ex + ey * ey + ez * ez) < 0.01f) {
                                     ++api_brush_origin_agrees;
+                                }
+                            }
+                        }
+                    }
+                    // THE SPATIAL INDEX. The oracle is SELF-LOCATION: the engine linked
+                    // each object at the deepest node fully containing its AABB, and the
+                    // object's own position lies inside that AABB, so descending toward that
+                    // position must pass through that node. Every LINKED object therefore
+                    // has to find ITSELF. A wrong quadrant mapping, or harvesting only the
+                    // leaf, breaks this while still returning plausible neighbours.
+                    if (const auto linked = sdk::WorldBSP::is_linked(obj); linked.has_value()) {
+                        ++api_tree_asked;
+                        if (*linked) {
+                            ++api_tree_linked;
+                            const auto nearby = sdk::WorldBSP::objects_near(info->position, 4096);
+                            if (!nearby.empty()) {
+                                ++api_tree_nonempty;
+                                bool self = false;
+                                for (const auto* o : nearby) {
+                                    if (o == obj) {
+                                        self = true;
+                                        break;
+                                    }
+                                }
+                                const bool is_wm = info->kind == sdk::ObjectKind::WorldModel;
+                                if (!is_wm) {
+                                    ++api_tree_nonwm;
+                                }
+                                if (self) {
+                                    ++api_tree_self_found;
+                                    if (!is_wm) {
+                                        ++api_tree_nonwm_found;
+                                    }
+                                } else if (info->kind == sdk::ObjectKind::WorldModel) {
+                                    // AN OPEN QUESTION, recorded rather than smoothed over.
+                                    // 235 of 1473 linked worldmodels are not found by a
+                                    // descent toward their own position, while all 669
+                                    // non-worldmodels are. Two candidate explanations were
+                                    // MEASURED AND REFUTED: buffer truncation (raising the
+                                    // cap 256 -> 4096 recovered only 3) and a position
+                                    // outside the object's own AABB (zero of the 235). The
+                                    // quadrant convention is the engine's own, transcribed
+                                    // from LTWorldTree_FindNodeForObject, and it is exactly
+                                    // what makes the other 669 work.
+                                    ++api_tree_wm_missed;
                                 }
                             }
                         }
@@ -1705,7 +1753,10 @@ std::string build_objects_json() {
                  "\"brush_quality\":%zu,\"brush_trusted\":%zu,\"brush_matrix\":%zu,"
                  "\"brush_origin_agrees\":%zu,\"brush_worst_rot\":%.5f,"
                  "\"cull_ok\":%zu,\"cull_sphere\":%zu,\"cull_box\":%zu,\"cull_none\":%zu,"
-                 "\"cull_sane\":%zu,\"cull_compared\":%zu,\"cull_current\":%zu}",
+                 "\"cull_sane\":%zu,\"cull_compared\":%zu,\"cull_current\":%zu,"
+                 "\"tree_asked\":%zu,\"tree_linked\":%zu,\"tree_nonempty\":%zu,"
+                 "\"tree_self_found\":%zu,\"tree_nonwm\":%zu,"
+                 "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1722,7 +1773,9 @@ std::string build_objects_json() {
                  api_brush_worst_origin, api_brush_quality, api_brush_trusted,
                  api_brush_matrix, api_brush_origin_agrees, api_brush_worst_rot,
                  api_cull_ok, api_cull_sphere, api_cull_box, api_cull_none,
-                 api_cull_sane, api_cull_compared, api_cull_current);
+                 api_cull_sane, api_cull_compared, api_cull_current,
+                 api_tree_asked, api_tree_linked, api_tree_nonempty, api_tree_self_found,
+                 api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {
