@@ -27,6 +27,7 @@
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/EngineVars.hpp"
+#include "sdk/Input.hpp"
 #include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
 #include "sdk/ShaderParams.hpp"
@@ -3988,6 +3989,124 @@ std::string build_shader_params_json() {
     json_append_double(out, "engine_var_floats", static_cast<double>(vars_float), 0);
     json_append_double(out, "engine_var_ints", static_cast<double>(vars_int), 0);
     json_append_double(out, "engine_var_strings_4byte", static_cast<double>(vars_spaced), 0);
+
+    // ---- INPUT SUBSYSTEM ----------------------------------------------------------------------
+    //
+    // The focus flags first, because one of them decides whether the engine simulates at all. Reported
+    // rather than asserted for the ones that track window state: whether this machine's window is
+    // active when the suite runs is not the suite's business, but the SHAPE of the device array and the
+    // arithmetic of the key queue are.
+    const auto focus = sdk::Input::focus();
+    json_append_bool(out, "input_focus_readable", focus.has_value());
+    if (focus.has_value()) {
+        json_append_bool(out, "input_client_active", focus->client_active);
+        json_append_bool(out, "input_lost_focus", focus->lost_focus);
+        json_append_bool(out, "input_minimized", focus->minimized);
+        json_append_bool(out, "input_renderer_shutdown", focus->renderer_shutdown);
+        json_append_bool(out, "input_render_initted", focus->render_initted);
+    }
+    const auto gated = sdk::Input::simulation_is_gated();
+    json_append_bool(out, "input_gate_readable", gated.has_value());
+    json_append_bool(out, "input_simulation_gated", gated.value_or(false));
+    // The gate agrees with the flag by construction; asserted anyway because "gated" is the question a
+    // consumer asks and a sign error here would invert every answer this SDK gives about liveness.
+    json_append_bool(out, "input_gate_matches_flag",
+                     focus.has_value() && gated.has_value() && (*gated == !focus->client_active));
+    json_append_double(out, "input_client_active_offset",
+                       static_cast<double>(sdk::Input::client_active_address() != 0
+                                               ? sdk::Input::client_active_address() -
+                                                     sdk::Modules::get().exe()->base
+                                               : 0),
+                       0);
+
+    const auto input_devices = sdk::Input::devices();
+    size_t n_keyboard = 0, n_mouse = 0, n_unknown = 0, n_vt_in_exe = 0;
+    const uintptr_t input_exe_base = sdk::Modules::get().exe()->base;
+    const size_t input_exe_size = sdk::Modules::get().exe()->size;
+    for (const auto& d : input_devices) {
+        if (d.kind == sdk::Input::DeviceKind::Keyboard) {
+            ++n_keyboard;
+        } else if (d.kind == sdk::Input::DeviceKind::Mouse) {
+            ++n_mouse;
+        } else {
+            ++n_unknown;
+        }
+        // Every device's vtable must live inside the exe: these are engine-side classes, and a vtable
+        // outside the image would mean the slot is not what this mapping says it is.
+        if (input_exe_base != 0 && d.vtable >= input_exe_base &&
+            d.vtable < input_exe_base + input_exe_size) {
+            ++n_vt_in_exe;
+        }
+    }
+    json_append_double(out, "input_devices_populated", static_cast<double>(input_devices.size()), 0);
+    json_append_double(out, "input_devices_keyboard", static_cast<double>(n_keyboard), 0);
+    json_append_double(out, "input_devices_mouse", static_cast<double>(n_mouse), 0);
+    json_append_double(out, "input_devices_unknown", static_cast<double>(n_unknown), 0);
+    json_append_double(out, "input_devices_vtable_in_exe", static_cast<double>(n_vt_in_exe), 0);
+
+    // Keyboard reads through the SDK's own accessors, so the suite exercises what a consumer calls.
+    // A key's state must be one of exactly two values the engine tests for, and the edge helpers must
+    // agree with the two banks they derive from -- checked across the whole 256-entry space rather
+    // than on a key someone happens to be holding.
+    const auto keys = sdk::Input::keys_down();
+    json_append_bool(out, "input_keys_readable", keys.has_value());
+    json_append_double(out, "input_keys_down_count",
+                       static_cast<double>(keys.has_value() ? keys->size() : 0), 0);
+    size_t edge_consistent = 0, edge_checked = 0;
+    for (uint32_t vk = 0; vk < sdk::Input::kKeyStateCount; ++vk) {
+        const auto now = sdk::Input::key_is_down(static_cast<uint8_t>(vk));
+        const auto before = sdk::Input::key_was_down(static_cast<uint8_t>(vk));
+        const auto pressed = sdk::Input::key_just_pressed(static_cast<uint8_t>(vk));
+        const auto released = sdk::Input::key_just_released(static_cast<uint8_t>(vk));
+        if (!now.has_value() || !before.has_value() || !pressed.has_value() || !released.has_value()) {
+            continue;
+        }
+        ++edge_checked;
+        const bool want_pressed = *now && !*before;
+        const bool want_released = !*now && *before;
+        // A key cannot be both a press edge and a release edge, which is the invariant that catches a
+        // swapped bank far more reliably than comparing values that are usually all zero.
+        if (*pressed == want_pressed && *released == want_released && !(*pressed && *released)) {
+            ++edge_consistent;
+        }
+    }
+    json_append_double(out, "input_key_edges_checked", static_cast<double>(edge_checked), 0);
+    json_append_double(out, "input_key_edges_consistent", static_cast<double>(edge_consistent), 0);
+
+    const auto mouse = sdk::Input::mouse();
+    json_append_bool(out, "input_mouse_readable", mouse.has_value());
+    if (mouse.has_value()) {
+        json_append_bool(out, "input_mouse_look_delta_valid", mouse->look_delta_valid);
+        json_append_double(out, "input_mouse_screen_x", static_cast<double>(mouse->screen_x), 0);
+        json_append_double(out, "input_mouse_screen_y", static_cast<double>(mouse->screen_y), 0);
+        json_append_double(out, "input_mouse_look_dx", mouse->look_delta[0], 2);
+        json_append_double(out, "input_mouse_look_dy", mouse->look_delta[1], 2);
+    }
+
+    // The queue's two counters and the path selector. The counters are reported, not pinned: they are
+    // whatever the last frame left behind. What IS pinned is that they never exceed the capacity the
+    // handlers enforce, since that bound is what makes the parallel arrays' extents facts.
+    const auto geom = sdk::Input::window_geometry();
+    json_append_bool(out, "input_window_geometry_readable", geom.has_value());
+    if (geom.has_value()) {
+        json_append_double(out, "input_window_width", static_cast<double>(geom->client_width), 0);
+        json_append_double(out, "input_window_height", static_cast<double>(geom->client_height), 0);
+        json_append_double(out, "input_window_origin_x", static_cast<double>(geom->screen_x), 0);
+        json_append_double(out, "input_window_origin_y", static_cast<double>(geom->screen_y), 0);
+        json_append_bool(out, "input_window_geometry_iconic", geom->iconic);
+    }
+    const auto iconic = sdk::Input::window_is_iconic();
+    json_append_bool(out, "input_window_readable", sdk::Input::main_window() != 0);
+    json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
+    json_append_bool(out, "input_window_iconic", iconic.value_or(false));
+
+    const auto downs = sdk::Input::pending_key_downs();
+    const auto ups = sdk::Input::pending_key_ups();
+    const auto drained = sdk::Input::key_queue_is_drained();
+    json_append_double(out, "input_queue_downs", static_cast<double>(downs.size()), 0);
+    json_append_double(out, "input_queue_ups", static_cast<double>(ups.size()), 0);
+    json_append_bool(out, "input_queue_drain_readable", drained.has_value());
+    json_append_bool(out, "input_queue_is_drained", drained.value_or(false));
     json_append_bool(out, "engine_var_pause_physics_found", pause_physics.has_value());
     // Reported as an exe-relative OFFSET, like the vtable anchors: an absolute address would encode
     // this machine's load base into the suite.

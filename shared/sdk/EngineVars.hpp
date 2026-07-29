@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-// The engine's BUILT-IN SETTINGS TABLE: 22 entries of {name, storage, type}, each carrying a DIRECT
+// The engine's BUILT-IN SETTINGS TABLE: 107 entries of {name, storage, type}, each carrying a DIRECT
 // address for the value. No console-variable API, no string parsing, no lookup by hash -- the engine
 // keeps a static array of triplets and reads the storage directly wherever the setting is used.
 //
@@ -34,7 +34,7 @@
 // The type-1 case is the decisive one: a value that is nonsense as an integer and exact as a float is
 // a float. Type 0 is left explicitly unresolved rather than folded into one of the others.
 //
-// THE TAG IS TWO FIELDS. Low 16 bits are the type above; the high 16 carry flags, and 6 of the 106
+// THE TAG IS TWO FIELDS. Low 16 bits are the type above; the high 16 carry flags, and 6 of the 107
 // entries set bit 0. What that bit means is NOT established. It is surfaced on Entry rather than masked
 // away, because an unexplained field a caller can see beats one a library silently discards.
 //

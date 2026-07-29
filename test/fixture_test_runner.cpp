@@ -3930,6 +3930,94 @@ int main(int argc, char** argv) {
             check(json_double(body, "engine_var_strings_4byte", n_spaced) && n_spaced == n_str,
                   "every string setting's slot is 4 bytes wide (a pointer, not a buffer)");
 
+            // ---- INPUT SUBSYSTEM ----------------------------------------------------------------
+            //
+            // The device array's SHAPE, not its contents: CLTInput has six slots and an ordinary
+            // session populates exactly two of them. A third appearing would mean a gamepad, which is
+            // worth failing on so it gets mapped rather than silently mis-typed.
+            double n_dev = -1.0, n_kb = -1.0, n_mouse = -1.0, n_unk = -1.0, n_vt = -1.0;
+            const bool devs = json_double(body, "input_devices_populated", n_dev) &&
+                              json_double(body, "input_devices_keyboard", n_kb) &&
+                              json_double(body, "input_devices_mouse", n_mouse) &&
+                              json_double(body, "input_devices_unknown", n_unk) &&
+                              json_double(body, "input_devices_vtable_in_exe", n_vt);
+            check(devs && n_dev == 2.0, "CLTInput has exactly two devices populated");
+            check(devs && n_kb == 1.0 && n_mouse == 1.0,
+                  "and they identify as one keyboard and one mouse by vtable");
+            check(devs && n_unk == 0.0, "no populated slot has an unrecognised vtable");
+            // Engine-side classes: a vtable outside the exe would mean the slot is not what this
+            // mapping claims. Checked live because the pointers are heap addresses.
+            check(devs && n_vt == n_dev, "every device's vtable lies inside the exe image");
+
+            bool b_focus = false, b_gate = false, b_gate_ok = false;
+            check(json_bool(body, "input_focus_readable", b_focus) && b_focus,
+                  "the focus flags are readable");
+            // The gate is the SDK's answer to "is the engine simulating", and a sign error here would
+            // invert every liveness answer it gives. Cheap to pin, so pinned.
+            check(json_bool(body, "input_gate_readable", b_gate) && b_gate &&
+                      json_bool(body, "input_gate_matches_flag", b_gate_ok) && b_gate_ok,
+                  "simulation_is_gated() is exactly !client_active");
+            double gate_off = -1.0;
+            check(json_double(body, "input_client_active_offset", gate_off) && gate_off == 3032884.0,
+                  "the simulation gate sits at exe+0x2E4734");
+
+            // The keyboard's two banks, surveyed across the whole 256-entry space. A press edge and a
+            // release edge cannot both hold for one key, which catches a swapped bank far more reliably
+            // than comparing values that are almost always zero on an idle session.
+            double edges = -1.0, edges_ok = -1.0;
+            check(json_double(body, "input_key_edges_checked", edges) &&
+                      edges == 256.0,
+                  "all 256 key slots read through the SDK's accessors");
+            check(json_double(body, "input_key_edges_consistent", edges_ok) && edges_ok == edges,
+                  "and the edge helpers agree with the current/previous banks on every one");
+
+            bool b_mouse = false, b_win = false;
+            check(json_bool(body, "input_mouse_readable", b_mouse) && b_mouse, "the mouse device reads");
+            check(json_bool(body, "input_window_readable", b_win) && b_win,
+                  "g_hMainWnd holds a window");
+
+            // THE DEFECT THIS ASSERTION EXISTS FOR: while the window is iconic, its client rect reads
+            // 160x28 at (-32000, -32000), and the look-delta subtraction produces ~34480 -- a number
+            // that looks exactly like a fast mouse movement. A `width > 0` guard does NOT catch it,
+            // because 160 is positive; only the iconic test does. So whenever the window is iconic the
+            // delta must be refused outright.
+            bool win_iconic = false;
+            json_bool(body, "input_window_iconic", win_iconic);
+            if (win_iconic) {
+                bool delta_ok = true, rend = true, sim_gated = false;
+                check(json_bool(body, "input_mouse_look_delta_valid", delta_ok) && !delta_ok,
+                      "an iconic window refuses to report a mouse look delta");
+                // The same branch that parks the window tears the renderer down, which is the
+                // explanation for the scene renderer's state field reading 0 rather than 1..4.
+                check(json_bool(body, "input_render_initted", rend) && !rend,
+                      "and the renderer is shut down, not merely idle");
+                check(json_bool(body, "input_simulation_gated", sim_gated) && sim_gated,
+                      "and simulation is gated off");
+            }
+
+            // Two different notions of "minimized" that measurably disagree: the flag tracks the
+            // SC_MINIMIZE system command, while the branch that gates simulation tests a live
+            // IsIconic(). Asserted as a live comparison rather than as fixed values, since which state
+            // the window is in when the suite runs is not the suite's business.
+            bool b_iconic_ok = false, b_min_flag = true;
+            check(json_bool(body, "input_window_iconic_readable", b_iconic_ok) && b_iconic_ok,
+                  "the live iconic state is readable");
+            json_bool(body, "input_minimized", b_min_flag);
+            if (win_iconic && !b_min_flag) {
+                check(true, "iconic without the SC_MINIMIZE flag: the two disagree, as documented");
+            }
+
+            // The queue's counters are whatever the last frame left; what is pinned is the bound the
+            // handlers enforce, because that bound is what makes the parallel arrays' extents facts.
+            double q_down = -1.0, q_up = -1.0;
+            check(json_double(body, "input_queue_downs", q_down) && q_down >= 0.0 && q_down <= 100.0,
+                  "the key-down queue stays within its 100-entry capacity");
+            check(json_double(body, "input_queue_ups", q_up) && q_up >= 0.0 && q_up <= 100.0,
+                  "and so does the key-up queue");
+            bool b_drain_ok = false;
+            check(json_bool(body, "input_queue_drain_readable", b_drain_ok) && b_drain_ok,
+                  "whether the engine drains the queue this frame is readable");
+
             // The load-bearing cross-check: the table's slot for PausePhysics must be the very global
             // CClientMgr__Update tests before its physics block. Static reversing found the flag first
             // and the table second, so agreement ties the two together.

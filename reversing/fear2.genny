@@ -3312,3 +3312,159 @@ class LTSpriteObject 0x154 {
     void* owned[6]         @0x13C   // CONFIRMED OWNED: OT_SPRITE_dtor_body (0x4150B3) runs `do { LTMem_Free(*v2++) } while(--6)` starting at this+79 dwords == +0x13C, so all six are freed unconditionally. Ends at 0x154 == the class size, which is how the count 6 and this offset corroborate each other. Live they are sparsely used -- 168 of 1344 slots non-null, and only 3 of 224 sprites fill all six -- so they are optional per-slot allocations. WHAT they hold is unmapped.
 }
 }
+
+// ==================================================================================================
+// THE INPUT SUBSYSTEM, AND THE ONE FLAG THAT DECIDES WHETHER THE GAME SIMULATES
+// ==================================================================================================
+//
+// WHAT THIS BUILD DOES NOT USE. The reference tree reads input through DirectInput 8 -- input.cpp calls
+// DirectInput8Create, CreateDevice, SetDataFormat, Acquire, GetDeviceState, GetDeviceData behind an
+// InputMgr struct of function pointers. FEAR 2 replaced that layer wholesale, and three independent
+// checks say so:
+//
+//   * dinput8.dll is NOT LOADED in the live process. Neither is xinput, nor any HID module.
+//   * FEAR2.exe's user32 imports contain no RegisterRawInputDevices, no GetRawInputData, and -- the
+//     surprise -- NO GetCursorPos. The `SetCursorPos` and `USER32.dll` strings that look like a dynamic
+//     resolution table are just the PE import descriptors; there is no GetProcAddress path.
+//   * LTClient_WndProc (0x466B82) handles NO MOUSE MESSAGE AT ALL: WM_KEYDOWN, WM_KEYUP, WM_CHAR,
+//     WM_PAINT, WM_ERASEBKGND, WM_ACTIVATEAPP, WM_SYSCOMMAND, WM_WTSSESSION_CHANGE, and nothing else.
+//
+// So the mouse is neither polled from the cursor nor received as a message by the engine's own window
+// procedure. Its position is PUSHED IN from outside that procedure.
+//
+// ---- THE DEVICE ARRAY ----------------------------------------------------------------------------
+//
+// CLTInput (g_CLTInput, 0x6F7688) holds SIX device slots at +4, and CLTInput_PollDevices walks all six
+// calling each one's vtable slot 2. Two are populated in an ordinary session; the other four are null,
+// so a gamepad would appear there. Identified by vtable, since this binary carries NO RTTI:
+//
+//     slot 0 -> vtable 0x67807C  KEYBOARD
+//     slot 1 -> vtable 0x678050  MOUSE
+//
+// Both were identified from their own code, not from the slot order. The keyboard's value getter is
+// `this[id + 4] == 1 ? 1.0 : 0.0` over a 256-entry byte array, and its poll shifts 256 bytes per bank.
+// The mouse's getter switches on object ids 1000..1006 and uses GetClientRect/ClientToScreen. The slot
+// order then agrees with the live vtable read, which is corroboration rather than the basis.
+//
+// KEYBOARD LAYOUT, fixed entirely by the shift loop `cur[i+256] = cur[i]; cur[i] = cur[i+512]` x256:
+//     +0x004  current[256]
+//     +0x104  previous[256]
+//     +0x204  incoming[256]      <- written by whatever samples the device
+//
+// MOUSE LAYOUT, from the same pattern applied to 3 bytes and 2 floats:
+//     +0x04..0x06  buttons current (left, right, middle) -- tested `== 1`, not non-zero
+//     +0x07..0x09  buttons previous
+//     +0x0A..0x0C  buttons incoming
+//     +0x10,+0x14  axis incoming    (zeroed after shift ONLY if exactly 1.0 -- a one-shot convention)
+//     +0x18,+0x1C  axis current     (what object ids 1005/1006 return)
+//     +0x20,+0x24  axis previous
+//     +0x28,+0x2C  position, SCREEN space, as a POINT
+//
+// MOUSE OBJECT IDS, from LTInputDevice_Mouse_GetObjectValue (0x46C7BA):
+//     1000/1001/1002 -> buttons 0/1/2, as 1.0 or 0.0
+//     1003/1004      -> position MINUS THE WINDOW CENTRE:  pos - rect.right/2 - clientOriginScreen
+//     1005/1006      -> the current axis floats
+//
+// THE MOUSE-LOOK LOOP, complete: LTInputDevice_Mouse_SetPositionFromClient (0x46C6E1) takes a CLIENT
+// point, stores it at +0x28/+0x2C and converts it in place with ClientToScreen; the axis getter returns
+// that minus the window centre; LTInput_CenterCursor (0x469199) warps the cursor back to the centre with
+// SetCursorPos so the next read is relative again. Textbook centre-relative mouse-look, with the
+// sampling step living outside LTClient_WndProc. WHO CALLS THE SETTER IS NOT FULLY ESTABLISHED: its only
+// caller is sub_46CE11, whose `this` is NOT CLTInput (it holds an enable flag at +0x48 and a mouse
+// pointer at +0x04), reached from sub_46CE93 <- sub_46D08F. That class is unmapped.
+//
+// ---- THE WINDOW-MESSAGE KEY QUEUE ----------------------------------------------------------------
+//
+// LTInput_QueueKeyDown (0x4665F5) and LTInput_QueueKeyUp (0x466722) append straight from the window
+// procedure into PARALLEL ARRAYS of 100 entries. The layout is ARITHMETICALLY CLOSED -- every array's
+// end is exactly the next array's start, with the counters immediately past the last one, so a 101st
+// element of any array would overlap its neighbour's first:
+//
+//     0x6E4744 downVK[100]      0x6E48D4 downLParam[100]   0x6E4A64 downAscii[100]
+//     0x6E4B2C downUnicode[100] 0x6E4BF4 downMods[100]     0x6E4CBC upVK[100]
+//     0x6E4E4C upAscii[100]     0x6E4F14 upUnicode[100]    0x6E4FDC upMods[100]
+//     0x6E50A4 nDowns (u16)     0x6E50A6 nUps (u16)        0x6E50A8 bufferedKeyInput
+//
+// Both handlers capture MORE than the reference's equivalent, which stored only the virtual key: the
+// ToAscii and ToUnicode translations and a modifier mask (bit 0 Shift, 1 Ctrl, 2 Alt, 3 NumLock,
+// 4 CapsLock, 5 ScrollLock -- the last three being TOGGLE states, read with `GetKeyState(k) & 1`).
+//
+// A DEFECT IN THE BINARY, worth knowing before reading the up queue: LTInput_QueueKeyUp's translation
+// test is INVERTED relative to the down handler. The down path zeroes the character when ToAscii FAILS;
+// the up path zeroes it when ToAscii SUCCEEDS and leaves the stack value untouched when it fails. The up
+// queue's ascii field is therefore either 0 or uninitialised stack, never a character. Its unicode field
+// is correct. sdk::Input::kKeyUpAsciiIsUnreliable records this rather than hiding it.
+//
+// TWO INPUT PATHS, selected by LTInput_IsBufferedKeyInputActive (0x46897C) = `g_bBufferedKeyInputEnabled
+// ? g_bBufferedKeyInput : 0`:
+//
+//   buffered OFF (normal) -- CClientMgr::Update calls g_pILTInput's slot 3 (CLTInput_Poll), which polls
+//       the device array. THE KEY QUEUE IS NEVER DRAINED. Injecting into it accomplishes nothing.
+//   buffered ON  -- the device poll is skipped and the queue IS drained: each queued virtual key goes to
+//       sub_4111C1, then LTInput_ClearKeyDowns/ClearKeyUps zero both counters.
+//
+// That is why sdk::Input exposes key_queue_is_drained(): a mod writing synthetic keys needs to know
+// which path the engine is on, or its events pile up unread.
+//
+// ---- THE SIMULATION GATE -------------------------------------------------------------------------
+//
+// LTClient_IsClientActive (0x468976) reads g_ClientGlob_bClientActive (0x6E4734). DO NOT READ THAT FLAG
+// AS "THE ENGINE IS RUNNING": measured 0 while the main loop was pumping CClientShell::Update at ~170 Hz.
+// CClientShell::Update checks it THREE times --
+//
+//     v3 = 0; if (!active) v3 = (this[105] >= 2)      -- an idle/background flag passed to sub_44CD24
+//     if (active) sub_40B380(g_pClientMgr)            -- SKIPPED when inactive
+//     if (active) LTClient_InterpolateObjectTransforms -- SKIPPED when inactive
+//
+// -- while the IClientShell Pre/Update/Post callbacks (vtable slots 2/4/3) run UNCONDITIONALLY. And
+// CClientMgr::Update gates the ILTInput poll on `active && !buffered`.
+//
+// THAT IS THE MECHANISM behind the three-way liveness split measured earlier in this project, where a
+// frame hook on CClientShell::Update kept firing at ~170 Hz while the engine clock and the render path
+// were both frozen. The main loop pumps; simulation and rendering are switched off by one flag. Also
+// note CClientMgr::Update is called ONLY from WinMain, and CClientShell::Update only from
+// CClientMgr::Update -- the clock and the shell sit on different rungs of the same loop.
+//
+// ---- WHAT SETS IT: WM_ACTIVATEAPP ---------------------------------------------------------------
+//
+// LTClient_WndProc's handler matches the reference's structure closely enough to borrow its names, and
+// differs in one ground-truth detail. The reference clears m_bClientActive on ANY deactivation; FEAR 2
+// clears it ONLY when `IsIconic(hWnd) || device->TestCooperativeLevel() < 0` (D3D9 vtable slot 3). On
+// that same branch it logs "Minimizing.. shutting down renderer." and calls LTRender_TermRender.
+//
+//     deactivate: bLostFocus = 1; if (iconic || device lost) { bClientActive = 0; TermRender }
+//                 IClientShell->OnEvent(LTEVENT_LOSTFOCUS = 6, 0)
+//     activate:   if (bLostFocus) { bClientActive = 1; ... InitRender unless bRendererShutdown }
+//                 IClientShell->OnEvent(LTEVENT_GAINEDFOCUS = 7, 0); ILTCursor->RefreshCursor()
+//
+// Event ids 6 and 7 are confirmed against the reference's ltcodes.h. So the PAUSE ITSELF is the game's
+// decision -- gameclient.dll responding to LTEVENT_LOSTFOCUS -- while the engine independently stops
+// simulating and rendering via the flag.
+//
+// TWO DIFFERENT MEANINGS OF "MINIMIZED", which measurably disagree. g_ClientGlob_bMinimized (0x6E473C)
+// tracks the WM_SYSCOMMAND/SC_MINIMIZE command. The branch above tests a LIVE IsIconic(). Measured
+// simultaneously: bMinimized = 0, bLostFocus = 1, bClientActive = 0, g_bRenderInitted = 0, IsIconic =
+// TRUE. A consumer asking "is the window minimized" wants the live query, not the flag.
+//
+// AND THIS CLOSES AN EARLIER GAP. g_bRenderInitted reading 0 means the renderer is not idle but SHUT
+// DOWN, which is the best available explanation for the scene renderer's state field reading 0 rather
+// than any of its documented 1..4 -- previously recorded as "observed but unexplained".
+//
+// A TRAP FOUND BY MEASURING, recorded because it would bite any consumer computing a look delta: while
+// the window is iconic its client rect reads 160x28 at (-32000, -32000), so `pos - width/2 - originX`
+// yields ~34480. That is meaningless and looks exactly like a fast mouse movement. A `width > 0` guard
+// does NOT catch it -- 160 is positive -- and the first version of sdk::Input's check did exactly that
+// and still reported a valid delta. Only the iconic test rejects it. The engine's own getter has the
+// identical hazard and is simply never reached in that state, because the poll is gated off with the
+// simulation.
+//
+// EXPOSED AS sdk::Input: focus state, simulation_is_gated() plus the gate's address for a mod that means
+// to hold simulation on, the device array with vtable identification, keyboard state with edge helpers
+// derived from the previous bank, the mouse with the engine's own look-delta arithmetic reproduced, the
+// key queues, and key_queue_is_drained(). The suite asserts the array's shape (six slots, exactly two
+// populated, one keyboard and one mouse, every vtable inside the exe), the gate's identity with the flag
+// and its offset, all 256 key slots agreeing with their banks under the invariant that a key cannot be
+// both a press edge and a release edge, the queue capacity bound, and -- when the window is iconic --
+// that the look delta is refused, the renderer reads shut down, and simulation reads gated.
+//
+// 827 checks, 0 failures.
