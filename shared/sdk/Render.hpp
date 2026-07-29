@@ -127,7 +127,13 @@ public:
     // cache it, and any installed hook has to be reinstated at that point.
     static uintptr_t device_vtable();
 
-    // Is the device's vtable in writable memory? True when the containing region reports PAGE_*WRITE*.
+    // Is the device's vtable in writable memory? nullopt when there is nothing to answer about -- no device,
+    // or VirtualQuery failed -- false for a valid READ-ONLY table, true for a writable one.
+    //
+    // TRI-STATE ON PURPOSE. A plain bool would fold three different situations into `false`: no device yet,
+    // a failed query, and a perfectly good read-only table. A caller cannot then tell "I could not find out"
+    // from "I found out, and you need VirtualProtect" -- which is the difference that decides whether to
+    // proceed or to retry later.
     //
     // Measured on this machine: true -- the containing region is committed read/write, no execute, so a hook
     // needs no VirtualProtect here, unlike a .rdata table. Established from page metadata via VirtualQuery
@@ -141,7 +147,7 @@ public:
     // IT IS A REGION-LEVEL ANSWER. VirtualQuery reports the containing region's protection, and a caller
     // that writes should still be prepared for that to change between the check and the write; this reports
     // what protection IS, not a guarantee about what it will be.
-    static bool device_vtable_writable();
+    static std::optional<bool> device_vtable_writable();
 
     static std::optional<std::string> interface_impl_owner(IUnknown* iface,
                                                            size_t method_slot = 2);

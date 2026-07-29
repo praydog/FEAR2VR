@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A BOOL THAT FOLDS "COULD NOT FIND OUT" INTO "NO" -- WRITTEN THIS SESSION, AFTER LOGGING THE SAME LESSON
+  TWICE.** device_vtable_writable() returned plain bool, so `false` meant three different things: no device
+  yet, VirtualQuery failed, and a valid read-only table. A caller cannot then distinguish "I do not know" from
+  "you need VirtualProtect" -- and the fixture, which had just been changed to assert QUERYABILITY rather than
+  layout, could not actually tell the two apart either.
+  
+  Now std::optional<bool>: nullopt for unavailable or failed query, false for read-only, true for writable, and
+  the probe reports -1/0/1 so the suite can require a definite answer only when a device exists. The pattern to
+  watch for is a predicate whose failure mode and negative answer share a value -- the same shape as the
+  bp_edges sentinel and the engine's own 0xFF/0 sentinels recorded above, so this is the third variant of one
+  mistake.
+
 - **WHEN STATIC ANALYSIS STALLS, READ THE LIVE PROCESS.** Two displacement scans and a def-use tracker failed
   to pin the device's methods; reading g_Renderer's vptr in the running game answered it in one query, with
   eleven entries landing in d3d9.dll at distinct addresses -- which also corroborates the corrected offsets

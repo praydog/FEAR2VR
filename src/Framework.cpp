@@ -990,7 +990,10 @@ std::string build_targets_json() {
     // THE DEVICE'S VTABLE: where it lives and whether it is writable. A stereo path patches this table, so
     // the reportable facts are its address, that it is NOT inside d3d9.dll, and its page protection.
     const uintptr_t dev_vt = sdk::Render::device_vtable();
-    const int dev_vt_writable = sdk::Render::device_vtable_writable() ? 1 : 0;
+    // -1 = could not find out, 0 = read-only, 1 = writable. Folding the first two together would hide
+    // "no device yet" behind "needs VirtualProtect".
+    const auto dev_vt_w = sdk::Render::device_vtable_writable();
+    const int dev_vt_writable = dev_vt_w.has_value() ? (*dev_vt_w ? 1 : 0) : -1;
     int dev_vt_outside_d3d9 = 0;
     {
         const auto d3d9 = GetModuleHandleW(L"d3d9.dll");

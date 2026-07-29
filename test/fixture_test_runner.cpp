@@ -1082,9 +1082,12 @@ int main(int argc, char** argv) {
             const bool have = json_hex(body, "dev_vt", dvt);
             check(json_int(body, "dev_vt_writable", writable) &&
                   json_int(body, "dev_vt_outside_d3d9", outside),
-                  "the device vtable's storage and protection are both queryable");
+                  "the device vtable's storage and protection fields are present");
             if (have && dvt != 0) {
-                check(writable == 0 || writable == 1, "the protection query yields a definite answer");
+                // -1 means the SDK could not find out, which is distinct from a read-only table. With a
+                // device present the query must produce a definite answer either way.
+                check(writable == 0 || writable == 1,
+                      "with a device present, the protection query answers rather than failing");
                 printf("[fixture] device vtable 0x%08X: %s d3d9.dll, region %s -- a hook %s VirtualProtect\n",
                        dvt, outside == 1 ? "outside" : "inside",
                        writable == 1 ? "writable" : "not writable",

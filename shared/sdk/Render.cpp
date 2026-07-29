@@ -159,14 +159,14 @@ uintptr_t Render::device_vtable() {
     return vt.ok ? vt.value : 0;
 }
 
-bool Render::device_vtable_writable() {
+std::optional<bool> Render::device_vtable_writable() {
     const auto vt = device_vtable();
     if (vt == 0) {
-        return false;
+        return std::nullopt;   // no device to answer about
     }
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(reinterpret_cast<LPCVOID>(vt), &mbi, sizeof(mbi)) != sizeof(mbi)) {
-        return false;
+        return std::nullopt;   // could not find out -- distinct from "not writable"
     }
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
         return false;
