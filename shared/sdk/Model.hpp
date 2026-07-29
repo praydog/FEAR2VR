@@ -212,42 +212,17 @@ public:
         regenny::LTRotation rotation;
     };
 
-    // THE ANIMATION-FALLBACK POSE COMPOSED DOWN THE HIERARCHY, in model space.
+    // NO COMPOSED-FALLBACK HELPER IS OFFERED, and the reason is worth recording where someone
+    // would look for one. A previous version composed the +0x24 pair down the hierarchy and called
+    // it the transform the engine would reach along an all-fallback path. Reading the PRODUCER
+    // killed that: LTModelObject_EvaluateSkeleton builds each node's local transform with the
+    // rotation from g_AnimEval_NodeLocalRotations -- ALWAYS, animated or not -- and only takes the
+    // POSITION from +0x24. So composing +0x24's rotation reproduces a path the engine never walks,
+    // and shipping it would have been speculative math behind a confident name.
     //
-    // NOT A BIND OR REST POSE, and the distinction is measured rather than pedantic: composing this
-    // does NOT reproduce bind_pose() (268 of 2196 nodes, essentially the roots), so the two are
-    // different data. What the fallback pair's reader establishes is narrower -- it is the local
-    // transform ILTModel_GetAnimNodeTransform substitutes for a node with no animation key -- so
-    // this composition is what the engine would arrive at along an ALL-FALLBACK path, i.e. for a
-    // model with no animation driving those nodes. Treating it as the bind skeleton would be
-    // adopting a semantic the evidence does not support.
-    //
-    // THE ACCUMULATION RULE IS READ, NOT ASSUMED, and it matches this composition term for term.
-    // ILTModel_GetAnimNodeTransform walks the parent chain feeding each node's pair to
-    // LTTransform_ComposeIntoIdentity, which initialises the output rotation to identity and then
-    // calls LTTransform_Compose (0x424CEB):
-    //
-    //     out.rot = LTRotation_Multiply(parent.rot, child.rot)
-    //     out.pos = LTVector_Add(LTRotation_RotateVector(parent.rot, child.pos), parent.pos)
-    //
-    // i.e. `q_parent * q_child` and `p_parent + R(q_parent) * p_child` -- exactly what this helper
-    // computes. (The identity-zeroing briefly looked like evidence AGAINST a plain compose; it is
-    // just output initialisation before the real one.)
-    //
-    // So the field is parent-relative on the strength of the engine's own combiner, and the value
-    // here is that it is the one MODEL-SPACE candidate available with no staleness, no evaluation and
-    // no game thread.
-    //
-    // Validating it against GetAnimNodeTransform on a genuinely key-free path would upgrade this
-    // from "our composition of a proven-local field" to "the engine's own answer"; that has not been
-    // done.
-    //
-    // Composition is `p_model = p_parent + R_parent * p_local` with the rotations multiplied, and it
-    // relies on parents preceding children in the record array -- which the schema records and the
-    // hierarchy checks confirm.
-    //
-    // nullopt when the index is out of range, a read faulted, or the chain is malformed.
-    std::optional<NodePose> composed_fallback_pose(size_t node_index) const;
+    // A faithful reproduction needs the animation scratch buffers that supply those rotations, which
+    // are per-frame engine state this SDK does not map. Until they are, use socket_pose() or the
+    // engine call for real poses, and anim_fallback_pose() only to read the field itself.
 
     // nullopt when the index is out of range or the read faulted.
     //

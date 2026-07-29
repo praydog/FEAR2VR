@@ -963,6 +963,36 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **WHEN THE PRODUCER CONTRADICTS A SHIPPED HELPER, DELETE THE HELPER.** `composed_fallback_pose()`
+  composed the +0x24 pair down the hierarchy and was documented as the transform the engine would
+  reach along an all-fallback path. Then reading LTModelObject_EvaluateSkeleton showed the engine
+  builds each local transform with the rotation from g_AnimEval_NodeLocalRotations -- always,
+  animated or not -- taking only the POSITION from +0x24. The composed rotation is a path the engine
+  never walks.
+  
+  The temptation was to keep the function and document the caveat, since the arithmetic itself is the
+  engine's own and validated elsewhere. That would still leave a confident name over speculative
+  semantics. Removed, along with the assertion built on it, and the header now carries a note WHERE
+  SOMEONE WOULD LOOK FOR IT explaining why it is absent and what would be needed to do it properly.
+  
+  An absent helper with a reason beats a present one with a caveat.
+
+- **READ THE PRODUCER, NOT JUST THE GETTERS.** Two getters had been read for the node poses and both
+  left the important questions open. The PRODUCER -- LTModelObject_EvaluateSkeleton, the function that
+  actually fills the per-node cache -- answered three at once: +0x24 is a local position, the cache is
+  built by composing locals onto the PARENT'S CACHED transform, and the composition rule is
+  LTTransform_Compose exactly as the SDK reimplements it.
+  
+  A getter shows you a field's shape. The writer shows you its role.
+
+- **A FIELD'S HALVES CAN HAVE DIFFERENT EVIDENCE.** The same read showed the two readers of +0x24
+  disagreeing: GetAnimNodeTransform copies the whole (position, rotation) pair, while the evaluator
+  takes ONLY the position and sources the rotation from the animation buffer. So the position half is
+  established by the producer and the rotation half rests on a single secondary reader.
+  
+  That asymmetry is also a candidate explanation for the earlier failed composition -- feeding a
+  rotation the evaluator would never have used. Record confidence per FIELD, not per record.
+
 - **TRACE THE DELEGATE BEFORE DOUBTING THE CLAIM (and before shipping it).** I had "+0x24 is
   parent-relative" from ILTModel_GetAnimNodeTransform walking the parent chain. Then I noticed its
   combiner zeroes the output rotation to identity, read that as evidence AGAINST a plain compose, and

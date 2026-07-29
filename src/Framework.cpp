@@ -2116,7 +2116,6 @@ std::string build_objects_json() {
                api_bind_nodes = 0, api_bind_unit = 0, api_bind_finite = 0, api_bind_shared = 0,
                api_bind_shared_ok = 0, api_bind_same_array = 0, api_bind_n_shallow = 0,
                api_bind_n_deep = 0, api_bind_max_depth = 0, api_bind_n_edge = 0,
-               api_comp_probed = 0, api_comp_match = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2145,7 +2144,6 @@ std::string build_objects_json() {
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
         double api_bind_mag_shallow = 0.0, api_bind_mag_deep = 0.0, api_bind_edge = 0.0;
-        double api_comp_worst = 0.0;
         float api_eye_sep_min = -1.0f, api_eye_sep_max = 0.0f, api_eye_asym_max = 0.0f;
         float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
               api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
@@ -2575,28 +2573,6 @@ std::string build_objects_json() {
                         if (sk->find_socket("camera").has_value()) {
                             ++api_socket_camera;
                         }
-                        // THE DECISIVE TEST, using only FEAR2's own data and the SDK's helper --
-                        // the composition itself belongs in ModelSkeleton, not here. +0x24 is PROVEN
-                        // parent-relative, so composing it from the root must reproduce +0x08 IF the
-                        // two are one rest pose in two spaces.
-                        for (size_t ni = 0; ni < sk->node_count(); ++ni) {
-                            const auto comp = sk->composed_fallback_pose(ni);
-                            const auto raw = sk->bind_pose(ni);
-                            if (!comp.has_value() || !raw.has_value()) {
-                                continue;
-                            }
-                            ++api_comp_probed;
-                            const float ex = comp->position.x - raw->position.x;
-                            const float ey = comp->position.y - raw->position.y;
-                            const float ez = comp->position.z - raw->position.z;
-                            const double err = std::sqrt(ex * ex + ey * ey + ez * ez);
-                            if (err < 0.05) {
-                                ++api_comp_match;
-                            }
-                            if (err > api_comp_worst) {
-                                api_comp_worst = err;
-                            }
-                        }
                         // THE BIND POSE IS ASSET DATA, so every object sharing an asset must
                         // report the SAME bind pose for the same node. That is the check which
                         // distinguishes asset data from a per-object cache -- had the offset been a
@@ -2797,9 +2773,6 @@ std::string build_objects_json() {
         .f("bind_mag_deep", api_bind_n_deep ? api_bind_mag_deep / api_bind_n_deep : 0.0, 3)
         .u("bind_n_edge", api_bind_n_edge)
         .f("bind_edge_mean", api_bind_n_edge ? api_bind_edge / api_bind_n_edge : 0.0, 3)
-        .u("comp_probed", api_comp_probed)
-        .u("comp_match", api_comp_match)
-        .f("comp_worst", api_comp_worst, 4)
         .u("socket_eyes", api_socket_eyes)
         .u("eye_geom", api_eye_geom)
         .u("eye_level", api_eye_level)
