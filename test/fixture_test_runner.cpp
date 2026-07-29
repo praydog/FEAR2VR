@@ -520,6 +520,34 @@ int main(int argc, char** argv) {
         const double diff = static_cast<double>(elapsed_ms) - elapsed_time * 1000.0;
         check(diff > -2.0 && diff < 2.0,
               "counter_elapsed_ms == counter_elapsed_time*1000 (two distinct mapped fields agree -- offset proof)");
+
+        // THE SAME CLOCK BY A DIFFERENT ROAD. counter_elapsed_* above are field
+        // reads through CClientMgr's mapped layout; these come from CALLING the
+        // engine's own two accessors, located by byte pattern. Agreement between a
+        // layout read and a behaviour call is the strongest kind of cross-check
+        // available here: a wrong offset and a wrong pattern cannot agree by luck.
+        int64_t eng_ms = -1;
+        double eng_s = -1.0;
+        check(json_has(body, "\"engine_time_ok\":true"),
+              "both engine clock accessors were located and called");
+        check(json_int(body, "engine_time_ms", eng_ms) && eng_ms >= 0,
+              "the engine's millisecond accessor answered");
+        check(json_double(body, "engine_time_seconds", eng_s) && eng_s >= 0.0,
+              "the engine's seconds accessor answered");
+        // TOLERANCE ON PURPOSE, and the reason matters: the two paths are read a few
+        // microseconds apart inside one request, so on a RUNNING game the clock
+        // legitimately advances between them. A tight equality here would pass only
+        // while the game is paused and fail during play -- the per-frame-state trap.
+        // A second of slack still catches the failure that matters, since a wrong
+        // pattern yields zero or nonsense, not a value 40ms off.
+        const double path_gap = static_cast<double>(eng_ms) - static_cast<double>(elapsed_ms);
+        check(path_gap > -1000.0 && path_gap < 1000.0,
+              "the engine's own accessor agrees with the mapped field read");
+        // The unit tie WITHIN one guarded pair, which shares an instant and so can be
+        // checked tightly.
+        const double unit_gap = static_cast<double>(eng_ms) - eng_s * 1000.0;
+        check(unit_gap > -2.0 && unit_gap < 2.0,
+              "the engine's ms and seconds accessors are the same instant in two units");
     }
 
     // 5b1. /sdk/models: the CONSUMER API, tested the way a mod uses it.
@@ -1529,6 +1557,26 @@ int main(int argc, char** argv) {
                 // mechanism. Asserting it would turn an observation into a tripwire.
                 check(abit >= 0 && abit <= acam,
                       "the camera-only flag bit is a reported fraction of cameras");
+
+                // THE TWO IDENTITIES. An object carries both a handle and a slot
+                // index or neither -- 3248 both, 335 neither, zero mixed. This is a
+                // BICONDITIONAL, so it is asserted as one: the interesting failure is
+                // not a count changing (objects come and go between samples) but the
+                // two counts DIVERGING, which would mean a field moved.
+                int64_t ahnd = -1, aslot = -1, aagree = -1, aaddr = -1;
+                json_int(ab, "with_handle", ahnd);
+                json_int(ab, "with_slot", aslot);
+                json_int(ab, "identities_agree", aagree);
+                json_int(ab, "addressable", aaddr);
+                check(aagree == aobj,
+                      "handle presence and slot-index presence agree on every object");
+                check(ahnd == aslot, "the two identity counts are equal");
+                check(ahnd > 0 && ahnd < aobj,
+                      "both populations exist -- some objects addressable, some not");
+                // The predicate a mod calls must answer about the handle it concerns,
+                // so this is an identity check on the public function, not a rate.
+                check(aaddr == ahnd,
+                      "sdk::is_engine_addressable matches handle presence exactly");
             }
         }
 

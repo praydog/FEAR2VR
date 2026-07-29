@@ -356,6 +356,23 @@ schedule (render, animation, network) rather than at construction or load. Map i
 expose it with a populated-ness predicate so callers can tell, and let the test
 watch the shape rather than the contents.
 
+**Two paths to a LIVE value agree within a tolerance, not exactly.** Cross-checking
+a layout read against a behaviour call is the strongest evidence this project has --
+a wrong offset and a wrong byte pattern cannot agree by luck. The client clock now
+has both: `counter_elapsed_ms` reads the mapped field, `Engine::client_time()` calls
+the engine's own accessor.
+
+But the two reads happen microseconds apart, and on a running game the clock
+advances between them. Asserting exact equality would produce a check that passes at
+a pause menu and fails during play — the same trap as asserting per-frame contents,
+arriving from the opposite direction. So the assertion allows a second of slack,
+which still catches every failure that matters: a mislocated accessor returns zero
+or nonsense, never a value 40ms off.
+
+The distinction to hold onto: values read under ONE guard share an instant and can
+be compared tightly (the ms/seconds pair is checked to within 2ms). Values read by
+two separate paths do not, however close together they look in the source.
+
 **A check that compares things needs to be shown that it COMPARED something.**
 The node-hash check asserts that the same name always carries the same hash. It
 recomputes nothing — no translation table, no module offset — it just compares the

@@ -963,6 +963,22 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Searching for another INSTANCE of a known class: match an invariant, never a
+  shape.** Looking for a second object manager, the obvious filter was structural --
+  seven consecutive 8-byte pairs that each either self-point or hold two heap
+  pointers. Scanning 512KB of globals with it returned **798 candidates**, and every
+  one inspected was ASCII text (`0x736F6940`, `0x243F5544`) or unrelated data that
+  happened to fit. Swapping the filter for a proven INVARIANT -- walk all seven
+  buckets and require every object's `type` byte to equal its bucket index -- returned
+  **0 false positives** over the same range, while still scoring the known manager at
+  3583 objects with zero mismatches.
+
+  The difference is that a shape asks "could these bytes be a manager", which random
+  data answers yes to surprisingly often, while an invariant asks "do these bytes
+  BEHAVE like one", which requires the pointed-at memory to be internally consistent.
+  Corollary: proving an invariant pays twice -- once as a test, and again as a search
+  key. A pointer-validity check is not an invariant; a relationship between two
+  independently-read fields is.
 - **A vtable slot can point at bytes IDA never turned into a function.**
   `OT_MODEL`'s slot 0 (0x42A844) was live, referenced from a vtable, and
   decompiled fine afterwards — but `rename` failed with "Function not found"

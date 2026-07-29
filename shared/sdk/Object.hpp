@@ -62,6 +62,16 @@ struct ObjectInfo {
     regenny::LTVector position;
     regenny::LTRotation rotation;
     float scale;
+    // The object's SECOND identity, distinct from the handle: a unique index, live
+    // 3248 distinct values in [0..3885] with no duplicates, and 0xFFFFFFFF on the
+    // other 335. It is NOT a copy of the handle -- the two are unequal on all 3248
+    // objects carrying both.
+    //
+    // Useful to a mod as a stable per-object key: unlike a pointer it survives being
+    // logged, and unlike the handle it is unique across the whole object set rather
+    // than per-table. Reuse after free is NOT ruled out, so it identifies an object
+    // for the frame you read it, not forever.
+    uint32_t slot_index;
 };
 
 // nullopt only when `obj` is null or the read faulted.
@@ -79,5 +89,17 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj);
 // appear for reasons this cannot see (its volume reaching no sector, for instance --
 // live, 40 objects pass the gate and hold no spatial entries).
 std::optional<bool> is_renderable(const regenny::LTObject* obj);
+
+// Whether the engine can be ASKED about this object at all.
+//
+// The 335 objects that carry no handle cannot be passed to any ILT* entry point --
+// those take an HOBJECT, and the handle table has no slot for them. A mod iterating
+// the object lists will meet them (every particle system is one) and must skip them
+// rather than discover it one failed call at a time.
+//
+// The two identities agree completely on this: handle present and slot_index present
+// are the SAME 3248 objects, with zero objects holding one and not the other. So this
+// is one question with one answer, and a caller need not check both.
+std::optional<bool> is_engine_addressable(const regenny::LTObject* obj);
 
 }  // namespace sdk

@@ -16,6 +16,22 @@ namespace sdk {
 static constexpr const char* kGetEngineHook =
     "68 ? ? ? ? FF 74 24 08 E8 ? ? ? ? 85 C0 59 59 75 10 8B 44 24 08 8B 0D ? ? ? ? 89 08 33 C0 EB 30";
 
+// ClientTime_GetSeconds -- FEAR2_dump.exe 0x406DED, and
+// ClientTime_GetMilliseconds -- 0x406DFC. Both are 15-byte leaves:
+//   A1 [g_pClientMgr] | 8B 80 F4 13 00 00 | <load> | C3
+// The tail is what distinguishes them: `fld qword ptr [eax+38h]` (DD 40 38) for the
+// double, `mov eax, [eax+30h]` (8B 40 30) for the millisecond count. The global's
+// address is wildcarded; the +0x13F4 displacement is not, because that is the field
+// identifying which manager member is being followed.
+static constexpr const char* kClientTimeSeconds =
+    "A1 ? ? ? ? 8B 80 F4 13 00 00 DD 40 38 C3";
+static constexpr const char* kClientTimeMillis =
+    "A1 ? ? ? ? 8B 80 F4 13 00 00 8B 40 30 C3";
+
+// No arguments, so __cdecl and __stdcall are indistinguishable here.
+using GetTimeSecondsFn = double(*)();
+using GetTimeMillisFn = uint32_t(*)();
+
 using GetEngineHookFn = int(__stdcall*)(const char* name, void** out_data);
 
 namespace {
@@ -48,6 +64,22 @@ int call_engine_hook(uintptr_t fn, const char* name, void** out) {
         return -1;
     }
     return rc;
+}
+
+// Both engine calls inside ONE guard, so the pair is read from one instant. Reading
+// them under separate guards would let a frame boundary fall between and produce a
+// seconds/milliseconds mismatch that never existed.
+bool call_client_time(uintptr_t fn_s, uintptr_t fn_ms, double* out_s, uint32_t* out_ms) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        *out_s = reinterpret_cast<GetTimeSecondsFn>(fn_s)();
+        *out_ms = reinterpret_cast<GetTimeMillisFn>(fn_ms)();
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
 }
 
 } // namespace
@@ -83,6 +115,21 @@ void* Engine::main_hwnd() {
         return nullptr;
     }
     return hwnd;
+}
+
+std::optional<Engine::ClientTime> Engine::client_time() {
+    static const uintptr_t s_sec =
+        Modules::get().scan_exe(kClientTimeSeconds, "ClientTime_GetSeconds");
+    static const uintptr_t s_ms =
+        Modules::get().scan_exe(kClientTimeMillis, "ClientTime_GetMilliseconds");
+    if (s_sec == 0 || s_ms == 0) {
+        return std::nullopt;
+    }
+    ClientTime out{};
+    if (!call_client_time(s_sec, s_ms, &out.seconds, &out.milliseconds)) {
+        return std::nullopt;
+    }
+    return out;
 }
 
 } // namespace sdk

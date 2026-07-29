@@ -20,6 +20,7 @@ struct InfoRaw {
     float pos[3];
     float rot[4];
     float scale;
+    uint32_t slot_index;
     bool ok;
 };
 
@@ -40,6 +41,7 @@ InfoRaw seh_read_info(const regenny::LTObject* obj) {
         r.rot[2] = obj->rotation.z;
         r.rot[3] = obj->rotation.w;
         r.scale = obj->scale;
+        r.slot_index = obj->slot_index;
         r.ok = true;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
@@ -89,6 +91,7 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj) {
     out.rotation.z = r.rot[2];
     out.rotation.w = r.rot[3];
     out.scale = r.scale;
+    out.slot_index = r.slot_index;
     return out;
 }
 
@@ -101,6 +104,20 @@ std::optional<bool> is_renderable(const regenny::LTObject* obj) {
         return std::nullopt;
     }
     return r != 0;
+}
+
+std::optional<bool> is_engine_addressable(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const InfoRaw r = seh_read_info(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    // The handle is the one the ILT* entry points take, so it decides. slot_index is
+    // read too and must agree -- see the header -- but a caller asking this question
+    // wants the answer about the API it is going to call.
+    return r.handle != 0xFFFF;
 }
 
 }  // namespace sdk

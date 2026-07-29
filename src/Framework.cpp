@@ -242,9 +242,10 @@ std::string build_health_fragment() {
 }
 
 std::string build_targets_json() {
-    char buf[1024];
+    char buf[1280];
     const auto* exe = sdk::Modules::get().exe();
     auto* client_mgr = sdk::CClientMgr::get();
+    const auto engine_time = sdk::Engine::client_time();
 
     // start_shell_list_count is std::optional: nullopt means the SDK's own
     // walk did NOT terminate (corrupt list / wrong mapping) or faulted.
@@ -264,7 +265,12 @@ std::string build_targets_json() {
              "\"client_mgr_updating\":%s,\"counter_elapsed_ms\":%u,"
              "\"counter_elapsed_time\":%f,\"start_shell_list_count\":%lld,"
              "\"counter_node_registered\":%s,"
-             "\"last_sample_time_ms\":%u,\"pending_shell_release\":%s}",
+             "\"last_sample_time_ms\":%u,\"pending_shell_release\":%s,"
+             // The SAME clock by a different road: these come from calling the
+             // engine's own accessors, while counter_elapsed_* above are field reads
+             // through CClientMgr. Two independent paths to one value, so a
+             // disagreement means one of them is wrong.
+             "\"engine_time_seconds\":%f,\"engine_time_ms\":%u,\"engine_time_ok\":%s}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -281,7 +287,12 @@ std::string build_targets_json() {
              shell_count.has_value() ? static_cast<long long>(*shell_count) : -1LL,
              (client_mgr != nullptr && client_mgr->counter_node_registered()) ? "true" : "false",
              client_mgr != nullptr ? client_mgr->last_sample_time_ms() : 0u,
-             (client_mgr != nullptr && client_mgr->has_pending_shell_release()) ? "true" : "false");
+             (client_mgr != nullptr && client_mgr->has_pending_shell_release()) ? "true" : "false",
+             // ONE call, not three: sampling the clock per format argument would let
+             // it advance mid-line and print a seconds/ms pair that never coexisted.
+             engine_time.value_or(sdk::Engine::ClientTime{}).seconds,
+             engine_time.value_or(sdk::Engine::ClientTime{}).milliseconds,
+             engine_time.has_value() ? "true" : "false");
     return buf;
 }
 
@@ -852,7 +863,8 @@ std::string build_objects_json() {
     // public functions a mod would call, on the same object addresses.
     {
         size_t api_objects = 0, api_renderable = 0, api_info_ok = 0, api_camera_bit = 0,
-               api_cameras = 0;
+               api_cameras = 0, api_with_handle = 0, api_with_slot = 0,
+               api_identities_agree = 0, api_addressable = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -871,18 +883,45 @@ std::string build_objects_json() {
                             ++api_camera_bit;
                         }
                     }
+                    // THE TWO IDENTITIES, both through the public struct. An object
+                    // either carries a handle and a slot index or neither -- so
+                    // counting them separately and comparing is a real check: a
+                    // schema drift that moved one field would break the equality
+                    // without either count going to zero.
+                    const bool has_handle = info->handle != 0xFFFF;
+                    const bool has_slot = info->slot_index != 0xFFFFFFFFu;
+                    if (has_handle) {
+                        ++api_with_handle;
+                    }
+                    if (has_slot) {
+                        ++api_with_slot;
+                    }
+                    if (has_handle == has_slot) {
+                        ++api_identities_agree;
+                    }
+                    // And the predicate a mod actually calls, which must match the
+                    // handle it is really about.
+                    if (const auto a = sdk::is_engine_addressable(obj); a.value_or(false)) {
+                        ++api_addressable;
+                    }
                 }
                 if (const auto r = sdk::is_renderable(obj); r.value_or(false)) {
                     ++api_renderable;
                 }
             }
         }
-        char ab[256];
-        snprintf(ab, sizeof(ab),
+        char ab[384];
+        const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
-                 "\"cameras\":%zu,\"cameras_with_bit11\":%zu}",
-                 api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit);
-        out += ab;
+                 "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
+                 "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu}",
+                 api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
+                 api_with_handle, api_with_slot, api_identities_agree, api_addressable);
+        if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
+            out += ",\"object_api\":{\"error\":\"truncated\"}";
+        } else {
+            out += ab;
+        }
     }
 
     // Renderability vs world-tree membership. Asserts the mechanism-backed
