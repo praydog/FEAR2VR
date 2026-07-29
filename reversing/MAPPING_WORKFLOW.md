@@ -417,6 +417,23 @@ Two things follow:
   the field ever leaves the range, either it was never an index or one of the two
   offsets moved. Same discipline as asserting `entry_count == (b - a) / 4` after using
   that arithmetic to find the count field.
+- **Require the maximum to SCALE with the count.** This is the guard that makes the
+  technique safe to run in bulk, and without it the bulk version is worthless. Sweeping
+  every offset of the model object against `node_count` returned four fields that fit
+  on 215/215. Two were real. The other two were `list_count` (a small count, max 6) and
+  `sphere_source` (values 0 and 1) -- fields that satisfy ANY bound above their own
+  range and would "pass" against a count of a thousand just as happily.
+
+  Bucket the field's maximum by the count and read the row:
+
+  ```
+  node_a      n=2:1   n=20:9   n=38:14   n=61:9    n=84:37     <- scales: an index
+  list_count  n=2:1   n=20:1   n=38:3    n=61:5    n=84:3      <- capped: a count
+  ```
+
+  An index into N things eventually uses the top of N. A count, a flag, or a small
+  enum never does, however many instances you test. The 215/215 figure is identical
+  for both rows -- only the scaling separates them.
 
 The same pass found a float in the same record sitting inside [0,1] on 215/215, which
 identifies it as a NORMALISED fraction while saying nothing about what it measures --

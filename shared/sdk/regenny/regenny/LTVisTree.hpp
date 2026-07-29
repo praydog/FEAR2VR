@@ -3,10 +3,10 @@ namespace regenny {
 class LTVisPortal;
 }
 namespace regenny {
-class LTVisTreeNode;
+class LTVisSector;
 }
 namespace regenny {
-class LTVisSector;
+class LTVisTreeNode;
 }
 namespace regenny {
 #pragma pack(push, 1)

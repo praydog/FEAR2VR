@@ -178,6 +178,17 @@ struct AnimState {
     // 178 sitting at exactly 0 or 1. Read it as a normalised fraction and measure
     // what it tracks before relying on either reading.
     float fraction;
+    // Two NODE indices the record carries alongside the animation ones, proven to be
+    // node indices by staying inside node_count while SCALING with it (max 37 and 38
+    // on an 84-node skeleton). Resolve either through ModelSkeleton::node_name() to
+    // get a bone name -- live they land on Pelvis, Root_assault, Hand_attach_Jnt and
+    // similar, so this is how a caller sees which bone a track is anchored to.
+    //
+    // Ordered: node_b >= node_a always, and the pair is either equal or exactly
+    // adjacent. Their ROLE is unresolved -- a subtree span was tested and failed --
+    // so they are exposed as the two indices they are and nothing more.
+    uint16_t node_a;
+    uint16_t node_b;
 };
 
 // nullopt when `obj` is not a model or the read faulted.

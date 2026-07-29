@@ -646,6 +646,26 @@ int main(int argc, char** argv) {
         // paused game, which is the per-frame-state trap TESTING.MD describes.
         check(ablend >= 0 && ablend <= aok,
               "models with differing index pair are a reported count, not a requirement");
+
+        // The record's two NODE indices. All three of these are the evidence that
+        // named them, so all three are requirements rather than reports:
+        //   in_range -- they stay inside node_count, which is the bound that
+        //               identified them (a field merely holding small numbers would
+        //               fail on the 2-node models in this population);
+        //   named    -- handed back to the skeleton they resolve to a real bone
+        //               name, so the index is usable as an index, not just in range
+        //               as a number;
+        //   ordered  -- node_b >= node_a, observed on every model with no exception.
+        // A regression in any of them means the offset moved or the field is not what
+        // the schema says. Note the ROLE of the pair is unmapped, so nothing here
+        // asserts what the two nodes mean together -- only that they are nodes.
+        int64_t anr = -1, ann = -1, ano = -1;
+        json_int(body, "anim_nodes_in_range", anr);
+        json_int(body, "anim_nodes_named", ann);
+        json_int(body, "anim_nodes_ordered", ano);
+        check(anr == aok, "every animation record's node indices are inside node_count");
+        check(ann == aok, "every animation record's node indices resolve to a bone name");
+        check(ano == aok, "node_b >= node_a on every animation record");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised

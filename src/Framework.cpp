@@ -396,6 +396,7 @@ std::string build_models_json() {
     // those are counted for assertion.
     size_t bone_slots = 0, bone_slots_live = 0, models_with_palette = 0;
     size_t anim_ok = 0, anim_index_in_range = 0, anim_frac_in_range = 0, anim_blending = 0;
+    size_t anim_nodes_in_range = 0, anim_nodes_named = 0, anim_nodes_ordered = 0;
     for (size_t si = 0; si < *taken; ++si) {
         const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
         const auto skel = sdk::ModelSkeleton::from_object(obj);
@@ -434,6 +435,22 @@ std::string build_models_json() {
             if (anim->index != anim->index_b) {
                 ++anim_blending;
             }
+            // The consumer flow that makes these fields worth exposing: a track's
+            // node index handed to the skeleton comes back as a BONE NAME. If that
+            // resolves for every model, the index is usable as an index and not just
+            // in-range as a number.
+            if (skel.has_value()) {
+                if (anim->node_a < skel->node_count() && anim->node_b < skel->node_count()) {
+                    ++anim_nodes_in_range;
+                }
+                if (skel->node_name(anim->node_a).has_value() &&
+                    skel->node_name(anim->node_b).has_value()) {
+                    ++anim_nodes_named;
+                }
+                if (anim->node_b >= anim->node_a) {
+                    ++anim_nodes_ordered;
+                }
+            }
         }
     }
 
@@ -462,18 +479,30 @@ std::string build_models_json() {
     const auto weapons = sdk::find_models("weapons", 32);
     const auto everything = sdk::find_models("", 4096);
 
-    char sum[416];
-    snprintf(sum, sizeof(sum),
+    // snprintf TRUNCATES rather than overflowing, which is safe for memory and
+    // terrible for a JSON consumer: the reply parses as an unterminated string and
+    // the failure looks like a transport bug. It returns the length it WANTED, so a
+    // buffer that grew past its literal is caught here instead of downstream.
+    char sum[640];
+    const int want = snprintf(sum, sizeof(sum),
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
              "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
              "\"handle_table_slots\":%zu,\"found_weapons\":%zu,\"found_all\":%zu,"
              "\"bone_slots\":%zu,\"bone_slots_live\":%zu,\"models_with_palette\":%zu,"
              "\"anim_ok\":%zu,\"anim_index_in_range\":%zu,\"anim_frac_in_range\":%zu,"
-             "\"anim_blending\":%zu}",
+             "\"anim_blending\":%zu,\"anim_nodes_in_range\":%zu,"
+             "\"anim_nodes_named\":%zu,\"anim_nodes_ordered\":%zu}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
              handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
              everything.size(), bone_slots, bone_slots_live, models_with_palette, anim_ok,
-             anim_index_in_range, anim_frac_in_range, anim_blending);
+             anim_index_in_range, anim_frac_in_range, anim_blending, anim_nodes_in_range,
+             anim_nodes_named, anim_nodes_ordered);
+    if (want < 0 || static_cast<size_t>(want) >= sizeof(sum)) {
+        // Say so in the payload rather than shipping half a field. A reader that
+        // sees this knows the numbers are missing, not that the socket broke.
+        out += "],\"error\":\"summary truncated\"}";
+        return out;
+    }
     out += sum;
     return out;
 }

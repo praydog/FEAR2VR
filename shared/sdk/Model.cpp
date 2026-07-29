@@ -562,6 +562,8 @@ namespace {
 struct AnimRaw {
     uint16_t index;
     uint16_t index_b;
+    uint16_t node_a;
+    uint16_t node_b;
     float fraction;
     uint32_t anim_count;
     bool ok;
@@ -581,6 +583,8 @@ AnimRaw seh_anim(const regenny::LTObject* obj) {
                 r.index = model->record.anim_index;
                 r.index_b = model->record.anim_index_b;
                 r.fraction = model->record.anim_fraction;
+                r.node_a = model->record.node_a;
+                r.node_b = model->record.node_b;
                 const auto* first = asset->anim_names.first;
                 const auto* last = asset->anim_names.last;
                 if (first != nullptr && last >= first) {
@@ -603,7 +607,7 @@ std::optional<AnimState> model_anim_state(const regenny::LTObject* obj) {
     if (!r.ok) {
         return std::nullopt;
     }
-    return AnimState{r.index, r.index_b, r.fraction};
+    return AnimState{r.index, r.index_b, r.fraction, r.node_a, r.node_b};
 }
 
 std::optional<size_t> model_anim_count(const regenny::LTObject* obj) {
