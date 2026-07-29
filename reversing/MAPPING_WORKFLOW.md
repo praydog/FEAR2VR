@@ -963,6 +963,27 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A near-miss recorded honestly is worth chasing one more indirection.** Last pass ended by
+  noting that `LTWorldTree_AddObject` starts its descent at `world + 0x1C` and that this could
+  NOT be `LTWorldClientBSP + 0x1C`, since that offset is the confirmed node count (649) while
+  the root sits at +0x20. The wrong claim was kept out of the schema and the discrepancy
+  written down instead.
+
+  Two indirections closed it. `world` comes from the object's owner (`LTObject +0x34`, the
+  singleton `g_pLTObjectOwner`, shared by all 3583 objects) through owner vtable slot 3, which
+  forwards to `IWorldClientBSP` vtable slot 13 -- and that slot is literally
+  `lea eax, [ecx+4]; retn`. So `world` is `bsp + 4`, `world + 0x1C` is `bsp + 0x20`, and the
+  engine's insertion starts at exactly the `world_tree_root` this SDK descends from.
+
+  The arithmetic only closes once the `+4` is followed, which is why the offsets appeared to
+  contradict. A pointer handed out by an accessor is frequently NOT the object's base -- check
+  what the accessor returns before matching offsets against a class.
+
+- **Correct a name that describes a guess, even when nothing is broken.** `0x40C44B` was
+  called `LTObjectOwner_NotifyWorldBSP`. It notifies nothing: it returns a base pointer, and it
+  is the link in the chain above. Renamed `LTObjectOwner_GetWorldTreeBase`. A wrong name is a
+  claim that outlives the pass that guessed it, and this one would have sent the next reader
+  looking for a notification path that does not exist.
 - **Two engine functions can share a NAME and test different things.** The SDK exposed one
   "renderable" predicate -- `(flags & 1) && !(flags2 & 0x700)`, the draw gate from
   `LTObjectOwner_UpdateSpatialRecord` -- and a check quietly contained a second:

@@ -236,7 +236,10 @@ public:
     // through check() until this pass.
     //
     // THE DESCENT IS THE ENGINE'S OWN, transcribed from LTWorldTree_FindNodeForObject
-    // (0x46462F) rather than guessed:
+    // (0x46462F) rather than guessed -- and it starts at the SAME NODE the engine starts at,
+    // which took following two indirections to establish: LTWorldTree_AddObject begins at
+    // `world + 0x1C`, `world` is IWorldClientBSP vtable slot 13 (`lea eax, [ecx+4]`), so
+    // `world + 0x1C` is the BSP's +0x20 -- world_tree_root, exactly what get() gives us:
     //
     //   child index = (x > split_x ? 2 : 0) + (z > split_z ? 1 : 0)
     //
