@@ -936,6 +936,53 @@ int main(int argc, char** argv) {
                "%lld truncated\n",
                static_cast<long long>(plverts), static_cast<long long>(plp),
                static_cast<long long>(pltr));
+
+        // ---- REACHABILITY over the portal graph ---------------------------------------
+        //
+        // sectors_within/sector_hops/sector_component are COMPOSITION, not reversing -- one
+        // breadth-first walk over an adjacency this suite already validated from both
+        // directions. So the checks are the properties a walk cannot fake rather than a
+        // comparison against a second walk, which would only prove the code agrees with itself.
+        int64_t rp = -1, r1 = -1, rm = -1, rsp = -1, rso = -1, rco = -1, rcs = -1, rho = -1;
+        json_int(body, "rch_probed", rp);
+        json_int(body, "rch_1hop_ok", r1);
+        json_int(body, "rch_mono_ok", rm);
+        json_int(body, "rch_sym_probed", rsp);
+        json_int(body, "rch_sym_ok", rso);
+        json_int(body, "rch_comp_ok", rco);
+        json_int(body, "rch_comp_size", rcs);
+        json_int(body, "rch_hops_ok", rho);
+        check(rp == stot, "every sector was walked");
+
+        // Ties the walk to the primitive: one hop must be exactly the sector plus its
+        // neighbours, nothing gained and nothing lost.
+        check(r1 == rp, "sectors_within(s,1) is EXACTLY s plus sector_neighbours(s)");
+        check(rm == rp, "the reachable set only grows with the hop limit");
+        check(rho == rp, "sector_hops(s,s) is zero for every sector");
+
+        // THE STRONG ONE. Portal adjacency is symmetric -- established over all 688 links
+        // without any traversal -- so reachability at a fixed radius must be symmetric too. A
+        // walk that dropped or invented an edge fails this even though it would still return a
+        // plausible-looking set.
+        check(rsp > 0, "the two-hop frontiers are non-empty, so symmetry is not vacuous");
+        check(rso == rsp,
+              "reachability is SYMMETRIC: b is within n hops of a exactly when a is of b");
+
+        // Transitivity, which cannot hold by accident across a component this size: every
+        // member of a component must compute the same component.
+        check(rcs > 1, "the level has a multi-sector connected component");
+        check(rco == rcs, "EVERY member of a component agrees on that component");
+
+        // AND IT RECONCILES WITH THE PORTAL DATA, from the other end: the portals were measured
+        // to join `swn` of `stot` sectors, so the sectors outside the component are exactly the
+        // portal-less ones. Two independent measurements of the same partition.
+        check(rcs == swn,
+              "the connected component is exactly the set of sectors the portals join");
+        printf("[fixture] reachability: component of %lld/%lld sectors, symmetry %lld/%lld, "
+               "one-hop agrees %lld/%lld\n",
+               static_cast<long long>(rcs), static_cast<long long>(stot),
+               static_cast<long long>(rso), static_cast<long long>(rsp),
+               static_cast<long long>(r1), static_cast<long long>(rp));
         if (psec >= 0 && pnb >= 0) {
             printf("[fixture] the player's sector has %lld neighbour(s)\n",
                    static_cast<long long>(pnb));

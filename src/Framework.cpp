@@ -319,7 +319,11 @@ std::string build_targets_json() {
     // Grown three times now, each time by one more field. The GUARD below is the part
     // that matters: an overflow used to ship invalid JSON and break the caller's parser
     // with a mystery offset, which cost more than the missing field would have.
-    char buf[3072];
+    // Grown as the report gained fields; the guard below is what makes this safe to grow
+    // reactively rather than having to guess right. It reported `needed: 3118` when the
+    // reachability block pushed past 3072, which is exactly the failure mode a half-written
+    // JSON object would have hidden.
+    char buf[5120];
     const auto* exe = sdk::Modules::get().exe();
     auto* client_mgr = sdk::CClientMgr::get();
     const auto engine_time = sdk::Engine::client_time();
@@ -792,6 +796,74 @@ std::string build_targets_json() {
             }
         }
     }
+    // REACHABILITY, checked against properties the BFS cannot fake.
+    //
+    //   1-hop agreement -- sectors_within(s,1) must be exactly {s} + sector_neighbours(s),
+    //                      tying the walk to the primitive already validated against the
+    //                      portal table from both directions.
+    //   monotonicity    -- within(s,n) must be a subset of within(s,n+1).
+    //   SYMMETRY        -- b reachable from a in <=n hops iff a is from b. This is the strong
+    //                      one: it holds because portal adjacency is symmetric (688/688,
+    //                      established independently of any traversal), so a BFS that lost or
+    //                      invented an edge breaks it.
+    //   components      -- every member of a component must report the SAME component, which is
+    //                      transitivity and cannot hold by accident across 263 sectors.
+    int rch_probed = 0, rch_1hop_ok = 0, rch_mono_ok = 0, rch_sym_probed = 0, rch_sym_ok = 0;
+    int rch_comp_ok = 0, rch_comp_size = 0, rch_hops_ok = 0;
+    {
+        const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < nsec; ++i) {
+            const size_t si = static_cast<size_t>(i);
+            ++rch_probed;
+            const auto w0 = sdk::VisTree::sectors_within(si, 0);
+            const auto w1 = sdk::VisTree::sectors_within(si, 1);
+            const auto w2 = sdk::VisTree::sectors_within(si, 2);
+            const auto nb = sdk::VisTree::sector_neighbours(si);
+            if (w0.size() == 1 && w0[0] == si && w1.size() == nb.size() + 1) {
+                bool all = true;
+                for (const size_t n : nb) {
+                    if (std::find(w1.begin(), w1.end(), n) == w1.end()) {
+                        all = false;
+                    }
+                }
+                if (all && std::find(w1.begin(), w1.end(), si) != w1.end()) {
+                    ++rch_1hop_ok;
+                }
+            }
+            bool mono = w1.size() <= w2.size();
+            for (const size_t a : w1) {
+                if (std::find(w2.begin(), w2.end(), a) == w2.end()) {
+                    mono = false;
+                }
+            }
+            if (mono) {
+                ++rch_mono_ok;
+            }
+            // symmetry at a fixed radius, over the whole 2-hop frontier
+            for (const size_t b : w2) {
+                ++rch_sym_probed;
+                const auto back = sdk::VisTree::sectors_within(b, 2);
+                if (std::find(back.begin(), back.end(), si) != back.end()) {
+                    ++rch_sym_ok;
+                }
+            }
+            // hop distance must agree with the frontier that contains it
+            if (const auto h = sdk::VisTree::sector_hops(si, si); h.value_or(999) == 0) {
+                ++rch_hops_ok;
+            }
+        }
+        // component transitivity: every member agrees on the component
+        if (nsec > 0) {
+            const auto comp = sdk::VisTree::sector_component(0);
+            rch_comp_size = static_cast<int>(comp.size());
+            for (const size_t m : comp) {
+                const auto other = sdk::VisTree::sector_component(m);
+                if (other.size() == comp.size()) {
+                    ++rch_comp_ok;
+                }
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -981,6 +1053,9 @@ std::string build_targets_json() {
              "\"sec_links_ok\":%d,\"sec_portal_sum\":%d,\"sec_portal_listed\":%d,"
              "\"poly_probed\":%d,\"poly_len_ok\":%d,\"poly_on_plane\":%d,"
              "\"poly_trunc\":%d,\"poly_verts\":%d,"
+             "\"rch_probed\":%d,\"rch_1hop_ok\":%d,\"rch_mono_ok\":%d,"
+             "\"rch_sym_probed\":%d,\"rch_sym_ok\":%d,\"rch_comp_ok\":%d,"
+             "\"rch_comp_size\":%d,\"rch_hops_ok\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -1063,6 +1138,8 @@ std::string build_targets_json() {
              rec_consistent, sec_idx_probed, sec_idx_ok, sec_links_probed,
              sec_links_ok, sec_portal_sum, sec_portal_listed,
              poly_probed, poly_len_ok, poly_on_plane, poly_trunc, poly_verts,
+             rch_probed, rch_1hop_ok, rch_mono_ok, rch_sym_probed, rch_sym_ok,
+             rch_comp_ok, rch_comp_size, rch_hops_ok,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

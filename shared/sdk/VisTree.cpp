@@ -1985,3 +1985,87 @@ std::optional<bool> VisTree::spatial_record_is_consistent(const regenny::LTObjec
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// ONE breadth-first walk, and the three public queries are all views of it -- a hop-limited
+// frontier, a distance, and a component are the same traversal stopped at different points, so
+// sharing it is what keeps them from disagreeing.
+//
+// `stop_at` short-circuits the distance query. `max_hops` bounds the frontier. Returns hop
+// depths indexed by sector, with npos meaning unreached.
+std::vector<size_t> bfs_hops(size_t start, size_t max_hops, size_t stop_at) {
+    constexpr size_t kUnreached = static_cast<size_t>(-1);
+    std::vector<size_t> depth;
+    const auto total = VisTree::sector_count();
+    if (!total.has_value() || start >= *total) {
+        return depth;
+    }
+    depth.assign(*total, kUnreached);
+    depth[start] = 0;
+    std::vector<size_t> frontier{start};
+    std::vector<size_t> next;
+    for (size_t hop = 0; hop < max_hops && !frontier.empty(); ++hop) {
+        next.clear();
+        for (const size_t s : frontier) {
+            if (stop_at != kUnreached && s == stop_at) {
+                return depth;
+            }
+            for (const size_t n : VisTree::sector_neighbours(s)) {
+                if (n < depth.size() && depth[n] == kUnreached) {
+                    depth[n] = hop + 1;
+                    next.push_back(n);
+                }
+            }
+        }
+        frontier.swap(next);
+    }
+    return depth;
+}
+
+constexpr size_t kUnreached = static_cast<size_t>(-1);
+
+}  // namespace
+
+std::vector<size_t> VisTree::sectors_within(size_t sector_index, size_t max_hops) {
+    std::vector<size_t> out;
+    const auto depth = bfs_hops(sector_index, max_hops, kUnreached);
+    if (depth.empty()) {
+        return out;
+    }
+    for (size_t i = 0; i < depth.size(); ++i) {
+        if (depth[i] != kUnreached && depth[i] <= max_hops) {
+            out.push_back(i);
+        }
+    }
+    return out;
+}
+
+std::optional<size_t> VisTree::sector_hops(size_t from, size_t to) {
+    const auto total = sector_count();
+    if (!total.has_value() || from >= *total || to >= *total) {
+        return std::nullopt;
+    }
+    if (from == to) {
+        return size_t{0};
+    }
+    // Bounded by the sector count: a shortest path never revisits a sector, so anything not
+    // found within that many hops is not connected.
+    const auto depth = bfs_hops(from, *total, to);
+    if (depth.empty() || depth[to] == kUnreached) {
+        return std::nullopt;
+    }
+    return depth[to];
+}
+
+std::vector<size_t> VisTree::sector_component(size_t sector_index) {
+    const auto total = sector_count();
+    if (!total.has_value()) {
+        return {};
+    }
+    return sectors_within(sector_index, *total);
+}
+
+}  // namespace sdk

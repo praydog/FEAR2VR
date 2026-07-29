@@ -963,6 +963,49 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A vtable's base comes from the CONSTRUCTOR'S STORE, never from scanning backwards.** I
+  walked back from a known slot while the preceding dword looked like a function and concluded
+  `GetVisTree` was slot 13, one below the schema's recorded 14 -- and was about to "correct" a
+  note that was right. The constructor settles it: `mov dword ptr [esi], offset vtbl_...` gives
+  the base, and it was one slot lower than my scan found because slot 0 held an address IDA had
+  not recognised as a function (the destructor, since defined).
+
+  Backward scanning is off by one for every unrecognised slot it stops at. And the near miss is
+  the lesson: BEFORE overwriting a recorded claim, find the authority that settles it. I have
+  corrected genuinely wrong notes this way, which makes it easy to correct a right one.
+
+- **"There is no loader" is itself a finding.** I went looking for a world-tree stream loader by
+  analogy with the vis tree and there is none. `LTWorldClientBSP_Construct` calls
+  `LTWorldTree_InitFields`, which zeroes the bounds, sets `node_count = 1` and leaves the root
+  null; nodes appear only as objects are inserted.
+
+  That answers a question left open several passes ago. The vis tree is immutable level data
+  loaded once, so nothing in it CAN go stale, while the world tree indexes moving objects and is
+  mutated at runtime -- so the stale world-tree entries measured earlier are native to the
+  design, not a fault. An absent function can explain a behaviour as well as a present one.
+
+- **When a query is composition rather than reversing, check the PROPERTIES, not a second
+  implementation.** `sectors_within`/`sector_hops`/`sector_component` are one breadth-first walk
+  over an adjacency already validated from both directions. Writing a second walk to compare
+  against would only prove the code agrees with itself -- the exact trap the plane-sign oracle
+  fell into.
+
+  What cannot be faked: one hop must equal the primitive (`{s}` + neighbours), the set must only
+  grow with the limit, reachability must be SYMMETRIC because the adjacency is (2495/2495), and
+  every member of a component must compute the same component. Then reconcile with a number
+  measured independently: the component came out at 262 sectors and the portals were separately
+  measured to join 262 of 263, so the sector outside the component is exactly the portal-less
+  one. Two routes to one partition.
+
+- **A truncation guard is what lets you size a buffer REACTIVELY.** The report's JSON buffer
+  overflowed again, and the guard returned `{"ok":false,"error":"targets truncated",
+  "needed":3118}` -- parseable, specific, and immediately actionable. An earlier version shipped
+  half-written JSON and cost a confusing parser error instead.
+
+  Note what made the difference: my probe raised a KeyError on a missing field, which looks
+  exactly like a wiring mistake, and I spent two reads checking the format string and argument
+  list before printing the raw payload. When a field is missing, READ THE RAW RESPONSE FIRST --
+  the transport says what happened, the parsed view cannot.
 - **THE ALLOCATION SIZE IS THE STRUCT DEFINITION. Read it before believing a stride.**
   `LTVisPortal` was recorded as `0x5C` with `vertices[4]` and a note that 4 "may be a hard
   maximum rather than a coincidence". `LTVisPortal_LoadFromStream` allocates

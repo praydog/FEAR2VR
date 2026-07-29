@@ -406,6 +406,38 @@ public:
     // THE REACHABILITY QUERY: the sectors directly connected to this one. Deduplicated, and
     // `sector_index` itself is never included even if a malformed portal named it twice.
     static std::vector<size_t> sector_neighbours(size_t sector_index);
+
+    // ---- REACHABILITY BEYOND ONE HOP ----------------------------------------
+    //
+    // sector_neighbours() answers "next door". These answer the question a mod actually asks:
+    // what is within N rooms of here -- which is how you decide what to keep streamed in
+    // around a play space, how far to propagate a sound, or whether two points are in the same
+    // connected part of the level at all.
+    //
+    // These are a BREADTH-FIRST WALK over the portal graph and nothing more; no engine function
+    // does this, so it is composition rather than reversing. It is sound because the graph
+    // itself is: portal adjacency was independently shown symmetric over all 688 links, and the
+    // per-sector portal arrays agree with the portals' back-references on all 263 sectors.
+
+    // Every sector reachable within `max_hops` portal crossings, INCLUDING `sector_index`
+    // itself at hop zero. `max_hops` of 0 therefore yields just that sector, and 1 yields it
+    // plus its neighbours.
+    //
+    // Empty when `sector_index` is out of range or the tree is unresolved -- note that is
+    // distinguishable from a valid isolated sector, which yields exactly itself.
+    static std::vector<size_t> sectors_within(size_t sector_index, size_t max_hops);
+
+    // HOW MANY ROOMS APART, or nullopt when `to` is not reachable from `from` at all -- which
+    // for a level means they are in different connected components, something a teleport or
+    // streaming decision wants to know before it trusts a straight-line distance.
+    //
+    // Zero when `from == to`. Symmetric, because the underlying adjacency is.
+    static std::optional<size_t> sector_hops(size_t from, size_t to);
+
+    // THE WHOLE CONNECTED COMPONENT containing `sector_index`, itself included. This is the
+    // set of rooms the player can walk between without leaving the portal graph, and it is
+    // what "the reachable level" means for a mod that needs to bound its work.
+    static std::vector<size_t> sector_component(size_t sector_index);
 };
 
 
