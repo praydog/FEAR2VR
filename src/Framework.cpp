@@ -528,13 +528,17 @@ std::string build_objects_json() {
     // counts, so the walk is checked against the engine's numbers.
     out += ",\"vis_tree\":";
     if (const auto vt = sdk::VisTree::check(); vt.has_value()) {
-        char tb[320];
+        char tb[512];
         snprintf(tb, sizeof(tb),
                  "{\"sector_count\":%zu,\"node_count\":%zu,\"nodes_walked\":%zu,"
                  "\"elements_seen\":%zu,\"elements_in_arr\":%zu,\"sectors_reached\":%zu,"
-                 "\"leaves\":%zu,\"max_depth\":%zu}",
+                 "\"leaves\":%zu,\"max_depth\":%zu,\"portal_count\":%zu,"
+                 "\"portal_unit_normal\":%zu,\"portal_center_on_plane\":%zu,"
+                 "\"portal_sectors_ok\":%zu,\"portal_verts_on_plane\":%zu}",
                  vt->sector_count, vt->node_count, vt->nodes_walked, vt->elements_seen,
-                 vt->elements_in_arr, vt->sectors_reached, vt->leaves, vt->max_depth);
+                 vt->elements_in_arr, vt->sectors_reached, vt->leaves, vt->max_depth,
+                 vt->portal_count, vt->portal_unit_normal, vt->portal_center_on_plane,
+                 vt->portal_sectors_ok, vt->portal_verts_on_plane);
         out += tb;
     } else {
         out += "null";

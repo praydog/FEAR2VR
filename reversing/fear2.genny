@@ -580,6 +580,36 @@ class LTVisTreeNode 0x18 {
     float split_value      @0x14   // CONFIRMED: compared against the query volume's component on split_axis
 }
 
+// A visibility PORTAL: the connection between two sectors, and the other half of
+// the visibility graph. 344 of them live, joining 262 of the 263 sectors (one
+// sector has no portals at all).
+//
+// Found by resolving what LTVisTree's unmapped +0x00/+0x10 pair pointed at. The
+// stride is pinned by arithmetic rather than guessed: the region between the
+// pointer table and the sector array is 31648 bytes for 344 entries, exactly
+// 92 = 0x5C each, and the mapped fields below fill that to the byte.
+//
+// CONFIRMED live on all 344, with no exceptions:
+//   * plane_normal is unit length.
+//   * center lies ON the plane -- dot(plane_normal, center) == plane_distance.
+//   * sector_a and sector_b are both aligned entries of LTVisTree.sectors, and
+//     no portal joins a sector to itself.
+//   * vertex_count is 4 on every single one, and all four vertices satisfy the
+//     plane equation.
+// An earlier guess that this region held bare 4-vertex quads was WRONG and was
+// tested: read as 12 floats only 45 of 344 were coplanar. The quads are real but
+// they start at +0x2C, behind the plane and the sector pair.
+class LTVisPortal 0x5C {
+    LTVector plane_normal  @0x00   // CONFIRMED unit length 344/344
+    float plane_distance   @0x0C   // CONFIRMED: center and all four vertices satisfy dot(n,p) == this
+    LTVector center        @0x10   // CONFIRMED on-plane point; a centroid by position, though nothing read so far proves it is the exact centroid
+    float radius           @0x1C   // bounding radius about center; magnitude is plausible (1030..2154 live) but no reader has been traced
+    LTVisSector* sector_a  @0x20   // CONFIRMED aligned sector pointer
+    LTVisSector* sector_b  @0x24   // CONFIRMED aligned sector pointer, never equal to sector_a
+    uint32_t vertex_count  @0x28   // CONFIRMED == 4 on 344/344. The array below holds exactly 4, so 4 may be a hard maximum rather than a coincidence.
+    LTVector vertices[4]   @0x2C   // CONFIRMED: all vertices lie on the plane. Ends at 0x5C == the stride.
+}
+
 // The visibility tree manager -- the root of the whole vis subsystem, and the
 // reason it can be reached without a pattern scan of its own.
 //
@@ -604,11 +634,11 @@ class LTVisTreeNode 0x18 {
 // unk_10 reads 344, which looks like a second array/count pair, but nothing
 // read so far touches them so no claim is made.
 class LTVisTree 0x24 {
-    void* unk_00            @0x00   // unmapped; live equals unk_0C
+    LTVisPortal** portals   @0x00   // CONFIRMED: a table of portal_count pointers, immediately followed in memory by the portals themselves and then by `sectors` -- one contiguous allocation. Every pointer equals `table_end + i*0x5C` in order, 344/344.
     LTVisSector* sectors    @0x04   // CONFIRMED: base of the sector array (stride 0x30)
     uint32_t sector_count   @0x08   // CONFIRMED == 263 live, matching the array's extent
     void* unk_0C            @0x0C   // unmapped; live equals unk_00
-    uint32_t unk_10         @0x10   // unmapped; live 344
+    uint32_t portal_count   @0x10   // CONFIRMED == 344 live. The arithmetic is exact: 344 pointers (0x560 bytes) + 344 portals (0x5C each) lands precisely on `sectors`.
     LTVisTreeNode* root     @0x14   // CONFIRMED: LTVisTree_Root returns this when node_count is non-zero
     uint32_t node_count     @0x18   // CONFIRMED == 111 live, exactly the nodes reached by walking root
     void* traversal_stack   @0x1C   // CONFIRMED: the queries push deferred children here (`v4[7]`)

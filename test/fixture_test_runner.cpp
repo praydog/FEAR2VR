@@ -1047,6 +1047,24 @@ int main(int argc, char** argv) {
                           "the vis tree covers every sector in the array");
                     check(leaves > 0, "vis tree has leaves (split_axis > 2 branch exercised)");
                     check(depth > 0, "vis tree is deeper than a single node");
+
+                    // PORTALS -- the other half of the visibility graph. Every
+                    // check here is self-contained geometry: a portal's own
+                    // `center` and its own vertices must satisfy its OWN plane
+                    // equation. No recorded baseline, and no wrong offset in the
+                    // 0x5C record survives it.
+                    int64_t pc = -1, pun = -1, pcp = -1, pso = -1, pvp = -1;
+                    json_int(tb, "portal_count", pc);
+                    json_int(tb, "portal_unit_normal", pun);
+                    json_int(tb, "portal_center_on_plane", pcp);
+                    json_int(tb, "portal_sectors_ok", pso);
+                    json_int(tb, "portal_verts_on_plane", pvp);
+                    check(pc > 0, "vis tree reports portals");
+                    check(pun == pc, "every portal's plane normal is unit length");
+                    check(pcp == pc, "every portal's center lies on its own plane");
+                    check(pso == pc,
+                          "every portal joins two DISTINCT aligned sectors");
+                    check(pvp == pc, "every portal's vertices lie on its own plane");
                 }
             }
         }

@@ -290,6 +290,30 @@ When mapping a container, look for a stored count before writing any assertion.
 If one exists, prefer it over every recorded constant; if one does not, say so in
 the check's comment so the next reader knows why a baseline was unavoidable.
 
+**Strongest of all: an assertion a record can be checked against ITSELF.** No
+baseline, no sibling structure, nothing to drift — the record either is
+internally consistent or the mapping is wrong.
+
+`LTVisPortal` is the clean example. Each portal stores a plane (normal +
+distance), a centre point, and four vertices. Every one of those points must
+satisfy that portal's OWN plane equation, so the check is
+`dot(normal, p) == distance` and nothing else is involved:
+
+- `plane_normal` unit length — 344/344
+- `center` on the plane — 344/344
+- all four `vertices` on the plane — 344/344
+
+A wrong offset anywhere in the 0x5C record breaks the arithmetic immediately;
+there is no way to be "slightly off" and still satisfy a plane equation across
+344 records. Contrast the weaker forms this file already describes: a stored
+count checks a traversal, and a cross-linked walk checks two structures against
+each other, but both still depend on a second thing being right.
+
+When a record contains a geometric relation — a plane and points on it, a
+normal and a distance, a transform and its inverse, an AABB and the centre it
+was derived from — assert the relation. Prefer it over any count, and prefer it
+strongly over anything you recorded from a previous run.
+
 **When you expect a biconditional and the data gives an IMPLICATION, assert the
 implication and report the other side.** Symmetry is an aesthetic preference, not
 evidence, and forcing it is the same error as widening a tolerance: it replaces

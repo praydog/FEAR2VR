@@ -4,6 +4,7 @@
 
 #include <utility/Seh.hpp>
 
+#include "regenny/regenny/LTVisPortal.hpp"
 #include "regenny/regenny/LTVisSector.hpp"
 #include "regenny/regenny/LTVisTreeNode.hpp"
 #include "regenny/regenny/LTWorldTreeLink.hpp"
@@ -132,6 +133,73 @@ int64_t seh_read_and_walk(const regenny::LTVisTree* tree, VisTree::TreeCheck* ou
     return result;
 }
 
+// Validates the portal table. The plane checks are what make this strong: a
+// portal's own `center` and all of its vertices must satisfy its own plane
+// equation, so a wrong offset anywhere in the record breaks the arithmetic
+// rather than merely looking odd.
+//
+// POD-only for the guard; on a fault the counters keep whatever they reached, and
+// the caller compares them against portal_count so a partial walk shows up as a
+// shortfall rather than as success.
+void seh_check_portals(const regenny::LTVisTree* tree, VisTree::TreeCheck* out) {
+    KANANLIB_SEH_TRY {
+        const auto* table = tree->portals;
+        const uint32_t count = tree->portal_count;
+        const auto* sectors = tree->sectors;
+        const uint32_t sector_count = tree->sector_count;
+        out->portal_count = count;
+        if (table == nullptr || count == 0 || count > 65536u || sectors == nullptr) {
+            return;
+        }
+        const auto ba = reinterpret_cast<uintptr_t>(sectors);
+        const auto span = static_cast<uintptr_t>(sector_count) * sizeof(regenny::LTVisSector);
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto* p = table[i];
+            if (p == nullptr) {
+                continue;
+            }
+            const float nx = p->plane_normal.x, ny = p->plane_normal.y, nz = p->plane_normal.z;
+            const float d = p->plane_distance;
+            const float len2 = nx * nx + ny * ny + nz * nz;
+            if (len2 > 0.98f && len2 < 1.02f) {
+                ++out->portal_unit_normal;
+            }
+            const float cd = nx * p->center.x + ny * p->center.y + nz * p->center.z - d;
+            if (cd > -0.5f && cd < 0.5f) {
+                ++out->portal_center_on_plane;
+            }
+
+            const auto a = reinterpret_cast<uintptr_t>(p->sector_a);
+            const auto b = reinterpret_cast<uintptr_t>(p->sector_b);
+            const bool a_ok =
+                a >= ba && a - ba < span && (a - ba) % sizeof(regenny::LTVisSector) == 0;
+            const bool b_ok =
+                b >= ba && b - ba < span && (b - ba) % sizeof(regenny::LTVisSector) == 0;
+            if (a_ok && b_ok && a != b) {
+                ++out->portal_sectors_ok;
+            }
+
+            // vertex_count is 4 on every live portal and the array holds exactly
+            // 4, so anything larger would read past the record -- clamp rather
+            // than trust the field.
+            const uint32_t vc = p->vertex_count > 4u ? 4u : p->vertex_count;
+            bool all = vc != 0;
+            for (uint32_t v = 0; v < vc; ++v) {
+                const float vd =
+                    nx * p->vertices[v].x + ny * p->vertices[v].y + nz * p->vertices[v].z - d;
+                if (vd < -0.5f || vd > 0.5f) {
+                    all = false;
+                }
+            }
+            if (all) {
+                ++out->portal_verts_on_plane;
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 } // namespace
 
 const regenny::LTVisTree* VisTree::get() {
@@ -154,6 +222,7 @@ std::optional<VisTree::TreeCheck> VisTree::check(size_t max_nodes) {
         return std::nullopt;
     }
     out.nodes_walked = static_cast<size_t>(walked);
+    seh_check_portals(tree, &out);
     return out;
 }
 

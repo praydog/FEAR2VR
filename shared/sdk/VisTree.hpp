@@ -52,6 +52,16 @@ public:
         size_t sectors_reached; // distinct sectors reached
         size_t leaves;          // nodes with split_axis > 2
         size_t max_depth;
+        // Portals: the other half of the visibility graph. Each connects two
+        // sectors, so validating them exercises the pointer table, the 0x5C
+        // stride, and the plane/vertex geometry together. The plane checks are
+        // the load-bearing ones: `center` and all four vertices must satisfy the
+        // portal's own plane equation, which no wrong offset survives.
+        size_t portal_count;       // the engine's own count
+        size_t portal_unit_normal; // |plane_normal| == 1
+        size_t portal_center_on_plane;
+        size_t portal_sectors_ok;  // both sector pointers aligned+in-range, and distinct
+        size_t portal_verts_on_plane; // all vertex_count vertices satisfy the plane
     };
 
     // nullopt when the interface is unresolved, the tree is empty, or the walk

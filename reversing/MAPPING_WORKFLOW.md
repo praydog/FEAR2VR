@@ -253,6 +253,33 @@ static evidence justifies writing the mapping" and "the fixture justifies
 keeping it", just run one phase earlier, interactively, before any C++ exists
 to fixture-test.
 
+**Derive a stride by ARITHMETIC on the surrounding allocation before trying to
+recognise the record's contents.** Engine data is often one contiguous block, and
+when you know a count and the address of whatever comes next, the stride falls
+out exactly — no pattern-matching required, and no chance of talking yourself
+into a shape.
+
+`LTVisPortal` came out this way. `LTVisTree` had an unmapped pointer at +0x00 and
+an unmapped 344 at +0x10, with `sectors` at +0x04 pointing further along. Two
+divisions settled the whole layout:
+
+- `(sectors - table) / 344 == 96.00` exactly, so the block between them is 344
+  units of 96 bytes.
+- `344 * 4 == 0x560`, and `table + 0x560` equals the value of the FIRST pointer —
+  so the block is a 344-entry pointer table immediately followed by 344 records
+  of `96 - 4 == 92` bytes, and every pointer is `records + i*92` in order,
+  344/344.
+
+That fixed the stride at 0x5C before a single field was interpreted, and the
+mapped fields then filled it to the byte. Compare with what happened when the
+same region was approached by eyeballing: read as bare 12-float records it
+"looked like" 4-vertex quads, and testing that guess gave only 45 of 344
+coplanar. The quads were real but sat at +0x2C, behind a plane and a sector pair.
+
+So: exact division is evidence, a recognised shape is a hypothesis. Do the
+division first, and if a gap divides evenly by the count, treat that as the
+stride and make the fields fit it.
+
 **A float blob's GROUPING is a hypothesis too — test it against a field you
 already know, never against how the numbers look.** Reading a span of floats
 and recognising a shape is the single easiest way to invent structure, because
