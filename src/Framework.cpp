@@ -4310,6 +4310,40 @@ std::string build_shader_params_json() {
         const auto h3 = sdk::mem::read_u32(pm_player->holder + 516);
         json_append_bool(out, "cam_owned_share_vtable",
                          h1.has_value() && h1 == h2 && h2 == h3 && *h1 != 0);
+        // THE DELEGATES, read through the accessor rather than by offset arithmetic here. Every one must
+        // name the camera as its owner -- an internal-consistency check across eight independent nodes, which
+        // is what establishes the owner field rather than any single read.
+        const auto cam_dels = sdk::PlayerMgr::camera_delegates(0);
+        size_t del_owned = 0, del_registered = 0, del_subject = 0;
+        for (const auto& d : cam_dels) {
+            if (d.owner == pm_player->holder) {
+                ++del_owned;
+            }
+            if (d.registered) {
+                ++del_registered;
+            }
+            if (d.subject != 0) {
+                ++del_subject;
+            }
+        }
+        json_append_double(out, "cam_delegates", static_cast<double>(cam_dels.size()), 0);
+        json_append_double(out, "cam_delegates_owned", static_cast<double>(del_owned), 0);
+        json_append_double(out, "cam_delegates_registered", static_cast<double>(del_registered), 0);
+        json_append_double(out, "cam_delegates_subject", static_cast<double>(del_subject), 0);
+        json_append_bool(out, "cam_delegates_consistent",
+                         sdk::PlayerMgr::camera_delegates_consistent(0).value_or(false));
+        // Six of the eight subjects point into the player object's own region, which is what says the camera
+        // listens to the player rather than to the world at large. Reported as a count so a build that
+        // rewires it is visible rather than silently different.
+        size_t del_subject_in_player = 0;
+        for (const auto& d : cam_dels) {
+            if (d.subject >= pm_player->object && d.subject < pm_player->object + 0x400) {
+                ++del_subject_in_player;
+            }
+        }
+        json_append_double(out, "cam_delegates_on_player",
+                           static_cast<double>(del_subject_in_player), 0);
+
         // A null link is refused rather than reported as an empty list.
         json_append_bool(out, "cam_link_null_refused",
                          sdk::mem::classify_link(0) == sdk::mem::LinkState::Unreadable &&

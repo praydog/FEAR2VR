@@ -4287,6 +4287,28 @@ int main(int argc, char** argv) {
             check(json_bool(body, "cam_link_null_refused", cam_null) && cam_null,
                   "a null link is unreadable rather than reported as an empty list");
 
+            // THE DELEGATE LAYOUT, established by internal consistency rather than by any single read: all
+            // eight nodes must name the camera as their owner. Eight independent pointers agreeing on one
+            // value is not something a wrong offset produces.
+            double del_n = -1.0, del_owned = -1.0, del_reg = -1.0, del_subj = -1.0, del_player = -1.0;
+            const bool dln = json_double(body, "cam_delegates", del_n) &&
+                             json_double(body, "cam_delegates_owned", del_owned) &&
+                             json_double(body, "cam_delegates_registered", del_reg) &&
+                             json_double(body, "cam_delegates_subject", del_subj) &&
+                             json_double(body, "cam_delegates_on_player", del_player);
+            check(dln && del_n == 8.0, "all eight camera delegates read");
+            check(dln && del_owned == del_n,
+                  "every delegate names the camera as its owner -- eight pointers agreeing on one value");
+            check(dln && del_reg == del_n && del_subj == del_n,
+                  "every delegate is registered and holds a subject");
+            bool del_cons = false;
+            check(json_bool(body, "cam_delegates_consistent", del_cons) && del_cons,
+                  "the consistency accessor agrees");
+            // The camera listens to the PLAYER: most subjects lie inside the player object. A build that
+            // rewired this would change the count rather than fail silently.
+            check(dln && del_player >= 4.0 && del_player <= del_n,
+                  "most delegate subjects lie inside the player object's own region");
+
             // TWO POSE GENERATIONS, and which one the engine carries matters to anyone reading the view.
             //
             // The +232 pair is bit-equal to the camera object's own LTObject transform; the +300 pair's

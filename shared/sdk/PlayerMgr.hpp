@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 //
 // THE GAME'S OWN VIEW OF THE PLAYER -- gameclient.dll's player manager, which is a different thing from the
@@ -151,6 +152,49 @@ public:
     // nullopt when the handle cannot be read; false means client-created with no server counterpart.
     static constexpr uint16_t kNoServerHandle = 0xFFFF;
     static std::optional<bool> is_server_backed(uintptr_t object);
+
+    //
+    // THE CAMERA'S EVENT DELEGATES -- eight of them, and the layout comes from their own handlers.
+    //
+    // Every handler in every sink vtable begins `mov ecx, [ecx+0Ch]`: the node carries a pointer to its OWNER
+    // and the handler dereferences it to reach the camera. So a node is twenty bytes:
+    //
+    //     +0x00  vtable          one per sink -- eight distinct ones
+    //     +0x04  link.prev       self-pointing when detached
+    //     +0x08  link.next
+    //     +0x0C  owner           the camera; verified equal on 8 of 8
+    //     +0x10  subject         what it is attached to, and non-null exactly when registered
+    //
+    // The unregister method (shared by all eight, gameclient 0x100EE9F0) is what pins the last two: it guards
+    // on the subject being non-null, unlinks the node, SELF-LINKS IT AGAIN, then clears both the subject and
+    // the owner. So sdk::mem::LinkState::Empty meaning "not registered" is the engine's own construction
+    // rather than an inference from what an empty list looks like.
+    //
+    // WHY A CONSUMER WANTS THIS. Six of the eight subjects point into the player OBJECT's region and two
+    // elsewhere, so the set says what the camera is currently listening to -- and a camera whose delegates have
+    // gone Empty has been torn down, which is exactly the state in which its cached pose must not be trusted.
+    // That is a cheaper liveness test than re-walking the manager.
+    static constexpr uintptr_t kDelegateVtable = 0x00;
+    static constexpr uintptr_t kDelegateLink = 0x04;
+    static constexpr uintptr_t kDelegateOwner = 0x0C;
+    static constexpr uintptr_t kDelegateSubject = 0x10;
+    static constexpr size_t kDelegateSize = 20;
+
+    struct Delegate {
+        uintptr_t address{};   // the node inside the camera
+        uintptr_t vtable{};
+        uintptr_t owner{};     // should equal the camera
+        uintptr_t subject{};   // what it listens to; 0 when detached
+        bool registered{};     // link is threaded AND subject is non-null
+    };
+
+    // The eight delegates of the camera for `index`, in offset order. Empty when the player or camera cannot
+    // be read. A node that does not read is skipped rather than reported with zeroed fields.
+    static std::vector<Delegate> camera_delegates(unsigned index);
+
+    // Do all eight name the camera as their owner? The internal-consistency check that establishes the owner
+    // field, and a liveness test for a consumer holding a cached camera.
+    static std::optional<bool> camera_delegates_consistent(unsigned index);
 
     // The manager object, or 0 when gameclient.dll is not mapped. This is a POINTER variable in the DLL's
     // data, so the value is the object rather than the global's address.

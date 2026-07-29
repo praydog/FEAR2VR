@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <iterator>
 
 #include "Memory.hpp"
 #include "Modules.hpp"
@@ -184,6 +185,61 @@ std::optional<PlayerMgr::Player> PlayerMgr::local_player() {
         return std::nullopt;
     }
     return player(*index);
+}
+
+namespace {
+
+// The eight delegate offsets, from the constructor's repeating twenty-byte pattern.
+constexpr uintptr_t kDelegateOffsets[] = {16, 36, 56, 76, 96, 116, 136, 156};
+
+}  // namespace
+
+std::vector<PlayerMgr::Delegate> PlayerMgr::camera_delegates(unsigned index) {
+    std::vector<Delegate> out;
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return out;
+    }
+
+    out.reserve(std::size(kDelegateOffsets));
+    for (const uintptr_t off : kDelegateOffsets) {
+        const auto base = p->holder + off;
+        const auto vtable = mem::read_ptr(base + kDelegateVtable);
+        const auto owner = mem::read_ptr(base + kDelegateOwner);
+        const auto subject = mem::read_ptr(base + kDelegateSubject);
+        if (!vtable.has_value() || !owner.has_value() || !subject.has_value()) {
+            continue;  // a node that does not read is left out rather than reported as zeroes
+        }
+
+        Delegate d{};
+        d.address = base;
+        d.vtable = *vtable;
+        d.owner = *owner;
+        d.subject = *subject;
+        // Registered means BOTH: threaded into a list and holding a subject. The engine's unregister clears
+        // the subject and self-links the node, so the two agree -- and requiring both catches a half-torn
+        // node rather than reporting it as live.
+        d.registered = *subject != 0 && mem::classify_link(base + kDelegateLink) == mem::LinkState::Linked;
+        out.push_back(d);
+    }
+    return out;
+}
+
+std::optional<bool> PlayerMgr::camera_delegates_consistent(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto nodes = camera_delegates(index);
+    if (nodes.size() != std::size(kDelegateOffsets)) {
+        return false;  // a node failed to read at all
+    }
+    for (const auto& d : nodes) {
+        if (d.owner != p->holder) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::optional<std::array<float, 3>> PlayerMgr::eye_offset(unsigned index) {

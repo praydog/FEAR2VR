@@ -4781,3 +4781,46 @@ class LTInputDeviceMouse 0x30 {
 // decision instead of six.
 //
 // 999 checks, 0 failures.
+
+// ---- THE DELEGATE NODE, AND THE ENGINE DEFINING "EMPTY MEANS UNREGISTERED" ------------------------
+//
+// Last pass established that CPlayerCamera embeds eight twenty-byte links rather than inheriting from eight
+// bases, and separated registered nodes from owned heads by link state alone. The eight sink vtables name the
+// rest of the node, and one function defines it outright.
+//
+// EVERY SINK HANDLER BEGINS `mov ecx, [ecx+0Ch]`. The node carries a pointer to its owner and the handler
+// dereferences it to reach the camera, so the layout is:
+//
+//     +0x00  vtable      one per sink -- eight distinct
+//     +0x04  link.prev   self-pointing when detached
+//     +0x08  link.next
+//     +0x0C  owner       the object whose handler runs
+//     +0x10  subject     what the node is attached to, non-null EXACTLY when registered
+//
+// Delegate_Detach (gameclient 0x100EE9F0, shared by all eight) pins the last two fields and settles a
+// semantic this project had been asserting from appearance: it guards on +0x10 being non-zero, unlinks the
+// node, RE-SELF-LINKS IT, then zeroes +0x10 and +0x0C.
+//
+// > sdk::mem::classify_link's Empty state was justified as "this is what an empty list looks like". It is now
+// > justified by the engine's own detach path, which produces exactly that state on purpose. Same conclusion,
+// > different standing -- and the difference matters, because "looks empty" and "was emptied" are separable
+// > for any field that merely happens to point at itself.
+//
+// MEASURED: all eight nodes name the camera at +0x0C (8 of 8 -- eight independent pointers agreeing on one
+// value, which a wrong offset does not produce), all eight hold a subject, and SIX OF THE EIGHT SUBJECTS lie
+// inside the PLAYER OBJECT's own region. The camera listens to the player, not to the world at large.
+//
+// The +0x10 field was briefly read as a boolean "registered" flag because Detach tests it against zero. It
+// holds pointers. Both readings are true at once -- it is the subject, used as the attached test -- and naming
+// it the flag would have thrown away what it points AT.
+//
+// ONE SINK IS SELF-IDENTIFYING: CPlayerCamera_Sink_RefreshCameraClamping re-resolves the console variable
+// "CameraClamping" and caches the result at camera+6332 -- the same dword Save persists and Load restores,
+// which is what says +6332 holds a looked-up HANDLE rather than a float. Live it is a heap pointer into a
+// record.
+//
+// EXPOSED AS sdk::PlayerMgr::camera_delegates / camera_delegates_consistent, the latter being the
+// eight-pointers-agree check, which doubles as a liveness test: a camera whose delegates have gone Empty has
+// been torn down and its cached pose must not be trusted.
+//
+// 1004 checks, 0 failures.
