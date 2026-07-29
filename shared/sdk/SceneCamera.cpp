@@ -6,6 +6,7 @@
 #include <utility/Seh.hpp>
 
 #include "Modules.hpp"
+#include "interfaces/ILTRenderer.hpp"
 
 namespace sdk {
 
@@ -752,6 +753,49 @@ std::array<float, 16> SceneCamera::compose_view_projection(const std::array<floa
         affine[i] = view.m[i];
     }
     return multiply_by_affine(projection, affine);
+}
+
+size_t SceneCamera::pass_setup_slot(PassKind kind) {
+    switch (kind) {
+    case PassKind::Perspective:
+        return 15;
+    case PassKind::Affine:
+        return 16;
+    case PassKind::Stored:
+        return 17;
+    default:
+        return 0;
+    }
+}
+
+uintptr_t SceneCamera::pass_setup_fn(PassKind kind) {
+    const auto slot = pass_setup_slot(kind);
+    if (slot == 0) {
+        return 0;
+    }
+    auto* renderer = interfaces::ILTRenderer::get();
+    if (renderer == nullptr) {
+        return 0;  // not resolved right now; the interface database clears slots
+    }
+    uintptr_t vftable = 0;
+    if (!seh_copy(&vftable, reinterpret_cast<uintptr_t>(renderer), sizeof(vftable)) ||
+        vftable == 0) {
+        return 0;
+    }
+    uintptr_t fn = 0;
+    if (!seh_copy(&fn, vftable + slot * sizeof(uintptr_t), sizeof(fn)) || fn == 0) {
+        return 0;
+    }
+    // BOUNDS-CHECKED, because the whole point of this address is that something will hook it: a
+    // plausible-looking pointer from an unexpected table would be written to, not merely read.
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || exe->size == 0) {
+        return 0;
+    }
+    if (fn < exe->base || fn >= exe->base + exe->size) {
+        return 0;
+    }
+    return fn;
 }
 
 uintptr_t SceneCamera::record_address() {

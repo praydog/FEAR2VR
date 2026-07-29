@@ -408,6 +408,31 @@ public:
     static std::optional<RoundTripError> view_inverse_round_trip_error(
         const regenny::LTNodeTransform& pose);
 
+    // ---- THE PASS SETUP ENTRY POINTS, i.e. WHERE TO HOOK -----------------------------
+    //
+    // CLTRenderer's vtable slots 15, 16 and 17 each configure one kind of pass, and slot 15 -- the
+    // perspective one -- takes the camera transform as its first stack argument.
+    //
+    // WHY THIS IS THE USEFUL PLACE TO INTERVENE. That argument's path to the record is fully traced:
+    // SceneRenderer_SetupPassPerspective forwards it to SceneRenderer_SetupCameraShaderParams,
+    // sub_610DA2 copies it to SceneCamera+0x14 as the pose, and LTTransform_CopyInverted turns that
+    // into the view matrix. So replacing the transform HERE changes the view matrix, the
+    // view-projection and the world-to-screen matrix together and consistently, rather than patching
+    // three matrices and hoping they agree. Everything else in this class exists to read and validate
+    // what that produces.
+    //
+    // Resolved from the LIVE vtable rather than a fixed address, and bounds-checked against the exe,
+    // so a null interface or an unexpected table yields 0 instead of a wild pointer to hook.
+    enum class PassKind {
+        Perspective,  // slot 15, mode 0, LTMatrix_BuildPerspectiveProjection
+        Affine,       // slot 16, mode 1, LTMatrix_BuildAffineProjection
+        Stored,       // slot 17, one argument; which pass it configures is NOT established
+    };
+    static uintptr_t pass_setup_fn(PassKind kind);
+
+    // The vtable slot index each kind occupies, for logging and for a consumer resolving its own way.
+    static size_t pass_setup_slot(PassKind kind);
+
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();
 

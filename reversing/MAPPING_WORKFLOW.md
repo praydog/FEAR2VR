@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE USEFUL HOOK IS AT THE SINGLE COMMON INPUT, NOT THE DERIVED VALUES.** The camera pose, view matrix,
+  view-projection and world-to-screen matrix are four fields, but three of them are computed from the first,
+  and the first is a function ARGUMENT at CLTRenderer vtable slot 15. Tracing the argument forward
+  (SetupPass -> SetupCameraShaderParams -> sub_610DA2 -> the pose -> CopyInverted -> the view matrix) found
+  a place where one substitution keeps all four consistent, instead of four patches that must be kept in
+  agreement by hand.
+  
+- **A HOOK ADDRESS DESERVES A BOUNDS CHECK THAT A READ ADDRESS DOES NOT.** Everything else in this SDK reads
+  engine memory, where a wrong pointer is a fault-guarded nullopt. This one is going to be WRITTEN to, so
+  pass_setup_fn resolves through the live vtable and then rejects anything outside the exe's mapped range --
+  a plausible-looking pointer from an unexpected table is worse than returning nothing.
+
 - **TWO MATRICES CAN BE "INVERSES" ONLY IN THE STATE YOU MEASURED.** The engine's screen_to_clip writes -1
   and +1 into column 3 where a true inverse of its own viewport transform wants -centreX/halfW and
   centreY/halfH. Those coincide exactly when the viewport is anchored at the origin -- which the measured

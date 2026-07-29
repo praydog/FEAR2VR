@@ -3848,6 +3848,21 @@ int main(int argc, char** argv) {
                       "distant translation residual stays well under the scaled allowance");
             }
 
+            // THE PASS SETUP ANCHORS, resolved from the LIVE CLTRenderer vtable and checked against
+            // what static reversing recorded. Two independent paths -- IDA read the table out of the
+            // file, the DLL walks it through the interface registry in the running process -- so
+            // agreement means the slot indices are right, not merely self-consistent.
+            //
+            // These are exe-relative offsets: slot 15 is the perspective pass, which takes the camera
+            // transform, and is the address a stereo path would hook.
+            double po = -1.0, ao = -1.0, so = -1.0;
+            check(json_double(body, "pass_persp_off", po) && po == 0x20B520,
+                  "pass_setup_fn(Perspective) resolves to exe+0x20B520 (CLTRenderer vtable slot 15)");
+            check(json_double(body, "pass_affine_off", ao) && ao == 0x20B560,
+                  "pass_setup_fn(Affine) resolves to exe+0x20B560 (slot 16)");
+            check(json_double(body, "pass_stored_off", so) && so == 0x20B5A0,
+                  "pass_setup_fn(Stored) resolves to exe+0x20B5A0 (slot 17)");
+
             // THE REGRESSION TEST FOR A BUG THE LIVE CHECKS CANNOT SEE. rotation_matrix() hardcoded a
             // factor of 2 where the engine divides by |q|^2. Every rotation the game exposes is unit,
             // so the two formulas agree everywhere the suite looks and the bug survived until a

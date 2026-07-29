@@ -1481,7 +1481,43 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- WHERE THE VIEW MATRIX COMES FROM ----
+// // ---- WHERE THE CAMERA TRANSFORM ENTERS THE ENGINE, i.e. WHERE TO HOOK ----
+//
+// CLTRenderer_vftable SLOTS 15, 16 AND 17 are the pass setup entry points, and slot 15 takes the
+// CAMERA TRANSFORM as its first stack argument. That makes it the single most useful interception
+// point found in this whole chain.
+//
+//     slot 15  CLTRenderer_SetupPassPerspective  0x60B520  mode 0 -> perspective projection
+//     slot 16  CLTRenderer_SetupPassAffine       0x60B560  mode 1 -> affine projection
+//     slot 17  CLTRenderer_SetupPassStored       0x60B5A0  mode not an immediate; NOT established
+//
+// All three gate on g_SceneRenderer == 3 and return 0 without doing anything otherwise, so a caller
+// cannot assume a pass was configured. The mode is what distinguishes them: the wrappers pass 0 and 1
+// as SceneRenderer_SetupCameraShaderParams's a6, and sub_610BA1 branches on exactly that to pick
+// LTMatrix_BuildPerspectiveProjection or LTMatrix_BuildAffineProjection.
+//
+// THE ARGUMENT'S PATH TO THE RECORD IS FULLY TRACED, which is what makes this an intervention point
+// rather than just a call site:
+//
+//     slot 15 arg_0
+//       -> SceneRenderer_SetupPassPerspective forwards it
+//       -> SceneRenderer_SetupCameraShaderParams takes it as the transform argument
+//       -> sub_610DA2 copies it to SceneCamera+0x14, the pose
+//       -> LTTransform_CopyInverted + LTTransform_ToMatrix3x4 make the view matrix at +0x48
+//       -> the view-projection at +0xB8 and world-to-screen at +0xF8 follow from that
+//
+// So substituting a transform at slot 15 moves the view matrix, the view-projection and the
+// world-to-screen matrix together and consistently. Patching those matrices individually would mean
+// keeping three derived values in agreement by hand; this changes their single common input.
+//
+// EXPOSED AS sdk::SceneCamera::pass_setup_fn(PassKind), resolved from the LIVE vtable through the
+// interface registry rather than a fixed address, and bounds-checked against the exe -- the whole
+// point of this address is that something will WRITE to it, so a plausible pointer from an unexpected
+// table is worse than none. The suite checks all three resolve to the offsets static reversing
+// recorded (exe+0x20B520/560/5A0), which is two independent paths agreeing: IDA read the table out of
+// the file, the DLL walks it in the running process.
+//
+// ---- WHERE THE VIEW MATRIX COMES FROM ----
 //
 // view = matrix_from(inverse(camera pose)), which is the textbook construction and, more usefully,
 // SETTLES THAT THE POSE AT +0x14 IS THE CAMERA'S WORLD TRANSFORM rather than something already
