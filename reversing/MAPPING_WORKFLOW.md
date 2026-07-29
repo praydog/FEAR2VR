@@ -963,6 +963,29 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **`call dword ptr [reg+OFFSET]` IS NOT A D3D CALL SITE FINDER.** Small displacements are ordinary member
+  offsets for any object, so scanning for them produced pure noise -- the first run had Present "called from"
+  CClientMgr_StartShell and CLTModelClient_SetMaterialFilename appearing under both SetTransform and
+  SetViewport. What makes a candidate real is tying the RECEIVER to the device: intersecting those sites with
+  the 90 functions that read g_Renderer is what produced a usable list.
+  
+- **THE D3D9 SLOT INDICES WERE +3 TOO HIGH, AND A HEADER PARSE IS WHY.** The MinGW DECLARE_INTERFACE_ block
+  declares QueryInterface/AddRef/Release itself, so adding 3 for IUnknown double-counted. Two parse bugs
+  underneath: the regex captured `THIS_` as a method name from `STDMETHOD_(ret,Name)(THIS_ ...)`, and the
+  first-three check was what finally exposed the base error. Correct: Present 0x44, BeginScene 0xA4,
+  EndScene 0xA8, Clear 0xAC, SetTransform 0xB0, SetViewport 0xBC, SetVertexShaderConstantF 0x178. Now an enum
+  in the IDB (D3D9DeviceSlot) so call sites read as names instead of numbers.
+  
+  The confirmation is worth more than the parse: sub_615CC1 calls seven distinct offsets which decode as one
+  coherent family -- Set/GetRenderTarget, Set/GetDepthStencilSurface, Clear, Set/GetViewport. A wrong base
+  would scatter those across unrelated methods, so their coherence is the check.
+  
+- **A DEF-USE TRACE THAT RETURNS 0 OF 73 IS BROKEN, NOT INFORMATIVE.** My backward walk required the receiver
+  to be loaded directly from g_Renderer within 14 instructions and matched nothing at all. The device is
+  usually held in a local or a member by then, so the trace was too narrow to conclude anything -- and a
+  uniform zero across every method is the tell. Asking the reverse question (who reads the global?) got the
+  answer in one query.
+
 - **MEASURE THE REFERENCE'S DIVERGENCE BEFORE TRUSTING OR DISCARDING IT.** With extents in hand, counting
   virtuals per reference class body and adding 2 for the leading pair predicts an entry count. ILTCursor:
   8 declared -> 10 predicted -> 10 measured, MATCH. ILTServer diverges by 61 methods, ILTClient by 43,

@@ -1178,6 +1178,39 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// ---- THE D3D9 DEVICE AND ITS CALL SITES ----
+//
+// g_Renderer (exe+0x32E118, absolute 0x0072E118) holds the IDirect3DDevice9 POINTER. shared/sdk/Render.cpp
+// already records the renderer object at that address with the device at +0x00, so the dword there IS the
+// device -- and the code agrees: consumers do `(**(g_Renderer))(g_Renderer, ...)`.
+//
+// TWO ACCESS PATTERNS, visible in the disassembly and easy to confuse:
+//   `mov eax, g_Renderer`         takes the DEVICE (this global's value)
+//   `mov ecx, offset g_Renderer`  takes the renderer OBJECT's address, used as `this`
+// 90 functions read it. Heaviest: 0x6152D4 (24 refs) and 0x615CC1 (10).
+//
+// D3D9 DEVICE SLOT OFFSETS, now an enum in the IDB (D3D9DeviceSlot) so call sites read as names:
+//   0x40 Reset   0x44 Present   0x94/0x98 Set/GetRenderTarget   0x9C/0xA0 Set/GetDepthStencilSurface
+//   0xA4 BeginScene   0xA8 EndScene   0xAC Clear   0xB0/0xB4 Set/GetTransform
+//   0xBC/0xC0 Set/GetViewport   0x148 DrawIndexedPrimitive   0x170 SetVertexShader
+//   0x178 SetVertexShaderConstantF
+//
+// THE INDICES WERE WRONG FIRST TIME, +3 slots too high, from a header parse that counted IUnknown's three
+// methods inside the interface block and then added 3 again. What settles them is not the parse but
+// sub_615CC1: it calls SEVEN distinct offsets which decode as one coherent family -- save render target,
+// depth-stencil and viewport, Clear, draw, restore. A wrong base would scatter those across unrelated
+// methods.
+//
+// A CAUTION THAT COST A WHOLE SCAN: searching for `call dword ptr [reg+OFFSET]` finds mostly NOISE, because
+// small displacements like 0x44 or 0xB0 are ordinary member-call offsets for any LithTech object. The first
+// scan "found" Present being called from CClientMgr_StartShell. Validation has to tie the receiver to the
+// device -- intersecting call sites with functions that read g_Renderer is what produced the real list.
+//
+// NOT ESTABLISHED: where the view/projection reaches the shaders. There are ZERO `call [reg+0x178]` sites,
+// i.e. no direct memory-indirect call of SetVertexShaderConstantF anywhere -- but that rules out one
+// syntactic form only. The slot can be loaded into a register first, reached through a state-manager wrapper,
+// or constants set via D3DX effects, and with 90 device consumers a wrapper is likely. Not traced yet.
+
 // ---- HOW FAR THE REFERENCE SDK'S INTERFACES DIVERGE FROM THIS BUILD ----
 //
 // With extents measured, the reference headers can be checked instead of trusted. Counting virtuals per
