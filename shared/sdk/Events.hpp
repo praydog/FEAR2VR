@@ -78,10 +78,31 @@ public:
     // reading arguments off a stack from a bad format is worse off than one that refused.
     static bool payload_is_well_formed(std::string_view payload);
 
-    // Total bytes the payload occupies as pushed arguments, on the assumption every one is a 4-byte slot --
-    // which is what a 32-bit cdecl call does with int, float, bool and a string POINTER alike. nullopt for a
-    // malformed format.
+    // Total bytes the payload occupies as pushed arguments.
+    //
+    // A FLOAT IS EIGHT BYTES HERE, NOT FOUR, and an earlier version of this returned four for every letter.
+    // The call sites settle it: these dispatchers are reached through a VARIADIC sender, so a float is
+    // promoted to double exactly as C varargs requires. Measured on two events whose frames are visible in
+    // the disassembly --
+    //
+    //     HealthChanged     "d"   push int      -> add esp, 14h = 20 = 4 + 4 + 4 + 4 + 4
+    //     SlowMoMaxChanged  "f"   sub esp, 8    -> add esp, 18h = 24 = 4 + 4 + 4 + 8 + 4
+    //
+    // -- and both totals reconcile only with d = 4 and f = 8. A consumer reading a hooked "f" event four
+    // bytes wide gets the low half of a double, which is not a small error but a meaningless one.
+    //
+    // nullopt for a malformed format.
     static std::optional<size_t> payload_stack_bytes(std::string_view payload);
+
+    // THE WHOLE CALL FRAME a hook will see, in bytes: source, target, a MARKER, the payload, and a second
+    // MARKER. The markers are literal sentinels the senders push around the payload (0x12345678 / 0x1234567D,
+    // with the leading one varying by payload kind), which is what makes the frame layout readable at all.
+    //
+    // This is the number that appears as the `add esp, N` after the call, so a consumer can check its hook
+    // against the disassembly it is patching. nullopt for a malformed format.
+    static constexpr size_t kMarkerBytes = 4;
+    static constexpr size_t kHeaderBytes = 8;  // source + target
+    static std::optional<size_t> frame_bytes(std::string_view payload);
 
     // DOES THE BINARY STILL MATCH THIS ENTRY? Reads the dispatcher's first bytes, treats each 4-byte
     // immediate as a candidate pointer, and requires one to spell `name`. False when gameclient is absent,

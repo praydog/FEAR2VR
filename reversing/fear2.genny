@@ -4938,3 +4938,46 @@ class LTInputDeviceMouse 0x30 {
 // parser that accepted anything would satisfy the well-formed count without meaning anything.
 //
 // 1024 checks, 0 failures.
+
+// ---- THE EVENT CALL FRAME, AND A FLOAT THAT IS EIGHT BYTES ----------------------------------------
+//
+// The event catalogue shipped last pass with a helper that reported how many stack bytes a payload occupies. It
+// returned four for every format letter. Reading the call sites shows that is wrong for floats, and the
+// disassembly proves it arithmetically.
+//
+// THE DISPATCHER SIGNATURE, exact (cdecl, verified by `add esp, 1Ch` = 7 arguments on the inner call):
+//
+//     Event(void* a1, void* target, <payload...>)
+//        -> Send("Player", a1 + 0x10, "EventName", target, format, &payload, 0)
+//
+// So the SOURCE the bus reports is a1 + 0x10, and the payload is passed on BY ADDRESS -- which is why the
+// format string is needed to read it at all.
+//
+// THE CALLER'S FRAME, identical across three independent call sites:
+//
+//     push MARKER_END      0x1234567D
+//     push <payload>       an int directly; a float stored after `sub esp, 8`
+//     push MARKER_BEGIN    0x12345678, or 0x12345679 when the payload is a float
+//     push target
+//     push a1
+//     call Event ; add esp, N
+//
+// AND N SETTLES THE WIDTHS:
+//     HealthChanged     "d"   add esp, 14h = 20 = 4 + 4 + 4 + 4 + 4
+//     SlowMoMaxChanged  "f"   add esp, 18h = 24 = 4 + 4 + 4 + 8 + 4
+//
+// Both totals reconcile ONLY with int at 4 and FLOAT AT 8 -- promoted to double, exactly as a variadic sender
+// requires. The `sub esp, 8` before the fstp is the same fact stated a second way.
+//
+// > This is the rare case where a computed number can be checked against an instruction operand. The suite
+// > asserts frame_bytes("d") == 20 and frame_bytes("f") == 24 -- not because 20 and 24 are interesting, but
+// > because they are what the binary literally contains, and a wrong float width cannot produce both.
+//
+// A consumer reading a hooked "f" event four bytes wide gets the low half of a double: not a small error but a
+// meaningless one. payload_stack_bytes is corrected and frame_bytes added, the latter being the number that
+// appears as `add esp, N` so a hook can be checked against the code it patches.
+//
+// The markers' low nibble tracks the payload kind (8 for int, 9 for float). That is what makes the frame
+// readable; what the sender DOES with them is not established and is not claimed.
+//
+// 1027 checks, 0 failures.

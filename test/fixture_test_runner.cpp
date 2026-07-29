@@ -4457,6 +4457,28 @@ int main(int argc, char** argv) {
                       json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
                   "a three-argument payload measures three arguments and twelve stack bytes");
 
+            // THE CALL FRAME, checked against the `add esp, N` the disassembly actually contains. This is the
+            // rare case where a computed number can be compared to an instruction operand:
+            //
+            //     HealthChanged     "d"   add esp, 14h = 20
+            //     SlowMoMaxChanged  "f"   add esp, 18h = 24
+            //
+            // They reconcile ONLY with a float at eight bytes -- promoted to double by the variadic sender --
+            // and an earlier version of this SDK returned four for every letter. A consumer reading a hooked
+            // "f" four bytes wide gets the low half of a double, which is not a small error but a meaningless
+            // one, so both widths are asserted directly as well.
+            double ev_fd = -1.0, ev_ff = -1.0, ev_fl = -1.0, ev_in = -1.0;
+            const bool evf = json_double(body, "ev_frame_d", ev_fd) &&
+                             json_double(body, "ev_frame_f", ev_ff) &&
+                             json_double(body, "ev_float_bytes", ev_fl) &&
+                             json_double(body, "ev_int_bytes", ev_in);
+            check(evf && ev_fd == 20.0,
+                  "a one-int event's frame is 20 bytes, matching its add esp, 14h");
+            check(evf && ev_ff == 24.0,
+                  "a one-float event's frame is 24 bytes, matching its add esp, 18h");
+            check(evf && ev_fl == 8.0 && ev_in == 4.0,
+                  "a float payload is eight bytes and an int four -- the difference the frames prove");
+
             // An EMPTY payload is legitimate; a malformed one is not. Both are asserted, because a parser that
             // accepted anything would pass the well-formed count above.
             bool ev_bad = false, ev_empty = false;

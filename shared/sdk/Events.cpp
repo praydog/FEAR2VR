@@ -85,9 +85,21 @@ std::optional<size_t> Events::payload_stack_bytes(std::string_view payload) {
     if (!payload_is_well_formed(payload)) {
         return std::nullopt;
     }
-    // Every one of d/f/s/b occupies a 4-byte slot in a 32-bit cdecl call: an int, a float promoted to no
-    // wider than its own size, a bool widened, or a string POINTER.
-    return payload.size() * sizeof(uint32_t);
+    size_t total = 0;
+    for (const char c : payload) {
+        // A float is promoted to double by the variadic sender; everything else is one 4-byte slot -- an int,
+        // a widened bool, or a string POINTER.
+        total += (c == 'f') ? sizeof(double) : sizeof(uint32_t);
+    }
+    return total;
+}
+
+std::optional<size_t> Events::frame_bytes(std::string_view payload) {
+    const auto payload_bytes = payload_stack_bytes(payload);
+    if (!payload_bytes.has_value()) {
+        return std::nullopt;
+    }
+    return kHeaderBytes + kMarkerBytes + *payload_bytes + kMarkerBytes;
 }
 
 bool Events::verify(const Event& event) {

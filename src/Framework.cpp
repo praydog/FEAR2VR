@@ -4484,6 +4484,24 @@ std::string build_shader_params_json() {
                                  sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
                            : -1.0,
                        0);
+    // THE FRAME ARITHMETIC, against the two events whose `add esp, N` is visible in the disassembly. These
+    // are the numbers a consumer checks its hook against, and they reconcile only with a float at 8 bytes.
+    const auto health = sdk::Events::find("HealthChanged");
+    const auto slowmo = sdk::Events::find("SlowMoMaxChanged");
+    json_append_double(out, "ev_frame_d",
+                       health.has_value()
+                           ? static_cast<double>(sdk::Events::frame_bytes(health->payload).value_or(0))
+                           : -1.0,
+                       0);
+    json_append_double(out, "ev_frame_f",
+                       slowmo.has_value()
+                           ? static_cast<double>(sdk::Events::frame_bytes(slowmo->payload).value_or(0))
+                           : -1.0,
+                       0);
+    json_append_double(out, "ev_float_bytes",
+                       static_cast<double>(sdk::Events::payload_stack_bytes("f").value_or(0)), 0);
+    json_append_double(out, "ev_int_bytes",
+                       static_cast<double>(sdk::Events::payload_stack_bytes("d").value_or(0)), 0);
     json_append_bool(out, "ev_malformed_refused",
                      !sdk::Events::payload_is_well_formed("dxf") &&
                          !sdk::Events::payload_stack_bytes("dxf").has_value() &&
