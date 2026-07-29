@@ -226,6 +226,86 @@ public:
     static std::optional<bool> plane_corner_code_is_current(size_t sector_index,
                                                             size_t plane_index);
 
+    // ---- OBJECT <-> SECTOR: THE ENGINE'S OWN ANSWER -------------------------
+    //
+    // The queries above COMPUTE which sectors a volume touches. The engine already knows, for
+    // every object it culls, and stores it: LTSpatialRecord_CollectSphere runs exactly the
+    // query above with LTSpatialRecord_AddEntry as its callback, so an object's entry list IS
+    // the query's result, frozen at the moment the engine last relinked it.
+    //
+    // A mod should usually ASK rather than compute. It is cheaper, and more importantly it is
+    // the answer the renderer, the audio system and the streaming code are all acting on --
+    // including when it is out of date, which is a thing that happens and which
+    // spatial_record_matches_volume() below exists to detect.
+    //
+    // The association is doubly linked, so both directions are cheap:
+    //
+    //   LTSpatialRecord.entry_list --record_next-->  this object's sectors
+    //   LTVisSector.entry_list     --hit_next-->     this sector's objects
+    //
+    // and an entry reaches its sector through `hit_head`, which points AT the sector's own
+    // list-head slot -- and since that slot is at offset 0, it points at the sector itself.
+
+    // WHICH SECTORS IS THIS OBJECT IN, per the engine. Empty when the object has no record,
+    // is not culled (see the gate on LTSpatialRecord.entry_list in the schema: an object
+    // failing `(flags & 1) && !(flags2 & 0x700)` is released rather than collected), the tree
+    // is unresolved, or a read faulted.
+    static std::vector<size_t> sectors_for_object(const regenny::LTObject* obj);
+
+    // WHICH OBJECTS ARE IN THIS SECTOR, per the engine -- the reverse index, which no amount
+    // of querying can produce because it needs every object's volume at once. This is what
+    // "what is in this room" wants.
+    static std::vector<const regenny::LTObject*> objects_in_sector(size_t index);
+
+    // The record's own stored entry count, for callers that only need the size. This is a
+    // MAINTAINED counter (LinkEntry increments it, DetachEntries zeroes it), not a hint --
+    // live it equals the walked list length on every record -- so it is worth having
+    // separately from sectors_for_object().size(), which walks.
+    static std::optional<size_t> spatial_entry_count(const regenny::LTObject* obj);
+
+    // DOES THE STORED ANSWER STILL MATCH ITS OWN INPUT? Runs the query using the volume the
+    // record itself stores, and compares against the entries the engine collected.
+    //
+    // This is deliberately narrower than "is the record correct": it holds the volume fixed,
+    // so it cannot be confused by a stale VOLUME (cull_volume_is_current() answers that).
+    // What it catches is a volume that was rewritten without recollecting -- the same class of
+    // bug as the stale world-tree entries, where 370 of 2142 objects had moved without their
+    // index following.
+    //
+    // nullopt when there is no record, no volume, or a read faulted. Note an object with no
+    // entries and no overlaps trivially matches; use spatial_entry_count() if a caller needs
+    // to distinguish "agrees" from "agrees about nothing".
+    static std::optional<bool> spatial_record_matches_volume(const regenny::LTObject* obj);
+
+    // WHERE the stored answer and a fresh query differ, which is the diagnostic a mod chasing
+    // a culling problem actually needs. `missing` are sectors the query finds that the record
+    // does not list -- the object reaches somewhere the engine has not been told about, the
+    // signature of a stale collection. `extra` are sectors the record lists that the query
+    // does not, which would instead mean the SDK's traversal is failing to reach them.
+    //
+    // Keeping the two directions apart is the point: they blame opposite sides, and a single
+    // "does not match" boolean cannot tell a stale engine record from a broken reimplementation.
+    struct RecordDiff {
+        size_t stored;   // entries the record holds
+        size_t computed; // sectors a query on its own stored volume finds
+        size_t missing;  // computed but not stored
+        size_t extra;    // stored but not computed
+    };
+    static std::optional<RecordDiff> spatial_record_diff(const regenny::LTObject* obj);
+
+    // IS THIS OBJECT'S SPATIAL STATE TRUSTWORTHY, by the engine's own rule rather than by a
+    // flat comparison? LTObjectOwner_UpdateSpatialRecord stores the volume UNCONDITIONALLY and
+    // collects only when is_renderable() holds, so the contract has two branches:
+    //
+    //   not renderable  ->  the entry list must be EMPTY (Release ran)
+    //   renderable      ->  the entries must match a query on the stored volume
+    //
+    // Measured live: 1087 of 1087 non-renderable objects have empty lists, so that branch is
+    // exact. This is the predicate to ask before trusting sectors_for_object(); the flat
+    // comparison above answers a narrower question and reports every gated-out object as a
+    // mismatch, which it is not.
+    static std::optional<bool> spatial_record_is_consistent(const regenny::LTObject* obj);
+
     // THE WHOLE QUERY IN ONE CALL: the first sector whose planes contain the point.
     // nullopt means the point is in no sector, which for a world position means outside
     // the playable volume -- exactly what a teleport check wants to know.

@@ -597,6 +597,7 @@ struct CullRaw {
     bool has_record;
     float stored[6];
     bool ok;
+    bool stored_is_sphere = false;
 };
 
 CullRaw seh_read_cull(const regenny::LTObject* obj) {
@@ -653,6 +654,8 @@ CullRaw seh_read_cull(const regenny::LTObject* obj) {
             for (size_t i = 0; i < 6; ++i) {
                 r.stored[i] = rec->volume[i];
             }
+            // The engine's OWN shape tag, written by whichever setter last stored a volume.
+            r.stored_is_sphere = (rec->volume_flags & 0x80u) != 0;
         }
         r.ok = true;
     }
@@ -754,14 +757,28 @@ std::optional<CullVolume> cull_volume(const regenny::LTObject* obj) {
     if (!r.ok || !r.has_record) {
         return std::nullopt;
     }
-    // The stored volume carries no shape tag -- the engine knows it from the type, so the
-    // shape comes from the same rule and only the NUMBERS come from the record.
+    // THE RECORD CARRIES ITS OWN SHAPE TAG, and it is what decides the layout below. An
+    // earlier version re-derived the shape from the object's type instead, on the stated
+    // belief that no such tag existed -- see volume_flags in the schema for the two engine
+    // writers that set and clear it.
+    //
+    // THE TWO AGREE ON EVERY LIVE OBJECT (2215/2215), so this is a corroboration and not a
+    // correction: the type rule was right. It is still worth taking the shape from here,
+    // because the tag is ONE BIT WRITTEN BY THE ENGINE AT STORE TIME while the type rule is a
+    // reimplementation of six virtual functions -- when a future object type appears, or one
+    // of those virtuals is misread, the tag is the side that cannot drift.
+    //
+    // The type rule is still needed for the one thing the tag cannot express: whether a volume
+    // exists at all. The engine calls neither setter for a suppressed object, so the bit keeps
+    // whatever it last held. Existence comes from the gate, the layout from the tag.
     const auto computed = computed_cull_volume(obj);
     if (!computed.has_value()) {
         return std::nullopt;
     }
     CullVolume out{};
-    out.shape = computed->shape;
+    out.shape = computed->shape == CullShape::None
+                    ? CullShape::None
+                    : (r.stored_is_sphere ? CullShape::Sphere : CullShape::Box);
     switch (out.shape) {
         case CullShape::Sphere:
             out.center.x = r.stored[0];

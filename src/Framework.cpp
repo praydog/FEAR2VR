@@ -612,6 +612,120 @@ std::string build_targets_json() {
             }
         }
     }
+    // THE ENGINE'S OWN ANSWER versus my reimplementation of the query that produced it.
+    // LTSpatialRecord_CollectSphere runs LTVisTree_QuerySphere with AddEntry as the callback,
+    // so a record's entry list IS this query's result as the ENGINE computed it, at relink
+    // time, in its own code. Feeding my walk the volume the record itself stores holds the
+    // input fixed, so a disagreement is either my traversal or a record collected against a
+    // volume it no longer holds.
+    int rec_objects = 0, rec_with_entries = 0, rec_match = 0, rec_entries = 0, rec_count_ok = 0;
+    int rev_probed = 0, rev_ok = 0, rev_pairs = 0;
+    int shape_probed = 0, shape_agree = 0;
+    int gate_rend = 0, gate_rend_match = 0, gate_norend = 0, gate_norend_match = 0,
+        gate_norend_empty = 0;
+    int rec_missing = 0, rec_extra = 0, rec_only_missing = 0, rec_only_extra = 0,
+        rec_both = 0, rec_consistent = 0;
+    {
+        auto* rec_mgr = sdk::CClientMgr::get();
+        const size_t types = sdk::CClientMgr::object_list_count();
+        std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(512);
+        for (size_t t = 0; t < types; ++t) {
+            const auto taken = rec_mgr == nullptr
+                                   ? std::nullopt
+                                   : rec_mgr->snapshot_objects(static_cast<sdk::ObjectType>(t),
+                                                     snaps.data(), snaps.size());
+            if (!taken.has_value()) {
+                continue;
+            }
+            for (size_t si2 = 0; si2 < *taken; ++si2) {
+                const auto* obj =
+                    reinterpret_cast<const regenny::LTObject*>(snaps[si2].address);
+                ++rec_objects;
+                const auto secs = sdk::VisTree::sectors_for_object(obj);
+                rec_entries += static_cast<int>(secs.size());
+                if (!secs.empty()) {
+                    ++rec_with_entries;
+                }
+                // the maintained counter against the walked length
+                if (sdk::VisTree::spatial_entry_count(obj).value_or(SIZE_MAX) == secs.size()) {
+                    ++rec_count_ok;
+                }
+                const bool rmatch =
+                    sdk::VisTree::spatial_record_matches_volume(obj).value_or(false);
+                if (rmatch) {
+                    ++rec_match;
+                }
+                // THE GATE. LTObjectOwner_UpdateSpatialRecord stores the volume
+                // UNCONDITIONALLY and collects only `if ((flags & 1) && !(flags2 & 0x700))`,
+                // which is is_renderable(). So a non-renderable object keeps a current volume
+                // with a RELEASED entry list, and "the entries do not match the volume" is the
+                // engine working as designed rather than a fault. Splitting the mismatches by
+                // that gate is what tells the two apart.
+                // WHICH DIRECTION the residual mismatches go. `missing` blames a stale
+                // engine record, `extra` blames this SDK's traversal -- and they must be
+                // counted apart, because a bare "differs" cannot assign blame.
+                if (const auto d = sdk::VisTree::spatial_record_diff(obj); d.has_value()) {
+                    rec_missing += static_cast<int>(d->missing);
+                    rec_extra += static_cast<int>(d->extra);
+                    if (d->missing != 0 && d->extra == 0) {
+                        ++rec_only_missing;
+                    } else if (d->extra != 0 && d->missing == 0) {
+                        ++rec_only_extra;
+                    } else if (d->extra != 0) {
+                        ++rec_both;
+                    }
+                }
+                if (sdk::VisTree::spatial_record_is_consistent(obj).value_or(false)) {
+                    ++rec_consistent;
+                }
+                const bool rend = sdk::is_renderable(obj).value_or(false);
+                if (rend) {
+                    ++gate_rend;
+                    if (rmatch) {
+                        ++gate_rend_match;
+                    }
+                } else {
+                    ++gate_norend;
+                    if (rmatch) {
+                        ++gate_norend_match;
+                    }
+                    if (secs.empty()) {
+                        ++gate_norend_empty;
+                    }
+                }
+                // THE TAG AGAINST THE TYPE RULE. cull_volume() now takes the layout from the
+                // record's own bit; computed_cull_volume() still derives it from the object's
+                // type. Where they differ, the old code was reading a sphere's four floats as
+                // a box's six or the reverse.
+                if (const auto sv = sdk::cull_volume(obj); sv.has_value()) {
+                    if (const auto cv = sdk::computed_cull_volume(obj); cv.has_value()) {
+                        ++shape_probed;
+                        if (sv->shape == cv->shape) {
+                            ++shape_agree;
+                        }
+                    }
+                }
+                // THE REVERSE INDEX must agree with the forward one: if this object lists a
+                // sector, that sector must list this object. One doubly-linked structure read
+                // from both ends -- a wrong hit_next or hit_head breaks the pairing while each
+                // direction still looks like a plausible list.
+                for (const size_t si : secs) {
+                    ++rev_probed;
+                    const auto objs = sdk::VisTree::objects_in_sector(si);
+                    for (const auto* o : objs) {
+                        if (o == obj) {
+                            ++rev_ok;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < nsec; ++i) {
+            rev_pairs += static_cast<int>(sdk::VisTree::objects_in_sector(static_cast<size_t>(i)).size());
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -789,6 +903,14 @@ std::string build_targets_json() {
              "\"box_probes\":%d,\"box_agree\":%d,\"box_hits\":%d,"
              "\"code_probed\":%d,\"code_current\":%d,"
              "\"contain_probes\":%d,\"contain_ok\":%d,\"contain_sphere\":%d,"
+             "\"rec_objects\":%d,\"rec_with_entries\":%d,\"rec_match\":%d,"
+             "\"rec_entries\":%d,\"rec_count_ok\":%d,"
+             "\"rev_probed\":%d,\"rev_ok\":%d,\"rev_pairs\":%d,"
+             "\"shape_probed\":%d,\"shape_agree\":%d,"
+             "\"gate_rend\":%d,\"gate_rend_match\":%d,\"gate_norend\":%d,"
+             "\"gate_norend_match\":%d,\"gate_norend_empty\":%d,"
+             "\"rec_missing\":%d,\"rec_extra\":%d,\"rec_only_missing\":%d,"
+             "\"rec_only_extra\":%d,\"rec_both\":%d,\"rec_consistent\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -864,6 +986,11 @@ std::string build_targets_json() {
              region_probes, region_agree, region_hits,
              box_probes, box_agree, box_hits, code_probed, code_current,
              contain_probes, contain_ok, contain_sphere,
+             rec_objects, rec_with_entries, rec_match, rec_entries, rec_count_ok,
+             rev_probed, rev_ok, rev_pairs, shape_probed, shape_agree,
+             gate_rend, gate_rend_match, gate_norend, gate_norend_match, gate_norend_empty,
+             rec_missing, rec_extra, rec_only_missing, rec_only_extra, rec_both,
+             rec_consistent,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,
@@ -1606,8 +1733,8 @@ std::string build_objects_json() {
               api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
-            const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
-                                                    snaps.size());
+            const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t),
+                                                     snaps.data(), snaps.size());
             if (!taken.has_value()) {
                 continue;
             }

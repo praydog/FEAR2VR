@@ -963,6 +963,54 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **The engine's STORED results are the best oracle available, and they are usually free.**
+  Every spatial check before this compared a query against a scan built on the SDK's own
+  per-sector test. But `LTSpatialRecord_CollectSphere` runs `LTVisTree_QuerySphere` with
+  `AddEntry` as its callback, so each object's entry list *is* this query's output as the
+  ENGINE computed it -- different code, different moment, same stored input. Feeding the SDK
+  the volume the record itself holds makes the comparison exact.
+
+  Result: `extra == 0` over 2565 entries -- the reimplementation reaches every association the
+  engine made. No hand-written oracle earns that.
+
+  Look for stored results generally: a cache, an index, a record, a count the engine maintains
+  for its own use is a free answer key for whatever computed it.
+
+- **Count the DIRECTION of a disagreement before naming its cause.** 569 of 2215 records
+  disagreed with a query on their own volume. "Stale" was the obvious guess and it was wrong
+  about most of them. Splitting the difference into `missing` (query found it, record did not)
+  and `extra` (record has it, query missed it) assigns blame, because the two accuse opposite
+  sides -- a stale engine record versus a hole in this SDK's traversal.
+
+  `extra` was 0 everywhere, so the traversal was sound and every mismatch was the record
+  lagging. A single "does not match" boolean cannot make that distinction, so the SDK exposes
+  `spatial_record_diff()` with both counts rather than a bare bool.
+
+- **A gate explains a mismatch population; find it before calling anything a bug.** Of those
+  569, five hundred and fifty-three were objects the engine deliberately never collected:
+  `LTObjectOwner_UpdateSpatialRecord` stores the volume UNCONDITIONALLY and collects only when
+  `is_renderable()`, so a non-renderable object legitimately holds a current volume beside an
+  empty list. 1087 of 1087 such objects were empty -- the gate is exact, not statistical.
+
+  THIS IS THE THIRD TIME the same asymmetry has appeared: `LTObject_SetPos` writes the AABB
+  unconditionally and relinks the world tree only when renderable; `LTSpatialRecord_SetSphere`
+  is called before the collect gate. Treat "one writer, two consistency domains, an
+  eligibility test between them" as a house pattern and look for the gate first.
+
+- **A refuted hypothesis still pays if it was CHEAP and the measurement is kept.** `unk_10`'s
+  discovery suggested the record might also tag its shape, and it does -- bit 0x80 of
+  `volume_flags`, set by the sphere writer and cleared by the AABB writer. I predicted this
+  would explain the 569 mismatches, since the SDK was re-deriving the shape from the object's
+  type on the written-down belief that no tag existed.
+
+  It explained none of them: tag and type rule agree 2215/2215. The prediction was wrong and
+  the finding was still worth keeping -- the shape now comes from one engine-written bit
+  instead of a reimplementation of six virtual functions, and the agreement is corroboration
+  from two independent routes.
+
+  The discipline that matters: I had already written "disagreed on 569 of 2215" into the code
+  comment as the justification, BEFORE measuring. It was false. Write the number down only
+  after the run prints it.
 - **An unmapped field is often a CACHE, and finding its source proves both at once.**
   `LTVisPlane+0x10` sat as `unk_10` for several passes because the sphere path never touches
   it. It turned up as the first argument to the BOX path's plane reject, indexing an

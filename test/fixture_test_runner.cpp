@@ -728,6 +728,101 @@ int main(int argc, char** argv) {
                static_cast<long long>(cnok), static_cast<long long>(cnp),
                static_cast<long long>(cnsph));
 
+        // ---- THE ENGINE'S OWN ANSWER, and what it validates ---------------------------
+        //
+        // LTSpatialRecord_CollectSphere runs LTVisTree_QuerySphere with AddEntry as its
+        // callback, so every entry the engine holds is a result THIS SDK's query should also
+        // produce -- computed by different code, at a different time, from the same volume.
+        // That makes the stored entries a genuine external oracle for the traversal, unlike a
+        // full scan built on the SDK's own per-sector test.
+        int64_t robj = -1, rents = -1, rcnt_ok = -1, rmiss = -1, rextra = -1;
+        int64_t ronly_missing = -1, ronly_extra = -1, rboth = -1, rconsist = -1;
+        json_int(body, "rec_objects", robj);
+        json_int(body, "rec_entries", rents);
+        json_int(body, "rec_count_ok", rcnt_ok);
+        json_int(body, "rec_missing", rmiss);
+        json_int(body, "rec_extra", rextra);
+        json_int(body, "rec_only_missing", ronly_missing);
+        json_int(body, "rec_only_extra", ronly_extra);
+        json_int(body, "rec_both", rboth);
+        json_int(body, "rec_consistent", rconsist);
+        check(robj > 0, "objects were walked");
+        check(rents > 0, "the engine holds spatial entries, so the comparison is not vacuous");
+
+        // THE LOAD-BEARING ONE. `extra` means the record names a sector the SDK's query does
+        // not reach, which would be a hole in the traversal. Zero says the reimplementation
+        // reproduces every association the engine made, and it is asserted rather than
+        // reported because a regression here is a bug in this code, not in the scene.
+        check(rextra == 0,
+              "the SDK's query reaches EVERY sector the engine itself collected (no extras)");
+        check(ronly_extra == 0 && rboth == 0,
+              "every disagreement is one-directional: the record is a subset, never a superset");
+
+        // The maintained counter against the walked list length -- two representations of one
+        // fact, both the engine's, neither derived from the other by this code.
+        check(rcnt_ok == robj, "entry_count equals the walked list length on EVERY object");
+
+        // Consistency by the engine's own two-branch rule. The residual is real staleness --
+        // renderable objects that reach somewhere their record was never told about, the same
+        // phenomenon as the stale world-tree entries -- so it is bounded rather than required
+        // to be zero. The DIRECTION is the invariant; the count is scene-dependent.
+        check(rconsist > robj - robj / 20,
+              "at least 95% of objects are spatially consistent by the engine's own rule");
+        printf("[fixture] engine records: %lld entries over %lld objects, %lld reachable by "
+               "query, %lld missing; consistent %lld/%lld (%lld stale)\n",
+               static_cast<long long>(rents), static_cast<long long>(robj),
+               static_cast<long long>(rents - rextra), static_cast<long long>(rmiss),
+               static_cast<long long>(rconsist), static_cast<long long>(robj),
+               static_cast<long long>(robj - rconsist));
+
+        // ---- THE COLLECT GATE is exact -----------------------------------------------
+        //
+        // The volume write is UNCONDITIONAL and the collect is gated on is_renderable(), so a
+        // non-renderable object must hold a released (empty) list while its volume stays
+        // current. This is the third place the same asymmetry has turned up -- LTObject_SetPos
+        // writes the AABB unconditionally and relinks only when renderable -- which is why it
+        // is asserted as a rule and not treated as a coincidence.
+        int64_t gnr = -1, gnr_empty = -1, gr = -1;
+        json_int(body, "gate_norend", gnr);
+        json_int(body, "gate_norend_empty", gnr_empty);
+        json_int(body, "gate_rend", gr);
+        check(gnr > 0 && gr > 0, "both sides of the collect gate are populated");
+        check(gnr_empty == gnr,
+              "EVERY non-renderable object has an empty entry list -- the gate is exact");
+
+        // The record's own shape tag against the type rule: one bit the engine writes at store
+        // time, versus a reimplementation of six virtual functions. Agreement is corroboration
+        // from two independent routes, and a divergence would mean stored volumes are being
+        // read with the wrong four-versus-six-float layout.
+        int64_t shp = -1, shp_ok = -1;
+        json_int(body, "shape_probed", shp);
+        json_int(body, "shape_agree", shp_ok);
+        check(shp > 0, "shapes were compared");
+        check(shp_ok == shp,
+              "the record's own shape tag agrees with the type rule on EVERY object");
+        printf("[fixture] collect gate: %lld/%lld non-renderable released, %lld renderable; "
+               "shape tag %lld/%lld agrees\n",
+               static_cast<long long>(gnr_empty), static_cast<long long>(gnr),
+               static_cast<long long>(gr), static_cast<long long>(shp_ok),
+               static_cast<long long>(shp));
+
+        // ---- THE REVERSE INDEX pairs back --------------------------------------------
+        //
+        // One doubly-linked structure read from both ends: if an object lists a sector, that
+        // sector must list the object. A wrong hit_next or hit_head breaks the pairing while
+        // each direction still walks a plausible-looking list.
+        int64_t rvp = -1, rvok = -1, rvpairs = -1;
+        json_int(body, "rev_probed", rvp);
+        json_int(body, "rev_ok", rvok);
+        json_int(body, "rev_pairs", rvpairs);
+        check(rvp > 0, "associations were probed in both directions");
+        check(rvok == rvp, "EVERY object->sector association is present in the reverse index");
+        check(rvpairs >= rvp, "the sectors' own lists hold at least the sampled associations");
+        printf("[fixture] reverse index: %lld/%lld associations pair back (%lld total sector "
+               "entries)\n",
+               static_cast<long long>(rvok), static_cast<long long>(rvp),
+               static_cast<long long>(rvpairs));
+
         // ---- PORTALS AND CONNECTIVITY ------------------------------------------------
         //
         // The load-bearing property is SYMMETRY. Both directions of an edge come from ONE

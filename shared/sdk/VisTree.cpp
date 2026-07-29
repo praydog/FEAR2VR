@@ -11,6 +11,10 @@
 #include "regenny/regenny/LTWorldTreeLink.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 #include "regenny/regenny/LTObject.hpp"
+#include "regenny/regenny/LTSpatialEntry.hpp"
+#include "regenny/regenny/LTSpatialRecord.hpp"
+
+#include "Object.hpp"
 
 #include "interfaces/IWorldClientBSP.hpp"
 
@@ -1335,16 +1339,16 @@ namespace sdk {
 
 namespace {
 
-struct Box {
+struct QueryBox {
     float mn[3];
     float mx[3];
 };
 
 // A mod computing a play space from two tracked points has no reason to have sorted them.
-Box normalised_box(const regenny::LTVector& a, const regenny::LTVector& b) {
+QueryBox normalised_box(const regenny::LTVector& a, const regenny::LTVector& b) {
     const float av[3] = {a.x, a.y, a.z};
     const float bv[3] = {b.x, b.y, b.z};
-    Box out{};
+    QueryBox out{};
     for (size_t i = 0; i < 3; ++i) {
         out.mn[i] = av[i] < bv[i] ? av[i] : bv[i];
         out.mx[i] = av[i] < bv[i] ? bv[i] : av[i];
@@ -1388,7 +1392,7 @@ std::optional<bool> VisTree::sector_overlaps_box(size_t index, const regenny::LT
     if (!s.has_value()) {
         return std::nullopt;
     }
-    const Box q = normalised_box(min, max);
+    const QueryBox q = normalised_box(min, max);
     // LTVisSector_AABBOverlapsAABB: separated on any axis means no overlap.
     const float smn[3] = {s->min.x, s->min.y, s->min.z};
     const float smx[3] = {s->max.x, s->max.y, s->max.z};
@@ -1418,7 +1422,7 @@ std::optional<bool> VisTree::sector_overlaps_box(size_t index, const regenny::LT
 namespace {
 
 // LTVisTree_QueryAABB's descent, POD in and POD out.
-int64_t seh_box_sectors(const regenny::LTVisTree* tree, const Box& q, size_t* out,
+int64_t seh_box_sectors(const regenny::LTVisTree* tree, const QueryBox& q, size_t* out,
                         size_t max_out) {
     int64_t found = -1;
     KANANLIB_SEH_TRY {
@@ -1513,7 +1517,7 @@ std::vector<VisTree::Sector> VisTree::sectors_in_box(const regenny::LTVector& mi
     if (max_results == 0 || max_results > 4096) {
         max_results = 256;
     }
-    const Box q = normalised_box(min, max);
+    const QueryBox q = normalised_box(min, max);
     std::vector<size_t> idx(max_results);
     const int64_t n = seh_box_sectors(tree, q, idx.data(), max_results);
     if (n <= 0) {
@@ -1530,6 +1534,222 @@ std::vector<VisTree::Sector> VisTree::sectors_in_box(const regenny::LTVector& mi
         }
     }
     return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// LTSpatialRecord.entry_list threaded by record_next. Each entry's hit_head points AT the
+// sector's own list-head slot, and that slot is at offset 0, so it IS the sector address --
+// which is how an entry names its sector without storing an index.
+int64_t seh_record_sectors(const regenny::LTObject* obj, const regenny::LTVisSector* sectors,
+                           uint32_t sector_count, size_t* out, size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* rec = obj->spatial_record;
+        if (rec == nullptr) {
+            return -1;
+        }
+        size_t n = 0;
+        const auto* e = static_cast<const regenny::LTSpatialEntry*>(
+            static_cast<const void*>(rec->entry_list));
+        size_t guard = 0;
+        while (e != nullptr && n < max_out && guard < 4096) {
+            ++guard;
+            const auto sa = reinterpret_cast<uintptr_t>(e->hit_head);
+            const auto ba = reinterpret_cast<uintptr_t>(sectors);
+            if (sa >= ba) {
+                const uintptr_t off = sa - ba;
+                if (off % sizeof(regenny::LTVisSector) == 0) {
+                    const uintptr_t idx = off / sizeof(regenny::LTVisSector);
+                    if (idx < sector_count) {
+                        out[n++] = static_cast<size_t>(idx);
+                    }
+                }
+            }
+            e = e->record_next;
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+// The reverse walk: LTVisSector.entry_list threaded by hit_next, each entry naming its owner
+// through record->object.
+int64_t seh_sector_objects(const regenny::LTVisSector* sector, const regenny::LTObject** out,
+                           size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        size_t n = 0;
+        const auto* e = sector->entry_list;
+        size_t guard = 0;
+        while (e != nullptr && n < max_out && guard < 65536) {
+            ++guard;
+            const auto* rec = static_cast<const regenny::LTSpatialRecord*>(
+                static_cast<const void*>(e->record));
+            if (rec != nullptr) {
+                const auto* o = static_cast<const regenny::LTObject*>(
+                    static_cast<const void*>(rec->object));
+                if (o != nullptr) {
+                    out[n++] = o;
+                }
+            }
+            e = e->hit_next;
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+int64_t seh_entry_count(const regenny::LTObject* obj) {
+    int64_t n = -1;
+    KANANLIB_SEH_TRY {
+        const auto* rec = obj->spatial_record;
+        n = rec == nullptr ? -1 : static_cast<int64_t>(rec->entry_count);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        n = -1;
+    }
+    return n;
+}
+
+}  // namespace
+
+std::vector<size_t> VisTree::sectors_for_object(const regenny::LTObject* obj) {
+    std::vector<size_t> out;
+    const auto* tree = get();
+    if (tree == nullptr || obj == nullptr) {
+        return out;
+    }
+    const auto* sectors = tree->sectors;
+    const uint32_t count = tree->sector_count;
+    if (sectors == nullptr || count == 0) {
+        return out;
+    }
+    // entry_count is a uint16, so this bound is the field's own maximum.
+    std::vector<size_t> idx(1024);
+    const int64_t n = seh_record_sectors(obj, sectors, count, idx.data(), idx.size());
+    if (n <= 0) {
+        return out;
+    }
+    out.assign(idx.begin(), idx.begin() + static_cast<size_t>(n));
+    return out;
+}
+
+std::vector<const regenny::LTObject*> VisTree::objects_in_sector(size_t index) {
+    std::vector<const regenny::LTObject*> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    const auto* sectors = tree->sectors;
+    if (sectors == nullptr || index >= tree->sector_count) {
+        return out;
+    }
+    std::vector<const regenny::LTObject*> buf(4096);
+    const int64_t n = seh_sector_objects(&sectors[index], buf.data(), buf.size());
+    if (n <= 0) {
+        return out;
+    }
+    out.assign(buf.begin(), buf.begin() + static_cast<size_t>(n));
+    return out;
+}
+
+std::optional<size_t> VisTree::spatial_entry_count(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const int64_t n = seh_entry_count(obj);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(n);
+}
+
+std::optional<VisTree::RecordDiff> VisTree::spatial_record_diff(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    // The volume the RECORD stores, not the one the object's fields imply -- holding it fixed
+    // is what makes this a check of the collection step alone.
+    const auto vol = cull_volume(obj);
+    if (!vol.has_value()) {
+        return std::nullopt;
+    }
+    std::vector<Sector> want;
+    switch (vol->shape) {
+    case CullShape::Sphere:
+        want = sectors_in_sphere(vol->center, vol->radius, 1024);
+        break;
+    case CullShape::Box:
+        want = sectors_in_box(vol->min, vol->max, 1024);
+        break;
+    case CullShape::None:
+        break;  // nothing to collect
+    }
+    const auto have = sectors_for_object(obj);
+    RecordDiff out{};
+    out.stored = have.size();
+    out.computed = want.size();
+    for (const auto& w : want) {
+        bool seen = false;
+        for (const size_t h : have) {
+            if (h == w.index) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            ++out.missing;
+        }
+    }
+    for (const size_t h : have) {
+        bool seen = false;
+        for (const auto& w : want) {
+            if (h == w.index) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            ++out.extra;
+        }
+    }
+    return out;
+}
+
+std::optional<bool> VisTree::spatial_record_matches_volume(const regenny::LTObject* obj) {
+    const auto d = spatial_record_diff(obj);
+    if (!d.has_value()) {
+        return std::nullopt;
+    }
+    return d->missing == 0 && d->extra == 0;
+}
+
+std::optional<bool> VisTree::spatial_record_is_consistent(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto rend = is_renderable(obj);
+    if (!rend.has_value()) {
+        return std::nullopt;
+    }
+    // Gated out: the engine ran Release, so the only correct state is an empty list. Note this
+    // deliberately does NOT look at the volume, which stays current -- the volume write is
+    // unconditional and only the collect is gated.
+    if (!*rend) {
+        return sectors_for_object(obj).empty();
+    }
+    return spatial_record_matches_volume(obj);
 }
 
 }  // namespace sdk
