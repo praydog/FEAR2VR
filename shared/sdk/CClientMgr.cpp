@@ -11,6 +11,7 @@
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
+#include "regenny/regenny/LTSpriteObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
@@ -784,6 +785,48 @@ int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t 
     return result;
 }
 
+// Classifies OT_SPRITE volumes. The provider hard-codes which KIND bytes are
+// AABB-shaped, so the split is an interface fact while the kind values are not.
+// Each shape is sanity-checked on its own fields: ordering for the AABB, a
+// finite positive radius for the sphere.
+int64_t seh_check_sprite_volumes(const regenny::CClientMgrListLink* head, size_t max,
+                                 size_t* aabb_n, size_t* sphere_n, size_t* ordered,
+                                 size_t* radius_ok, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const uint8_t k = s->kind;
+                if (k == 3 || k == 4 || k == 7 || k == 9) {
+                    ++*aabb_n;
+                    if (s->aabb_min.x <= s->aabb_max.x && s->aabb_min.y <= s->aabb_max.y &&
+                        s->aabb_min.z <= s->aabb_max.z) {
+                        ++*ordered;
+                    }
+                } else {
+                    ++*sphere_n;
+                    const float r = s->radius;
+                    if (r > 0.0f && r == r && r < 1.0e30f) {
+                        ++*radius_ok;
+                    }
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
 // Classifies OT_PARTICLESYSTEM volume kinds. The provider returns this byte, so
 // 1 and 2 are the only values the interface can mean.
 int64_t seh_check_particle_volumes(const regenny::CClientMgrListLink* head, size_t max,
@@ -844,6 +887,16 @@ std::optional<CClientMgr::CullVolumeCheck> CClientMgr::check_cull_volumes(
         return std::nullopt;
     }
     out.particles = static_cast<size_t>(np);
+
+    constexpr size_t kSprite = 3;
+    const int64_t ns = seh_check_sprite_volumes(&regenny()->object_lists[kSprite], max_per_type,
+                                               &out.sprite_aabb, &out.sprite_sphere,
+                                               &out.sprite_aabb_ordered, &out.sprite_radius_ok,
+                                               max_object_walk);
+    if (ns < 0) {
+        return std::nullopt;
+    }
+    out.sprites = static_cast<size_t>(ns);
     return out;
 }
 

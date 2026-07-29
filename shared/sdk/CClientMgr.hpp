@@ -394,6 +394,16 @@ public:
         size_t particle_type_ok;     // cull_volume_type is 1 or 2
         size_t particle_sphere;      // cull_volume_type == 1
         size_t particle_aabb;        // cull_volume_type == 2
+        // OT_SPRITE's selector is a KIND byte, not a volume enum: the provider
+        // hard-codes kinds 3/4/7/9 as AABB-shaped and everything else as a
+        // sphere. So unlike the particle case, the legal values are not fixed by
+        // the interface -- only the split is. Each shape gets its own sanity
+        // check because they read different fields.
+        size_t sprites;              // OT_SPRITE objects examined
+        size_t sprite_aabb;          // kind in {3,4,7,9}
+        size_t sprite_sphere;        // any other kind
+        size_t sprite_aabb_ordered;  // of the AABB kinds, aabb_min <= aabb_max componentwise
+        size_t sprite_radius_ok;     // of the sphere kinds, radius finite and > 0
     };
 
     // nullopt on fault or a walk that failed to terminate.

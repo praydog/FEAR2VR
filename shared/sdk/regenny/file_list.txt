@@ -23,3 +23,4 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgr.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTParticleSystemObject.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTSpriteObject.hpp" \

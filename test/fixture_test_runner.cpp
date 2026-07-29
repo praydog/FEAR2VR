@@ -752,6 +752,12 @@ int main(int argc, char** argv) {
                     json_int(cb, "particle_type_ok", tok);
                     json_int(cb, "particle_sphere", sph);
                     json_int(cb, "particle_aabb", aabb);
+                    int64_t spr = -1, sab = -1, ssp = -1, sord = -1, srad = -1;
+                    json_int(cb, "sprites", spr);
+                    json_int(cb, "sprite_aabb", sab);
+                    json_int(cb, "sprite_sphere", ssp);
+                    json_int(cb, "sprite_aabb_ordered", sord);
+                    json_int(cb, "sprite_radius_ok", srad);
 
                     check(models > 0, "OT_MODEL objects present to check cull radii");
                     check(vispos == models, "every OT_MODEL has vis_radius > 0");
@@ -767,6 +773,19 @@ int main(int argc, char** argv) {
                           "particle volume kinds partition into sphere and AABB");
                     check(sph > 0, "sphere-volume particle systems exist (kind 1 exercised)");
                     check(aabb > 0, "AABB-volume particle systems exist (kind 2 exercised)");
+
+                    // OT_SPRITE. The kind byte is NOT a volume enum, so unlike
+                    // the particle case there is no interface-fixed value set to
+                    // assert -- only the split, and each shape's own fields.
+                    check(spr > 0, "OT_SPRITE objects present to check cull volumes");
+                    check(sab + ssp == spr, "sprite kinds partition into AABB-shaped and sphere");
+                    check(sord == sab, "every AABB-kind sprite has aabb_min <= aabb_max");
+                    check(srad == ssp, "every sphere-kind sprite has a finite positive radius");
+                    // Both shapes are populated live (9 AABB / 215 sphere), so
+                    // requiring both keeps the two field sets genuinely exercised
+                    // rather than one of them passing on an empty set.
+                    check(sab > 0, "AABB-kind sprites exist (aabb fields exercised)");
+                    check(ssp > 0, "sphere-kind sprites exist (radius field exercised)");
                 }
             }
         }

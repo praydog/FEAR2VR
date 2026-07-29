@@ -504,6 +504,24 @@ class LTObject 0xCC {
     void* self               @0x84   // CONFIRMED == this object's own address on 3583/3583. Not vestigial: it exists so a child_list walker can recover the OBJECT from a bare parent_link -- LTObject_DetachAllChildren reads link[2], which is exactly this field at parent_link + 0x08.
     LTObject* parent         @0x88   // CONFIRMED: written by LTObject_SetParent, cleared by LTObject_DetachFromParent, and used as that function's gate. Live, every child reached by walking a child_list names its walker here (1/1 -- see the population caveat below).
     uint32_t attach_extra    @0x8C   // CONFIRMED written alongside parent by LTObject_SetParent (its third argument) and zeroed by LTObject_DetachFromParent, so it is per-attachment state. Meaning unverified -- a socket/node index would fit the engine's attachment model but nothing read so far consumes it.
+    // slot_index's WRITER IS NOT IDENTIFIED, and one plausible candidate has
+    // been RULED OUT by measurement. Recorded so nobody re-walks this path:
+    //
+    // SlotIndex_AcquireOrRelease (0x444B9B) is a textbook acquire/release on a
+    // +0xA8 field -- it calls SlotTable_Acquire (0x459CB3) when a predicate holds
+    // and no slot is held, and SlotTable_Release (0x4599DC) plus a -1 store when
+    // the predicate fails. Its gate, SlotIndex_WantsSlot (0x44365E), even reads
+    // offsets that look exactly LTObject-shaped: a BYTE type at +0x10, +0x38, a
+    // DWORD flag word at +0x3C, a WORD flag word at +0x46, and +0xEC.
+    //
+    // But transcribing that predicate and evaluating it over live memory gives
+    // TRUE on 0 of 3583 objects, while 3248 hold slots. The blocker is its
+    // `flags3 & 4` clause, which passes on 0/3583 -- every OTHER clause passes on
+    // 2138..3583. So either it operates on a different class that happens to
+    // share the layout, or it is a real LTObject path for a state that does not
+    // occur at the main menu; either way it did NOT assign the values that are
+    // there. A scan for writes to [reg+0xA8] found 70 sites across many unrelated
+    // classes, so offset coincidence is the likely explanation.
     uint32_t slot_index   @0xA8   // CONFIRMED uint32, NOT a float. The ctor's value renders as `NAN` in the decompiler because the constant is 0xFFFFFFFF, and read as a float the live values are denormals (max 5.4e-42) -- which is what exposed the mistake. Read as uint32: 0xFFFFFFFF on 335 objects (a "none" sentinel), and on the other 3248 the values are ALL DISTINCT (3248 distinct values, zero duplicates) in the range 0..3885. So this is a unique per-object slot index into some ~3886-entry table. It is NOT `handle`: it matches +0x12 on 0/3248. Which table it indexes is unmapped.
     CClientMgrListLink list_link  @0xAC   // CONFIRMED: the object_lists[] threading point (walkers do `link - 172`); the ctor self-points it, matching an unlinked object
     CClientMgrListLink owned_list @0xB8   // CONFIRMED list head, self-pointed by the ctor, and CONFIRMED NON-EMPTY in practice: 1931 of 3583 live objects hold entries, 3260 entries in total (by owner type: 1168 OT_NORMAL, 910 OT_MODEL, 662 OT_WORLDMODEL, 474 OT_CAMERA, 45 OT_SPRITE, 1 OT_PARTICLESYSTEM). An earlier draft of this comment claimed every list was empty -- that was written without checking and was wrong. LTObject_ReleaseOwnedList (0x4206E8) drains it, recovering each element as `link - 4` (the element's own link pair sits at element+0x04/+0x08) and calling the element's vtable slots 3 and 1. The recovery is right and the elements ARE vtable-bearing: the three dominant vtables (x2372, x534, x346) are heap addresses whose slots point into GameClient.dll, so these are GAME-side objects owned by an engine object -- the engine/game boundary showing up in data. 7 more entries use an exe-side vtable at 0x66F6A0. Element layout unmapped.
@@ -904,6 +922,21 @@ class LTParticleSystemObject 0x108 {
     float sphere_radius        @0xEC   // CONFIRMED: the sphere radius (type 1)
     LTVector aabb_min_offset   @0xF0   // CONFIRMED: added to LTObject.position to give the AABB min (type != 1)
     LTVector aabb_max_offset   @0xFC   // CONFIRMED: added to LTObject.position to give the AABB max. Ends at 0x108 == the class size.
+}
+
+// The concrete class behind object type 3. 340 bytes (0x154) from its bank's
+// element_size. Only the cull-volume fields are mapped.
+//
+// Unlike OT_PARTICLESYSTEM, the selector here is NOT a volume-kind enum: the
+// provider switches on a KIND byte and hard-codes which kinds are AABB-shaped
+// (3, 4, 7 and 9), returning a sphere for everything else. So the byte
+// identifies what the sprite IS and the volume shape follows from that.
+class LTSpriteObject 0x154 {
+    LTObject base          @0x00    // CONFIRMED: the first 0xCC bytes are an LTObject
+    uint8_t kind           @0x106   // CONFIRMED selector in OT_SPRITE_GetCullVolume: kinds 3/4/7/9 take the AABB path, all others the sphere path. Live values span 1..9 across 224/224 objects (6 is the most common at 112), so this is a small dense enum -- but only the AABB-vs-sphere split is proven; what each kind MEANS is unmapped.
+    LTVector aabb_min      @0x120   // CONFIRMED: passed to LTMath_WriteAABB as the min for AABB kinds. Live, min <= max componentwise on 9/9 AABB-kind sprites.
+    LTVector aabb_max      @0x12C   // CONFIRMED: the max for AABB kinds
+    float radius           @0x138   // CONFIRMED: the sphere radius for all other kinds, paired with LTObject.position as the centre. Live, finite and > 0 on 215/215 sphere-kind sprites.
 }
 
 }

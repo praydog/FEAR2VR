@@ -92,6 +92,30 @@ for the full evidence trail this recipe produced).
   Provable attribution looks like: the offset is read inside a method whose
   `this` IS the class (e.g. `CClientMgr::Update` reading `this + 5120`
   directly), or the call site visibly loads `ecx` from that object.
+- **The same hazard runs BACKWARDS: searching for a field's writer by OFFSET
+  finds every class that happens to share that offset.** Looking for who assigns
+  `LTObject.slot_index` (+0xA8), an instruction scan for `mov [reg+0A8h], ...`
+  returned **70 sites across many unrelated classes**. One of them,
+  `SlotIndex_AcquireOrRelease` (0x444B9B), was a textbook match: allocate a slot
+  when a predicate holds and none is held, free it and store -1 otherwise --
+  precisely the shape of the -1 sentinel already mapped. Its gate even reads
+  offsets that look LTObject-shaped (a BYTE type at +0x10, +0x38, a DWORD flag
+  word at +0x3C, a WORD flag word at +0x46, +0xEC).
+  It is still not the writer. **Transcribe the predicate and evaluate it over
+  live memory** -- that is the cheap decisive test, and here it returned TRUE on
+  **0 of 3583** objects while 3248 hold slots. One clause (`flags3 & 4`) passes
+  on 0/3583 while every other passes on 2138..3583, which localises the
+  disagreement instead of leaving a vague doubt.
+  Two things worth keeping from this:
+  * A predicate is *executable evidence*. When a candidate function claims to
+    gate a field, run its condition against the live population and compare to
+    the field's actual distribution. Agreement is strong support; total
+    disagreement is a refutation, and a per-clause breakdown tells you which
+    assumption broke.
+  * **Write the negative result down next to the field.** A ruled-out candidate
+    that looks this convincing will be rediscovered and re-believed otherwise.
+    `slot_index`'s comment records the address, the measurement and the number,
+    so the next pass starts after this dead end rather than inside it.
 - Two functions at *different vtable slots* sharing the *identical* body
   address is real (ICF/linker folding when two methods compile identically —
   e.g. `GetNumRecords`/some other `GetNumX` both reducing to `return *(a1+8)`).
