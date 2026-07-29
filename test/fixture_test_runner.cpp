@@ -570,6 +570,38 @@ int main(int argc, char** argv) {
               "path_to_root terminates for every node found by name");
         check(body.find("\"materials\":-1") == std::string::npos,
               "model_materials answers for every listed model");
+
+        // HANDLE ROUND-TRIP. The engine's HOBJECT is an index into CClientMgr's
+        // handle table, so every ILT* call a mod makes depends on this conversion
+        // being right. The DLL takes each object's own handle, resolves it back
+        // through object_from_handle, and requires the SAME object out.
+        //
+        // This is a contract check, not a layout check: it would catch the table
+        // pointer moving, the tag convention changing, or the entry stride being
+        // wrong -- all of which would leave a mod silently holding other people's
+        // objects.
+        int64_t hseen = -1, hround = -1, habsent = -1, hslots = -1;
+        json_int(body, "handles_seen", hseen);
+        json_int(body, "handles_round_trip", hround);
+        json_int(body, "handles_absent", habsent);
+        json_int(body, "handle_table_slots", hslots);
+
+        check(hseen > 0, "objects with handles exist, so the round-trip is not vacuous");
+        check(hround == hseen, "every handle resolves back to the object that carries it");
+        // Objects without a handle are normal -- live 335 of 3583 across all types --
+        // so absence is reported rather than asserted away.
+        check(habsent >= 0, "objects without a handle are counted, not treated as failures");
+        check(hslots > hseen,
+              "the handle table is sparser than the live object count (handles are not dense)");
+
+        // PATH SEARCH, the way a mod identifies its target. An empty needle must
+        // match every model -- that is what makes a non-empty needle's smaller
+        // result meaningful rather than just a failure to match.
+        int64_t fw = -1, fa = -1;
+        json_int(body, "found_weapons", fw);
+        json_int(body, "found_all", fa);
+        check(fa == model_objects, "find_models(\"\") returns every live model object");
+        check(fw > 0 && fw <= fa, "find_models(\"weapons\") matches a real subset");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised

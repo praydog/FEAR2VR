@@ -387,10 +387,39 @@ std::string build_models_json() {
         ++emitted;
     }
 
-    char sum[224];
+    // A HANDLE ROUND-TRIP over every model, done the way a mod must: take the
+    // handle an object carries, hand it back to the engine's own table, and require
+    // the same object out. This is the conversion every ILT* call depends on, so it
+    // is worth proving rather than assuming -- and it is checked here, at the API,
+    // rather than by re-deriving the table layout host-side.
+    size_t handles_seen = 0, handles_round_trip = 0, handles_absent = 0;
+    for (size_t si = 0; si < *taken; ++si) {
+        const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
+        const auto h = mgr->handle_of(obj);
+        if (!h.has_value()) {
+            ++handles_absent;  // legal: 335 of 3583 live objects carry no handle
+            continue;
+        }
+        ++handles_seen;
+        if (mgr->object_from_handle(*h) == obj) {
+            ++handles_round_trip;
+        }
+    }
+
+    // And a search the way a mod identifies what it cares about: by path substring.
+    // "weapons" is a stable directory in this game's asset tree, so it is a fair
+    // demonstration without pinning an exact filename that a level change would move.
+    const auto weapons = sdk::find_models("weapons", 32);
+    const auto everything = sdk::find_models("", 4096);
+
+    char sum[416];
     snprintf(sum, sizeof(sum),
-             "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu}",
-             *taken, with_skeleton, resolved_wanted, emitted);
+             "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
+             "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
+             "\"handle_table_slots\":%zu,\"found_weapons\":%zu,\"found_all\":%zu}",
+             *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
+             handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
+             everything.size());
     out += sum;
     return out;
 }

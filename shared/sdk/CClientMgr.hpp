@@ -799,6 +799,35 @@ public:
     // so a count you get here is one the other two would also accept.
     std::optional<size_t> object_count(ObjectType type) const;
 
+    // ---- object handles (HOBJECT <-> object) -----------------------------
+    //
+    // CONSUMER API, and the one every other engine call needs. The engine's
+    // HOBJECT is an INDEX into CClientMgr's handle table, not a pointer -- which
+    // is why no module global holds an object address, and why a mod that gets a
+    // handle back from any ILT* method needs this to do anything with it.
+    //
+    // CClientMgr_RegisterObjectHandle writes {tag=1, object} at index `handle`
+    // when an object is created, so the table is authoritative and sparse: live
+    // 7719 slots hold 3248 objects.
+
+    // The engine's "no handle" sentinel. 335 of 3583 live objects carry it, and
+    // they are exactly the objects whose slot_index is also unset.
+    static constexpr uint16_t kNoHandle = 0xFFFF;
+
+    // Object for `handle`, or nullptr for kNoHandle, an out-of-range index, a free
+    // slot, or a faulted read. SEH-guarded: a stale handle returns nullptr rather
+    // than a wild pointer, which is the whole point of going through the table
+    // instead of caching object addresses.
+    const regenny::LTObject* object_from_handle(uint16_t handle) const;
+
+    // The handle an object carries, or nullopt when it has none. Cheap -- it reads
+    // the object's own field rather than searching the table.
+    std::optional<uint16_t> handle_of(const regenny::LTObject* obj) const;
+
+    // Slots in the table. Grows to fit the highest handle ever registered, so it
+    // is an upper bound on handles, not a live object count.
+    std::optional<size_t> handle_table_size() const;
+
     // Walks bucket `type` and copies up to `max` objects into `out` in a
     // single SEH-guarded pass. Returns how many were written, or nullopt on
     // the same failure conditions as object_count(). Writing fewer than the

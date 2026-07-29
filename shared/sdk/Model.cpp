@@ -4,6 +4,7 @@
 
 #include <utility/Seh.hpp>
 
+#include "CClientMgr.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -405,6 +406,55 @@ std::optional<std::vector<std::string>> model_materials(const regenny::LTObject*
         // An empty or unreadable slot still occupies an index, and the slot count is
         // meaningful to a caller, so hold the position rather than compacting.
         out.emplace_back(len > 0 ? std::string(buf, static_cast<size_t>(len)) : std::string{});
+    }
+    return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+std::vector<ModelMatch> find_models(std::string_view needle, size_t max) {
+    std::vector<ModelMatch> out;
+    auto* mgr = CClientMgr::get();
+    if (mgr == nullptr || max == 0) {
+        return out;
+    }
+
+    // Snapshot, then resolve. The snapshot is what makes this safe to call from a
+    // thread that is not the one mutating the object lists; the pointers it hands
+    // back are still only good for this frame, which is why each match also carries
+    // a handle.
+    std::vector<CClientMgr::ObjectSnapshot> snaps(2048);
+    const auto taken = mgr->snapshot_objects(static_cast<ObjectType>(1), snaps.data(), snaps.size());
+    if (!taken.has_value()) {
+        return out;
+    }
+
+    std::string lowered;
+    lowered.reserve(needle.size());
+    for (const char c : needle) {
+        lowered += (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+    }
+
+    for (size_t i = 0; i < *taken && out.size() < max; ++i) {
+        const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
+        auto file = model_filename(obj);
+        if (!file.has_value()) {
+            continue;
+        }
+        if (!lowered.empty()) {
+            std::string hay;
+            hay.reserve(file->size());
+            for (const char c : *file) {
+                hay += (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+            }
+            if (hay.find(lowered) == std::string::npos) {
+                continue;
+            }
+        }
+        const auto h = mgr->handle_of(obj);
+        out.push_back(ModelMatch{obj, std::move(*file), h.value_or(CClientMgr::kNoHandle)});
     }
     return out;
 }

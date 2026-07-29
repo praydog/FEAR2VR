@@ -1,12 +1,12 @@
 #pragma once
 namespace regenny {
-class LTVisSector;
-}
-namespace regenny {
 class LTVisPortal;
 }
 namespace regenny {
 class LTVisTreeNode;
+}
+namespace regenny {
+class LTVisSector;
 }
 namespace regenny {
 #pragma pack(push, 1)

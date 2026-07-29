@@ -9,6 +9,7 @@
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
 #include "regenny/regenny/LTAnimNameEntry.hpp"
+#include "regenny/regenny/LTObjectHandleEntry.hpp"
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -409,6 +410,99 @@ std::optional<size_t> CClientMgr::object_count(ObjectType type) const {
     }
     const int64_t n = seh_count_objects(&regenny()->object_lists[static_cast<size_t>(type)],
                                         static_cast<uint8_t>(type), max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(n);
+}
+
+namespace {
+
+// POD-only SEH helpers for the handle table. Kept out of the methods below so the
+// guarded reads never share a function with std::optional's construction.
+struct HandleSlot {
+    uint32_t tag;
+    const void* object;
+    bool valid;
+};
+
+HandleSlot seh_handle_slot(const regenny::CClientMgr* mgr, uint16_t handle) {
+    HandleSlot s{};
+    KANANLIB_SEH_TRY {
+        const auto* first = mgr->handle_table.first;
+        const auto* last = mgr->handle_table.last;
+        if (first != nullptr && last > first) {
+            const size_t slots = static_cast<size_t>(last - first);
+            if (handle < slots) {
+                s.tag = first[handle].tag;
+                s.object = first[handle].object;
+                s.valid = true;
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        s.valid = false;
+    }
+    return s;
+}
+
+int64_t seh_handle_of(const regenny::LTObject* obj) {
+    int64_t h = -1;
+    KANANLIB_SEH_TRY {
+        h = static_cast<int64_t>(obj->handle);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        h = -1;
+    }
+    return h;
+}
+
+int64_t seh_handle_slots(const regenny::CClientMgr* mgr) {
+    int64_t n = -1;
+    KANANLIB_SEH_TRY {
+        const auto* first = mgr->handle_table.first;
+        const auto* last = mgr->handle_table.last;
+        if (first != nullptr && last >= first) {
+            n = static_cast<int64_t>(last - first);
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        n = -1;
+    }
+    return n;
+}
+
+}  // namespace
+
+const regenny::LTObject* CClientMgr::object_from_handle(uint16_t handle) const {
+    if (handle == kNoHandle || regenny() == nullptr) {
+        return nullptr;
+    }
+    const HandleSlot s = seh_handle_slot(regenny(), handle);
+    // A free slot is not tagged 1. Checking the tag rather than just non-null is
+    // what keeps a recycled slot from handing back a stale object.
+    if (!s.valid || s.tag != 1 || s.object == nullptr) {
+        return nullptr;
+    }
+    return static_cast<const regenny::LTObject*>(s.object);
+}
+
+std::optional<uint16_t> CClientMgr::handle_of(const regenny::LTObject* obj) const {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const int64_t h = seh_handle_of(obj);
+    if (h < 0 || h == kNoHandle) {
+        return std::nullopt;
+    }
+    return static_cast<uint16_t>(h);
+}
+
+std::optional<size_t> CClientMgr::handle_table_size() const {
+    if (regenny() == nullptr) {
+        return std::nullopt;
+    }
+    const int64_t n = seh_handle_slots(regenny());
     if (n < 0) {
         return std::nullopt;
     }

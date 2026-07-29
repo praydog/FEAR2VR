@@ -986,6 +986,28 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED correlated with elapsed_ms (see above)
 }
 
+// One slot of CClientMgr's object handle table. This is the mapping every ILT*
+// call goes through: the engine's HOBJECT is an INDEX into this vector, not a
+// pointer, which is why no global in the module holds an object pointer.
+//
+// CClientMgr_RegisterObjectHandle (0x40BEC2) is the whole story: it grows the
+// vector to handle+1 if needed, then writes {1, object} at index `handle`. So a
+// live slot is tagged 1 and holds the object; anything else is a free slot.
+class LTObjectHandleEntry 0x8 {
+    uint32_t tag       @0x00   // CONFIRMED 1 on every live entry (3248/3248). The registration writes it from a caller-supplied word that is always 1 at the one call site, so it reads as an occupancy/kind tag rather than a refcount.
+    LTObject* object   @0x04   // CONFIRMED: for every live object with a handle, table[handle].object == that object, 3248/3248 with ZERO mismatches across all seven type buckets.
+}
+
+// std::vector<LTObjectHandleEntry> -- same _SECURE_SCL shape as the other vectors
+// here, and the engine's own size/index helpers (StdVector8_Size / StdVector8_At)
+// confirm the 8-byte element from its arithmetic rather than from our assumption.
+class LTObjectHandleTable 0x10 {
+    void* proxy                  @0x00   // live 0 here, unlike StdString's -- this vector is not iterated through a checked iterator
+    LTObjectHandleEntry* first   @0x04
+    LTObjectHandleEntry* last    @0x08
+    LTObjectHandleEntry* end_cap @0x0C
+}
+
 // FEAR2.exe's engine-side client manager singleton (see
 // shared/sdk/CClientMgr.hpp/.cpp -- already deployed via a hand-derived
 // offset before this pass; this formalizes it into the regenny convention).
@@ -1192,6 +1214,7 @@ class CClientMgr 0x1468 {
     CClientMgrListLink counter_list_head     @0x13EC   // CONFIRMED: iterated per-frame by EngineList_ForEach(this+0x13EC) in CClientMgr::Update (dump 0x40B6A3)
     CClientMgrCounterNode* own_counter_node  @0x13F4
     uint32_t last_sample_time_ms             @0x1400   // CONFIRMED milliseconds. CClientMgr::Update computes `sub_409FD0(now - this->last_sample_time_ms)` with now = dump 0x60AAF2 (dump 0x40B6AD/0x40B6C6), and sub_409FD0 divides that delta by exactly 1000.0 (dbl_66E738) to get seconds -- so this field's unit is ms. Live: advanced 1672342 -> 1673346 (delta 1004) across ~1.00s of wall clock, i.e. tracks real time 1:1 and is re-sampled continuously. The instruction that writes it was NOT located in the functions read so far.
+    LTObjectHandleTable handle_table         @0x1414   // CONFIRMED the engine's HOBJECT -> object map, indexed directly by LTObject.handle. CClientMgr_RegisterObjectHandle (0x40BEC2) writes {1, obj} at index `handle` during CClientMgr_CreateObject, growing the vector when the handle exceeds its size. Live: 7719 slots of which 3248 are tagged live, and for EVERY object carrying a handle, table[handle].object is that object -- 3248/3248, zero mismatches, all seven buckets. The other 335 objects hold handle 0xFFFF, exactly the same 335 that hold slot_index 0xFFFFFFFF. This is how a mod turns an HOBJECT from any ILT* call back into an object, and why no module global holds an object pointer: the engine passes indices, not addresses.
     float unk_1424                           @0x1424   // unverified float. Live: advances while the engine runs, but NOT by whole numbers and NOT at a fixed rate -- observed +168.000 over ~1.0s in one sample and +21.987 over ~2.0s in another. RETRACTED HYPOTHESIS: dump 0x409FD0 does `*(float*)(<ecx>+0x1424) += 1.0` (dbl_66EDF0 == 1.0), and this field was briefly named frame_counter on that basis. That was WRONG: the decompiler never established that 0x409FD0's ecx is CClientMgr, and the non-integral live deltas here disprove it -- either that function operates on a different object, or something else writes this field. Offset/type are sound (read as a float that changes); the meaning is not.
     uint16_t last_sent_bandwidth             @0x1430   // CONFIRMED == clamp(BandwidthTargetClient/8000, 0, 0xFFFF); live 256000/8000 == 32 == field
     void* client_shell                       @0x1434

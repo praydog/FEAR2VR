@@ -2,6 +2,7 @@
 #include "CClientMgrListLink.hpp"
 #include "CClientMgrObjectBank.hpp"
 #include "CClientMgrPtrVector.hpp"
+#include "LTObjectHandleTable.hpp"
 namespace regenny {
 class CClientMgrCounterNode;
 }
@@ -19,7 +20,8 @@ public:
     regenny::CClientMgrCounterNode* own_counter_node; // 0x13f4
     private: char pad_13f8[0x8]; public:
     uint32_t last_sample_time_ms; // 0x1400
-    private: char pad_1404[0x20]; public:
+    private: char pad_1404[0x10]; public:
+    regenny::LTObjectHandleTable handle_table; // 0x1414
     float unk_1424; // 0x1424
     private: char pad_1428[0x8]; public:
     uint16_t last_sent_bandwidth; // 0x1430

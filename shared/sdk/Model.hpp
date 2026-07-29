@@ -109,4 +109,27 @@ std::optional<std::string> model_filename(const regenny::LTObject* obj);
 // legal and are returned as empty strings, because the slot count is meaningful.
 std::optional<std::vector<std::string>> model_materials(const regenny::LTObject* obj);
 
+
+// How a mod finds the object it cares about.
+//
+// Identity by PATH is the reliable route: an object's .mdl is what it is, whereas
+// position, type and node count are all shared by dozens of unrelated objects. So
+// "find the assault rifle" is a substring search over model_filename, not a guess
+// about which of 215 models is interesting.
+struct ModelMatch {
+    const regenny::LTObject* object;  // valid only while the object lives
+    std::string filename;             // its .mdl path, copied
+    uint16_t handle;                  // CClientMgr::kNoHandle when it has none
+};
+
+// Every live OT_MODEL whose .mdl path contains `needle`, case-insensitively, up to
+// `max` results. An empty needle matches everything, which is the cheap way to
+// enumerate what is loaded.
+//
+// Returns handles as well as pointers on purpose: a pointer is only good for this
+// frame, while a handle survives and can be re-resolved through
+// CClientMgr::object_from_handle, so a mod that wants to remember an object should
+// keep the handle.
+std::vector<ModelMatch> find_models(std::string_view needle, size_t max = 64);
+
 }  // namespace sdk
