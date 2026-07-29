@@ -10,6 +10,9 @@ namespace regenny {
 class StdString;
 }
 namespace regenny {
+class LTMatrix3x4;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class LTModelObject {
 public:
@@ -28,7 +31,8 @@ public:
     private: char pad_158[0x8]; public:
     regenny::LTVector sphere_center; // 0x160
     float vis_radius; // 0x16c
-    private: char pad_170[0x8]; public:
+    void* per_node_alloc; // 0x170
+    regenny::LTMatrix3x4* node_matrices; // 0x174
     void* per_node_stride2_b; // 0x178
     private: char pad_17c[0xc]; public:
     regenny::LTRotation cached_rotation; // 0x188

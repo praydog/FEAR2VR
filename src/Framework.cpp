@@ -387,6 +387,36 @@ std::string build_models_json() {
         ++emitted;
     }
 
+    // The per-node 48-byte region, through the public accessor. Reported as a
+    // POPULATED count rather than asserted: the region's size and location are
+    // proven from the allocator, but its contents are mostly unpopulated in an idle
+    // scene, so a consumer must test each slot before using it. Surfacing the count
+    // is how a mod (or a later pass) can tell when the animation system has filled
+    // them in.
+    size_t node_slots = 0, node_slots_rigid = 0, models_with_region = 0;
+    for (size_t si = 0; si < *taken; ++si) {
+        const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
+        const auto skel = sdk::ModelSkeleton::from_object(obj);
+        if (!skel.has_value()) {
+            continue;
+        }
+        bool any = false;
+        for (size_t i = 0; i < skel->node_count(); ++i) {
+            const auto mat = skel->node_matrix_raw(i);
+            if (!mat.has_value()) {
+                continue;
+            }
+            any = true;
+            ++node_slots;
+            if (sdk::ModelSkeleton::is_rigid(*mat)) {
+                ++node_slots_rigid;
+            }
+        }
+        if (any) {
+            ++models_with_region;
+        }
+    }
+
     // A HANDLE ROUND-TRIP over every model, done the way a mod must: take the
     // handle an object carries, hand it back to the engine's own table, and require
     // the same object out. This is the conversion every ILT* call depends on, so it
@@ -416,10 +446,11 @@ std::string build_models_json() {
     snprintf(sum, sizeof(sum),
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
              "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
-             "\"handle_table_slots\":%zu,\"found_weapons\":%zu,\"found_all\":%zu}",
+             "\"handle_table_slots\":%zu,\"found_weapons\":%zu,\"found_all\":%zu,"
+             "\"node_slots\":%zu,\"node_slots_rigid\":%zu,\"models_with_region\":%zu}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
              handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
-             everything.size());
+             everything.size(), node_slots, node_slots_rigid, models_with_region);
     out += sum;
     return out;
 }

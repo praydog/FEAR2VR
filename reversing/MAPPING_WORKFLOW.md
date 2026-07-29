@@ -495,6 +495,36 @@ above 8; and a size that is a common constant (16, 32) will return noise. 64 was
 ideal. Check the smallest matches first — a short function that scales by the
 record size is almost always a pure accessor.
 
+**One allocation, many arrays: read the SIZE EXPRESSION and every region falls out
+at once.** `LTModelObject_BindAsset` computes a single size as a sum of aligned
+terms, `LTMem_Alloc`s it, and hands `{base, size}` to a chain of carvers that each
+take a slice. That one expression is a manifest:
+
+```
+align4(a) + align4(b) + align4(2*node_count) + align4(48*node_count)
+          + align4(28*asset->unk_54)
+```
+
+It says there are per-node arrays of stride 2 and stride 48, and another array of
+28-byte records whose count is a field at asset+0x54 -- so it simultaneously
+identified a region AND told me that an unmapped uint16 is a count. The base is
+stored on the object, so every carved region can be bounds-checked against it,
+which is what makes reading them safe.
+
+This is the same lesson as "the allocation call is the size", one level up: a
+single-allocation-many-regions pattern hides several array descriptors inside one
+arithmetic expression, and it is far denser than any individual accessor.
+
+**But an allocated region is not a populated one.** The 48-byte-per-node region is
+obviously a world-transform cache, and I could not confirm it: live, only 181 of
+2222 slots hold a matrix with unit rows and determinant +1, and 1 model of 215 is
+clean throughout. So the mapping records the region's stride and length as PROVEN
+(the allocator's own arithmetic) and its meaning as UNPROVEN, and the consumer API
+exposes it as `node_matrix_raw` with an `is_rigid` predicate rather than as a
+`world_transform` accessor. Naming it for the guess would have shipped the guess to
+every caller; naming it for the shape costs one awkward identifier and keeps the
+open question visible.
+
 **A vtable slot's IDENTITY comes from what its worker touches, never from the
 reference interface's method order.** FEAR 2's `ILTModel` has 80 slots and the
 reference SDK's `iltmodel.h` lists methods in a plausible-looking order, so

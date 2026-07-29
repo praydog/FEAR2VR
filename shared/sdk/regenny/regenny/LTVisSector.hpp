@@ -1,10 +1,10 @@
 #pragma once
 #include "LTVector.hpp"
 namespace regenny {
-class LTSpatialEntry;
+class LTVisPlane;
 }
 namespace regenny {
-class LTVisPlane;
+class LTSpatialEntry;
 }
 namespace regenny {
 #pragma pack(push, 1)

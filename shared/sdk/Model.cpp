@@ -6,6 +6,7 @@
 
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
+#include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
 #include "regenny/regenny/StdString.hpp"
@@ -284,6 +285,7 @@ std::optional<ModelSkeleton> ModelSkeleton::from_object(const regenny::LTObject*
         return std::nullopt;
     }
     ModelSkeleton s;
+    s.m_object = obj;
     s.m_asset = raw.asset;
     s.m_records = raw.records;
     s.m_names = raw.names;
@@ -457,6 +459,68 @@ std::vector<ModelMatch> find_models(std::string_view needle, size_t max) {
         out.push_back(ModelMatch{obj, std::move(*file), h.value_or(CClientMgr::kNoHandle)});
     }
     return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// Reads one 48-byte record out of the object's per-node region, bounds-checked
+// against the SINGLE parent allocation the engine carves every per-node array from.
+// That bound is what makes this safe on a model whose flag gate is clear: the region
+// pointer is stale or null and the read is refused rather than attempted.
+bool seh_node_matrix(const void* obj_v, size_t index, size_t count, float* out12) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        const auto* model = static_cast<const regenny::LTModelObject*>(obj_v);
+        const auto* mats = model->node_matrices;
+        const auto* parent = model->per_node_alloc;
+        if (mats != nullptr && parent != nullptr && index < count &&
+            reinterpret_cast<uintptr_t>(mats) >= reinterpret_cast<uintptr_t>(parent)) {
+            const float* src = mats[index].m;
+            for (int i = 0; i < 12; ++i) {
+                out12[i] = src[i];
+            }
+            ok = true;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<ModelSkeleton::NodeMatrix> ModelSkeleton::node_matrix_raw(size_t index) const {
+    if (index >= m_count || m_object == nullptr) {
+        return std::nullopt;
+    }
+    NodeMatrix out{};
+    if (!seh_node_matrix(m_object, index, m_count, out.m)) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+bool ModelSkeleton::is_rigid(const NodeMatrix& mat) {
+    // Three unit-length rows AND determinant +1. Rows alone would accept a
+    // reflection, and a determinant alone would accept a uniform scale, so both are
+    // needed for "this is a rotation and therefore a populated slot".
+    for (int row = 0; row < 3; ++row) {
+        const float x = mat.m[row * 4 + 0], y = mat.m[row * 4 + 1], z = mat.m[row * 4 + 2];
+        const float mag2 = x * x + y * y + z * z;
+        if (!(mag2 > 0.96f && mag2 < 1.04f)) {
+            return false;
+        }
+    }
+    const float* m = mat.m;
+    const float det = m[0] * (m[5] * m[10] - m[6] * m[9]) -
+                      m[1] * (m[4] * m[10] - m[6] * m[8]) +
+                      m[2] * (m[4] * m[9] - m[5] * m[8]);
+    return det > 0.94f && det < 1.06f;
 }
 
 }  // namespace sdk

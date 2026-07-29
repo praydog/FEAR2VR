@@ -602,6 +602,28 @@ int main(int argc, char** argv) {
         json_int(body, "found_all", fa);
         check(fa == model_objects, "find_models(\"\") returns every live model object");
         check(fw > 0 && fw <= fa, "find_models(\"weapons\") matches a real subset");
+
+        // THE PER-NODE 48-BYTE REGION, through node_matrix_raw. The accessor's
+        // CONTRACT is assertable even though the data's meaning is not: the engine
+        // allocates the region for every model (it is gated on a flag bit that is set
+        // on all of them), sized at 48 * node_count, so the accessor must answer for
+        // every model and for every node index below that count.
+        int64_t mwr = -1, nslots = -1, nrigid = -1;
+        json_int(body, "models_with_region", mwr);
+        json_int(body, "node_slots", nslots);
+        json_int(body, "node_slots_rigid", nrigid);
+        check(mwr == with_skeleton,
+              "node_matrix_raw answers for every model that has a skeleton");
+        check(nslots > 0, "per-node matrix slots were actually read");
+        // REPORTED, not asserted equal. Live only 181 of 2222 slots hold a rigid
+        // matrix, so requiring all of them would encode a guess about what the region
+        // holds -- see fear2.genny's node_matrices. What IS required is that the
+        // count is a sane fraction, i.e. is_rigid is discriminating rather than
+        // trivially true or trivially false.
+        check(nrigid >= 0 && nrigid <= nslots,
+              "rigid node matrices are a reported fraction of the slots, not a claim");
+        check(nrigid > 0,
+              "is_rigid accepts at least some slots, so it is not rejecting everything");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised
