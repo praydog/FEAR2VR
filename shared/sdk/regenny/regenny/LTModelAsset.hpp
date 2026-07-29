@@ -4,6 +4,9 @@ namespace regenny {
 class LTModelNode;
 }
 namespace regenny {
+class LTModelSocket;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class LTModelAsset {
 public:
@@ -32,7 +35,9 @@ public:
     regenny::LTAnimNameTable anim_names; // 0x6c
     uint32_t refcount; // 0x7c
     float radius_from_file; // 0x80
-    private: char pad_84[0xc]; public:
+    regenny::LTModelSocket* sockets; // 0x84
+    uint32_t socket_count; // 0x88
+    private: char pad_8c[0x4]; public:
     uint32_t string_blob_size; // 0x90
     private: char pad_94[0x4]; public:
     void* string_blob; // 0x98

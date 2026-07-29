@@ -7,6 +7,7 @@
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTModelAsset.hpp"
 #include "regenny/regenny/LTAnimNameEntry.hpp"
+#include "regenny/regenny/LTModelSocket.hpp"
 #include "regenny/regenny/LTMatrix3x4.hpp"
 #include "regenny/regenny/LTModelNode.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
@@ -58,6 +59,10 @@ struct SkelRaw {
     // "at or after the base".
     uintptr_t alloc_base;
     uintptr_t alloc_end;
+    // Sockets are per-asset, read under the same guard as the nodes so a caller sees
+    // one consistent asset rather than two reads of a possibly-rebound one.
+    const void* sockets;
+    uint32_t socket_count;
 };
 
 bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
@@ -75,6 +80,14 @@ bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
                     out->records = recs;
                     out->names = names;
                     out->count = n;
+                    // A socket table is OPTIONAL: an asset may define none, so a
+                    // zero count is a normal answer and not a resolve failure.
+                    const auto* socks = asset->sockets;
+                    const uint32_t sn = asset->socket_count;
+                    if (socks != nullptr && sn > 0 && sn <= kMaxNodes) {
+                        out->sockets = socks;
+                        out->socket_count = sn;
+                    }
 
                     // BindAsset's own arithmetic, term for term. Verified live: every
                     // pointer the engine carves out lands inside the result on
@@ -314,6 +327,8 @@ std::optional<ModelSkeleton> ModelSkeleton::from_object(const regenny::LTObject*
     s.m_records = raw.records;
     s.m_names = raw.names;
     s.m_count = raw.count;
+    s.m_sockets = raw.sockets;
+    s.m_socket_count = raw.socket_count;
     return s;
 }
 
@@ -619,3 +634,97 @@ std::optional<size_t> model_anim_count(const regenny::LTObject* obj) {
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD copy of one socket record, taken under the guard. The name is copied into a
+// asset's blob and dies with it. The NAME POINTER is captured here and copied by the
+// caller through seh_copy_cstr -- that helper carries its own guard, and nesting SEH
+// frames is exactly the mistake this split avoids.
+struct SocketRaw {
+    const char* name_ptr;
+    uint32_t node_index;
+    float pos[3];
+    float rot[4];
+    bool ok;
+};
+
+SocketRaw seh_socket(const void* base, size_t index, size_t count, size_t node_count) {
+    SocketRaw r{};
+    if (base == nullptr || index >= count) {
+        return r;
+    }
+    KANANLIB_SEH_TRY {
+        const auto* s = static_cast<const regenny::LTModelSocket*>(base) + index;
+        // The engine bounds this itself when it uses the socket -- GetSocketTransform
+        // hands node_index straight to GetNodeTransform, which range-checks against
+        // node_count. Checking here means a caller never receives an index it cannot
+        // then feed back into node_name()/bone_matrix().
+        if (s->node_index < node_count) {
+            r.node_index = s->node_index;
+            r.pos[0] = s->position.x;
+            r.pos[1] = s->position.y;
+            r.pos[2] = s->position.z;
+            r.rot[0] = s->rotation.x;
+            r.rot[1] = s->rotation.y;
+            r.rot[2] = s->rotation.z;
+            r.rot[3] = s->rotation.w;
+            r.name_ptr = s->name;
+            r.ok = true;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+} // namespace
+
+std::optional<ModelSkeleton::Socket> ModelSkeleton::socket(size_t index) const {
+    const SocketRaw r = seh_socket(m_sockets, index, m_socket_count, m_count);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    char buf[kMaxName]{};
+    if (seh_copy_cstr(r.name_ptr, buf, sizeof(buf)) < 0) {
+        return std::nullopt;
+    }
+    Socket out{};
+    out.name = buf;
+    out.node_index = r.node_index;
+    out.position.x = r.pos[0];
+    out.position.y = r.pos[1];
+    out.position.z = r.pos[2];
+    out.rotation.x = r.rot[0];
+    out.rotation.y = r.rot[1];
+    out.rotation.z = r.rot[2];
+    out.rotation.w = r.rot[3];
+    return out;
+}
+
+std::optional<size_t> ModelSkeleton::find_socket(const char* name) const {
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    // A linear scan, exactly as the engine does it: the tables are 1..15 long, so an
+    // index would cost more than it saves.
+    for (size_t i = 0; i < m_socket_count; ++i) {
+        const SocketRaw r = seh_socket(m_sockets, i, m_socket_count, m_count);
+        if (!r.ok) {
+            continue;
+        }
+        char buf[kMaxName]{};
+        if (seh_copy_cstr(r.name_ptr, buf, sizeof(buf)) < 0) {
+            continue;
+        }
+        if (equals_i(buf, name, sizeof(buf))) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace sdk

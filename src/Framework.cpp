@@ -887,7 +887,9 @@ std::string build_objects_json() {
                api_cameras = 0, api_with_handle = 0, api_with_slot = 0,
                api_identities_agree = 0, api_addressable = 0, api_with_attachments = 0,
                api_attachments = 0, api_att_child_ok = 0, api_att_socketed = 0,
-               api_att_socket_named = 0;
+               api_att_socket_named = 0, api_socket_total = 0, api_socket_ok = 0,
+               api_socket_named_node = 0, api_socket_roundtrip = 0,
+               api_socket_camera = 0, api_socket_eyes = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -949,23 +951,67 @@ std::string build_objects_json() {
                             }
                         }
                     }
+                    // SOCKETS, asked for the way a VR mod would: by NAME. These are
+                    // the art's own attach points, so the interesting question is not
+                    // "how many" but "does the model define the ones I need".
+                    if (const auto sk = sdk::ModelSkeleton::from_object(obj); sk.has_value()) {
+                        api_socket_total += sk->socket_count();
+                        for (size_t si = 0; si < sk->socket_count(); ++si) {
+                            const auto s = sk->socket(si);
+                            if (!s.has_value()) {
+                                continue;
+                            }
+                            ++api_socket_ok;
+                            // Every socket names a node in THIS skeleton, and that
+                            // node must resolve to a name -- the same two-subsystem
+                            // crossing the attachment sockets get.
+                            if (sk->node_name(s->node_index).has_value()) {
+                                ++api_socket_named_node;
+                            }
+                            // CASE-INSENSITIVITY, tested without depending on which
+                            // assets happen to be loaded: take the socket's OWN name,
+                            // upper-case it, and require the lookup to return the same
+                            // index. Asking for a hardcoded "LEFTHAND" would only
+                            // prove anything in a level containing characters.
+                            std::string upper = s->name;
+                            for (auto& c : upper) {
+                                c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+                            }
+                            if (sk->find_socket(upper.c_str()) == si) {
+                                ++api_socket_roundtrip;
+                            }
+                        }
+                        // The VR-relevant ones, REPORTED rather than required: which
+                        // sockets exist depends entirely on what the level loaded.
+                        if (sk->find_socket("camera").has_value()) {
+                            ++api_socket_camera;
+                        }
+                        if (sk->find_socket("socket_left_eye").has_value() &&
+                            sk->find_socket("socket_right_eye").has_value()) {
+                            ++api_socket_eyes;
+                        }
+                    }
                 }
                 if (const auto r = sdk::is_renderable(obj); r.value_or(false)) {
                     ++api_renderable;
                 }
             }
         }
-        char ab[640];
+        char ab[896];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
                  "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu,"
                  "\"with_attachments\":%zu,\"attachments\":%zu,\"att_child_ok\":%zu,"
-                 "\"att_socketed\":%zu,\"att_socket_named\":%zu}",
+                 "\"att_socketed\":%zu,\"att_socket_named\":%zu,"
+                 "\"socket_total\":%zu,\"socket_ok\":%zu,\"socket_named_node\":%zu,"
+                 "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
-                 api_att_socketed, api_att_socket_named);
+                 api_att_socketed, api_att_socket_named, api_socket_total, api_socket_ok,
+                 api_socket_named_node, api_socket_roundtrip, api_socket_camera,
+                 api_socket_eyes);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

@@ -1427,6 +1427,61 @@ class LTModelNode 0x40 {
 // assets, 1 on 10 and 11 on 10. Not an array header. The real array pair sits at
 // +0x24/+0x28 with its count at +0x20 -- close to where the guess was looking,
 // which is exactly why guessing from shape was not good enough.
+// ---- A LEAD, NOT A MAPPING: the per-node TRANSFORM arrays -------------------
+//
+// LTModelObject_GetNodeTransform (0x429D66) is the function every socket transform
+// ultimately goes through, and it reveals two parallel per-node arrays on the MODEL
+// object (not the asset) that are not yet in this schema. Recorded so the next pass
+// starts from the code rather than from another stride scan:
+//
+//   if (index >= asset->node_count) -> fail            // it bounds-checks the asset
+//   if (*(uint16_t*)(model + 0x156)) {                 // a mode selector
+//       ... *(uint8_t*)(*(void**)(model + 0x140) + 3*index + 1)   // 3 bytes per node
+//       ... transform at  *(void**)(model + 0x144) + 28*index     // 28 bytes per node
+//   } else {
+//       ... *(uint8_t*)(*(void**)(model + 0x124) + 2*index)       // 2 bytes per node
+//       ... transform at  *(void**)(model + 0x128) + 28*index     // 28 bytes per node
+//   }
+//
+// 28 bytes is LTVector + LTRotation, i.e. a position/rotation pair per node -- which
+// is what an earlier pass went hunting for with stride scans and did not pin down.
+// Note there are TWO of them behind a selector, and TWO companion byte arrays with
+// DIFFERENT strides (3 and 2), so "the node transform cache" is not one array and a
+// scan that assumed it was could not have found this shape. Nothing here is asserted
+// yet: the offsets come from the decompiler and have not been read live.
+//
+// One SOCKET on a model asset: a NAMED, oriented attach point hanging off a skeleton
+// node. This is the most directly useful table yet mapped for a VR mod, because the
+// game's own art already defines the points a VR implementation needs.
+//
+// Found from the engine's own lookup, LTModelAsset_FindSocketByName (0x424BBC):
+//   if (!asset[34]) return 0;                    // asset+0x88 = count
+//   for (i = 0; ; i += 40) {                     // stride 0x28
+//       rec = asset[33] + i;                     // asset+0x84 = array
+//       if (String_EqualsI(*(char**)(rec + 32), wanted)) break;   // rec+0x20 = name
+//       if (++index >= asset[34]) return 0;
+//   }
+// so the array base, the count, the stride and the name offset all come from one
+// function rather than from pattern-matching bytes.
+//
+// Live: 186 sockets across all 34 assets, every one with a non-empty name, and every
+// one naming a node index inside its own asset's node_count (186/186).
+//
+// WHAT THE ART ACTUALLY DEFINES, which is why this matters: a character asset carries
+//   camera -> Head          socket_left_eye -> Head    socket_right_eye -> Head
+//   eyes   -> Head          LeftHand -> L_Hand         RightHand -> R_Hand
+//   head, nose, chin -> Head    back -> Upper_Torso    LeftFoot/RightFoot -> L/R_Foot
+// and a weapon asset carries flash, breach, laser, physics, flashlight -> its own
+// offset node. Several passes were spent hunting the view camera by heuristic; the
+// asset names one.
+class LTModelSocket 0x28 {
+    LTVector position     @0x00   // CONFIRMED the socket's offset from its node, and live these are real art values, not zeroes: socket_left_eye sits at (-3.013, 13.745, 2.784) and camera at (-4.251, 13.156, 0.000) on the same Head node.
+    LTRotation rotation   @0x0C   // CONFIRMED a UNIT quaternion: |q| == 1.00000 on the records sampled. camera's is (0.5002, -0.4998, -0.5002, -0.4998), i.e. a coordinate-frame flip rather than an identity -- which is what a camera attach point needs and what makes it clear the field is a real orientation and not padding.
+    float unk_1C          @0x1C   // live exactly 1.0 on the records sampled. A scale would fit and is NOT established.
+    char* name            @0x20   // CONFIRMED the socket's name, from the lookup's own String_EqualsI comparison against this offset. Live all 186 are non-empty.
+    uint32_t node_index   @0x24   // CONFIRMED the skeleton node the socket hangs off: LTModelObject_GetSocketTransform reads `*(rec + 36)` and passes it to LTModelObject_GetNodeTransform. Live inside node_count on 186/186, and resolving it through node_names gives the pairings above.
+}
+
 class LTModelAsset 0xA0 {
     float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0; the real value is read from the file into radius_from_file below.
     uint32_t region_count_a  @0x08   // CONFIRMED a count, from the allocation side: LTModelAsset_RegionSize_31xNodes computes `31*node_count + 4*(asset+0x08 + asset+0x10)`, so both of these scale a 4-byte-per-element region inside the model's per-object block. Live they track model complexity -- 11 and 10 on a 61-node character, 0 and 0 on a 2-node shell casing. WHAT they count is unmapped; that they ARE counts is proven, because reconstructing BindAsset's size with them puts every carved pointer inside the result on 215/215 models.
@@ -1443,6 +1498,8 @@ class LTModelAsset 0xA0 {
     LTAnimNameTable anim_names @0x6C   // CONFIRMED the model's ANIMATION-NAME lookup table (see LTAnimNameTable). Identified by hashing every string in the asset's own string_blob and intersecting: all 42 entries of a character asset matched, and the names are animations -- ATC_Corpse1_LOOP, Corpse_Drag, Corpse_surface_faceup, Corpse_edge_facedown_Hit. Live the hashes are ASCENDING on 34/34, which they must be, since LTModelAsset_FindAnimByName binary-searches them. Note the count is NOT node_count (42 against 61 nodes here), which is what first showed the table is about animations and not the skeleton.
     uint16_t material_count @0x54  // CONFIRMED the asset's MATERIAL (piece) count, and the value every model's material_count is set from: they are equal on 215/215 live. Found from the allocation side rather than a reader -- LTModelObject_BindAsset sizes one of its regions as `28 * asset->unk_54`, and 28 is sizeof(std::string) in this build, so the term is an array of that many material paths. Read as a WORD straight from the file, gated behind a byte flag the loader reads first. Live 1..8, and 8 on the player's viewmodel.
     void* subobject_5C     @0x5C   // the loader finalises `this + 0x5C` through 0x458894 before accepting the model, so a sub-object starts here. Unmapped.
+    LTModelSocket* sockets @0x84   // CONFIRMED the socket ARRAY, from LTModelAsset_FindSocketByName's `asset[33] + 40*i` walk. Live non-null on every asset that reports a count, and walking it yields 186 named sockets across the 34 live assets.
+    uint32_t socket_count  @0x88   // CONFIRMED the socket count, the loop bound in that same function (`if (++index >= asset[34]) return 0`) and the split point of the engine's UNIFIED socket/node index space: LTModelObject_GetSocketTransform does `if (index >= socket_count) return GetNodeTransform(index - socket_count, ...)`, so a caller's "socket handle" addresses sockets first and then skeleton nodes. Live 1..15 per asset.
     uint32_t refcount      @0x7C   // CONFIRMED the refcount, from TWO sites: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing a fresh asset out, and LTModelAsset_FindCached does `++*(hit + 124)` on a cache hit -- same offset, two independent paths. The ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset (34/34). A tidier shape does NOT survive counting: refcount == 2*users + 1 fits 27 of 34, but 6 assets fall BELOW that and 1 above -- and below refutes a per-model floor outright. Eyeballing the ten biggest rows made it look exact; counting all 34 did not.
     float radius_from_file @0x80   // CONFIRMED read directly out of the .mdl: the loader does `stream->Read(this + 128, 4)`. Equal to `radius` on 34/34, so radius is a working copy of this one -- and that PROVENANCE is what the earlier "radius_dup, a second copy" note was missing.
     uint32_t string_blob_size @0x90 // CONFIRMED the size passed to LTMem_Alloc for string_blob, computed by LTModelAsset_ComputeBlobSize before the allocation. Live 336..19496, scaling with model complexity.

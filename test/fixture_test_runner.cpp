@@ -1700,6 +1700,36 @@ int main(int argc, char** argv) {
                       "socketed attachments are a subset of all attachments");
                 check(asn == aso,
                       "EVERY socketed attachment resolves its socket to a bone name");
+
+                // MODEL SOCKETS -- the art's own named attach points. Three
+                // requirements, all of them things a consumer depends on:
+                int64_t st = -1, sok = -1, snn = -1, srt = -1, scam = -1, seye = -1;
+                json_int(ab, "socket_total", st);
+                json_int(ab, "socket_ok", sok);
+                json_int(ab, "socket_named_node", snn);
+                json_int(ab, "socket_roundtrip", srt);
+                json_int(ab, "socket_camera", scam);
+                json_int(ab, "socket_eyes", seye);
+                check(st > 0, "models define sockets");
+                check(sok == st, "every socket reads through the public accessor");
+                // Crosses the socket table AND the node table: a socket's node_index
+                // must name a bone in the same skeleton. Breaks if either moves.
+                check(snn == st, "EVERY socket's node index resolves to a bone name");
+                // Proves the lookup is genuinely case-insensitive, the way the engine's
+                // own String_EqualsI comparison is. The endpoint upper-cases each
+                // socket's OWN name before looking it up, so this holds regardless of
+                // which assets a level loaded -- asking for a hardcoded "LEFTHAND"
+                // would only test anything in a level containing characters.
+                check(srt == st,
+                      "every socket is found again by its own UPPER-CASED name");
+                // REPORTED, not required: which sockets exist is a property of the
+                // loaded art, so a level without characters legitimately has none.
+                check(scam >= 0 && scam <= st, "camera sockets are a reported count");
+                check(seye >= 0 && seye <= st, "eye sockets are a reported count");
+                printf("[fixture] sockets: %lld total, %lld with a 'camera', %lld with both "
+                       "eye sockets\n",
+                       static_cast<long long>(st), static_cast<long long>(scam),
+                       static_cast<long long>(seye));
                 printf("[fixture] attachments: %lld records on %lld objects, %lld resolved, "
                        "%lld on bones\n",
                        static_cast<long long>(aat), static_cast<long long>(awa),

@@ -38,6 +38,7 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameEntry.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTAnimNameTable.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelNode.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelSocket.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelAsset.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTModelRecord.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\StdString.hpp" \

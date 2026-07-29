@@ -124,6 +124,39 @@ public:
     // indices; comparing it is how a caller can cache per-asset work.
     uintptr_t asset_id() const { return reinterpret_cast<uintptr_t>(m_asset); }
 
+    // ---- SOCKETS ---------------------------------------------------------------
+    //
+    // A socket is a NAMED, oriented point hanging off a node -- the art department's
+    // own attach points, which is why they matter far more than anything derivable
+    // from geometry. A character asset defines `camera`, `eyes`, `socket_left_eye`,
+    // `socket_right_eye` (all on Head), `LeftHand`, `RightHand`, `back`, `LeftFoot`,
+    // `RightFoot`; a weapon defines `flash`, `breach`, `laser`, `flashlight`.
+    //
+    // For a VR mod this is the shortest path to the things that are otherwise guessed
+    // at: where the view should sit, where each eye goes, and where a hand belongs.
+    // Live, 186 sockets across 34 assets, every one named and every one pointing at a
+    // node index inside this skeleton.
+    struct Socket {
+        std::string name;
+        // Index into THIS skeleton -- feed it to node_name() or bone_matrix().
+        size_t node_index;
+        // The socket's offset from that node. Real art values, not zeroes:
+        // socket_left_eye sits at (-3.013, 13.745, 2.784) from Head on the sampled
+        // character, with a unit-length rotation.
+        regenny::LTVector position;
+        regenny::LTRotation rotation;
+    };
+
+    size_t socket_count() const { return m_socket_count; }
+
+    // nullopt when the index is out of range or the read faulted.
+    std::optional<Socket> socket(size_t index) const;
+
+    // CASE-INSENSITIVE, because the engine's own lookup is: it compares with
+    // String_EqualsI. That is not pedantry -- the live data mixes `flash` and `Flash`
+    // across assets, so a case-sensitive search would miss half the weapons.
+    std::optional<size_t> find_socket(const char* name) const;
+
 private:
     // The engine's per-object allocation, reconstructed from BindAsset's own size
     // expression, so every palette read can be bounded exactly instead of trusting
@@ -137,6 +170,9 @@ private:
     const void* m_records{};
     const void* m_names{};
     size_t m_count{};
+    // Per-ASSET like the node data above: two models sharing an asset share sockets.
+    const void* m_sockets{};
+    size_t m_socket_count{};
 };
 
 // The object's .mdl path, e.g. "char\ai\rep_heavyweapons\rep_heavyweapons.mdl".
