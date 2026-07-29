@@ -8,7 +8,11 @@ namespace regenny {
 class LTModelAsset {
 public:
     float radius; // 0x0
-    private: char pad_4[0x18]; public:
+    private: char pad_4[0x4]; public:
+    uint32_t region_count_a; // 0x8
+    private: char pad_c[0x4]; public:
+    uint32_t region_count_b; // 0x10
+    private: char pad_14[0x8]; public:
     regenny::LTModelNode* node_records; // 0x1c
     uint32_t node_count; // 0x20
     char** node_names; // 0x24
@@ -21,7 +25,7 @@ public:
     private: char pad_4c[0x4]; public:
     uint16_t unk_50; // 0x50
     uint16_t unk_52; // 0x52
-    uint16_t unk_54; // 0x54
+    uint16_t material_count; // 0x54
     private: char pad_56[0x6]; public:
     void* subobject_5C; // 0x5c
     private: char pad_60[0xc]; public:

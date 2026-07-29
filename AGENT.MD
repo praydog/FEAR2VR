@@ -314,3 +314,19 @@ bin\injector.exe --reload                   # hot-swap into the running game
 bin\injector.exe --status                   # module/IPC snapshot
 ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```
+
+**Gate the test run on the compiler's verdict, not on your own echo.** Filtering
+build output through `grep` and then printing a cheerful marker discards the exit
+code, so a compile error becomes a *green-looking* build followed by a fixture run
+against the PREVIOUS DLL. That has happened twice here; the second time it produced
+two red palette checks that looked like a mapping regression and were nothing of
+the kind. Chain on the build's own status instead:
+
+```
+cmd /c build.bat > b.log 2>&1 && <run the thing> || grep -E "error C|error LNK|fatal" b.log
+```
+
+The `&&` only fires when MSBuild returned 0, and the `||` branch shows why it did
+not. Same reasoning as rule 10's silent-regeneration trap: a build that looks fine
+while producing nothing new is the most expensive failure mode in this project,
+because every downstream signal stays plausible.

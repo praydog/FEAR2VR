@@ -51,6 +51,12 @@ struct SkelRaw {
     const void* records;
     const void* names;
     uint32_t count;
+    // The engine's per-object allocation, reconstructed from the SAME expression
+    // LTModelObject_BindAsset uses to size it. Carrying the extent (not just the
+    // base) is what lets every later read be bounded exactly rather than merely
+    // "at or after the base".
+    uintptr_t alloc_base;
+    uintptr_t alloc_end;
 };
 
 bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
@@ -68,6 +74,21 @@ bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
                     out->records = recs;
                     out->names = names;
                     out->count = n;
+
+                    // BindAsset's own arithmetic, term for term. Verified live: every
+                    // pointer the engine carves out lands inside the result on
+                    // 215/215 models, including the bone palette's full extent.
+                    const auto align4 = [](uint32_t v) { return v + 3u - ((v + 3u) & 3u); };
+                    const uint32_t c08 = asset->region_count_a;
+                    const uint32_t c10 = asset->region_count_b;
+                    uint32_t size = align4(34u * n) + align4(31u * n + 4u * (c08 + c10)) +
+                                    align4(28u * asset->material_count);
+                    if ((obj->flags3 & 0x400) != 0) {
+                        size += align4(2u * n) + align4(48u * n);
+                    }
+                    const auto base = reinterpret_cast<uintptr_t>(model->per_node_alloc);
+                    out->alloc_base = base;
+                    out->alloc_end = (base != 0) ? base + size : 0;
                     ok = true;
                 }
             }
@@ -286,6 +307,8 @@ std::optional<ModelSkeleton> ModelSkeleton::from_object(const regenny::LTObject*
     }
     ModelSkeleton s;
     s.m_object = obj;
+    s.m_alloc_base = raw.alloc_base;
+    s.m_alloc_end = raw.alloc_end;
     s.m_asset = raw.asset;
     s.m_records = raw.records;
     s.m_names = raw.names;
@@ -467,18 +490,23 @@ namespace sdk {
 
 namespace {
 
-// Reads one 48-byte record out of the object's per-node region, bounds-checked
-// against the SINGLE parent allocation the engine carves every per-node array from.
-// That bound is what makes this safe on a model whose flag gate is clear: the region
-// pointer is stale or null and the read is refused rather than attempted.
-bool seh_bone_matrix(const void* obj_v, size_t index, size_t count, float* out12) {
+// Reads one 48-byte palette entry, bounded EXACTLY: the read must fall inside the
+// engine's own per-object allocation, whose extent is reconstructed from the same
+// size expression LTModelObject_BindAsset uses (verified against every carved
+// pointer on 215/215 models). An earlier version only required the region pointer to
+// be at or after the allocation base, which would not have caught a stale region
+// pointer left over from a rebind -- the base moves, the region pointer does not, and
+// ">= base" happily accepts a read past the end of a smaller new block.
+bool seh_bone_matrix(const void* obj_v, size_t index, size_t count, uintptr_t alloc_base,
+                     uintptr_t alloc_end, float* out12) {
     bool ok = false;
     KANANLIB_SEH_TRY {
         const auto* model = static_cast<const regenny::LTModelObject*>(obj_v);
         const auto* mats = model->node_matrices;
-        const auto* parent = model->per_node_alloc;
-        if (mats != nullptr && parent != nullptr && index < count &&
-            reinterpret_cast<uintptr_t>(mats) >= reinterpret_cast<uintptr_t>(parent)) {
+        const auto first = reinterpret_cast<uintptr_t>(mats);
+        const auto want_end = first + sizeof(regenny::LTMatrix3x4) * (index + 1);
+        if (mats != nullptr && alloc_base != 0 && alloc_end > alloc_base && index < count &&
+            first >= alloc_base && want_end <= alloc_end) {
             const float* src = mats[index].m;
             for (int i = 0; i < 12; ++i) {
                 out12[i] = src[i];
@@ -499,7 +527,7 @@ std::optional<ModelSkeleton::BoneMatrix> ModelSkeleton::bone_matrix(size_t index
         return std::nullopt;
     }
     BoneMatrix out{};
-    if (!seh_bone_matrix(m_object, index, m_count, out.m)) {
+    if (!seh_bone_matrix(m_object, index, m_count, m_alloc_base, m_alloc_end, out.m)) {
         return std::nullopt;
     }
     return out;

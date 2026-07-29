@@ -125,6 +125,11 @@ public:
     uintptr_t asset_id() const { return reinterpret_cast<uintptr_t>(m_asset); }
 
 private:
+    // The engine's per-object allocation, reconstructed from BindAsset's own size
+    // expression, so every palette read can be bounded exactly instead of trusting
+    // a region pointer that a rebind may have left stale.
+    uintptr_t m_alloc_base{};
+    uintptr_t m_alloc_end{};
     // The object as well as the asset: node data is per-ASSET (shared), but the
     // 48-byte region is per-OBJECT, so a view needs both.
     const void* m_object{};
@@ -140,8 +145,17 @@ private:
 // case-insensitively against whatever a level references.
 std::optional<std::string> model_filename(const regenny::LTObject* obj);
 
-// The object's material paths (the .mat files it renders with). Empty entries are
-// legal and are returned as empty strings, because the slot count is meaningful.
+// The object's material paths (the .mat files it renders with).
+//
+// THE INDEX IS THE ENGINE'S PIECE INDEX, which is the part worth knowing: the
+// vector's length equals the shared asset's own material_count (equal on 215/215
+// live), and that same count is what the engine uses to size this array when it
+// binds the model. So slot i here is the i'th piece as the engine numbers it, and an
+// index taken from any engine-facing piece API lines up with this vector directly.
+//
+// Empty entries are legal and are returned as empty strings rather than skipped,
+// because the POSITION carries meaning -- compacting would silently renumber the
+// pieces. Live, 34 of 476 slots are empty.
 std::optional<std::vector<std::string>> model_materials(const regenny::LTObject* obj);
 
 
