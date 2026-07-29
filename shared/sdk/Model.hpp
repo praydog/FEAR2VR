@@ -125,12 +125,18 @@ public:
     uintptr_t asset_id() const { return reinterpret_cast<uintptr_t>(m_asset); }
 
     // CAN PER-NODE WORK BE REUSED between these two skeletons? True when both read the same node
-    // record storage, so anything derived purely from node data -- bind poses, the hierarchy, socket
-    // offsets -- is valid for both and need only be computed once.
+    // RECORD storage, so anything derived from those records is valid for both and need only be
+    // computed once: the bind pose, the animation fallback pose, and the parent/child hierarchy.
     //
-    // Stronger than comparing asset_id(), and stronger than finding that their node data agrees:
-    // agreement would also hold for two separate copies, whereas this is storage identity. The
-    // address itself stays private, because a consumer needs the answer and not the pointer.
+    // IT SAYS NOTHING ABOUT SOCKETS, and that is worth stating because socket offsets are exactly
+    // what a caller might assume it covers. The socket table is a separate `asset->sockets` pointer,
+    // resolved independently of the records, so record identity does not establish socket-table
+    // identity. For per-asset data in general compare asset_id(); this deliberately answers the
+    // narrower question its name asks.
+    //
+    // Stronger than finding that their node data merely AGREES: agreement would also hold for two
+    // separate copies, whereas this is storage identity. The address itself stays private, because
+    // a consumer needs the answer and not the pointer.
     bool shares_node_data(const ModelSkeleton& other) const {
         return m_records != nullptr && m_records == other.m_records;
     }

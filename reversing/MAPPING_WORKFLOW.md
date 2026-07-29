@@ -963,6 +963,16 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A PREDICATE'S PROMISE MUST COVER ONLY WHAT IT COMPARES.** `shares_node_data()` compares one
+  pointer -- the node RECORD array -- but its comment offered "bind poses, the hierarchy, socket
+  offsets". Sockets come from a separate `asset->sockets` pointer resolved independently, so record
+  identity establishes nothing about the socket table, and socket offsets are precisely what a
+  caller would assume such a predicate covers.
+  
+  The function was right and the documentation was generous. When writing a "can I reuse X" helper,
+  enumerate the fields it actually proves and stop there -- a consumer trusts the comment, not the
+  body.
+
 - **A METRIC THAT IS ONLY INTERPRETABLE UNDER ONE HYPOTHESIS CANNOT CHOOSE BETWEEN HYPOTHESES.**
   Trying to settle whether `LTModelNode`'s bind pose is parent-relative or model-space, I measured
   mean `|pos(child) - pos(parent)|` and read 38.6 against positions of 57.2 -- "too large to be a
