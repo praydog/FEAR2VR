@@ -28,7 +28,9 @@ public:
     private: char pad_158[0x8]; public:
     regenny::LTVector sphere_center; // 0x160
     float vis_radius; // 0x16c
-    private: char pad_170[0x18]; public:
+    private: char pad_170[0x8]; public:
+    void* per_node_stride2_b; // 0x178
+    private: char pad_17c[0xc]; public:
     regenny::LTRotation cached_rotation; // 0x188
 }; // Size: 0x198
 #pragma pack(pop)

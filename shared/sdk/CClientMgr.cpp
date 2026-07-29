@@ -1026,7 +1026,8 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                               size_t* collisions, size_t* count_dup_ok, size_t* records_in_blob,
                               size_t* root_255, size_t* index_self_ok, size_t* topological_ok,
                               size_t* child_sum_ok, size_t* rot_a_unit, size_t* rot_b_unit,
-                              size_t* pos_finite, size_t cap) {
+                              size_t* pos_finite, size_t* child_range_ok, size_t* child_parents_ok,
+                              size_t* child_links_seen, size_t cap) {
     constexpr size_t kMaxAssets = 512;
     constexpr size_t kMaxNames = 4096;
     constexpr uint32_t kMaxName = 128;
@@ -1122,6 +1123,35 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
                         if (children + 1 == nc) {
                             ++*child_sum_ok;
                         }
+                        // Contiguous children: the block a node points at must be
+                        // in range and must point back. Counted per LINK, not per
+                        // asset, and the link count is reported so the fixture can
+                        // prove the loop was not empty.
+                        bool blk_range = true, blk_par = true;
+                        for (uint32_t k = 0; k < nc; ++k) {
+                            const auto& nd = recs[k];
+                            const uint32_t c = nd.child_count;
+                            if (c == 0) {
+                                continue;
+                            }
+                            const uint32_t start = k + nd.first_child_offset;
+                            if (start + c > nc) {
+                                blk_range = false;
+                                continue;
+                            }
+                            for (uint32_t j = 0; j < c; ++j) {
+                                ++*child_links_seen;
+                                if (recs[start + j].parent_index != static_cast<uint8_t>(k)) {
+                                    blk_par = false;
+                                }
+                            }
+                        }
+                        if (blk_range) {
+                            ++*child_range_ok;
+                        }
+                        if (blk_par) {
+                            ++*child_parents_ok;
+                        }
                     }
                     if (blob != 0 && bsz > 0 && bsz < 0x400000 && nc > 0 && nc <= kMaxNodes &&
                         a->node_names != nullptr && a->node_hashes != nullptr) {
@@ -1215,7 +1245,9 @@ std::optional<CClientMgr::NodeCheck> CClientMgr::check_model_nodes(size_t max) c
                                      &out.hash_collisions, &out.count_dup_ok, &out.records_in_blob,
                                      &out.root_is_255, &out.index_self_ok, &out.topological_ok,
                                      &out.child_sum_ok, &out.rot_a_unit, &out.rot_b_unit,
-                                     &out.pos_finite, max_object_walk);
+                                     &out.pos_finite, &out.child_block_in_range,
+                                     &out.child_parents_ok, &out.child_links_seen,
+                                     max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

@@ -468,6 +468,33 @@ TREE were checkable with nothing but the asset's own node_count: one root marked
 off-by-one in the stride or a mis-sized record breaks the sum long before any
 individual field looks wrong.
 
+**Once you know a record's SIZE, scan for the multiply and you have found every
+function that indexes the array.** `LTModelNode` is 64 bytes, so any code walking
+the node array must scale an index by 64 — `shl r, 6` or `imul r, r, 40h`. One pass
+over the model code range for those two instruction shapes returned 25 functions,
+sorted by how many times each does it, and the smallest ones were the accessors:
+
+- a 35-byte function resolving `nodes[i + nodes[i].byte3 + ordinal].own_index`,
+  which is what identified byte +3 as a FIRST-CHILD OFFSET and proved children are
+  stored contiguously
+- a recursive walk marking a node and its descendants, which incidentally exposed
+  three PER-NODE arrays hanging off the model object (strides 2, 3 and 2, the last
+  gated on a flags bit)
+- `LTMem_Alloc(count << 6)`, i.e. the node allocator — confirming the 64 from the
+  allocation side, which is the rule this file already gives for sizes
+
+Why it works so well: a record size is a CONSTANT the compiler must materialise at
+every indexing site, so it behaves like a symbol you can grep for. Compare the
+alternative I was about to take — decompiling 80 vtable slots looking for node
+accessors — which is twenty times the work and would have missed the allocator and
+the internal walk entirely, since neither is a vtable entry.
+
+Caveats worth knowing: small powers of two get folded into addressing modes
+(`[base + r*8]`) rather than an explicit multiply, so this works best for sizes
+above 8; and a size that is a common constant (16, 32) will return noise. 64 was
+ideal. Check the smallest matches first — a short function that scales by the
+record size is almost always a pure accessor.
+
 **A vtable slot's IDENTITY comes from what its worker touches, never from the
 reference interface's method order.** FEAR 2's `ILTModel` has 80 slots and the
 reference SDK's `iltmodel.h` lists methods in a plausible-looking order, so

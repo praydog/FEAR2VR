@@ -917,6 +917,24 @@ int main(int argc, char** argv) {
                 check(ra == total, "every node's rotation_a is unit length");
                 check(rb == total, "every node's rotation_b is unit length");
                 check(pf == total, "every node's two position vectors are finite and in range");
+
+                // CONTIGUOUS CHILDREN. A node's children are the solid block
+                // [i+off, i+off+count), which is how GetNodeChildIndex resolves
+                // them, so first_child_offset, child_count and parent_index are
+                // three fields that must agree with each other.
+                int64_t cbr = -1, cpo = -1, cls = -1;
+                json_int(nb, "child_block_in_range", cbr);
+                json_int(nb, "child_parents_ok", cpo);
+                json_int(nb, "child_links_seen", cls);
+                check(cbr == nassets, "every child block stays inside its node array");
+                check(cpo == nassets, "every node in a child block names its owner as parent");
+                // EXACT relation, not just non-vacuity: every node except each
+                // skeleton's single root is reached exactly once as somebody's
+                // child, so the link count must be nodes minus roots. Live that is
+                // 626 == 660 - 34. This is what rules out children being
+                // double-counted or skipped, which the two counts above cannot see.
+                check(cls == total - nassets,
+                      "child links == nodes - roots (every non-root reached exactly once)");
             }
         }
 

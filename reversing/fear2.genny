@@ -1277,8 +1277,8 @@ class LTModelNode 0x40 {
     uint8_t parent_index   @0x00   // CONFIRMED: 255 on the root (the reader's sentinel), and always < own_index otherwise, on 34/34 assets
     uint8_t unk_01         @0x01
     uint8_t own_index      @0x02   // CONFIRMED == this node's index in the array, on all 660 live nodes
-    uint8_t unk_03         @0x03   // the reader writes a relative index here (counter - own index)
-    uint8_t child_count    @0x04   // CONFIRMED: the reader stores the low byte of a dword read from the file, and live the counts sum to node_count - 1 on 34/34 -- one root, no cycles
+    uint8_t first_child_offset @0x03 // CONFIRMED by a READER: LTModelObject_GetNodeChildIndex (0x429066) resolves a child as `nodes[i + nodes[i].first_child_offset + ordinal]`, so a node's children are a CONTIGUOUS BLOCK starting this many slots after it. The reader writes it as (next free index - own index), which is exactly that distance. Live, across 626 child links in 34 assets: the block [i+off, i+off+child_count) stays inside the array 34/34, every node in it names i as its parent 34/34, and each one's own_index matches its slot 34/34. Contiguity is what lets the engine walk children without a per-node child list.
+    uint8_t child_count    @0x04   // CONFIRMED: the reader stores the low byte of a dword read from the file, and live the counts sum to node_count - 1 on 34/34 -- one root, no cycles. Paired with first_child_offset it fully describes the child set, and the recursive walk at 0x4290A8 uses exactly that pair.
     uint8_t unk_05         @0x05   // CONFIRMED read as a single byte straight from the file
     uint16_t unk_06        @0x06
     LTVector position_a    @0x08   // CONFIRMED finite and sane on 660/660
@@ -1393,7 +1393,7 @@ class StdString 0x1C {
 // both ends: four dwords is 0x10, and the next sub-object starts at 0x130.
 class LTModelBlock120 0x10 {
     void* unk_00          @0x00   // live a heap pointer unique to each model (215 distinct, none null)
-    void* unk_04          @0x04   // live likewise unique per model
+    void* per_node_stride2 @0x04   // CONFIRMED a PER-NODE array indexed by node index with stride 2: LTModelObject_MarkNodeSubtreeDirty (0x4290A8) writes `*(this[0x124] + 2*node) = 1` while walking the skeleton. Live non-null on 215/215 models. Element meaning unmapped, but the indexing is proven, so its length is the asset's node_count.
     void* unk_08          @0x08   // live likewise unique per model
     LTModelAsset* asset   @0x0C   // CONFIRMED equal to the owning model's record.asset on 215/215 -- the THIRD offset that reaches the same pointer (record.asset at 0xEC, here at 0x12C, and LTModelBlock130.asset at 0x130)
 }
@@ -1406,7 +1406,7 @@ class LTModelBlock130 0x24 {
     uint32_t unk_04       @0x04   // ctor writes 0
     uint32_t unk_08       @0x08   // ctor writes 0
     uint32_t unk_0C       @0x0C   // ctor writes 0
-    uint32_t unk_10       @0x10   // ctor writes 0
+    uint32_t per_node_stride3 @0x10 // CONFIRMED a PER-NODE array with stride 3, from the same walk: `*(this[0x140] + 3*node + 1) = 1`. Note the +1: the byte written is the SECOND of the three, so the element is a small record rather than a scalar. Live non-null.
     uint32_t unk_14       @0x14   // ctor writes 0
     uint8_t unk_18        @0x18   // ctor writes 0
     uint8_t unk_19        @0x19   // ctor writes 0
@@ -1435,6 +1435,7 @@ class LTModelObject 0x198 {
     uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume. The two branches differ in MORE than where they read from, which is why both exist: non-zero takes the centre from sphere_center and the radius from asset->radius UNSCALED; zero takes the centre from LTObject.position and the radius from vis_radius * LTObject.scale. Since asset->radius == vis_radius on 215/215, the real distinction is explicit-centre-and-unscaled versus object-centre-and-scaled. Live: 22 non-zero / 193 zero of 215.
     LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position). PROVENANCE, from the ctor: it is initialised by copying base.position. That is why it is stale on most objects -- live it still equals base.position on only 12 of 215 -- and why the 193 objects with sphere_source == 0 can safely ignore it.
     float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give branch B's cull radius. Live > 0 on 215/215. It is a CACHE of the shared asset->radius -- the two are equal on 215/215 objects -- so a mod must not treat them as independent knobs. An earlier note said "the sampled models all read exactly 100.0", which was true only of the six models sampled then; across all 34 assets the values are 20/25/100/120/200/240 and more.
+    void* per_node_stride2_b @0x178  // CONFIRMED a third PER-NODE array, stride 2, written by the same walk as `*(this[0x178] + 2*node) = 0` -- but ONLY when LTObject.flags3 has bit 0x400 set, so it is conditional state. Live non-null on the sampled model.
     LTRotation cached_rotation @0x188   // CONFIRMED a real quaternion, not padding: the ctor writes (0,0,0,1) and live it is unit-length on 215/215. Ends at 0x198 == the class size, closing the class. It is NOT a live mirror of base.rotation (that would make it redundant); which of the two the renderer consumes is unmapped.
 }
 

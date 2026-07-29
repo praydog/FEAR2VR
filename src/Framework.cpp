@@ -458,12 +458,14 @@ std::string build_objects_json() {
                  "\"hash_consistent\":%zu,\"hash_collisions\":%zu,\"count_dup_ok\":%zu,"
                  "\"records_in_blob\":%zu,\"root_is_255\":%zu,\"index_self_ok\":%zu,"
                  "\"topological_ok\":%zu,\"child_sum_ok\":%zu,\"rot_a_unit\":%zu,"
-                 "\"rot_b_unit\":%zu,\"pos_finite\":%zu}",
+                 "\"rot_b_unit\":%zu,\"pos_finite\":%zu,\"child_block_in_range\":%zu,"
+                 "\"child_parents_ok\":%zu,\"child_links_seen\":%zu}",
                  nc->assets, nc->nodes_total, nc->names_in_blob, nc->names_printable,
                  nc->distinct_names, nc->repeated_names, nc->hash_consistent,
                  nc->hash_collisions, nc->count_dup_ok, nc->records_in_blob, nc->root_is_255,
                  nc->index_self_ok, nc->topological_ok, nc->child_sum_ok, nc->rot_a_unit,
-                 nc->rot_b_unit, nc->pos_finite);
+                 nc->rot_b_unit, nc->pos_finite, nc->child_block_in_range, nc->child_parents_ok,
+                 nc->child_links_seen);
         out += nb;
     } else {
         out += "null";

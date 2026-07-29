@@ -10,7 +10,7 @@ public:
     uint32_t unk_04; // 0x4
     uint32_t unk_08; // 0x8
     uint32_t unk_0C; // 0xc
-    uint32_t unk_10; // 0x10
+    uint32_t per_node_stride3; // 0x10
     uint32_t unk_14; // 0x14
     uint8_t unk_18; // 0x18
     uint8_t unk_19; // 0x19

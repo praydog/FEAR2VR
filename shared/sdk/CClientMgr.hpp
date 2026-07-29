@@ -457,6 +457,14 @@ public:
         size_t rot_a_unit;       // rotation_a is unit length
         size_t rot_b_unit;       // rotation_b is unit length
         size_t pos_finite;       // both position vectors are finite and in range
+        // CONTIGUOUS CHILDREN. LTModelObject_GetNodeChildIndex resolves a child as
+        // `nodes[i + nodes[i].first_child_offset + ordinal]`, so a node's children
+        // are a solid block. That makes first_child_offset and child_count
+        // cross-checkable against parent_index -- three fields that must agree, none
+        // of them recorded from a previous run:
+        size_t child_block_in_range;  // [i+off, i+off+count) stays inside the array
+        size_t child_parents_ok;      // every node in that block names i as parent
+        size_t child_links_seen;       // child links actually examined (non-vacuity)
     };
 
     // Walks up to `max` type-1 objects, visiting each distinct asset's nodes once.
