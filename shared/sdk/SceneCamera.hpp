@@ -389,6 +389,30 @@ public:
                                                           float up_x, float up_y, float up_z,
                                                           float fwd_x, float fwd_y, float fwd_z);
 
+    // A rotation looking along `forward`, with `up` as the roll hint. Transcribed from
+    // LTRotation_FromForwardUp (0x612827), operand order and all.
+    //
+    // THE HANDEDNESS IS PINNED, which an earlier pass could not do from the decompiler output alone --
+    // the cross receivers are in ECX, so only the disassembly shows them:
+    //
+    //     right = up x forward        (LTVector_Cross computes a3 x this, not this x a3)
+    //     right = normalise(right)
+    //     up    = forward x right
+    //     basis columns = (right, up, forward)
+    //
+    // Consistent with LithTech's +X right, +Y up, +Z forward: feed forward = +Z and up = +Y and the
+    // basis is the identity, so the rotation is the identity. The suite checks exactly that, and then
+    // the general property that rotating +Z by the result reproduces `forward`.
+    //
+    // Beyond a dot of +/-0.99 between forward and up the engine SWIZZLES the hint to
+    // (forward.y, forward.z, forward.x) rather than failing, so a caller may pass an up parallel to
+    // forward and still get a usable orientation -- the roll is then arbitrary but the view direction
+    // is right. Transcribed, because a caller relying on that must get the engine's behaviour.
+    //
+    // nullopt when either vector is non-finite or degenerate, or the conversion fails.
+    static std::optional<regenny::LTRotation> rotation_from_forward_up(
+        float forward_x, float forward_y, float forward_z, float up_x, float up_y, float up_z);
+
     // A camera transform from a position and rotation. Trivial, and exposed because it documents the
     // shape the engine actually wants: MakeCubicEnvMap builds exactly this on the stack -- position
     // then quaternion -- and passes its address to the perspective pass setup. There is no camera

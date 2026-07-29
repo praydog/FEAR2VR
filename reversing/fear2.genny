@@ -1498,10 +1498,31 @@ class CClientMgrCounterNode 0x40 {
 //     LTVector_Cross, LTVector_NormalizeInPlace, LTVector_Cross
 //     LTMatrix3x4_FromBasisColumns  then  LTRotation_FromMatrix3x4
 //
-// THE CROSS OPERAND ORDER IS NOT PINNED, only that two crosses and one normalise occur, so HANDEDNESS
-// IS NOT ESTABLISHED from this function. A consumer building its own look-at must verify against a
-// known rotation rather than assume this order -- which is why the SDK exposes the primitives and not a
-// look-at helper.
+// THE HANDEDNESS IS NOW PINNED, and the reason it took a second look is worth recording: the cross
+// products' receivers live in ECX, so Hex-Rays showed `sub_407936(v4, &v5)` with the operand that
+// decides the sign invisible. The disassembly has it:
+//
+//     ecx = forward, out = right, a3 = up          and LTVector_Cross computes a3 x this
+//         -> right = up x forward
+//     LTVector_NormalizeInPlace(right)
+//     ecx = right,   out = up,    a3 = forward
+//         -> up = forward x right
+//     LTMatrix3x4_FromBasisColumns(out, a2=right, a3=up, a4=forward)
+//         -> columns (right, up, forward)
+//
+// CONSISTENT WITH LithTech's +X right, +Y up, +Z forward: feed forward = +Z and up = +Y and the basis
+// is the identity matrix, so the rotation is the identity -- which the suite asserts directly, and
+// which would fail on any flipped cross or swapped column.
+//
+// THE DEGENERATE CASE IS A SWIZZLE, NOT A FAILURE. Beyond a dot of +/-0.99 the hint becomes
+// (forward.y, forward.z, forward.x), so a caller may pass an up parallel to forward and still get a
+// usable orientation with arbitrary roll. Transcribed rather than replaced, because a caller relying on
+// that behaviour needs the engine's.
+//
+// EXPOSED AS sdk::SceneCamera::rotation_from_forward_up, and VERIFIED BY THE PROPERTY a consumer
+// depends on rather than by matching the transcription to itself: rotating +Z by the result must
+// reproduce the requested forward. That single check exercises both crosses, the column order and the
+// quaternion conversion together, across a spread of directions plus the parallel-hint case.
 //
 // THE PRIMITIVES, all pinned:
 //

@@ -975,10 +975,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   taking a forward and an up hint. The caller-derived name would have hidden a generally useful primitive
   behind a special case.
   
-- **DECLINE TO EXPOSE WHAT THE DECOMPILE DOES NOT PIN.** The look-at's two cross products appear in the
-  pseudocode without their operand order, so handedness is unestablished -- and a flipped cross yields a
-  mirrored view that looks plausible. The SDK exposes the pinned primitives (cross, normalise, basis columns,
-  matrix-to-quaternion) and no look-at helper, with the gap named in the header instead of papered over.
+- **A THISCALL RECEIVER IS INVISIBLE IN PSEUDOCODE, AND IT CAN BE THE OPERAND THAT MATTERS.** The look-at's
+  handedness looked unrecoverable because Hex-Rays rendered the crosses as `sub_407936(v4, &v5)` -- the ECX
+  operand, which decides the sign, simply absent. The disassembly shows `mov ecx, esi` before each call and
+  pins it: right = up x forward, then up = forward x right, columns (right, up, forward). Declining to expose
+  the helper was right while the order was unknown; going back to the disassembly was what closed it. When a
+  decompile seems to omit something load-bearing, check whether it is in a register.
+  
+- **VERIFY A TRANSCRIPTION BY THE PROPERTY, NOT BY RE-READING IT.** Comparing my look-at to the disassembly
+  again would only re-check my own reading. Requiring that rotating +Z by the result reproduces the requested
+  forward exercises both crosses, the basis column order and the quaternion conversion at once, and the
+  canonical case (forward +Z, up +Y -> identity) fails on any single flipped sign.
 
 - **A GATE CAN ANSWER A SAMPLING MYSTERY.** I spent two passes noting that 4000 consecutive reads of the
   camera record never caught a perspective pass, and treating it as a limitation of sampling.

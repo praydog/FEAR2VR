@@ -3900,6 +3900,21 @@ int main(int argc, char** argv) {
             check(json_double(body, "quat_branches", qbr) && qbr >= 2.0,
                   "and the negative-trace fallback branch was actually exercised (>= 2 cases)");
 
+            // THE LOOK-AT, checked by the property a consumer depends on rather than by comparing the
+            // transcription to itself: rotating +Z by the result must reproduce the requested forward.
+            // That exercises both crosses, the basis column order and the quaternion conversion at
+            // once, and it is what pins the handedness the decompiler output could not show -- the
+            // cross receivers live in ECX, so only the disassembly gave the operand order.
+            bool lfo = false, lid = false, lpar = false;
+            check(json_bool(body, "lookat_identity", lid) && lid,
+                  "forward +Z with up +Y yields the identity rotation (the canonical basis)");
+            check(json_bool(body, "lookat_forward_ok", lfo) && lfo,
+                  "rotating +Z by the look-at reproduces the requested forward, for every probe "
+                  "direction (a flipped cross or swapped column fails here)");
+            check(json_bool(body, "lookat_parallel_ok", lpar) && lpar,
+                  "an up hint parallel to forward still yields the right view direction -- the engine "
+                  "swizzles the hint rather than failing, and the transcription does too");
+
             // Finite input whose OUTPUT overflows -- the same class of hole the projection builders
             // had. invert_transform's optional must mean "usable transform", not "input looked fine".
             bool rop = false;

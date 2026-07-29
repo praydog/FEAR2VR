@@ -791,6 +791,53 @@ regenny::LTMatrix3x4 SceneCamera::matrix_from_basis_columns(float right_x, float
     return out;
 }
 
+std::optional<regenny::LTRotation> SceneCamera::rotation_from_forward_up(
+    float forward_x, float forward_y, float forward_z, float up_x, float up_y, float up_z) {
+    const float f[3] = {forward_x, forward_y, forward_z};
+    float u[3] = {up_x, up_y, up_z};
+    for (size_t i = 0; i < 3; ++i) {
+        if (!std::isfinite(f[i]) || !std::isfinite(u[i])) {
+            return std::nullopt;
+        }
+    }
+    // The engine's degenerate handling: beyond +/-0.99 the hint is SWIZZLED rather than rejected.
+    const float dot = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
+    if (!std::isfinite(dot)) {
+        return std::nullopt;
+    }
+    if (dot > 0.99f || dot < -0.99f) {
+        u[0] = f[1];
+        u[1] = f[2];
+        u[2] = f[0];
+    }
+    // LTVector_Cross computes a3 x this, so the first call yields up x forward.
+    float right[3] = {
+        u[1] * f[2] - u[2] * f[1],
+        u[2] * f[0] - u[0] * f[2],
+        u[0] * f[1] - u[1] * f[0],
+    };
+    const float length_sq = right[0] * right[0] + right[1] * right[1] + right[2] * right[2];
+    if (!std::isfinite(length_sq) || length_sq <= 0.0f) {
+        return std::nullopt;  // forward and the (possibly swizzled) hint are still parallel
+    }
+    const float inv = 1.0f / std::sqrt(length_sq);
+    if (!std::isfinite(inv)) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        right[i] *= inv;
+    }
+    // Second cross: this = right, a3 = forward, so the result is forward x right.
+    const float new_up[3] = {
+        f[1] * right[2] - f[2] * right[1],
+        f[2] * right[0] - f[0] * right[2],
+        f[0] * right[1] - f[1] * right[0],
+    };
+    const auto basis = matrix_from_basis_columns(right[0], right[1], right[2], new_up[0], new_up[1],
+                                                 new_up[2], f[0], f[1], f[2]);
+    return rotation_from_matrix(basis);
+}
+
 regenny::LTNodeTransform SceneCamera::make_camera_transform(float x, float y, float z,
                                                             const regenny::LTRotation& rotation) {
     regenny::LTNodeTransform out{};

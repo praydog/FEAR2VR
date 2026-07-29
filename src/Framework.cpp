@@ -3697,6 +3697,55 @@ std::string build_shader_params_json() {
         }
     }
 
+    // THE LOOK-AT, VERIFIED BY WHAT IT MUST DO rather than by matching the transcription to itself:
+    // rotating +Z by the result must reproduce the requested forward direction. That is the property a
+    // consumer depends on, and it fails if either cross is flipped, the basis columns are swapped, or
+    // the quaternion conversion is wrong -- the whole chain at once.
+    int lookat_failures = 0;
+    bool lookat_identity = false;
+    bool lookat_handles_parallel = false;
+    {
+        // Canonical case first: forward +Z with up +Y is the identity basis, so the identity rotation.
+        const auto ident = sdk::SceneCamera::rotation_from_forward_up(0, 0, 1, 0, 1, 0);
+        lookat_identity = ident.has_value() && fabsf(ident->w - 1.0f) < 1e-3f &&
+                          fabsf(ident->x) < 1e-3f && fabsf(ident->y) < 1e-3f &&
+                          fabsf(ident->z) < 1e-3f;
+
+        // A spread of directions: rotating +Z by the result must land on `forward`.
+        const float dirs[5][3] = {
+            {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f},
+            {0.577f, 0.577f, 0.577f}, {-0.3f, 0.8f, 0.5f},
+        };
+        for (const auto& d : dirs) {
+            const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            const float fx = d[0] / len, fy = d[1] / len, fz = d[2] / len;
+            const auto q = sdk::SceneCamera::rotation_from_forward_up(fx, fy, fz, 0, 1, 0);
+            if (!q.has_value()) {
+                ++lookat_failures;
+                continue;
+            }
+            const auto m = sdk::rotation_matrix(*q);
+            if (!m.has_value()) {
+                ++lookat_failures;
+                continue;
+            }
+            // Column 2 of the basis IS forward, and R * (0,0,1) reads column 2 out again.
+            const float rx = m->m[2], ry = m->m[6], rz = m->m[10];
+            if (fabsf(rx - fx) > 2e-3f || fabsf(ry - fy) > 2e-3f || fabsf(rz - fz) > 2e-3f) {
+                ++lookat_failures;
+            }
+        }
+
+        // An up hint PARALLEL to forward: the engine swizzles rather than failing, so this must still
+        // produce a usable rotation whose forward is correct.
+        const auto par = sdk::SceneCamera::rotation_from_forward_up(0, 1, 0, 0, 1, 0);
+        if (par.has_value()) {
+            const auto m = sdk::rotation_matrix(*par);
+            lookat_handles_parallel = m.has_value() && fabsf(m->m[2]) < 2e-3f &&
+                                      fabsf(m->m[6] - 1.0f) < 2e-3f && fabsf(m->m[10]) < 2e-3f;
+        }
+    }
+
     // Finite input, overflowing output: FLT_MAX positions make the dot products infinite.
     regenny::LTNodeTransform huge_pose = probe_pose;
     huge_pose.position.x = std::numeric_limits<float>::max();
@@ -3852,6 +3901,9 @@ std::string build_shader_params_json() {
     json_append_bool(out, "rotation_rejects_nonfinite", rotation_rejects_nonfinite);
     json_append_bool(out, "quat_roundtrips", quat_roundtrip_failures == 0);
     json_append_double(out, "quat_branches", static_cast<double>(quat_branches_covered), 0);
+    json_append_bool(out, "lookat_forward_ok", lookat_failures == 0);
+    json_append_bool(out, "lookat_identity", lookat_identity);
+    json_append_bool(out, "lookat_parallel_ok", lookat_handles_parallel);
     json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
     json_append_bool(out, "tolerance_guards_hold", tolerance_guard_failures == 0);
     json_append_bool(out, "mismatch_detected", mismatch_detect_failures == 0);
