@@ -5,6 +5,9 @@
 #include "LTVector.hpp"
 #include "LTWorldTreeLink.hpp"
 namespace regenny {
+class LTSpatialRecord;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class LTObject {
 public:
@@ -20,7 +23,7 @@ public:
     regenny::LTRotation rotation; // 0x20
     float scale; // 0x30
     void* owner; // 0x34
-    regenny::LTWorldTreeLink* spatial_record; // 0x38
+    regenny::LTSpatialRecord* spatial_record; // 0x38
     uint32_t flags; // 0x3c
     uint32_t unk_40; // 0x40
     uint16_t flags2; // 0x44

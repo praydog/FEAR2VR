@@ -456,6 +456,38 @@ class LTRotation 0x10 {
 // OT_PARTICLESYSTEM 264. Those are the derived classes; only the shared
 // prefix is mapped here, and no derived field is claimed.
 //
+// The per-object spatial/visibility record LTObject.spatial_record points at.
+// Declared BEFORE LTObject because genny resolves types in file order and
+// LTObject holds a pointer to this; `object` below is therefore void* rather
+// than LTObject*, since typing both directions would be circular.
+//
+// The size here is the MAPPED EXTENT, not a proven class size: the true size is
+// unknown, fields beyond +0x3C exist (0xFFFFFFFF was observed at +0x40), and
+// parts of the layout are type-dependent.
+//
+// Its HEAD holds the CULL VOLUME the object's vtable slot 2 produced -- that is
+// how the volume reaches the spatial queries. Verified against the typed sources
+// on every live object, per type:
+//   OT_NORMAL          919/919   all six floats zero -- slot 2 returns 0
+//   OT_MODEL           193/193   position + vis_radius*scale (sphere branch)
+//   OT_WORLDMODEL     1472/1473  aabb_min / aabb_max
+//   OT_SPRITE          224/224   both kinds -- AABB fields, or position + radius
+//   OT_CAMERA          474/474   aabb_min / aabb_max
+//   OT_PARTICLESYSTEM  278/278   both kinds, offsets added to position
+// The single OT_WORLDMODEL exception is the level-geometry object, whose flags3
+// bit 0x80 makes slot 2 return 0, so there is no unexplained residue.
+//
+// This is the strongest cross-check in the schema so far, because the engine
+// wrote these bytes independently of the fields they are compared against: it
+// ties LTObject's position/aabb_min/aabb_max/scale, LTModelObject's vis_radius,
+// LTSpriteObject's kind/aabb/radius and LTParticleSystemObject's
+// cull_volume_type/offsets to one separate copy of the same values. A single
+// moved offset in any of those breaks it.
+class LTSpatialRecord 0x3C {
+    float volume[6]     @0x00   // CONFIRMED: sphere shapes use [0..2] centre + [3] radius; AABB shapes use [0..2] min + [3..5] max. WHICH shape applies is a property of the owning object, not of any field here.
+    void* object        @0x38   // CONFIRMED backpointer to the owning LTObject on 3583/3583. void* only to avoid a circular type reference; it is always an LTObject*.
+}
+
 // ---- The base virtual interface (from the six object vtables) --------------
 //
 // Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's
@@ -489,11 +521,11 @@ class LTObject 0xCC {
     LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples; the ctor writes (0,0,0,1), pinning w at +0x2C
     float scale           @0x30   // CONFIRMED as a uniform scale, by its READER: OT_MODEL's cull-volume provider (OT_MODEL_GetCullVolume, 0x428FB6) computes its sphere radius as `vis_radius(+0x16C) * this(+0x30)`. That matches the reference SDK's GetRadius() == m_VisRadius * MAX(m_Scale...), except FEAR2 keeps ONE float here rather than the reference's LTVector m_Scale. ctor sets 1.0; virtual slot 6 (LTObject_SetScale, 0x4200BF) is the setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583; the models that differ (1.658/2.493/2.656/3.0/3.19/3.2) multiply a vis_radius of 100.0 into radii of 165.76..320.0, all finite and positive on 193/193 sphere-culled models. An earlier pass called this MEANING UNKNOWN because the models whose value differs all had dims == 0 -- that turned out to be the explanation, not a counter-argument: they are SPHERE-culled, so LTObject_SetDims never runs on them and radius/dims stay at their constructor zeroes.
     void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
-    LTWorldTreeLink* spatial_record @0x38   // CONFIRMED per-object and never null (3583/3583); record[+0x38] points BACK to this object on 3583/3583. Its own list is REBUILT by spatial queries: LTObjectOwner_UpdateSpatialRecord asks the object's own vtable slot 2 for a bounding volume (return 1 = sphere as 4 floats, 2 = AABB as 6 floats), then calls LTSpatialRecord_CollectSphere / _CollectAABB, which traverse a world structure and link each hit onto this record via LTSpatialRecord_AddEntry; when the object is not renderable it calls LTSpatialRecord_Release instead. So this is the object's spatial/visibility association set, NOT a refcount as an earlier pass guessed. Typed as LTWorldTreeLink only because the first two fields are a link pair; the rest of the record is unmapped and type-dependent. record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree), so that is NOT a type field, and record[+0x34] is NOT a string pointer.
+    LTSpatialRecord* spatial_record @0x38   // CONFIRMED per-object and never null (3583/3583); record->object points BACK here on 3583/3583. LTObjectOwner_UpdateSpatialRecord asks the object's own vtable slot 2 for a bounding volume, then calls LTSpatialRecord_CollectSphere / _CollectAABB (or _Release when the object is not renderable), which store that volume on the record and link each spatial hit onto it. NOT a refcount, as an earlier pass guessed. See LTSpatialRecord for the volume evidence. Still unmapped there: record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree) so that is NOT a type field, and record[+0x34] is NOT a string pointer.
     uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; the render predicate 0x4200A0 reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0). The render gate is !(f & 0x200) && (f & 0x10C30); those bit meanings are unverified. ctor zeroes it.
     uint32_t unk_40       @0x40   // ctor zeroes it
     uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.
-    uint16_t flags3        @0x46  // CONFIRMED 16-bit and distinct from flags2 (SetPos reads it as a separate WORD). Bit 0x400 is set on 3583/3583 live objects (values 0x400 x3529, 0x420 x53, 0x490 x1), which is exactly why SetPos's "Object going outside world" branch never runs -- it is gated on that bit being CLEAR. Do not read the record fields that branch touches as validated: they are not. Bit 0x20 is set by 0x420585 when it unlinks the node at +0x7C.
+    uint16_t flags3        @0x46  // CONFIRMED 16-bit and distinct from flags2 (SetPos reads it as a separate WORD). Live values: 0x400 x3529, 0x420 x53, 0x490 x1. Bit 0x400 is set on 3583/3583, which is exactly why SetPos's "Object going outside world" branch never runs -- it is gated on that bit being CLEAR, so do not treat the record fields that branch touches as validated. Bit 0x20 is set by LTObject_DetachFromParent. Bit 0x80 means NO CULL VOLUME: LTObject_GetCullVolume_AABB tests the byte here as SIGNED (`(char)this[70] < 0`) and bails when negative, and the single object with that bit set -- the level geometry -- is exactly the single object whose spatial_record volume is all zeros.
     LTVector aabb_min     @0x48   // CONFIRMED == position - dims on 3583/3583 live objects. Written by 0x42015D from SetPos, SetPosRot and SetDims.
     LTVector aabb_max     @0x54   // CONFIRMED == position + dims on 3583/3583 live objects
     float radius          @0x60   // CONFIRMED, and TWO-STATE. SetDims computes sqrt(dot(dims,dims)) and adds the double at 0x66FBB8, which is exactly 0.1 -- but the ctor zeroes both this and dims, so an object SetDims never ran on sits at radius 0 WITH dims 0, not at 0.1. Live partition: 2126 sized (radius == |dims| + 0.1), 1457 pristine (both zero), 0 in neither. My first pass claimed the single formula held on 3583/3583 -- that was wrong, produced by a check with a 1.0-wide acceptance window; the fixture's tighter assertion caught it. Do NOT re-widen the tolerance to make one formula fit.
@@ -894,9 +926,17 @@ class CClientMgr 0x1468 {
 //   OT_SPRITE          2 when its kind byte @0x106 is 3/4/7/9, else 1
 //   OT_PARTICLESYSTEM  returns its own mode byte (see LTParticleSystemObject)
 //
-// The shared OT_WORLDMODEL/OT_CAMERA body also returns 0 when LTObject.flags3's
-// high bit (0x8000) is set. NOT EXERCISED: zero live objects have that bit, so
-// the "no volume" path is inferred from the code only.
+// The shared OT_WORLDMODEL/OT_CAMERA body also returns 0 when the byte at
+// LTObject.flags3's low end has bit 0x80 set. The code is `if ((char)this[70] <
+// 0) return 0` -- a SIGNED BYTE test, so the mask is 0x80, NOT 0x8000 as an
+// earlier draft of this comment said. That draft went on to call the path
+// unexercised, having looked for the wrong bit.
+//
+// It IS exercised, by exactly one object: the level geometry (flags3 == 0x490,
+// handle == 0xFFFF, slot_index == -1, dims of (13375, 9149, 10200) spanning the
+// whole map). Its spatial_record volume is all zeros while every other
+// OT_WORLDMODEL's holds a real AABB -- so the single live exception to the
+// record mapping is explained by this gate rather than left as residue.
 
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
 // element_size. Only the cull-volume fields are mapped; the rest of the derived
@@ -938,5 +978,4 @@ class LTSpriteObject 0x154 {
     LTVector aabb_max      @0x12C   // CONFIRMED: the max for AABB kinds
     float radius           @0x138   // CONFIRMED: the sphere radius for all other kinds, paired with LTObject.position as the centre. Live, finite and > 0 on 215/215 sphere-kind sprites.
 }
-
 }

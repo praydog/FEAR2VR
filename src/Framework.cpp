@@ -456,6 +456,24 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Spatial records: the cull volume the engine itself stored, compared against
+    // the volume recomputed from typed fields. The comparison spans LTObject,
+    // LTModelObject, LTSpriteObject and LTParticleSystemObject, so one number
+    // here guards the whole geometry mapping. Complete coverage matters for the
+    // same reason as the attachment walk, so the cap covers rather than samples.
+    out += ",\"spatial_records\":";
+    if (const auto sr = mgr->check_spatial_records(8192); sr.has_value()) {
+        char sb[256];
+        snprintf(sb, sizeof(sb),
+                 "{\"objects\":%zu,\"backpointer_ok\":%zu,\"volume_matched\":%zu,"
+                 "\"volume_gated\":%zu,\"unexplained\":%zu}",
+                 sr->objects, sr->backpointer_ok, sr->volume_matched, sr->volume_gated,
+                 sr->unexplained);
+        out += sb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

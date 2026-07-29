@@ -235,6 +235,30 @@ It matched to 0.00000 across 40 objects with determinant 1.0. So:
   `position` on 55/60 samples and diverges by up to 50 units on the rest is
   precisely why the schema does NOT call it the position. Record the 5, do
   not round them away.
+- **A residue of exactly ONE is the most informative sample you will get —
+  chase it.** When the spatial-record volume matched the recomputed volume on
+  1472 of 1473 OT_WORLDMODELs, the single holdout paid for itself three times
+  over. It turned out to be the level-geometry object (`flags3 == 0x490`,
+  `handle == 0xFFFF`, dims spanning the whole map); it was the SAME object as
+  the lone `flags3 == 0x490` anomaly noted a pass earlier; and explaining it
+  exposed a mask misreading (below) that had already been written into the
+  schema as a claim. One outlier, one object, three corrections. A 1/1473
+  discrepancy is small enough to feel like noise and specific enough to have
+  exactly one cause — the best possible ratio. Do not aggregate it away.
+- **`(char)field[n] < 0` on a 16-bit field tests 0x80, not 0x8000.** A signed
+  BYTE comparison against zero is a bit-7-of-that-byte test, and the decompiler
+  writes it as a comparison rather than a mask, which is what makes it easy to
+  misread. `LTObject_GetCullVolume_AABB` does `if ((char)this[70] < 0) return 0`
+  on `flags3` (a uint16 at +0x46): the gate is `flags3 & 0x80`. Recording it as
+  `0x8000` produced a knock-on error — a search for that bit found no objects, so
+  the code path was documented as NOT EXERCISED when in fact exactly one object
+  reaches it every frame. Two habits that prevent this:
+  * When a decompiled test is a signed comparison rather than an `&`, work out
+    the mask from the ACCESS WIDTH at that offset, not from the field's declared
+    width. `char` at +0x46 of a uint16 field means the low byte.
+  * Before writing "not exercised" into the schema, count the objects that
+    satisfy the condition you actually derived. Zero hits is as likely to mean
+    "wrong condition" as "unused path".
 
 **Before assuming one formula governs a field, ask whether its writer ever
 ran.** A derived field has at least two legitimate states: the value its setter

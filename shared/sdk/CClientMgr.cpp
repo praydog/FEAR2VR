@@ -11,6 +11,7 @@
 #include "regenny/regenny/LTMemoryPool.hpp"
 #include "regenny/regenny/LTModelObject.hpp"
 #include "regenny/regenny/LTParticleSystemObject.hpp"
+#include "regenny/regenny/LTSpatialRecord.hpp"
 #include "regenny/regenny/LTSpriteObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
@@ -997,6 +998,124 @@ std::optional<CClientMgr::AttachmentCheck> CClientMgr::check_attachments(
     for (size_t t = 0; t < object_list_count(); ++t) {
         const int64_t n =
             seh_check_attachments(&regenny()->object_lists[t], max_per_type, &out, max_object_walk);
+        if (n < 0) {
+            return std::nullopt;
+        }
+        out.objects += static_cast<size_t>(n);
+    }
+    return out;
+}
+
+namespace {
+
+// Recomputes the cull volume from the object's TYPED fields and compares it to
+// the copy the engine stored on the spatial record. POD-only for the SEH guard.
+//
+// `type` is passed in rather than read from the object so the comparison is
+// driven by the bucket the object was found in, which the schema already proves
+// equals LTObject.type -- using the field would make the check partly circular.
+//
+// Returns objects examined, or -1 on fault / non-termination.
+int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, size_t max,
+                          CClientMgr::SpatialRecordCheck* out, size_t cap) {
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* o = reinterpret_cast<const regenny::LTObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* rec = o->spatial_record;
+                if (rec != nullptr) {
+                    if (rec->object == reinterpret_cast<const void*>(o)) {
+                        ++out->backpointer_ok;
+                    }
+                    const float* v = rec->volume;
+                    const float px = o->position.x, py = o->position.y, pz = o->position.z;
+
+                    bool matched = false;
+                    // OT_NORMAL never stores a volume; flags3 bit 0x80 suppresses it.
+                    const bool gated = (type == 0) || ((o->flags3 & 0x80u) != 0);
+                    if (gated) {
+                        matched = v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f && v[3] == 0.0f;
+                        if (matched) {
+                            ++out->volume_gated;
+                        }
+                    } else if (type == 2 || type == 5) { // AABB from the base fields
+                        matched = approx_eq(v[0], o->aabb_min.x) && approx_eq(v[1], o->aabb_min.y) &&
+                                  approx_eq(v[2], o->aabb_min.z) && approx_eq(v[3], o->aabb_max.x) &&
+                                  approx_eq(v[4], o->aabb_max.y) && approx_eq(v[5], o->aabb_max.z);
+                        if (matched) {
+                            ++out->volume_matched;
+                        }
+                    } else if (type == 1) { // OT_MODEL sphere
+                        const auto* m = reinterpret_cast<const regenny::LTModelObject*>(o);
+                        if (m->sphere_source != 0) {
+                            matched = approx_eq(v[0], m->sphere_center.x) &&
+                                      approx_eq(v[1], m->sphere_center.y) &&
+                                      approx_eq(v[2], m->sphere_center.z);
+                        } else {
+                            matched = approx_eq(v[0], px) && approx_eq(v[1], py) &&
+                                      approx_eq(v[2], pz) &&
+                                      approx_eq(v[3], m->vis_radius * o->scale);
+                        }
+                        if (matched) {
+                            ++out->volume_matched;
+                        }
+                    } else if (type == 3) { // OT_SPRITE: kind selects the shape
+                        const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(o);
+                        const uint8_t k = s->kind;
+                        if (k == 3 || k == 4 || k == 7 || k == 9) {
+                            matched = approx_eq(v[0], s->aabb_min.x) &&
+                                      approx_eq(v[3], s->aabb_max.x);
+                        } else {
+                            matched = approx_eq(v[0], px) && approx_eq(v[1], py) &&
+                                      approx_eq(v[2], pz) && approx_eq(v[3], s->radius);
+                        }
+                        if (matched) {
+                            ++out->volume_matched;
+                        }
+                    } else if (type == 6) { // OT_PARTICLESYSTEM: offsets are object-local
+                        const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(o);
+                        if (p->cull_volume_type == 1) {
+                            matched = approx_eq(v[0], px + p->sphere_offset.x) &&
+                                      approx_eq(v[1], py + p->sphere_offset.y) &&
+                                      approx_eq(v[2], pz + p->sphere_offset.z) &&
+                                      approx_eq(v[3], p->sphere_radius);
+                        } else {
+                            matched = approx_eq(v[0], px + p->aabb_min_offset.x) &&
+                                      approx_eq(v[3], px + p->aabb_max_offset.x);
+                        }
+                        if (matched) {
+                            ++out->volume_matched;
+                        }
+                    }
+                    if (!matched) {
+                        ++out->unexplained;
+                    }
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::SpatialRecordCheck> CClientMgr::check_spatial_records(
+    size_t max_per_type) const {
+    SpatialRecordCheck out{};
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const int64_t n =
+            seh_check_records(&regenny()->object_lists[t], t, max_per_type, &out, max_object_walk);
         if (n < 0) {
             return std::nullopt;
         }

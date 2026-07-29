@@ -453,6 +453,36 @@ public:
     // nullopt on fault or a walk that failed to terminate.
     std::optional<AttachmentCheck> check_attachments(size_t max_per_type) const;
 
+    // ---- spatial records (the cull volume the engine actually stored) ------
+    //
+    // Each LTObject points at an LTSpatialRecord whose head holds the culling
+    // volume its vtable slot 2 produced. That makes this the strongest available
+    // check on the geometry mapping, because the engine wrote those bytes
+    // INDEPENDENTLY of the fields they are compared against: one comparison ties
+    // LTObject's position / aabb_min / aabb_max / scale, LTModelObject's
+    // vis_radius, LTSpriteObject's kind / aabb / radius and
+    // LTParticleSystemObject's cull_volume_type / offsets to a separate copy of
+    // the same values. A single moved offset anywhere in that set breaks it.
+    //
+    // Two legitimate reasons a record's volume is all zeros, and both are
+    // COUNTED rather than tolerated:
+    //   * OT_NORMAL -- its provider is `return 0`, so no volume is ever stored;
+    //   * flags3 bit 0x80 -- the shared WORLDMODEL/CAMERA provider tests that
+    //     byte as SIGNED and bails, which live is exactly the level-geometry
+    //     object.
+    // `unexplained` must be zero: anything neither matching nor gated is a real
+    // mapping failure, not noise.
+    struct SpatialRecordCheck {
+        size_t objects;        // objects examined
+        size_t backpointer_ok; // record->object == the owning object
+        size_t volume_matched; // head equals the volume recomputed from typed fields
+        size_t volume_gated;   // legitimately absent (OT_NORMAL, or flags3 & 0x80)
+        size_t unexplained;    // neither -- MUST be 0
+    };
+
+    // nullopt on fault or a walk that failed to terminate.
+    std::optional<SpatialRecordCheck> check_spatial_records(size_t max_per_type) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are

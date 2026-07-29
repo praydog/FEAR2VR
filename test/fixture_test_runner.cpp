@@ -859,6 +859,47 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Spatial records. This is the broadest guard in the suite: the engine
+        // stored a copy of each object's cull volume, and we recompute that volume
+        // from the typed fields and compare. A moved offset in LTObject's
+        // position/aabb/scale, LTModelObject's vis_radius, LTSpriteObject's
+        // kind/aabb/radius or LTParticleSystemObject's type/offsets all surface
+        // here as `unexplained`.
+        {
+            const size_t rp = body.find("\"spatial_records\":");
+            check(rp != std::string::npos, "objects report includes the spatial-record check");
+            if (rp != std::string::npos) {
+                if (json_has(body, "\"spatial_records\":null")) {
+                    check(false, "spatial-record walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', rp);
+                    const std::string rb = body.substr(rp, end - rp + 1);
+                    int64_t objs = -1, back = -1, matched = -1, gated = -1, unexp = -1;
+                    json_int(rb, "objects", objs);
+                    json_int(rb, "backpointer_ok", back);
+                    json_int(rb, "volume_matched", matched);
+                    json_int(rb, "volume_gated", gated);
+                    json_int(rb, "unexplained", unexp);
+
+                    check(objs > 0, "objects present to check spatial records against");
+                    check(back == objs, "every spatial_record points back at its owning object");
+                    // The partition must be TOTAL. `unexplained` is the real
+                    // assertion: a volume that neither matches nor is gated means
+                    // the geometry mapping is wrong somewhere.
+                    check(unexp == 0,
+                          "no spatial_record volume is unexplained (mismatch => a moved geometry "
+                          "offset)");
+                    check(matched + gated == objs,
+                          "every record volume either matches the recomputed volume or is gated");
+                    // Both sides populated: matched proves the recomputation is
+                    // real work, gated proves the OT_NORMAL/flags3-0x80 path is
+                    // genuinely reached rather than assumed.
+                    check(matched > 0, "records with a matching volume exist");
+                    check(gated > 0, "gated (legitimately empty) records exist");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no
