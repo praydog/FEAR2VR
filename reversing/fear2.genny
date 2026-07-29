@@ -4896,3 +4896,45 @@ class LTInputDeviceMouse 0x30 {
 // "what does this listener react to on that object" directly.
 //
 // 1017 checks, 0 failures.
+
+// ---- THE GAME'S NAMED EVENT BUS, WITH TYPED PAYLOADS ----------------------------------------------
+//
+// Chasing what the player's 21 delegate channels MEAN turned up something else: a second, unrelated
+// notification mechanism. Handler strings on one channel produced "SlowMoMaxChanged", which looked like an
+// event name, and searching for that family found 40 more.
+//
+// 87 FUNCTIONS, ONE PER EVENT, each a single line calling a shared sender with: a CATEGORY ("Player", "Menu"),
+// a source, the EVENT NAME as a literal, a target, a PAYLOAD FORMAT, and the argument block.
+//
+// THE FORMAT STRING IS THE PART THAT MATTERS: d = int, f = float, s = string, b = bool.
+//
+//     HealthChanged / HealthMaxChanged / ArmorChanged / ArmorMaxChanged     "d"
+//     PlayerAlive / OnPlayerStateChanged / PlayerRemoved / DamageDirAdd     "d"
+//     AmmoCountChanged / GrenadeCountChanged / GearCountChanged             "sdd"
+//     WeaponSelect / WeaponRemove / GrenadeTypeChanged                      "s"
+//     SlowMoMaxChanged / FlashlightMaxChargeChanged / WeaponSetHeatLevel    "f"
+//     ShowCrosshair / UseWideScreen / SetMiniMapMode / ScoreboardShow       "b"
+//
+// Without the format, reading a hooked event's arguments is guesswork; with it, each of these is a precise
+// single-purpose hook point.
+//
+// THIS IS NOT THE DELEGATE MECHANISM, and keeping them apart matters. A delegate channel is an intrusive list
+// of C++ observers on a subject -- the player object carries 21 of those, mapped last pass. This is a
+// name-and-format bus aimed at the UI layer. Both exist, they are unrelated, and the only reason they were
+// found together is that a delegate handler happened to reference an event name.
+//
+// CATALOGUED AS sdk::Events -- CURATED, NOT COMPLETE. The player and HUD events are transcribed because those
+// are the ones a mod reaches for; achievements, menus, matchmaking, CTF, control points and the PDA are left in
+// the binary. Transcribing all 88 would have been easy and worthless: an entry nobody checks is a claim nobody
+// maintains.
+//
+// AND THE CATALOGUE VERIFIES ITSELF. Every dispatcher pushes its own name literal, so Events::verify reads the
+// function's first bytes, treats each 4-byte window as a candidate pointer, and requires one to spell the
+// event's name. 25 of 25 pass live. A build that moved a function or renamed an event fails that instead of
+// handing a consumer a stale hook address -- which is the failure mode a hardcoded offset table normally has.
+//
+// The payload parser is exposed too (payload_arg_count, payload_is_well_formed, payload_stack_bytes) and the
+// suite asserts an empty format is well-formed and measures zero while a bad letter is refused -- because a
+// parser that accepted anything would satisfy the well-formed count without meaning anything.
+//
+// 1024 checks, 0 failures.

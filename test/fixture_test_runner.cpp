@@ -4431,6 +4431,40 @@ int main(int argc, char** argv) {
             check(json_bool(body, "cvar_runtime_in_table", cv_rt_table) && !cv_rt_table,
                   "that same variable is absent from the built-in descriptor table");
 
+            // ---- THE NAMED EVENT BUS -----------------------------------------------------------------
+            //
+            // A curated table of the game's own event names with their payload formats. The entry that makes it
+            // trustworthy is the verification: every dispatcher must still reference its own name string, so a
+            // moved function or a renamed event fails here instead of handing a consumer a stale hook address.
+            //
+            // Transcribing 88 events would have been easy and worthless -- an entry nobody checks is a claim
+            // nobody maintains -- so the table holds the player and HUD ones and the suite checks all of them.
+            double ev_total = -1.0, ev_ver = -1.0, ev_res = -1.0, ev_wf = -1.0;
+            const bool evn = json_double(body, "ev_total", ev_total) &&
+                             json_double(body, "ev_verified", ev_ver) &&
+                             json_double(body, "ev_resolved", ev_res) &&
+                             json_double(body, "ev_wellformed", ev_wf);
+            check(evn && ev_total >= 20.0, "the event catalogue is populated");
+            check(evn && ev_res == ev_total, "every catalogued dispatcher resolves inside gameclient");
+            check(evn && ev_ver == ev_total,
+                  "and every one still references its own event-name string in the live binary");
+            check(evn && ev_wf == ev_total, "every payload format uses only this bus's type letters");
+
+            // Payload arithmetic on a known multi-argument event: AmmoCountChanged carries "sdd", so three
+            // arguments and twelve bytes of pushed slots.
+            double ev_args = -1.0, ev_bytes = -1.0;
+            check(json_double(body, "ev_ammo_args", ev_args) && ev_args == 3.0 &&
+                      json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
+                  "a three-argument payload measures three arguments and twelve stack bytes");
+
+            // An EMPTY payload is legitimate; a malformed one is not. Both are asserted, because a parser that
+            // accepted anything would pass the well-formed count above.
+            bool ev_bad = false, ev_empty = false;
+            check(json_bool(body, "ev_malformed_refused", ev_bad) && ev_bad,
+                  "an unknown type letter and an unknown event name are both refused");
+            check(json_bool(body, "ev_empty_payload_ok", ev_empty) && ev_empty,
+                  "an empty payload is well-formed and measures zero, distinct from malformed");
+
             // ---- THE QUATERNION PRODUCT, AND ITS ORDER ---------------------------------------------
             //
             // Transcribed from the game client's own multiply, which CPlayerCamera's load path uses. The

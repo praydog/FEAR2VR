@@ -27,6 +27,7 @@
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
+#include "sdk/Events.hpp"
 #include "sdk/EngineVars.hpp"
 #include "sdk/Input.hpp"
 #include "sdk/Common.hpp"
@@ -4450,6 +4451,49 @@ std::string build_shader_params_json() {
     json_append_bool(out, "pmgr_bounds_refused",
                      !sdk::PlayerMgr::slot(4).has_value() && !sdk::PlayerMgr::player(4).has_value() &&
                          !sdk::PlayerMgr::read_pose(0).has_value());
+
+    // ---- THE NAMED EVENT BUS, VERIFIED AGAINST THE BINARY ----------------------------------------
+    //
+    // Each catalogued dispatcher must still reference its own event-name string. That turns the table from a
+    // transcription into something the suite maintains: a moved function or a renamed event fails here rather
+    // than handing a consumer a stale hook address.
+    const auto& evs = sdk::Events::all();
+    json_append_double(out, "ev_total", static_cast<double>(evs.size()), 0);
+    json_append_double(out, "ev_verified", static_cast<double>(sdk::Events::verified_count()), 0);
+    size_t ev_resolved = 0, ev_wellformed = 0;
+    for (const auto& e : evs) {
+        if (sdk::Events::dispatcher(e.name) != 0) {
+            ++ev_resolved;
+        }
+        if (sdk::Events::payload_is_well_formed(e.payload)) {
+            ++ev_wellformed;
+        }
+    }
+    json_append_double(out, "ev_resolved", static_cast<double>(ev_resolved), 0);
+    json_append_double(out, "ev_wellformed", static_cast<double>(ev_wellformed), 0);
+    // Payload arithmetic, on a known multi-argument event: "sdd" is three slots, twelve bytes.
+    const auto ammo = sdk::Events::find("AmmoCountChanged");
+    json_append_double(out, "ev_ammo_args",
+                       ammo.has_value()
+                           ? static_cast<double>(sdk::Events::payload_arg_count(ammo->payload))
+                           : -1.0,
+                       0);
+    json_append_double(out, "ev_ammo_bytes",
+                       ammo.has_value()
+                           ? static_cast<double>(
+                                 sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
+                           : -1.0,
+                       0);
+    json_append_bool(out, "ev_malformed_refused",
+                     !sdk::Events::payload_is_well_formed("dxf") &&
+                         !sdk::Events::payload_stack_bytes("dxf").has_value() &&
+                         !sdk::Events::find("NoSuchEventHere").has_value() &&
+                         sdk::Events::dispatcher("NoSuchEventHere") == 0);
+    // An empty payload is legitimate and must not be confused with a malformed one.
+    json_append_bool(out, "ev_empty_payload_ok",
+                     sdk::Events::payload_is_well_formed("") &&
+                         sdk::Events::payload_arg_count("") == 0 &&
+                         sdk::Events::payload_stack_bytes("").value_or(99) == 0);
 
     // ---- THE QUATERNION PRODUCT, AND WHICH ORDER IT MEANS ----------------------------------------
     //
