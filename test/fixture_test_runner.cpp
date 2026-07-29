@@ -4052,6 +4052,45 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THREE ASSET COUNTS THE ENGINE NAMED FOR ITSELF --------------------------------
+            //
+            // The LogModels console command writes a CSV whose header names twelve columns, and reading its
+            // writes in order maps each to an asset offset. FIVE landed on fields this SDK had already
+            // mapped independently (filename, refcount, node_count, piece_count, socket_count), which is
+            // what makes the column ordering trustworthy rather than a hopeful match against a header.
+            // Three were new: Physics Nodes at +0x08 (previously "a count of something unmapped"), Weight
+            // Sets at +0x38 (unmapped), Child Models at +0x52 (previously "ctor writes 1").
+            double ac_read = -1.0, ac_ple = -1.0, ac_ws = -1.0, ac_cs = -1.0;
+            const bool ac = json_double(body, "asset_counts_read", ac_read) &&
+                            json_double(body, "asset_physics_le_nodes", ac_ple) &&
+                            json_double(body, "asset_weight_sane", ac_ws) &&
+                            json_double(body, "asset_child_sane", ac_cs);
+            check(ac && ac_read > 0.0, "the three asset counts read on live models");
+
+            // THE INVARIANT THE NAMING IMPLIES: a physics node is one of the skeleton's, so its count can
+            // never exceed node_count. A column read off by one would very likely break this.
+            check(ac && ac_ple == ac_read, "physics-node count never exceeds node count");
+            check(ac && ac_ws == ac_read && ac_cs == ac_read,
+                  "weight-set and child-model counts stay within sane bounds");
+
+            // AND THE INVARIANT MUST NOT BE VACUOUS. "physics <= nodes" proves nothing if the field is
+            // always zero, so the field has to be seen VARYING -- some assets nonzero, some zero. Props
+            // have no physics nodes and characters do, which is exactly the split observed.
+            double ac_pnz = -1.0, ac_wnz = -1.0, ac_cnz = -1.0, ac_pmax = -1.0;
+            const bool acv = json_double(body, "asset_physics_nonzero", ac_pnz) &&
+                             json_double(body, "asset_weight_nonzero", ac_wnz) &&
+                             json_double(body, "asset_child_nonzero", ac_cnz) &&
+                             json_double(body, "asset_physics_max", ac_pmax);
+            check(acv && ac_pnz > 0.0 && ac_pnz < ac_read,
+                  "physics-node counts VARY -- some assets have none, others do");
+            check(acv && ac_pmax > 0.0 && ac_pmax <= 128.0,
+                  "and the largest is a plausible per-character figure");
+            // Both of these are nonzero on every asset, which is itself informative: a default weight set
+            // always exists, and the child-model count includes the base model -- consistent with the
+            // constructor writing 1 into that field.
+            check(acv && ac_wnz == ac_read && ac_cnz == ac_read,
+                  "every asset reports at least one weight set and one child model");
+
             // ---- THE MODEL TWIN ----------------------------------------------------------------
             //
             // 83 client slots against 81 server, aligned at offset +0, with the two extras at the TAIL.

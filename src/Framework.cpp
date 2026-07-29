@@ -4103,6 +4103,81 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE THREE COUNTS THE ENGINE NAMED FOR ITSELF -------------------------------------------
+    //
+    // Physics Nodes, Weight Sets and Child Models come from the LogModels CSV header, which maps its
+    // columns onto asset offsets -- five of which landed on fields this SDK had already mapped, which is
+    // what makes the ordering trustworthy. The INVARIANT is the useful check: physics nodes are drawn from
+    // the skeleton, so their count can never exceed node_count. A wrong column would very likely break it.
+    size_t asset_counts_read = 0, physics_le_nodes = 0, weight_sane = 0, child_sane = 0;
+    size_t physics_nonzero = 0, weight_nonzero = 0, child_nonzero = 0;
+    uint32_t physics_max = 0, weight_max = 0, child_max = 0;
+    {
+        std::vector<sdk::CClientMgr::ObjectSnapshot> msnaps(2048);
+        auto* mgr2 = sdk::CClientMgr::get();
+        const auto mtaken = mgr2 == nullptr
+                                ? std::optional<size_t>{}
+                                : mgr2->snapshot_objects(static_cast<sdk::ObjectType>(1),
+                                                         msnaps.data(), msnaps.size());
+        if (mtaken.has_value()) {
+            for (size_t si = 0; si < *mtaken; ++si) {
+                const auto* obj = reinterpret_cast<const regenny::LTObject*>(msnaps[si].address);
+                const auto skel = sdk::ModelSkeleton::from_object(obj);
+                if (!skel.has_value()) {
+                    continue;
+                }
+                const auto pn = skel->physics_node_count();
+                const auto ws = skel->weight_set_count();
+                const auto cm = skel->child_model_count();
+                if (!pn.has_value() || !ws.has_value() || !cm.has_value()) {
+                    continue;
+                }
+                ++asset_counts_read;
+                if (*pn <= skel->node_count()) {
+                    ++physics_le_nodes;
+                }
+                // Sanity bounds rather than values: these are per-asset content, so pinning numbers would
+                // encode this scene's models into the suite.
+                if (*ws <= 256) {
+                    ++weight_sane;
+                }
+                if (*cm <= 64) {
+                    ++child_sane;
+                }
+                // NON-VACUITY. An invariant like "physics nodes <= nodes" proves nothing if the field is
+                // always zero, so the suite needs to see that these counts actually vary.
+                if (*pn > 0) {
+                    ++physics_nonzero;
+                }
+                if (*ws > 0) {
+                    ++weight_nonzero;
+                }
+                if (*cm > 0) {
+                    ++child_nonzero;
+                }
+                if (*pn > physics_max) {
+                    physics_max = *pn;
+                }
+                if (*ws > weight_max) {
+                    weight_max = *ws;
+                }
+                if (*cm > child_max) {
+                    child_max = *cm;
+                }
+            }
+        }
+    }
+    json_append_double(out, "asset_counts_read", static_cast<double>(asset_counts_read), 0);
+    json_append_double(out, "asset_physics_le_nodes", static_cast<double>(physics_le_nodes), 0);
+    json_append_double(out, "asset_weight_sane", static_cast<double>(weight_sane), 0);
+    json_append_double(out, "asset_child_sane", static_cast<double>(child_sane), 0);
+    json_append_double(out, "asset_physics_nonzero", static_cast<double>(physics_nonzero), 0);
+    json_append_double(out, "asset_weight_nonzero", static_cast<double>(weight_nonzero), 0);
+    json_append_double(out, "asset_child_nonzero", static_cast<double>(child_nonzero), 0);
+    json_append_double(out, "asset_physics_max", static_cast<double>(physics_max), 0);
+    json_append_double(out, "asset_weight_max", static_cast<double>(weight_max), 0);
+    json_append_double(out, "asset_child_max", static_cast<double>(child_max), 0);
+
     // ---- THE MODEL TWIN -------------------------------------------------------------------------
     //
     // CLTModelClient has 83 slots, CLTModelServer 81, and they align at offset +0. The two extra client

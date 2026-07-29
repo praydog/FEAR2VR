@@ -3031,8 +3031,8 @@ class LTModelSocket 0x28 {
 
 class LTModelAsset 0xA0 {
     float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0; the real value is read from the file into radius_from_file below.
-    uint32_t region_count_a  @0x08   // CONFIRMED a count, from the allocation side: LTModelAsset_RegionSize_31xNodes computes `31*node_count + 4*(asset+0x08 + asset+0x10)`, so both of these scale a 4-byte-per-element region inside the model's per-object block. Live they track model complexity -- 11 and 10 on a 61-node character, 0 and 0 on a 2-node shell casing. WHAT they count is unmapped; that they ARE counts is proven, because reconstructing BindAsset's size with them puts every carved pointer inside the result on 215/215 models.
-    uint32_t region_count_b  @0x10   // CONFIRMED a count, same expression and same evidence as region_count_a.
+    uint32_t physics_node_count @0x08   // CONFIRMED the PHYSICS NODE COUNT, and the engine named it: the LogModels console command writes one CSV row per loaded asset under the header "Model, References, Total Memory, Render Memory, Nodes, Physics Nodes, Pieces, Animations, Keys, Sockets, Weight Sets, Child Models", and reading its writes in order maps the "Physics Nodes" column to THIS field. FIVE other columns of that row land on fields already mapped here independently -- filename (+0x9C), refcount (+0x7C), node_count (+0x20), piece_count (+0x30), socket_count (+0x88) -- which is what makes the column ordering trustworthy rather than a hopeful match. // Live it VARIES as the name implies: nonzero on 118 of 203 models, max 11, and always <= node_count (203/203, asserted). Props have none, characters do -- 11 on a 61-node character, 0 on a shell casing. // AN EARLIER NOTE HERE SAID "WHAT they count is unmapped", knowing only from LTModelAsset_RegionSize_31xNodes (`31*node_count + 4*(asset+0x08 + asset+0x10)`) that it IS a count. That much still holds and is why the sibling below is still unnamed.
+    uint32_t region_count_b  @0x10   // CONFIRMED a count, same expression and same evidence as physics_node_count above -- both scale a 4-byte-per-element region in LTModelAsset_RegionSize_31xNodes. WHAT THIS ONE COUNTS IS STILL UNMAPPED: the LogModels CSV names twelve columns and every one of them is accounted for by another field, so this is not among them.
     LTModelNode* node_records @0x1C   // CONFIRMED the SKELETON NODE ARRAY: node_count records of 64 bytes, inside string_blob (34/34). Found by fingerprint rather than by a writer -- LTModelAsset_ReadNodeTree strides by 64 and stores each node's own index at byte +2, so searching the blob for a stride/base where byte[base + 64*i + 2] == i for every i landed on exactly one place, and the asset field holding that base is this one. The parent/child bytes then validated as a real tree (see LTModelNode).
     uint32_t node_count      @0x20   // CONFIRMED the SKELETON NODE COUNT. Found by arithmetic first -- the two arrays below sit end to end, so (b - a) / 4 is the count, and searching every field of all 34 assets for a match returned exactly this and 0x40, each 34/34 -- then PROVEN by reading what the arrays hold: node_names has exactly this many entries and they are bone names. Live 2..84: 2 for a shell casing, 61 and 84 for characters.
     char** node_names        @0x24   // CONFIRMED an array of node_count char* INSIDE string_blob, holding the model's SKELETON NODE NAMES. LTModelAsset_ReadNodeTree (0x4261B0) is a recursive tree reader that writes `names[index] = name_ptr` per node, with 255 passed as the root's parent sentinel. Live all 660 names across 34 assets are blob-internal and printable, e.g. Pelvis, Torso_Base, Upper_Torso, Neck, Head, L_Shoulder, L_Hand, L_Thumb0, L_Index0, Face_Jaw, aimer, attach. 11 of 34 assets have a "Head" node and 12 have a hand node. This is the field a mod uses to locate a bone by name.
@@ -3041,7 +3041,8 @@ class LTModelAsset 0xA0 {
     uint32_t node_count_dup @0x40  // CONFIRMED equal to node_count on 34/34 -- found by the same arithmetic search, which returned both offsets. Which the engine treats as authoritative is unknown; they simply agree.
     void* self_ref         @0x48   // CONFIRMED live on 34/34: holds the asset's OWN address. The ctor zeroes it, so the loader writes it. A free integrity check -- see sdk::CClientMgr::check_model_assets.
     uint16_t unk_50        @0x50   // ctor writes 0
-    uint16_t unk_52        @0x52   // ctor writes 1
+    uint32_t weight_set_count @0x38   // CONFIRMED the WEIGHT SET count, from the LogModels CSV's "Weight Sets" column. Live 1..9 and nonzero on all 203 models, i.e. every asset carries at least one -- a default set. Pairs with ILTModel_GetNumWeightSets / SetWeightSet / FindPhysicsWeightSet, which is what a consumer uses to switch a model's bone weighting.
+    uint16_t child_model_count @0x52   // CONFIRMED the CHILD MODEL count, from the LogModels CSV's last column ("Child Models"), read as a WORD. Live 1..25 and NONZERO ON ALL 203 models -- which is the detail that makes it coherent rather than suspicious: the count INCLUDES THE BASE MODEL, so a model with no children reports 1, and that is exactly what the ctor writes. The reference's ILTModel has AddChildModelDB, so a model DB holding a base plus children is the expected shape.
     char** piece_names   @0x2C   // CONFIRMED the model's PIECE NAME array, from ILTModel_GetPieceName: it bounds the index with `*(asset + 48)` and reads `*(char**)(*(asset + 44) + 4*index)`. Live the names are real and meaningful -- Face, body_shadow, Clip_Group, Assault_Group, SMG_Group, Granade -- which is what makes a piece addressable by name rather than by number.
     uint32_t piece_count @0x30   // CONFIRMED the PIECE count, that same function's bound. // IT IS NOT material_count, and conflating the two was a real bug: the counts DIFFER on 17 of 34 live assets (assaultrifle 8 pieces / 7 materials, submachinegun 10 / 6, a grunt 7 / 3, atc_regular 7 / 3, grenade 2 / 1). Pieces are the addressable sub-objects; materials are what they render with, and several pieces can share one. Anything bounding a piece index MUST use this field -- an earlier version of the SDK's piece-visibility accessor used material_count and would have refused four of the grunt's seven pieces.
     LTAnimNameTable anim_names @0x6C   // CONFIRMED the model's ANIMATION-NAME lookup table (see LTAnimNameTable). Identified by hashing every string in the asset's own string_blob and intersecting: all 42 entries of a character asset matched, and the names are animations -- ATC_Corpse1_LOOP, Corpse_Drag, Corpse_surface_faceup, Corpse_edge_facedown_Hit. Live the hashes are ASCENDING on 34/34, which they must be, since LTModelAsset_FindAnimByName binary-searches them. Note the count is NOT node_count (42 against 61 nodes here), which is what first showed the table is about animations and not the skeleton.
@@ -4098,3 +4099,57 @@ class LTInputDeviceMouse 0x30 {
 // from plausibility is the error this project has spent several passes learning to avoid.
 //
 // 911 checks, 0 failures.
+
+// ==================================================================================================
+// ILTModel SLOT 27, AND THREE ASSET FIELDS THE ENGINE NAMED FOR ITSELF
+// ==================================================================================================
+//
+// Last pass left slot 27 unnamed on purpose: a five-argument function pointer plus userdata, walking a list.
+// Reading it fully turns out to answer a much bigger question than its own name.
+//
+// ITS SHAPE. The wrapper takes (callback, userdata) with NO object argument, so it is interface-level. The
+// body is a TRIPLE nested walk using the checked-array iterators mapped earlier in this project: over the
+// interface's own begin/end array at this[1]/this[2], then over a StdVector8 at element+92, then over an
+// array at that entry's +12 bounded by its +16 -- invoking the callback with (element+156, entry+32,
+// value & 0xFFFFFF, table[value >> 24], userdata), skipping entries whose high byte is 255. That 255 is the
+// same invalid-index sentinel the node and tracker tables use.
+//
+// WHAT IDENTIFIED THE CONTAINER was the neighbouring LogModels console command, which walks the SAME
+// this[1]/this[2] array and writes a CSV. Its header string is the engine naming its own fields:
+//
+//     "Model, References, Total Memory, Render Memory, Nodes, Physics Nodes, Pieces,
+//      Animations, Keys, Sockets, Weight Sets, Child Models"
+//
+// So the array is the LOADED MODEL ASSET LIST, element+92 is the animation record vector (LogModels counts
+// its entries as "Animations"), and the innermost array is bounded by the animation record's +16 -- which
+// LogModels sums as "Keys". Slot 27 therefore enumerates model -> animation -> KEY entries. Named
+// ILTModel_ForEachAnimKeyEntry: what the callback is FOR is not established, so the name describes the
+// traversal, which is what is proven.
+//
+// ---- AND THE CSV NAMED THREE ASSET FIELDS ------------------------------------------------------
+//
+// Reading LogModels' writes in order maps every column to an offset in LTModelAsset. FIVE of them land on
+// fields this project had already mapped independently -- filename +0x9C, refcount +0x7C, node_count +0x20,
+// piece_count +0x30, socket_count +0x88 -- and THAT is what makes the ordering trustworthy rather than a
+// hopeful match against a header. The other three were open questions:
+//
+//     +0x08  PHYSICS NODES  -- previously region_count_a, "WHAT they count is unmapped"
+//     +0x38  WEIGHT SETS    -- not mapped at all
+//     +0x52  CHILD MODELS   -- previously unk_52, "ctor writes 1"
+//
+// EACH IS CORROBORATED LIVE, and the first one non-vacuously:
+//     physics nodes VARY -- nonzero on 118 of 203 models, max 11, and never exceeding node_count (203/203).
+//         Props have none and characters do, which is what the name predicts. The suite asserts both the
+//         invariant AND that the field varies, because "physics <= nodes" would be trivially true of a
+//         field that were always zero.
+//     weight sets run 1..9 and are nonzero on all 203 -- every asset carries a default set.
+//     child models run 1..25 and are nonzero on all 203, which is the detail that makes it coherent: the
+//         count INCLUDES THE BASE MODEL, so a childless model reports 1 -- exactly what the ctor writes.
+//
+// region_count_b at +0x10 remains unmapped, and now for a sharper reason than before: all twelve CSV columns
+// are accounted for by other fields, so it is not among them.
+//
+// EXPOSED AS sdk::ModelSkeleton::physics_node_count / weight_set_count / child_model_count, beside the
+// node and socket counts they belong with.
+//
+// 917 checks, 0 failures.

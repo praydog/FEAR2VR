@@ -710,6 +710,70 @@ SocketRaw seh_socket(const void* base, size_t index, size_t count, size_t node_c
 
 } // namespace
 
+namespace {
+
+// Offsets named by the LogModels CSV header; see Model.hpp for the derivation. Read as raw offsets rather
+// than through the schema because two of the three are fields the schema still calls region_count_a and
+// unk_52 -- renaming those is a separate change to fear2.genny and its generated headers.
+constexpr uintptr_t kAssetPhysicsNodeCount = 0x08;
+constexpr uintptr_t kAssetWeightSetCount = 0x38;
+constexpr uintptr_t kAssetChildModelCount = 0x52;  // u16
+
+// One guarded read, in the same style as the rest of this file: a freed or rebound asset faults here and
+// yields nullopt rather than a plausible count.
+bool seh_read_asset_field(uintptr_t at, void* out, size_t bytes) {
+    if (at == 0 || out == nullptr) {
+        return false;
+    }
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<uint32_t> ModelSkeleton::physics_node_count() const {
+    if (m_asset == nullptr) {
+        return std::nullopt;
+    }
+    uint32_t v = 0;
+    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetPhysicsNodeCount,
+                              &v, sizeof(v))) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+std::optional<uint32_t> ModelSkeleton::weight_set_count() const {
+    if (m_asset == nullptr) {
+        return std::nullopt;
+    }
+    uint32_t v = 0;
+    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetWeightSetCount,
+                              &v, sizeof(v))) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+std::optional<uint32_t> ModelSkeleton::child_model_count() const {
+    if (m_asset == nullptr) {
+        return std::nullopt;
+    }
+    uint16_t v = 0;
+    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetChildModelCount,
+                              &v, sizeof(v))) {
+        return std::nullopt;
+    }
+    return v;
+}
+
 std::optional<ModelSkeleton::Socket> ModelSkeleton::socket(size_t index) const {
     const SocketRaw r = seh_socket(m_sockets, index, m_socket_count, m_count);
     if (!r.ok) {

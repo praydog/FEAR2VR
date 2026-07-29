@@ -191,6 +191,30 @@ public:
     // find_socket() as a fault.
     size_t socket_count() const { return m_socket_count; }
 
+    // ---- THREE COUNTS THE ENGINE NAMED FOR ITSELF -------------------------------------
+    //
+    // The `LogModels` console command writes one CSV row per loaded asset, and its header string is
+    //
+    //     "Model, References, Total Memory, Render Memory, Nodes, Physics Nodes, Pieces,
+    //      Animations, Keys, Sockets, Weight Sets, Child Models"
+    //
+    // Reading the writes in order maps every column to an asset offset. FIVE of them landed on fields this
+    // SDK had already mapped independently -- filename, refcount, node_count, piece_count, socket_count --
+    // which is what makes the ordering trustworthy rather than a guess at a header. The three below are the
+    // ones that column named and this SDK had not:
+    //
+    //   PHYSICS NODES at asset+0x08. Previously recorded as `region_count_a` with "WHAT they count is
+    //     unmapped" -- known to BE a count, because reconstructing the per-object allocation with it puts
+    //     every carved pointer inside the result, but not known to count what.
+    //   WEIGHT SETS at asset+0x38. Not mapped at all before.
+    //   CHILD MODELS at asset+0x52, a u16. Previously `unk_52`, documented only as "ctor writes 1".
+    //
+    // nullopt when the asset could not be read. Physics nodes are asserted by the suite to never exceed
+    // node_count, which is the invariant the naming implies: a physics node is one of the skeleton's.
+    std::optional<uint32_t> physics_node_count() const;
+    std::optional<uint32_t> weight_set_count() const;
+    std::optional<uint32_t> child_model_count() const;
+
     // nullopt when the index is out of range or the read faulted.
     std::optional<Socket> socket(size_t index) const;
 
