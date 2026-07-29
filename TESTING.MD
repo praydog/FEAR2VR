@@ -238,6 +238,32 @@ Generalisation: before asserting any relation between two aggregates, ask what
 population each was computed over. If the answers can differ, the relation is
 conditional and the condition belongs in the test.
 
+**When you expect a biconditional and the data gives an IMPLICATION, assert the
+implication and report the other side.** Symmetry is an aesthetic preference, not
+evidence, and forcing it is the same error as widening a tolerance: it replaces
+what the system guarantees with what you hoped it would.
+
+Worked example, 2026-07. `LTObject_IsRenderable` decides world-tree membership —
+`LTObject_SetFlags` adds or removes the tree link exactly when that predicate
+flips — so "renderable if and only if linked" looks like the natural test. Live:
+
+- renderable AND linked: 1758
+- renderable AND NOT linked: **0**
+- linked AND NOT renderable: **384**
+
+One direction is airtight, the other is wrong by 384. Both facts are real:
+insertion happens the moment the predicate turns true, while removal is less
+prompt (writes to `flags2`/`flags3` do not re-run it). So the fixture asserts
+`renderable_not_linked == 0` and merely *reads* `linked_not_renderable`.
+
+The diagnostic shape is worth recognising: **0 exceptions one way and many the
+other means a mechanism with lazy cleanup, not a broken mapping.** A genuinely
+wrong offset produces failures in both directions, or a count that tracks nothing.
+When you see this asymmetry, the correct response is to narrow the claim to the
+direction with zero exceptions and write down why the other side is allowed to
+differ — the comment explaining the asymmetry is what stops a later pass
+"tidying" the test into a biconditional and getting a red suite.
+
 **A frozen fixture answers IPC perfectly — so "it responded" proves nothing
 about liveness.** Threads created after a process is suspended keep running, so
 an injected IPC server happily serves stale reads from a game whose own threads

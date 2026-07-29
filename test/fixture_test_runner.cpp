@@ -900,6 +900,50 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Renderability vs world-tree membership.
+        //
+        // This block is deliberately ASYMMETRIC, and the asymmetry is the point.
+        // LTObject_SetFlags adds/removes the tree link exactly when
+        // LTObject_IsRenderable flips, so `renderable => linked` is backed by a
+        // mechanism and held on 1758/1758 live objects. The CONVERSE is false --
+        // 384 objects are linked while not renderable, because removal is less
+        // prompt than insertion -- so that count is read and ignored rather than
+        // asserted. Forcing a biconditional here would invent an invariant the
+        // engine does not maintain, which is the same mistake as widening a
+        // tolerance until it passes.
+        {
+            const size_t fp = body.find("\"render_flags\":");
+            check(fp != std::string::npos, "objects report includes the render-flag check");
+            if (fp != std::string::npos) {
+                if (json_has(body, "\"render_flags\":null")) {
+                    check(false, "render-flag walk completed (null == faulted)");
+                } else {
+                    const size_t end = body.find('}', fp);
+                    const std::string fb = body.substr(fp, end - fp + 1);
+                    int64_t objs = -1, rend = -1, lk = -1, rnl = -1, lnr = -1, sup = -1,
+                            suplk = -1;
+                    json_int(fb, "objects", objs);
+                    json_int(fb, "renderable", rend);
+                    json_int(fb, "linked", lk);
+                    json_int(fb, "renderable_not_linked", rnl);
+                    json_int(fb, "linked_not_renderable", lnr);
+                    json_int(fb, "suppressed", sup);
+                    json_int(fb, "suppressed_linked", suplk);
+
+                    check(objs > 0, "objects present for the render-flag check");
+                    check(rend > 0, "renderable objects exist (predicate exercised)");
+                    check(lk > 0, "world-tree linked objects exist");
+                    // The mechanism-backed direction.
+                    check(rnl == 0, "every renderable object is world-tree linked");
+                    // The suppressor bit, also mechanism-backed and exercised.
+                    check(sup > 0, "flag-0x200 suppressed objects exist (suppressor exercised)");
+                    check(suplk == 0, "no flag-0x200 suppressed object is world-tree linked");
+                    // lnr is intentionally NOT asserted; it is non-zero by design.
+                    check(lnr >= 0, "linked-not-renderable count reported (not an invariant)");
+                }
+            }
+        }
+
         // Cross-invariant tying the two halves of the class together: a type
         // with live objects MUST have a bank, because those objects had to be
         // allocated from one. OT_LIGHT is the interesting case -- it has no

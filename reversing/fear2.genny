@@ -522,7 +522,38 @@ class LTObject 0xCC {
     float scale           @0x30   // CONFIRMED as a uniform scale, by its READER: OT_MODEL's cull-volume provider (OT_MODEL_GetCullVolume, 0x428FB6) computes its sphere radius as `vis_radius(+0x16C) * this(+0x30)`. That matches the reference SDK's GetRadius() == m_VisRadius * MAX(m_Scale...), except FEAR2 keeps ONE float here rather than the reference's LTVector m_Scale. ctor sets 1.0; virtual slot 6 (LTObject_SetScale, 0x4200BF) is the setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583; the models that differ (1.658/2.493/2.656/3.0/3.19/3.2) multiply a vis_radius of 100.0 into radii of 165.76..320.0, all finite and positive on 193/193 sphere-culled models. An earlier pass called this MEANING UNKNOWN because the models whose value differs all had dims == 0 -- that turned out to be the explanation, not a counter-argument: they are SPHERE-culled, so LTObject_SetDims never runs on them and radius/dims stay at their constructor zeroes.
     void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
     LTSpatialRecord* spatial_record @0x38   // CONFIRMED per-object and never null (3583/3583); record->object points BACK here on 3583/3583. LTObjectOwner_UpdateSpatialRecord asks the object's own vtable slot 2 for a bounding volume, then calls LTSpatialRecord_CollectSphere / _CollectAABB (or _Release when the object is not renderable), which store that volume on the record and link each spatial hit onto it. NOT a refcount, as an earlier pass guessed. See LTSpatialRecord for the volume evidence. Still unmapped there: record[+0x1C]'s low byte equals this->type on 3465/3583 (118 OT_PARTICLESYSTEM disagree) so that is NOT a type field, and record[+0x34] is NOT a string pointer.
-    uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; the render predicate 0x4200A0 reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0). The render gate is !(f & 0x200) && (f & 0x10C30); those bit meanings are unverified. ctor zeroes it.
+    // flags bit survey (all rates from ONE main-menu snapshot, 3583 objects).
+    // These are CORRELATIONS and engine POLICY, not layout -- see
+    // MAPPING_WORKFLOW's layout-vs-policy rule. Rates are recorded so a future
+    // scene can be compared against them; none is asserted in the fixture except
+    // the two mechanism-backed ones called out below.
+    //
+    // 33 distinct values live. Most common: 0x00000000 x863, 0x00003033 x756,
+    // 0x00000800 x473, 0x00003003 x258.
+    //
+    // TYPE-EXCLUSIVE bits (a bit that only ever appears on one object type):
+    //   0x0800  OT_CAMERA, 474/474 AND no other type -- a perfect biconditional
+    //           in this snapshot, so it reads as a camera marker. It also sits
+    //           inside the renderable mask, which is WHY every camera is
+    //           world-tree linked.
+    //   0x0008 / 0x0080 / 0x0100 / 0x0200 / 0x20000   OT_MODEL only
+    //   0x0040 / 0x2000                               OT_WORLDMODEL only
+    //
+    // RENDERABILITY. LTObject_IsRenderable is
+    //     !(flags & 0x200) && (flags & 0x10C30)
+    // and LTObject_SetFlags adds to / removes from the world tree exactly when
+    // that predicate flips, which makes the following MECHANISM-backed rather
+    // than incidental:
+    //   * renderable IMPLIES world-tree linked: 1758/1758, zero counter-examples.
+    //   * the converse is FALSE -- 384 objects are linked while not renderable,
+    //     so do not turn this into a biconditional. Removal is not as prompt as
+    //     insertion (flags2/flags3 changes do not re-run the predicate).
+    //   * bit 0x200 (the suppressor) IMPLIES not linked: 27/27, and it is
+    //     exercised -- 27 OT_MODELs carry it.
+    // Of the mask's bits, the three that occur live (0x10 x1284, 0x20 x860,
+    // 0x800 x474) are each 100% world-tree linked; 0x400 and 0x10000 occur on no
+    // live object, so their contribution is unexercised.
+    uint32_t flags        @0x3C   // CONFIRMED 32-bit (SetFlags does a DWORD read/modify/write; LTObject_IsRenderable reads it as this[15]). Bit 0 is FLAG_VISIBLE: SetFlags special-cases `diff & 1`, and the reference SDK defines FLAG_VISIBLE as (1<<0) -- live it is the single most common bit (1924 objects across five types). ctor zeroes it. See the bit survey above for what else is known, and note that everything there is a rate, not an invariant.
     uint32_t unk_40       @0x40   // ctor zeroes it
     uint16_t flags2       @0x44   // CONFIRMED 16-bit, and CONFIRMED distinct from `flags` above -- SetFlags2 (0x4200D6) does a WORD read/modify/write here while SetFlags uses the DWORD at +0x3C. Was mapped as `flags` before +0x3C was found. Tested against 0x2/0x600/0x700; bit meanings unverified.
     uint16_t flags3        @0x46  // CONFIRMED 16-bit and distinct from flags2 (SetPos reads it as a separate WORD). Live values: 0x400 x3529, 0x420 x53, 0x490 x1. Bit 0x400 is set on 3583/3583, which is exactly why SetPos's "Object going outside world" branch never runs -- it is gated on that bit being CLEAR, so do not treat the record fields that branch touches as validated. Bit 0x20 is set by LTObject_DetachFromParent. Bit 0x80 means NO CULL VOLUME: LTObject_GetCullVolume_AABB tests the byte here as SIGNED (`(char)this[70] < 0`) and bails when negative, and the single object with that bit set -- the level geometry -- is exactly the single object whose spatial_record volume is all zeros.

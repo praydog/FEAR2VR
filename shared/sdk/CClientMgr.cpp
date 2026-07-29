@@ -1124,4 +1124,79 @@ std::optional<CClientMgr::SpatialRecordCheck> CClientMgr::check_spatial_records(
     return out;
 }
 
+namespace {
+
+// Recomputes LTObject_IsRenderable and compares it to world-tree membership.
+// POD-only for the SEH guard. Returns objects examined, or -1 on fault /
+// non-termination.
+//
+// The mask literals are the engine's, transcribed from LTObject_IsRenderable
+// (dump 0x4200A0). They are the one place in this file where a raw constant is
+// correct rather than a smell: they ARE the predicate under test, so naming them
+// after a guess at their meaning would obscure what is being checked.
+int64_t seh_check_render_flags(const regenny::CClientMgrListLink* head, size_t max,
+                               CClientMgr::RenderFlagCheck* out, size_t cap) {
+    constexpr uint32_t kSuppress = 0x200u;
+    constexpr uint32_t kAccept = 0x10C30u;
+
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, seen = 0;
+        while (cur != head && n < cap) {
+            if (seen < max) {
+                const auto* o = reinterpret_cast<const regenny::LTObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const uint32_t f = o->flags;
+                const bool renderable = (f & kSuppress) == 0 && (f & kAccept) != 0;
+                const auto* link = &o->world_tree_link;
+                const bool linked = link->next != link;
+
+                if (renderable) {
+                    ++out->renderable;
+                }
+                if (linked) {
+                    ++out->linked;
+                }
+                if (renderable && !linked) {
+                    ++out->renderable_not_linked;
+                }
+                if (linked && !renderable) {
+                    ++out->linked_not_renderable;
+                }
+                if ((f & kSuppress) != 0) {
+                    ++out->suppressed;
+                    if (linked) {
+                        ++out->suppressed_linked;
+                    }
+                }
+                ++seen;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<CClientMgr::RenderFlagCheck> CClientMgr::check_render_flags(
+    size_t max_per_type) const {
+    RenderFlagCheck out{};
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const int64_t n = seh_check_render_flags(&regenny()->object_lists[t], max_per_type, &out,
+                                                max_object_walk);
+        if (n < 0) {
+            return std::nullopt;
+        }
+        out.objects += static_cast<size_t>(n);
+    }
+    return out;
+}
+
 } // namespace sdk

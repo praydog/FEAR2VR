@@ -474,6 +474,23 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Renderability vs world-tree membership. Asserts the mechanism-backed
+    // direction only (renderable => linked); the reverse count is reported
+    // because the engine genuinely does not maintain it.
+    out += ",\"render_flags\":";
+    if (const auto rf = mgr->check_render_flags(8192); rf.has_value()) {
+        char fb[288];
+        snprintf(fb, sizeof(fb),
+                 "{\"objects\":%zu,\"renderable\":%zu,\"linked\":%zu,"
+                 "\"renderable_not_linked\":%zu,\"linked_not_renderable\":%zu,"
+                 "\"suppressed\":%zu,\"suppressed_linked\":%zu}",
+                 rf->objects, rf->renderable, rf->linked, rf->renderable_not_linked,
+                 rf->linked_not_renderable, rf->suppressed, rf->suppressed_linked);
+        out += fb;
+    } else {
+        out += "null";
+    }
+
     // Ask the ENGINE THREAD for an in-place for_each_object count and report
     // whatever it last published. Deliberately non-blocking: if the engine is
     // not running frames (paused, suspended, pre-init) no result will ever

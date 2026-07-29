@@ -483,6 +483,36 @@ public:
     // nullopt on fault or a walk that failed to terminate.
     std::optional<SpatialRecordCheck> check_spatial_records(size_t max_per_type) const;
 
+    // ---- renderability vs world-tree membership ---------------------------
+    //
+    // LTObject_IsRenderable is `!(flags & 0x200) && (flags & 0x10C30)`, and
+    // LTObject_SetFlags adds to / removes from the world tree exactly when that
+    // result flips. So the predicate and the tree link are two views of one
+    // mechanism, and comparing them checks `flags`, `world_tree_link` and the
+    // mask decode together.
+    //
+    // Read the asymmetry carefully, because it decides what may be asserted:
+    //   * renderable IMPLIES linked -- 1758/1758 live, zero counter-examples.
+    //     Mechanism-backed, so `renderable_not_linked` is asserted to be 0.
+    //   * linked does NOT imply renderable -- 384 live objects are linked while
+    //     the predicate is false, because removal is less prompt than insertion.
+    //     That count is REPORTED, never asserted; forcing a biconditional here
+    //     would be inventing an invariant the engine does not maintain.
+    // Everything else in the flags bit survey is a per-scene rate and stays in
+    // the schema comment rather than in a test.
+    struct RenderFlagCheck {
+        size_t objects;
+        size_t renderable;           // predicate true
+        size_t linked;               // threaded into the world tree
+        size_t renderable_not_linked; // MUST be 0 -- the mechanism-backed direction
+        size_t linked_not_renderable; // reported only; 384 live, legitimately non-zero
+        size_t suppressed;           // flags & 0x200
+        size_t suppressed_linked;    // MUST be 0 -- suppressor implies not linked
+    };
+
+    // nullopt on fault or a walk that failed to terminate.
+    std::optional<RenderFlagCheck> check_render_flags(size_t max_per_type) const;
+
     // Copied-out view of one object. Plain POD: safe to hold after the walk.
     //
     // `address`/`vtable` are uintptr_t, not a pointer type: they are
