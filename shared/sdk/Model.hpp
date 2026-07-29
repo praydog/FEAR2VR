@@ -219,14 +219,23 @@ public:
     //   gameclient.dll and reaches it as vt[22].
     //
     //   IF YOU CALL IT, THE CONVENTION IS FROM ITS OWN DISASSEMBLY, not inherited from the sibling slots
-    //   the genny documents. 0x42C958 opens `mov eax, [esp+object]` -- the FIRST STACK ARGUMENT, so the
-    //   interface `this` is never read -- gates on `cmp byte ptr [eax+10h], 1` (OT_MODEL), and ends
-    //   `retn 0Ch`: __stdcall, THREE dwords, (object, node_index, float* out).
+    //   the genny documents. All of 0x42C958 (119 bytes, ONE epilogue) was inspected, because "it opens by
+    //   reading a stack argument" would NOT on its own show the caller's ECX is unused:
+    //     * ECX is read exactly twice, at `shl ecx, 6` and `lea eax, [ecx+eax+8]`, and both are dominated
+    //       by `mov ecx, [esp+node_index]` a few bytes earlier -- no branch target lands between the write
+    //       and the reads (the only targets are the failure path and the epilogue), so the value the caller
+    //       left in ECX is dead on entry.
+    //     * no indirect call or jump exists that could forward ECX to a callee.
+    //     * the object comes from the FIRST STACK ARGUMENT and the OT_MODEL gate reads it:
+    //       `cmp byte ptr [eax+10h], 1`.
+    //   So: __stdcall, THREE stack dwords, (object, node_index, float* out), ECX unspecified.
     //
     //   Three, not four. The genny's slots 2/3 finding is the same shape but `retn 10h`, and assuming it
-    //   carried would have got the arity wrong -- GetSocketTransform takes a world_space flag this does not.
-    //   Its failure path is shared though: `push 3Ch; pop eax` returns LT_INVALIDPARAMS (60), so passing the
-    //   interface first is a clean refusal rather than a crash.
+    //   carried would have got the count wrong -- GetSocketTransform takes a world_space flag this does not.
+    //   `ret N` cannot be used to infer the convention either way, since MSVC __thiscall also cleans up its
+    //   own stack; it took the ECX dominance check above to rule the interface `this` out. The failure path
+    //   is shared: `push 3Ch; pop eax` returns LT_INVALIDPARAMS (60), so a wrong first argument is a clean
+    //   refusal rather than a crash.
     //
     //   reversing/fear2.genny's ILTModel VTABLE section owns this table's documentation.
     //   +0x08  THE BIND POSE. ILTModel_GetBindPoseNodeTransform computes

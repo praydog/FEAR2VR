@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **`ret N` IS A STACK-POP SIZE, NOT AN ARGUMENT COUNT, AND NOT A CONVENTION.** I inventoried all 83
+  ILTModelClient entries by their `ret N` and was about to call the column "arity". Three things it is not:
+  a __thiscall member carries an additional ECX `this` on top of the popped dwords; hidden return-buffer or
+  register parameters never appear in it; and MSVC __thiscall cleans up its own stack too, so the number
+  cannot distinguish the conventions. The one aggregate claim it supports is that all 83 clean up their own
+  stack.
+  
+- **"IT OPENS BY READING A STACK ARGUMENT" DOES NOT SHOW ECX IS UNUSED.** That was my basis for documenting
+  slot 22 as callable __stdcall, and it is not sufficient: ECX can be read later in the body or forwarded to
+  a callee. Settling it was cheap for a 119-byte function -- ECX is read exactly twice, both reads dominated
+  by a `mov ecx, [esp+node_index]` with no branch target landing between write and reads, and there is no
+  indirect call to forward it. So the caller's ECX is genuinely dead and the documentation stands, but on
+  the dominance check rather than on the opening instruction.
+  
+  Also worth separating: slots 2/3's convention has BEHAVIOURAL proof (passing the interface first returns
+  LT_INVALIDPARAMS, observed), while slot 22's is structural. Both are evidence; only one was tested.
+
 - **A CONVENTION ESTABLISHED ON ONE SLOT DOES NOT CARRY TO ANOTHER.** Merging my slot map into the incumbent
   ILTModel section, I attached its calling-convention finding -- __stdcall, object first, `retn 10h`, four
   dwords -- to slot 22. That finding was made on slots 2 and 3.

@@ -2031,12 +2031,21 @@ class LTModelBlock130 0x24 {
 //   slot 2  ILTModel_GetSocket            (object, name, out_index)
 //   slot 3  ILTModel_GetSocketTransform   (object, handle, out[8], world_space)
 //
-// THE ENTRIES TAKE THE OBJECT, NOT THE INTERFACE. `mov ecx, [esp+arg_0]` loads the FIRST STACK
+// SLOTS 2 AND 3 TAKE THE OBJECT, NOT THE INTERFACE. `mov ecx, [esp+arg_0]` loads the FIRST STACK
 // ARGUMENT into ECX and then `cmp byte ptr [ecx+10h], 1` tests the OBJECT's type for OT_MODEL
 // before re-dispatching as a thiscall on it -- so the interface `this` is never read, and these are
-// __stdcall wrappers over an object. `retn 10h` fixes the count at four dwords; passing the
-// interface first instead makes the gate read iface+0x10 and return LT_INVALIDPARAMS (60) without
-// touching anything, which is how that mistake surfaced -- a clean refusal, not a crash.
+// __stdcall wrappers over an object. What proves it BEHAVIOURALLY rather than by reading: passing the
+// interface first makes the gate read iface+0x10 and return LT_INVALIDPARAMS (60) without touching
+// anything, which is how that mistake surfaced -- a clean refusal, not a crash.
+//
+// THAT FINDING IS ABOUT SLOTS 2 AND 3. It is not a table-wide convention, and `ret N` cannot extend it:
+// MSVC __thiscall ALSO uses callee cleanup, ECX may be read later in a function or forwarded to a
+// callee, and a function may have several epilogues. Slot 22 was inspected individually and shows the
+// same structural shape (first instruction reads the first stack argument, the OT_MODEL gate reads it,
+// `retn 0Ch`) and its ECX use was then checked exhaustively: ECX is read twice, both reads dominated by a
+// `mov ecx, [esp+node_index]` with no branch target in between, and there is no indirect call to forward
+// it -- so the caller's ECX is dead there too. THREE stack dwords, not four. Every other slot's ABI is
+// unclaimed; the list below is an inventory of observed stack-pop sizes, not a set of signatures.
 //
 // out[8] is position(3), quaternion xyz(3), quaternion w, scale -- read off the engine's own
 // failure path, which zeroes all eight and writes 1.0 into the last two (identity quat, unit scale).
@@ -2051,8 +2060,13 @@ class LTModelBlock130 0x24 {
 // short-circuits and the call is a pure read.
 //
 // SLOT MAP (2026-07). 60 of the 83 client entries were already named by earlier passes, so walking the
-// table attached the indices for free. REMEMBER THE CONVENTION ABOVE: these are __stdcall wrappers taking
-// the OBJECT first, not thiscalls on the interface.
+// table attached the indices for free.
+//
+// THE NUMBER AFTER EACH NAME IS STACK DWORDS POPPED BY ITS `ret N` -- an inventory, not a signature. It is
+// NOT the argument count: a __thiscall member would carry an additional ECX `this` on top of it, hidden
+// return-buffer or register parameters would not appear, and nothing about output semantics follows from it.
+// The aggregate claim it does support is that all 83 clean up their own stack. Which slots take the OBJECT
+// first is established only for 2, 3 and 22, above.
 //    0  abstract_base_dtor (shared with CLTClient_vftable slot 0)   1  _InterfaceImplementation
 //    7  GetPieceName                  8/9  Get/SetPieceHideStatus
 //   10/11 Get/SetLODDistanceBias      12  GetNode        13  GetNodeName
