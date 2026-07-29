@@ -5061,3 +5061,40 @@ class LTInputDeviceMouse 0x30 {
 // pushes tags the marshaller will accept), kValueSlotBytes, and a corrected frame_bytes.
 //
 // 1033 checks, 0 failures.
+
+// ---- THE OTHER HALF OF THE FLASH BRIDGE: 17 UI PANELS, 242 METHODS --------------------------------
+//
+// The sender side is mapped; this is what it talks to. The binary holds 450 dotted-identifier literals, and they
+// separate into three families:
+//
+//     "<Panel>.<Method>"   242 across 17 panels -- methods the game invokes on Flash
+//     "_global.g_*"        172 -- Flash globals the game reads and writes directly
+//     "ILT*.Default"       the unrelated C++ interface registry, which shares the dotted shape
+//
+// EVERY PANEL'S METHOD LITERALS ARE REFERENCED FROM ONE FUNCTION. That is what makes the grouping a measurement
+// rather than a reading of the names, and it is the practically useful part: a consumer watching a whole panel
+// hooks one address, not thirty-four.
+//
+//     Multiplayer 59   Player 34   Menu 23   Performance 17   SaveGame 15   OnlineLogin 14
+//     Global 13   Options 13   MultiplayerHost 12   MultiplayerJoin 11   KeyBindings 9
+//     WorldInterface 6   ControlPanel 5   LayoutPanel 4   SecurityPanel 3   SystemLayer 2   WeaponDisplay 2
+//
+// THE PLAYER PANEL'S DISPATCHER IS A FUNCTION THIS PROJECT ALREADY HAD IN HAND: sub_10026C40, noted several
+// passes ago as "the function carrying all the Game_Player_* strings" and left unexplained. It is the Player
+// panel, and the two string families are the same panel seen from opposite directions -- Game_Player_* binds
+// Flash handlers for events the game SENDS, Player.* are methods Flash can have the game RUN.
+//
+// A FILTERING TRAP WORTH RECORDING: "GameDatabase.dll", "autoexec.cfg", "SHELL32.dll" and friends match the
+// dotted-identifier shape exactly and appeared as one-method "panels" with no dispatcher. Excluding them by
+// TAIL (dll, cfg, exe, ini) rather than by dispatcher presence is the honest filter -- a real panel with one
+// method would otherwise be discarded along with them.
+//
+// CATALOGUED AS sdk::Events::ui_panels, verified by PREFIX: each dispatcher must still reference some string
+// beginning "<Panel>.". A specific method would fail for reasons that do not matter, since a panel has many and
+// which one appears first in the function is incidental. 17 of 17 verify live.
+//
+// Global.IsLowViolenceMode is worth one note: this project already established ILTCommon slot 16 as
+// CLTCommonShared_IsLowViolence, so a build's censorship state has two independent read paths -- one C++, one
+// through Flash.
+//
+// 1039 checks, 0 failures.

@@ -172,6 +172,38 @@ public:
     // Every entry verified, as a count -- so a partial mismatch is visible rather than collapsing to false.
     static size_t verified_count();
 
+    //
+    // THE UI PANELS -- the other half of this bridge, and the half a consumer composing its own invoke needs.
+    //
+    // The binary holds 450 dotted-identifier literals, and they fall into three families: "<Panel>.<Method>"
+    // for methods the game invokes, "_global.g_*" for Flash globals it reads and writes (172 of those), and
+    // the unrelated "ILT*.Default" names belonging to the C++ interface registry.
+    //
+    // EVERY PANEL'S METHOD STRINGS ARE REFERENCED FROM ONE FUNCTION, which is what makes the grouping a
+    // measurement rather than a reading of the names: Player's 34 methods all come from one dispatcher, and
+    // that dispatcher is the same function that carries the Game_Player_* binding names. So a consumer wanting
+    // to observe a whole panel hooks one address instead of thirty-four.
+    //
+    // The counts below are the number of distinct method literals found per panel. Filenames and module names
+    // ("GameDatabase.dll", "autoexec.cfg") match the same dotted shape and are excluded by their tails.
+    struct UiPanel {
+        const char* name;
+        size_t method_count;
+        uintptr_t dispatch_offset;  // within gameclient.dll
+    };
+
+    static const std::vector<UiPanel>& ui_panels();
+    static std::optional<UiPanel> find_panel(std::string_view name);
+
+    // Runtime address of a panel's dispatcher, or 0. This is the one-address hook for a whole panel.
+    static uintptr_t panel_dispatch(std::string_view name);
+
+    // Does the dispatcher still reference one of its panel's method literals? Checked by PREFIX -- any string
+    // beginning "<Panel>." will do -- because a panel has many methods and requiring a specific one would make
+    // the check fail for a reason that does not matter.
+    static bool verify_panel(const UiPanel& panel);
+    static size_t verified_panel_count();
+
     // The ActionScript interface a category addresses, as the sender's own error string spells it:
     // "Monolith.I" + category + "Events". A consumer inspecting the Flash side needs this name, not the bare
     // category.

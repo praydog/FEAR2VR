@@ -4457,6 +4457,32 @@ int main(int argc, char** argv) {
                       json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
                   "a three-argument payload measures three arguments and twelve stack bytes");
 
+            // ---- THE UI PANELS ---------------------------------------------------------------------
+            //
+            // Every panel's method literals are referenced from ONE function, which is what makes the grouping
+            // a measurement rather than a reading of the names -- and what makes a whole panel hookable at one
+            // address instead of at each of its methods.
+            //
+            // Verified by PREFIX against the live binary: any string beginning "<Panel>." will do, because a
+            // panel has many methods and demanding a specific one would fail for a reason that does not matter.
+            double up_n = -1.0, up_v = -1.0, up_r = -1.0, up_m = -1.0;
+            const bool upn = json_double(body, "ui_panels", up_n) &&
+                             json_double(body, "ui_panels_verified", up_v) &&
+                             json_double(body, "ui_panels_resolved", up_r) &&
+                             json_double(body, "ui_method_total", up_m);
+            check(upn && up_n >= 15.0, "the UI panel catalogue is populated");
+            check(upn && up_r == up_n, "every panel's dispatcher resolves inside gameclient");
+            check(upn && up_v == up_n,
+                  "and every dispatcher still references its own panel's method literals");
+            check(upn && up_m > up_n * 5.0,
+                  "the panels carry many methods each -- one hook covers a whole family");
+
+            bool up_player = false, up_absent = false;
+            check(json_bool(body, "ui_player_panel", up_player) && up_player,
+                  "the Player panel is present and substantial");
+            check(json_bool(body, "ui_panel_absent_refused", up_absent) && up_absent,
+                  "an unknown and an empty panel name are both refused");
+
             // THE ACTIONSCRIPT NAMES, because this is a Flash call and not a C++ event bus -- the sender's own
             // error string says "Monolith.I%sEvents.%s", so the category is an AS INTERFACE name and the event
             // is a METHOD on a dot-separated implementation path.

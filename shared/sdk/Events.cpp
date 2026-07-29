@@ -185,6 +185,81 @@ std::string Events::as_method_name(std::string_view path, std::string_view event
     return out;
 }
 
+const std::vector<Events::UiPanel>& Events::ui_panels() {
+    static const std::vector<UiPanel> s_panels = {
+        {"Multiplayer", 59, 0x13380},     {"Player", 34, 0x26C40},
+        {"Menu", 23, 0xCE60},             {"Performance", 17, 0x1EC50},
+        {"SaveGame", 15, 0x29060},        {"OnlineLogin", 14, 0x1AD40},
+        {"Global", 13, 0x5860},           {"Options", 13, 0x1D080},
+        {"MultiplayerHost", 12, 0x18320}, {"MultiplayerJoin", 11, 0x19260},
+        {"KeyBindings", 9, 0x8790},       {"WorldInterface", 6, 0x2A9D0},
+        {"ControlPanel", 5, 0x4670},      {"LayoutPanel", 4, 0x8AC0},
+        {"SecurityPanel", 3, 0x29310},    {"SystemLayer", 2, 0x29480},
+        {"WeaponDisplay", 2, 0x2A800},
+    };
+    return s_panels;
+}
+
+std::optional<Events::UiPanel> Events::find_panel(std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    for (const auto& p : ui_panels()) {
+        if (name == p.name) {
+            return p;
+        }
+    }
+    return std::nullopt;
+}
+
+uintptr_t Events::panel_dispatch(std::string_view name) {
+    const auto p = find_panel(name);
+    if (!p.has_value()) {
+        return 0;
+    }
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return 0;
+    }
+    return gc->base + p->dispatch_offset;
+}
+
+bool Events::verify_panel(const UiPanel& panel) {
+    const auto at = panel_dispatch(panel.name);
+    if (at == 0) {
+        return false;
+    }
+
+    // A dispatcher references its panel's method literals throughout, so a window rather than a fixed offset,
+    // and a PREFIX rather than a specific method.
+    constexpr size_t kWindow = 2048;
+    std::string prefix{panel.name};
+    prefix += '.';
+
+    for (size_t i = 0; i + sizeof(uint32_t) <= kWindow; ++i) {
+        const auto candidate = mem::read_ptr(at + i);
+        if (!candidate.has_value() || *candidate < 0x10000) {
+            continue;
+        }
+        const auto text = mem::read_name(*candidate, 96, 1);
+        if (text.has_value() && text->size() > prefix.size() &&
+            text->compare(0, prefix.size(), prefix) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t Events::verified_panel_count() {
+    size_t n = 0;
+    for (const auto& p : ui_panels()) {
+        if (verify_panel(p)) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 size_t Events::verified_count() {
     size_t n = 0;
     for (const auto& e : all()) {

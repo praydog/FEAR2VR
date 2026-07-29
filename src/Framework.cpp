@@ -4484,6 +4484,31 @@ std::string build_shader_params_json() {
                                  sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
                            : -1.0,
                        0);
+    // THE UI PANELS: one dispatcher per panel, verified by prefix against the live binary.
+    const auto& panels = sdk::Events::ui_panels();
+    json_append_double(out, "ui_panels", static_cast<double>(panels.size()), 0);
+    json_append_double(out, "ui_panels_verified",
+                       static_cast<double>(sdk::Events::verified_panel_count()), 0);
+    size_t ui_resolved = 0, ui_methods = 0;
+    for (const auto& p : panels) {
+        if (sdk::Events::panel_dispatch(p.name) != 0) {
+            ++ui_resolved;
+        }
+        ui_methods += p.method_count;
+    }
+    json_append_double(out, "ui_panels_resolved", static_cast<double>(ui_resolved), 0);
+    json_append_double(out, "ui_method_total", static_cast<double>(ui_methods), 0);
+    // The Player panel's dispatcher is the same function that carries the Game_Player_* binding names, so it
+    // is the one a consumer hooks to see every player-facing UI call at once.
+    const auto player_panel = sdk::Events::find_panel("Player");
+    json_append_bool(out, "ui_player_panel",
+                     player_panel.has_value() && player_panel->method_count > 20 &&
+                         sdk::Events::panel_dispatch("Player") != 0);
+    json_append_bool(out, "ui_panel_absent_refused",
+                     !sdk::Events::find_panel("NoSuchPanel").has_value() &&
+                         sdk::Events::panel_dispatch("NoSuchPanel") == 0 &&
+                         !sdk::Events::find_panel("").has_value());
+
     // THE ACTIONSCRIPT NAMES the sender composes. Its error string spells the interface as
     // "Monolith.I<category>Events", and the invoked method as "<path>.<EventName>" with a "Default" fallback.
     json_append_bool(out, "ev_as_interface",
