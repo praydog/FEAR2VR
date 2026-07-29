@@ -481,6 +481,45 @@ std::string build_targets_json() {
         }
     }
 
+    // REGION QUERY vs a FULL SCAN. This validates the TRAVERSAL: both sides use the same
+    // per-sector test, which is grounded in the engine's code and in the centre-containment
+    // invariant, so what is being checked here is whether the descent VISITS everything it
+    // should. Three radii, because a descent bug can show up only at one scale: 0 collapses to
+    // point location, 250 is a play-space, and 4000 spans most of the level.
+    int region_probes = 0, region_agree = 0, region_hits = 0;
+    if (player.has_value()) {
+        if (const auto info = sdk::object_info(player->object); info.has_value()) {
+            const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+            for (const float r : {0.0f, 250.0f, 4000.0f}) {
+                ++region_probes;
+                const auto found = sdk::VisTree::sectors_in_sphere(info->position, r, 512);
+                int brute = 0;
+                bool all_found = true;
+                for (int i = 0; i < nsec; ++i) {
+                    if (!sdk::VisTree::sector_overlaps_sphere(static_cast<size_t>(i),
+                                                              info->position, r)
+                             .value_or(false)) {
+                        continue;
+                    }
+                    ++brute;
+                    bool seen = false;
+                    for (const auto& f : found) {
+                        if (f.index == static_cast<size_t>(i)) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) {
+                        all_found = false;
+                    }
+                }
+                region_hits += brute;
+                if (all_found && static_cast<int>(found.size()) == brute) {
+                    ++region_agree;
+                }
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -654,6 +693,7 @@ std::string build_targets_json() {
              "\"sector_total\":%d,\"sector_candidates\":%d,\"sector_brute\":%d,\"sec_read_ok\":%d,\"sec_with_planes\":%d,\"sec_plane_total\":%d,"
              "\"sec_planed\":%d,\"sec_centre_in\":%d,"
              "\"sec_plane_probed\":%d,\"sec_plane_pos\":%d,\"sec_plane_neg\":%d,"
+             "\"region_probes\":%d,\"region_agree\":%d,\"region_hits\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -726,6 +766,7 @@ std::string build_targets_json() {
              sector_total, sector_candidates, sector_brute,
              sec_read_ok, sec_with_planes, sec_plane_total, sec_planed, sec_centre_in,
              sec_plane_probed, sec_plane_pos, sec_plane_neg,
+             region_probes, region_agree, region_hits,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

@@ -137,6 +137,39 @@ public:
     // candidates: the KD leaf narrows it to a handful, the planes decide.
     static std::vector<Sector> sectors_at(const regenny::LTVector& point);
 
+    // ---- REGION QUERIES: what does a VOLUME touch? --------------------------
+    //
+    // sector_containing() answers for a point. These answer for a sphere, which is what a
+    // mod usually has: a play-space extent, a grab or interaction radius, a blast radius, an
+    // audio propagation seed. Both are the ENGINE'S OWN tests, not approximations:
+    //
+    //   per-sector  LTVisSector_TestSphere -- squared point-to-AABB distance against radius
+    //               squared, then the planes with `-radius` slack (positive is inside)
+    //   traversal   LTVisTree_QuerySphere -- child_a is the LOW side, child_b the HIGH, and a
+    //               sphere spanning the split visits BOTH
+    //
+    // sector_contains() is now literally the radius-zero case of the first, so the point and
+    // volume paths cannot drift apart.
+
+    // Does this sector overlap the sphere? nullopt when the tree is unresolved, `index` is out
+    // of range, or a read faulted.
+    static std::optional<bool> sector_overlaps_sphere(size_t index,
+                                                      const regenny::LTVector& center,
+                                                      float radius);
+
+    // Every sector the sphere touches, by the engine's own descent. Empty when nothing is
+    // touched, the tree is unresolved, or the walk faulted.
+    //
+    // A NOTE ON WHAT THE FIXTURE PROVES about this: the oracle compares it against a scan of
+    // all sectors using sector_overlaps_sphere, so it validates the TRAVERSAL only -- both
+    // paths share the per-sector test. That test is independently grounded in the engine's
+    // code and in the "a sector contains its own centre" invariant, which is what makes the
+    // arrangement honest rather than circular. It became honest the hard way: an earlier
+    // oracle shared an INVERTED predicate with the code it was checking and agreed with it
+    // perfectly for several passes.
+    static std::vector<Sector> sectors_in_sphere(const regenny::LTVector& center, float radius,
+                                                 size_t max_results = 256);
+
     // THE WHOLE QUERY IN ONE CALL: the first sector whose planes contain the point.
     // nullopt means the point is in no sector, which for a world position means outside
     // the playable volume -- exactly what a teleport check wants to know.

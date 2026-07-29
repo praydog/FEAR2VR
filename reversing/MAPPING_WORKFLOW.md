@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Probe a spatial query at SEVERAL SCALES, and require the oracle to find something first.**
+  `sectors_in_sphere` is checked against a full scan at radius 0, 250 and 4000 -- point,
+  play-space, and most of the level. One radius is not enough: a descent bug can be invisible
+  when the volume fits inside a leaf and only appear once it spans a split, or vice versa. All
+  three agree exactly, over 106 sector hits.
+
+  And the FIRST assertion is `hits > 0`, before any agreement is believed. That is not
+  defensive padding -- this project has already shipped an oracle that found nothing, agreed
+  with a query that found nothing, and read as success. `0 == 0` is the shape of a vacuous
+  proof, so the population has to be established before the comparison means anything.
+
+- **Collapse a special case INTO the general one rather than beside it.** `sector_contains`
+  (point) and `sector_overlaps_sphere` (volume) started as separate code with the same
+  structure -- box test then plane test -- and the point version is where the inverted plane
+  sign lived. A point is a zero-radius sphere, so the point path is now literally
+  `sector_overlaps_sphere(index, point, slop)`.
+
+  Two implementations of one rule is two places for a sign to be wrong and only one of them
+  gets exercised. Where the general case is the engine's own formula, the special case should
+  be a call into it, not a copy of it.
 - **A brute-force oracle that CALLS the code under test is blind to a shared error.** Point
   location was validated by scanning all 263 sectors and requiring the KD descent to name the
   same one. That caught two real bugs. It could never have caught a third: the plane

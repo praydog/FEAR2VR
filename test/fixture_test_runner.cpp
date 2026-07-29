@@ -654,6 +654,32 @@ int main(int argc, char** argv) {
                static_cast<long long>(scin), static_cast<long long>(splaned),
                static_cast<long long>(spos), static_cast<long long>(sprobed));
 
+        // ---- REGION QUERIES vs a FULL SCAN -------------------------------------------
+        //
+        // Validates the TRAVERSAL of sectors_in_sphere: does the descent visit everything a
+        // scan of all 263 sectors finds? Both sides share the per-sector test on purpose --
+        // that test is grounded in LTVisSector_TestSphere and in the centre-containment
+        // invariant above, so the shared part is the part already proven.
+        //
+        // Three radii because a descent bug can hide at one scale: 0 collapses to point
+        // location, 250 is a play-space, 4000 spans most of the level.
+        int64_t rprobes = -1, ragree = -1, rhits = -1;
+        json_int(body, "region_probes", rprobes);
+        json_int(body, "region_agree", ragree);
+        json_int(body, "region_hits", rhits);
+        check(rprobes == 3, "all three region radii were probed");
+        // NON-VACUITY FIRST. The failure this guards against is real and happened earlier in
+        // this project: an oracle that finds nothing agrees with a query that finds nothing,
+        // and 0 == 0 reads as success. Require the scan to have found sectors before believing
+        // the agreement means anything.
+        check(rhits > 0, "the scan found sectors, so the agreement is not vacuous");
+        check(ragree == rprobes,
+              "the descent finds EXACTLY the sectors a full scan finds, at every radius");
+        printf("[fixture] region queries: %lld/%lld radii agree with a full scan (%lld hits "
+               "total)\n",
+               static_cast<long long>(ragree), static_cast<long long>(rprobes),
+               static_cast<long long>(rhits));
+
         // ---- PORTALS AND CONNECTIVITY ------------------------------------------------
         //
         // The load-bearing property is SYMMETRY. Both directions of an edge come from ONE

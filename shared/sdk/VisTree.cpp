@@ -497,36 +497,11 @@ std::vector<VisTree::SectorPlane> VisTree::sector_planes(size_t index) {
 
 std::optional<bool> VisTree::sector_contains(size_t index, const regenny::LTVector& point,
                                              float slop) {
-    const auto s = sector(index);
-    if (!s.has_value()) {
-        return std::nullopt;
-    }
-    // THE BOX FIRST, because it is what a sector actually has: only 19 of 263 live sectors
-    // carry planes, so a plane-only test cannot answer for the rest.
-    if (point.x < s->min.x - slop || point.x > s->max.x + slop ||
-        point.y < s->min.y - slop || point.y > s->max.y + slop ||
-        point.z < s->min.z - slop || point.z > s->max.z + slop) {
-        return false;
-    }
-    // Then any planes, which refine the box where the art provided them.
-    //
-    // POSITIVE IS INSIDE. That is the engine's convention, taken from
-    // LTVisSector_TestSphere: it rejects a sphere when `dot(n, c) - d < -radius`, i.e. when
-    // the volume lies entirely on the NEGATIVE side of a plane. An earlier version of this
-    // function had the sign inverted -- it rejected on `d > slop` -- and no test could see it,
-    // because the brute-force oracle it was checked against CALLS THIS SAME FUNCTION. A
-    // shared-implementation oracle cannot catch a shared error; only the engine's own code
-    // could settle the sign.
-    //
-    // For a point, `radius` is zero, so the test is simply `d >= -slop`.
-    for (const auto& pl : sector_planes(index)) {
-        const float d = pl.normal.x * point.x + pl.normal.y * point.y +
-                        pl.normal.z * point.z - pl.distance;
-        if (d < -slop) {
-            return false;
-        }
-    }
-    return true;
+    // A POINT IS A ZERO-RADIUS SPHERE, so this is literally the volume test with `slop` as the
+    // radius -- box first, then planes rejecting only a wholly-negative side. Expressing it
+    // this way is deliberate: the point and volume paths used to be separate code and that is
+    // exactly how a sign error survived in one of them.
+    return sector_overlaps_sphere(index, point, slop);
 }
 
 }  // namespace sdk
@@ -1185,6 +1160,170 @@ std::optional<bool> WorldBSP::index_is_current(const regenny::LTObject* obj) {
         return std::nullopt;
     }
     return actual->node == wanted->node;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// LTVisSector_AABBOverlapsSphere: the SQUARED distance from the centre to the box, against
+// radius squared. An axis the centre already lies within contributes nothing.
+bool aabb_overlaps_sphere(const VisTree::Sector& s, const regenny::LTVector& c, float radius) {
+    const float mn[3] = {s.min.x, s.min.y, s.min.z};
+    const float mx[3] = {s.max.x, s.max.y, s.max.z};
+    const float p[3] = {c.x, c.y, c.z};
+    float d2 = 0.0f;
+    for (size_t i = 0; i < 3; ++i) {
+        const float over = mn[i] > p[i] ? p[i] - mn[i] : (mx[i] < p[i] ? p[i] - mx[i] : 0.0f);
+        d2 += over * over;
+        if (d2 > radius * radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+std::optional<bool> VisTree::sector_overlaps_sphere(size_t index,
+                                                    const regenny::LTVector& center,
+                                                    float radius) {
+    const auto s = sector(index);
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    // THE BOX FIRST, exactly as the engine orders it -- and it is the only test 244 of 263
+    // sectors have.
+    if (!aabb_overlaps_sphere(*s, center, radius)) {
+        return false;
+    }
+    // Then the planes, rejecting only when the sphere lies WHOLLY on the negative side.
+    // Positive is inside; see LTVisPlane.distance in the schema for how that was settled.
+    for (const auto& pl : sector_planes(index)) {
+        const float d = pl.normal.x * center.x + pl.normal.y * center.y +
+                        pl.normal.z * center.z - pl.distance;
+        if (d < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+namespace {
+
+// LTVisTree_QuerySphere's descent, POD in and POD out.
+int64_t seh_sphere_sectors(const regenny::LTVisTree* tree, const float c[3], float radius,
+                           size_t* out, size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* root = tree->root;
+        const auto* sectors = tree->sectors;
+        const uint32_t sector_count = tree->sector_count;
+        if (root == nullptr || sectors == nullptr || sector_count == 0) {
+            return -1;
+        }
+        const regenny::LTVisTreeNode* stack[128];
+        size_t sp = 0;
+        stack[sp++] = root;
+        size_t n = 0;
+        size_t guard = 0;
+        while (sp != 0 && guard < 4096) {
+            ++guard;
+            const auto* node = stack[--sp];
+            if (node == nullptr) {
+                continue;
+            }
+            const uint32_t count = node->element_count;
+            if (node->elements != nullptr && count != 0 && count < 100000u) {
+                for (uint32_t i = 0; i < count && n < max_out; ++i) {
+                    const auto* s = node->elements[i];
+                    if (s == nullptr) {
+                        continue;
+                    }
+                    const auto sa = reinterpret_cast<uintptr_t>(s);
+                    const auto ba = reinterpret_cast<uintptr_t>(sectors);
+                    if (sa < ba) {
+                        continue;
+                    }
+                    const uintptr_t off = sa - ba;
+                    if (off % sizeof(regenny::LTVisSector) != 0) {
+                        continue;
+                    }
+                    const uintptr_t idx = off / sizeof(regenny::LTVisSector);
+                    if (idx >= sector_count) {
+                        continue;
+                    }
+                    bool dup = false;
+                    for (size_t k = 0; k < n; ++k) {
+                        if (out[k] == static_cast<size_t>(idx)) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        out[n++] = static_cast<size_t>(idx);
+                    }
+                }
+            }
+            const uint32_t axis = node->split_axis;
+            if (axis > 2u) {
+                continue;  // leaf
+            }
+            if (sp + 2 > 128) {
+                continue;
+            }
+            const float sv = node->split_value;
+            const float ci = c[axis];
+            // child_a is the LOW side, child_b the HIGH -- from LTVisTree_QuerySphere itself.
+            if (sv > ci + radius) {
+                stack[sp++] = node->child_a;
+            } else if (sv < ci - radius) {
+                stack[sp++] = node->child_b;
+            } else {
+                stack[sp++] = node->child_b;
+                stack[sp++] = node->child_a;
+            }
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<VisTree::Sector> VisTree::sectors_in_sphere(const regenny::LTVector& center,
+                                                        float radius, size_t max_results) {
+    std::vector<Sector> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    if (max_results == 0 || max_results > 4096) {
+        max_results = 256;
+    }
+    const float c[3] = {center.x, center.y, center.z};
+    std::vector<size_t> idx(max_results);
+    const int64_t n = seh_sphere_sectors(tree, c, radius, idx.data(), max_results);
+    if (n <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        const size_t si = idx[static_cast<size_t>(i)];
+        // The descent narrows; the per-sector test decides. Both are the engine's.
+        if (!sector_overlaps_sphere(si, center, radius).value_or(false)) {
+            continue;
+        }
+        if (const auto s = sector(si); s.has_value()) {
+            out.push_back(*s);
+        }
+    }
+    return out;
 }
 
 }  // namespace sdk
