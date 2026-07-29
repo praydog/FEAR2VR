@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 #include "Vtables.hpp"
@@ -65,10 +65,9 @@ std::optional<uint32_t> Common::object_type(uintptr_t object) {
     using Fn = int32_t(__thiscall*)(void*, uintptr_t, uint32_t*);
     uint32_t out = 0xFFFFFFFFu;
     int32_t rc = -1;
-    KANANLIB_SEH_TRY {
-        rc = reinterpret_cast<Fn>(*fn)(reinterpret_cast<void*>(self), object, &out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            rc = reinterpret_cast<Fn>(*fn)(reinterpret_cast<void*>(self), object, &out);
+        })) {
         return std::nullopt;
     }
     if (rc != kLtOk) {
@@ -87,10 +86,9 @@ std::optional<bool> Common::is_low_violence() {
     // returned outright when Steam is unavailable rather than treated as an error.
     using Fn = uint8_t(__thiscall*)(void*);
     uint8_t out = 0;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<Fn>(*fn)(reinterpret_cast<void*>(self));
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            out = reinterpret_cast<Fn>(*fn)(reinterpret_cast<void*>(self));
+        })) {
         return std::nullopt;
     }
     return out != 0;

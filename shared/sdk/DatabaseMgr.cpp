@@ -2,7 +2,7 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 
@@ -25,10 +25,7 @@ DbGetFn resolve_getter_fn() {
 // initialization (MSVC C2712), and the caller's scope holds the static.
 DatabaseMgr* call_getter(DbGetFn fn) {
     void* mgr = nullptr;
-    KANANLIB_SEH_TRY {
-        mgr = fn();
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] { mgr = fn(); })) {
         return nullptr;
     }
     return reinterpret_cast<DatabaseMgr*>(mgr);
@@ -49,7 +46,7 @@ int32_t seh_read_strptr_field_into(const T* obj, strptr T::* field, char* buf, s
         return -1;
     }
     int32_t n = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const char* p = obj->*field;
         if (p != nullptr) {
             size_t i = 0;
@@ -61,10 +58,7 @@ int32_t seh_read_strptr_field_into(const T* obj, strptr T::* field, char* buf, s
             buf[i] = '\0';
             n = static_cast<int32_t>(i);
         }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
+    });
     return n;
 }
 
@@ -79,14 +73,7 @@ uint32_t seh_read_u32(const void* container, size_t byte_offset) {
     if (container == nullptr) {
         return 0;
     }
-    uint32_t v = 0;
-    KANANLIB_SEH_TRY {
-        v = *reinterpret_cast<const uint32_t*>(reinterpret_cast<uintptr_t>(container) + byte_offset);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        v = 0;
-    }
-    return v;
+    return sdk::mem::read<uint32_t>(reinterpret_cast<uintptr_t>(container) + byte_offset).value_or(0);
 }
 
 } // namespace

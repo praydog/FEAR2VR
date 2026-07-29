@@ -1,8 +1,9 @@
 #include "EngineVars.hpp"
 
+#include <algorithm>
 #include <cstring>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 
@@ -40,42 +41,6 @@ uintptr_t exe_at(uintptr_t offset) {
     return exe->base + offset;
 }
 
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
-bool seh_read_string(std::string& out, uintptr_t at, size_t max) {
-    out.clear();
-    for (size_t i = 0; i < max; ++i) {
-        char c = 0;
-        if (!seh_copy(&c, at + i, sizeof(c))) {
-            return false;
-        }
-        if (c == '\0') {
-            return true;
-        }
-        // Setting names are plain identifiers; anything else means the pointer is not a name.
-        const bool printable = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-                               (c >= 'a' && c <= 'z') || c == '_';
-        if (!printable) {
-            return false;
-        }
-        out.push_back(c);
-    }
-    return false;
-}
-
 // Is this address inside the exe? Both the name pointer and the storage pointer must be, which is what
 // stops the walk at the end of the table rather than trusting a count.
 bool inside_exe(uintptr_t address) {
@@ -111,9 +76,9 @@ std::vector<EngineVars::Entry> EngineVars::all() {
         uintptr_t name_ptr = 0;
         uintptr_t storage = 0;
         uint32_t type = 0;
-        if (!seh_copy(&name_ptr, at, sizeof(name_ptr)) ||
-            !seh_copy(&storage, at + 4, sizeof(storage)) ||
-            !seh_copy(&type, at + 8, sizeof(type))) {
+        if (!sdk::mem::copy(&name_ptr, at, sizeof(name_ptr)) ||
+            !sdk::mem::copy(&storage, at + 4, sizeof(storage)) ||
+            !sdk::mem::copy(&type, at + 8, sizeof(type))) {
             break;
         }
         // THE TERMINATOR IS VALIDATION, NOT A COUNT: both pointers must land in the exe and the tag
@@ -125,13 +90,33 @@ std::vector<EngineVars::Entry> EngineVars::all() {
             break;
         }
         Entry entry{};
-        if (!seh_read_string(entry.name, name_ptr, kMaxNameLength) || entry.name.empty()) {
+        auto name = sdk::mem::read_cstring(name_ptr, kMaxNameLength);
+        if (!name.has_value() || name->empty() ||
+            !std::all_of(name->begin(), name->end(), [](char c) {
+                return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                       c == '_';
+            })) {
             break;
         }
+        entry.name = std::move(*name);
         entry.address = storage;
         entry.type = type & 0xFFFFu;
         entry.flags = static_cast<uint16_t>(type >> 16);
         out.push_back(std::move(entry));
+    }
+    return out;
+}
+
+std::vector<EngineVars::Entry> EngineVars::suspicious_int_entries() {
+    std::vector<Entry> out;
+    for (auto& entry : all()) {
+        if (!entry.is_int()) {
+            continue;
+        }
+        const auto raw = mem::read_u32(entry.address);
+        if (raw.has_value() && mem::looks_like_float(*raw)) {
+            out.push_back(std::move(entry));
+        }
     }
     return out;
 }
@@ -151,7 +136,7 @@ std::optional<uint32_t> EngineVars::read_raw(std::string_view name) {
         return std::nullopt;
     }
     uint32_t value = 0;
-    if (!seh_copy(&value, entry->address, sizeof(value))) {
+    if (!sdk::mem::copy(&value, entry->address, sizeof(value))) {
         return std::nullopt;
     }
     return value;
@@ -163,7 +148,7 @@ std::optional<std::string> EngineVars::read_string(std::string_view name) {
         return std::nullopt;
     }
     uintptr_t text = 0;
-    if (!seh_copy(&text, entry->address, sizeof(text)) || text == 0) {
+    if (!sdk::mem::copy(&text, entry->address, sizeof(text)) || text == 0) {
         return std::nullopt;  // unset, which is every observed case
     }
     // Deliberately NOT reusing the name reader: that one rejects anything but identifier characters,
@@ -171,7 +156,7 @@ std::optional<std::string> EngineVars::read_string(std::string_view name) {
     std::string out;
     for (size_t i = 0; i < 512; ++i) {
         char ch = 0;
-        if (!seh_copy(&ch, text + i, sizeof(ch))) {
+        if (!sdk::mem::copy(&ch, text + i, sizeof(ch))) {
             return std::nullopt;
         }
         if (ch == '\0') {
@@ -188,7 +173,7 @@ std::optional<int32_t> EngineVars::read_int(std::string_view name) {
         return std::nullopt;  // typed refusal: a float setting read as an int is nonsense
     }
     int32_t value = 0;
-    if (!seh_copy(&value, entry->address, sizeof(value))) {
+    if (!sdk::mem::copy(&value, entry->address, sizeof(value))) {
         return std::nullopt;
     }
     return value;
@@ -200,7 +185,7 @@ std::optional<float> EngineVars::read_float(std::string_view name) {
         return std::nullopt;  // and an int setting read as a float yields a plausible-looking 6e-44
     }
     float value = 0.0f;
-    if (!seh_copy(&value, entry->address, sizeof(value))) {
+    if (!sdk::mem::copy(&value, entry->address, sizeof(value))) {
         return std::nullopt;
     }
     return value;

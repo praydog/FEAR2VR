@@ -4273,3 +4273,104 @@ class LTInputDeviceMouse 0x30 {
 // the bucket layout the walk relies on.
 //
 // 930 checks, 0 failures.
+
+// ---- THE CONSOLE REGISTRY: 118 COMMANDS, AND THE ENGINE'S OWN TABLE KNOWS 34 --------------------
+//
+// A SOURCE DESCRIPTOR at exe+0x2ED4A0 carries BOTH built-in tables, which is why one registrar walks both:
+//
+//     +0x00  g_LTConsoleSource_VarTable  -> g_LTEngineVarTable_1   (107 entries, see sdk::EngineVars)
+//     +0x04  g_LTConsoleSource_VarCount  =  107
+//     +0x08  g_LTConsoleSource_CmdTable  -> g_LTEngineCommandTable (34 entries)
+//     +0x0C  g_LTConsoleSource_CmdCount  =  34
+//     +0x10  g_LTConsoleCommandListHead  -- the block's own circular intrusive list head
+//
+// A DESCRIPTOR ENTRY IS 12 BYTES in both tables: {const char* name, void* target, uint32 tag}. For a command
+// the target is a handler; for a variable it is the storage address.
+//
+// THE EXTENT NEEDED NO CAP, which is worth recording because four containers in this project were first
+// mis-measured by letting a scan's own limit set the boundary. Three independent derivations agree on 34: the
+// literal LTConsole_InitBuiltinTables writes, the global LTConsole_ListCommands compares against, and a
+// pattern scan of the table. This is what a measured extent looks like when the engine publishes it.
+//
+// BUT THE TABLE IS ONLY A SEED, and this is the finding that matters. LTConsole_RegisterSourceEntries walks
+// the descriptors and calls LTConsole_CreateEntry for each, linking every result into the list at block+0x10.
+// The game DLLs register into the SAME list at runtime, so live it holds 118 commands where the engine
+// contributed 34: 41 handlers inside FEAR2.exe, 77 in other modules.
+//
+// The engine's own `ListCommands` walks the static COUNT, so it prints 34 of the 118 that will actually
+// dispatch. A consumer asking "can this build do X" gets the wrong answer from the table for 84 commands.
+//
+// WHAT THE GAME REGISTERS, and why a VR mod cares:
+//     GetPlayerPos, GetPlayerOrientation, SetPlayerOrientation   <-- head/player transform, from game code
+//     Teleport, PlayerLeash, Cheat, Health, MaxHealth, Armor, MaxArmor, Air
+//     RestartRender, RebindMaterials, RebindShaders, RebindFX, ClearTextureBehavior
+//     OrbitalSSPlaceCameraMarker, OrbitalSSCapture, MapCapture
+//     an embedded command-script vocabulary: MSG, VMSG, DELAY, DELAYID, LOOP, LOOPID, REPEAT, REPEATID,
+//         RAND, RANDWEIGHT, IF, WHEN, SET, ADD, SUB, INT, OBJ, ABORT, SHOWVAR, LISTCMDS, Cmd, List
+// None of those appear in any static table in the executable.
+//
+// A LIVE REGISTRY OBJECT IS 24 BYTES, from LTConsole_CreateEntry's own LTMem_Alloc(0x18):
+//     +0x00  const char* name
+//     +0x04  void*       target      (handler, or variable storage)
+//     +0x08  link.prev
+//     +0x0C  link.next
+//     +0x10  link.owner  = the object's OWN base, written as `result[4] = result`
+//     +0x14  uint32      flags       -- copied from the descriptor tag, NOT interpreted here
+//
+// THE OWNER BACK-POINTER MAKES THE WALK SELF-CHECKING. From a link the object base is link-8, and a node
+// disagreeing with its own owner field is not a registry object. sdk::Console rejects those rather than
+// reporting them, so the arithmetic is verified instead of trusted -- 0 inconsistent nodes across 118.
+//
+// HANDLER SIGNATURE, observed: void __cdecl(int argc, char** argv). ListResourcesOfType reads argv[0] only
+// when argc is non-zero; Mem, quit and RestartRender ignore both. sdk::Console hands over the address and
+// that shape and deliberately does NOT call it: a handler expects the thread the console dispatches from.
+//
+// A CORRECTION TO THE VARIABLE TABLE, found while decoding these tags. sdk::EngineVars types its 107 entries
+// from a tag whose low 16 bits are the type, and the tags are right where it counts -- verified by the LOAD
+// INSTRUCTION rather than by the value: Friction (type 1) is read by `fld`, ScreenWidth (type 2) by `mov`,
+// UpdateRate (type 2) by `fild` (integer loaded and converted). But two type-2 entries hold 0x3F000000 and
+// 0x42800000 -- exactly 0.5f and 64.0f -- and have NO code xrefs at all: MaxExtrapolateTime and
+// MaxExtrapolateDist. Nothing in the executable reads them, so the engine never notices; a consumer calling
+// read_int gets 1056964608. sdk::mem::looks_like_float exists for exactly this and is documented as a
+// heuristic about bytes, not a fact about the engine.
+//
+// > The engine published its command count honestly and its variable types honestly, and still the static
+// > table answers the wrong question. Which container the engine DISPATCHES from is a separate fact from
+// > which container it INITIALISES from.
+
+// ---- THE SDK KEPT ITS OWN SAFETY TO ITSELF, AND THAT WAS THE DEFECT --------------------------------
+//
+// Sixteen .cpp files each carried a private guarded-read helper in an anonymous namespace, every one a copy
+// of the same KANANLIB_SEH_TRY block. No header exposed it. So a consumer handed a raw address BY THIS SDK --
+// a model node-control slot, a physics vtable entry, a resource record, a console handler -- had to either
+// dereference it unguarded into a live engine or write its own guard.
+//
+// Now sdk/Memory.hpp: copy/store, read<T>/write<T>, read_cstring/read_name, is_printable_name,
+// looks_like_float, and guarded(body). Memory.cpp is the ONLY file in the SDK with an SEH block.
+//
+// THE THREE SHAPES THAT ACTUALLY EXIST, which only became clear by migrating all sixteen:
+//   1. One field           -> read<T> / copy. Most call sites.
+//   2. A whole walk        -> guarded(body). A KD-tree descent or a diagnostic sweep dereferences dozens of
+//      pointers per iteration and abandons on the first fault. Shredding that into per-node guarded reads
+//      multiplies cost on the GAME thread for no gain, so the guard stays wide and comes from one place.
+//   3. A CALL into engine code -> guarded(body) as well. Eight sites call through a resolved function
+//      pointer; that is not a read at all, and it was the shape none of the sixteen private helpers covered.
+//
+// WHAT THE MIGRATION BROKE, AND WHAT CAUGHT IT. Two regressions, both from treating a mechanical rewrite as
+// safe:
+//
+//   - ModelSkeleton::node_transform read a node transform and its dirty byte under ONE guard, with a comment
+//     saying why: the engine can clear the flag and rewrite the slot in between, handing back a "clean"
+//     answer holding stale bytes. Two back-to-back guarded copies reopened that window. The addresses are
+//     unrelated so no bulk copy spans them -- but a guarded BODY does, which is why shape 2 exists.
+//
+//   - GameClientShell::vtable_entry_address returned the ADDRESS OF A VTABLE ENTRY; migrated, it returned the
+//     function stored in it, duplicating pre_update_fn(). The header documents that entry as the hook point
+//     ("to hook PreUpdate, repoint pre_update_vtable_entry()"), so a consumer would have written THROUGH the
+//     value it was handed -- overwriting the method's first four code bytes instead of swapping a .rdata
+//     pointer. Caught by the one assertion that dereferences the entry and compares it to the function.
+//
+// > Both regressions passed a reading of the diff. The one that mattered was caught by an assertion written
+// > earlier for a different reason: that an entry address, dereferenced, yields the function.
+//
+// Migrations of shared plumbing need the suite pointed at SEMANTICS, not at compilation. 946 checks.

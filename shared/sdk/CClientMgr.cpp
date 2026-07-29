@@ -10,7 +10,7 @@
 #include "Object.hpp"
 #include "VisTree.hpp"
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "regenny/regenny/CClientMgrCounterNode.hpp"
 #include "regenny/regenny/LTCameraObject.hpp"
@@ -57,15 +57,12 @@ uintptr_t resolve_instance_slot() {
     if (fn == 0) {
         return 0;
     }
-    uintptr_t slot = 0;
-    KANANLIB_SEH_TRY {
-        slot = *reinterpret_cast<uintptr_t*>(fn + kUpdate_ClientMgrOperand);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto slot = sdk::mem::read_ptr(fn + kUpdate_ClientMgrOperand);
+    if (!slot.has_value()) {
         LOGX("[sdk] crashed reading &g_pClientMgr operand");
         return 0;
     }
-    return slot;
+    return *slot;
 }
 
 } // namespace
@@ -85,64 +82,44 @@ CClientMgr* CClientMgr::get() {
     if (slot == 0) {
         return nullptr;
     }
-    CClientMgr* instance = nullptr;
-    KANANLIB_SEH_TRY {
-        instance = *reinterpret_cast<CClientMgr**>(slot);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto instance = sdk::mem::read_ptr(slot);
+    if (!instance.has_value()) {
         return nullptr;
     }
-    return instance;
+    return reinterpret_cast<CClientMgr*>(*instance);
 }
 
 CClientShell* CClientMgr::client_shell() const {
-    CClientShell* shell = nullptr;
-    KANANLIB_SEH_TRY {
-        shell = reinterpret_cast<CClientShell*>(regenny()->client_shell);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto shell = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&regenny()->client_shell));
+    if (!shell.has_value()) {
         return nullptr;
     }
-    return shell;
+    return reinterpret_cast<CClientShell*>(*shell);
 }
 
 bool CClientMgr::is_updating() const {
-    bool updating = false;
-    KANANLIB_SEH_TRY {
-        updating = regenny()->updating;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return updating;
+    const auto updating = sdk::mem::read<bool>(reinterpret_cast<uintptr_t>(&regenny()->updating));
+    return updating.value_or(false);
 }
 
 uint32_t CClientMgr::counter_elapsed_ms() const {
-    uint32_t ms = 0;
-    KANANLIB_SEH_TRY {
-        const auto* node = regenny()->own_counter_node;
-        if (node != nullptr) {
-            ms = node->elapsed_ms;
-        }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto node = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&regenny()->own_counter_node));
+    if (!node.has_value() || *node == 0) {
         return 0;
     }
-    return ms;
+    const auto ms = sdk::mem::read<uint32_t>(
+        *node + offsetof(regenny::CClientMgrCounterNode, elapsed_ms));
+    return ms.value_or(0);
 }
 
 double CClientMgr::counter_elapsed_time() const {
-    double t = 0.0;
-    KANANLIB_SEH_TRY {
-        const auto* node = regenny()->own_counter_node;
-        if (node != nullptr) {
-            t = node->elapsed_time;
-        }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto node = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&regenny()->own_counter_node));
+    if (!node.has_value() || *node == 0) {
         return 0.0;
     }
-    return t;
+    const auto t = sdk::mem::read<double>(
+        *node + offsetof(regenny::CClientMgrCounterNode, elapsed_time));
+    return t.value_or(0.0);
 }
 
 // POD-only SEH helper (MSVC C2712: __try cannot share a function with a
@@ -152,7 +129,7 @@ double CClientMgr::counter_elapsed_time() const {
 static int64_t seh_walk_start_shell_list(const regenny::CClientMgr* r) {
     constexpr size_t kMaxWalk = 10000; // fail closed on a corrupted/non-terminating list rather than hang
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const auto* head = &r->start_shell_list;
         const regenny::CClientMgrListLink* cur = head->next;
         size_t count = 0;
@@ -164,8 +141,8 @@ static int64_t seh_walk_start_shell_list(const regenny::CClientMgr* r) {
         // means the list is corrupt or the mapping is wrong -- report neither
         // a count nor a guess.
         result = (cur == head) ? static_cast<int64_t>(count) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -180,20 +157,19 @@ std::optional<size_t> CClientMgr::start_shell_list_count() const {
 }
 
 bool CClientMgr::counter_node_registered() const {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        auto* r = regenny();
-        auto* node = r->own_counter_node;
-        if (node != nullptr) {
-            // &node->self_link -- the compiler computes the offset from the
-            // generated schema; no literal appears here or in any caller.
-            ok = (&node->self_link == r->counter_list_head.next);
-        }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    auto* r = regenny();
+    const auto node = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&r->own_counter_node));
+    if (!node.has_value() || *node == 0) {
         return false;
     }
-    return ok;
+    // &node->self_link -- the compiler computes the offset from the
+    // generated schema; no literal appears here or in any caller.
+    const auto self_link = *node + offsetof(regenny::CClientMgrCounterNode, self_link);
+    const auto head_next = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&r->counter_list_head.next));
+    if (!head_next.has_value()) {
+        return false;
+    }
+    return self_link == *head_next;
 }
 
 // SEH-guarded like is_updating() above, and for the same reason: `this` can go
@@ -202,25 +178,13 @@ bool CClientMgr::counter_node_registered() const {
 // a caller cannot mistake for real data.
 
 uint32_t CClientMgr::last_sample_time_ms() const {
-    uint32_t v = 0;
-    KANANLIB_SEH_TRY {
-        v = regenny()->last_sample_time_ms;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
-    return v;
+    const auto v = sdk::mem::read<uint32_t>(reinterpret_cast<uintptr_t>(&regenny()->last_sample_time_ms));
+    return v.value_or(0);
 }
 
 bool CClientMgr::has_pending_shell_release() const {
-    bool v = false;
-    KANANLIB_SEH_TRY {
-        v = (regenny()->pending_shell_release != nullptr);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return v;
+    const auto v = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&regenny()->pending_shell_release));
+    return v.has_value() && *v != 0;
 }
 
 const char* object_type_name(ObjectType type) {
@@ -263,18 +227,12 @@ struct RawStep {
 bool seh_step(const regenny::CClientMgrListLink* head,
               const regenny::CClientMgrListLink* cur,
               RawStep* out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
+    return sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* next = cur->next;
         out->next = next;
         out->at_end = (next == head);
         out->type = out->at_end ? 0u : static_cast<uint8_t>(object_from_link(next)->type);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
-    return ok;
+    });
 }
 
 // POD-only SEH helper. Walks one object bucket, counting entries. Returns
@@ -289,7 +247,7 @@ bool seh_step(const regenny::CClientMgrListLink* head,
 int64_t seh_count_objects(const regenny::CClientMgrListLink* head,
                           uint8_t expected_type, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0;
         bool invariant_ok = true;
@@ -302,8 +260,8 @@ int64_t seh_count_objects(const regenny::CClientMgrListLink* head,
             cur = cur->next;
         }
         result = (invariant_ok && cur == head) ? static_cast<int64_t>(n) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -325,7 +283,7 @@ int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
                              uint8_t expected_type,
                              CClientMgr::ObjectSnapshot* out, size_t max, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, written = 0;
         bool invariant_ok = true;
@@ -354,8 +312,8 @@ int64_t seh_snapshot_objects(const regenny::CClientMgrListLink* head,
             cur = cur->next;
         }
         result = (invariant_ok && cur == head) ? static_cast<int64_t>(written) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -424,7 +382,7 @@ std::optional<size_t> CClientMgr::object_count(ObjectType type) const {
 
 namespace {
 
-// POD-only SEH helpers for the handle table. Kept out of the methods below so the
+// Guarded reads for the handle table. Kept out of the methods below so the
 // guarded reads never share a function with std::optional's construction.
 struct HandleSlot {
     uint32_t tag;
@@ -434,48 +392,38 @@ struct HandleSlot {
 
 HandleSlot seh_handle_slot(const regenny::CClientMgr* mgr, uint16_t handle) {
     HandleSlot s{};
-    KANANLIB_SEH_TRY {
-        const auto* first = mgr->handle_table.first;
-        const auto* last = mgr->handle_table.last;
-        if (first != nullptr && last > first) {
-            const size_t slots = static_cast<size_t>(last - first);
-            if (handle < slots) {
-                s.tag = first[handle].tag;
-                s.object = first[handle].object;
-                s.valid = true;
-            }
-        }
+    const auto first = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&mgr->handle_table.first));
+    const auto last = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&mgr->handle_table.last));
+    if (!first.has_value() || !last.has_value() || *first == 0 || *last <= *first) {
+        return s;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        s.valid = false;
+    const size_t slots = (*last - *first) / sizeof(regenny::LTObjectHandleEntry);
+    if (handle >= slots) {
+        return s;
     }
+    const auto entry = sdk::mem::read<regenny::LTObjectHandleEntry>(
+        *first + handle * sizeof(regenny::LTObjectHandleEntry));
+    if (!entry.has_value()) {
+        return s;
+    }
+    s.tag = entry->tag;
+    s.object = entry->object;
+    s.valid = true;
     return s;
 }
 
 int64_t seh_handle_of(const regenny::LTObject* obj) {
-    int64_t h = -1;
-    KANANLIB_SEH_TRY {
-        h = static_cast<int64_t>(obj->handle);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        h = -1;
-    }
-    return h;
+    const auto h = sdk::mem::read<uint16_t>(reinterpret_cast<uintptr_t>(&obj->handle));
+    return h.has_value() ? static_cast<int64_t>(*h) : -1;
 }
 
 int64_t seh_handle_slots(const regenny::CClientMgr* mgr) {
-    int64_t n = -1;
-    KANANLIB_SEH_TRY {
-        const auto* first = mgr->handle_table.first;
-        const auto* last = mgr->handle_table.last;
-        if (first != nullptr && last >= first) {
-            n = static_cast<int64_t>(last - first);
-        }
+    const auto first = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&mgr->handle_table.first));
+    const auto last = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&mgr->handle_table.last));
+    if (!first.has_value() || !last.has_value() || *last < *first) {
+        return -1;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
-    return n;
+    return static_cast<int64_t>((*last - *first) / sizeof(regenny::LTObjectHandleEntry));
 }
 
 }  // namespace
@@ -546,18 +494,15 @@ static_assert(sizeof(kBankToType) / sizeof(kBankToType[0]) ==
 // POD-only SEH helper: reads the bank pair plus the pool's block size.
 bool seh_read_bank(const regenny::CClientMgrObjectBank* bank,
                    uint32_t* element_size, uint32_t* block_size, uintptr_t* pool) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
+    bool found = false;
+    const bool ok = sdk::mem::guarded([&] {
         const auto* p = bank->pool;
         *pool = reinterpret_cast<uintptr_t>(p);
         *element_size = bank->element_size;
         *block_size = (p != nullptr) ? p->block_size : 0u;
-        ok = (p != nullptr);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
-    return ok;
+        found = (p != nullptr);
+    });
+    return ok && found;
 }
 
 } // namespace
@@ -593,7 +538,7 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
                               size_t* members_total, size_t* member_asset_ok,
                               size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
@@ -661,8 +606,8 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -681,7 +626,7 @@ int64_t seh_check_materials(const regenny::CClientMgrListLink* head, size_t max,
     constexpr uint32_t kMaxLen = 1024;
     constexpr uint32_t kSmallBuf = 16;
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
@@ -737,8 +682,8 @@ int64_t seh_check_materials(const regenny::CClientMgrListLink* head, size_t max,
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -886,7 +831,7 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
     uint32_t users[kMaxAssets]{};
     size_t distinct = 0;
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
@@ -916,7 +861,8 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
             cur = cur->next;
         }
         if (cur != head) {
-            return -1;
+            result = -1;
+            return;
         }
         for (size_t i = 0; i < distinct; ++i) {
             const auto* a = seen[i];
@@ -981,8 +927,8 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
             }
         }
         result = static_cast<int64_t>(distinct);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1030,7 +976,7 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
     uint32_t counts[kMaxNames]{};
     size_t n_assets = 0, n_names = 0;
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
@@ -1204,7 +1150,8 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
             cur = cur->next;
         }
         if (cur != head) {
-            return -1;
+            result = -1;
+            return;
         }
         *distinct = n_names;
         for (size_t i = 0; i < n_names; ++i) {
@@ -1218,8 +1165,8 @@ static int64_t seh_check_nodes(const regenny::CClientMgrListLink* head, size_t m
             }
         }
         result = static_cast<int64_t>(n_assets);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1275,7 +1222,7 @@ static int64_t seh_check_anim_tables(const regenny::CClientMgrListLink* head, si
     const regenny::LTModelAsset* seen[kMaxAssets]{};
     size_t n_assets = 0;
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, sampled = 0;
         while (cur != head && n < cap) {
@@ -1320,11 +1267,12 @@ static int64_t seh_check_anim_tables(const regenny::CClientMgrListLink* head, si
             cur = cur->next;
         }
         if (cur != head) {
-            return -1;
+            result = -1;
+            return;
         }
         result = static_cast<int64_t>(n_assets);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1400,7 +1348,7 @@ namespace {
 int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uintptr_t img_base,
                        size_t img_size, CClientMgr::WorldTreeCheck* out, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1467,8 +1415,8 @@ int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uint
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1494,12 +1442,8 @@ std::optional<CClientMgr::WorldTreeCheck> CClientMgr::check_world_tree(size_t ma
     // independent routes to the same address; neither side is a baseline of
     // ours, so this stays valid in any level.
     if (const auto* bsp = WorldBSP::get()) {
-        KANANLIB_SEH_TRY {
-            out.bsp_root = reinterpret_cast<uintptr_t>(bsp->world_tree_root);
-        }
-        KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-            out.bsp_root = 0;
-        }
+        const auto root = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(&bsp->world_tree_root));
+        out.bsp_root = root.value_or(0);
     }
     out.root_matches_bsp = out.bsp_root != 0 && out.bsp_root == out.root;
     return out;
@@ -1513,7 +1457,7 @@ int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t 
                                 size_t* vis_pos, size_t* radius_ok, size_t* asset_nonnull,
                                 size_t* asset_radius_eq, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1545,8 +1489,8 @@ int64_t seh_check_model_volumes(const regenny::CClientMgrListLink* head, size_t 
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1560,7 +1504,7 @@ int64_t seh_check_sprite_volumes(const regenny::CClientMgrListLink* head, size_t
                                  size_t* aabb_n, size_t* sphere_n, size_t* ordered,
                                  size_t* radius_ok, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1587,8 +1531,8 @@ int64_t seh_check_sprite_volumes(const regenny::CClientMgrListLink* head, size_t
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1599,7 +1543,7 @@ int64_t seh_check_sprite_volumes(const regenny::CClientMgrListLink* head, size_t
 int64_t seh_check_particle_volumes(const regenny::CClientMgrListLink* head, size_t max,
                                    size_t* type_ok, size_t* sphere, size_t* aabb, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1621,8 +1565,8 @@ int64_t seh_check_particle_volumes(const regenny::CClientMgrListLink* head, size
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1676,7 +1620,7 @@ namespace {
 int64_t seh_check_attachments(const regenny::CClientMgrListLink* head, size_t max,
                               CClientMgr::AttachmentCheck* out, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1767,8 +1711,8 @@ int64_t seh_check_attachments(const regenny::CClientMgrListLink* head, size_t ma
         // both is what lets a caller distinguish a complete walk from a sample.
         out->listed += n;
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;
@@ -1803,7 +1747,7 @@ namespace {
 int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, size_t max,
                           CClientMgr::SpatialRecordCheck* out, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    const bool ok = sdk::mem::guarded([&] {
         const regenny::CClientMgrListLink* cur = head->next;
         size_t n = 0, seen = 0;
         while (cur != head && n < cap) {
@@ -1911,8 +1855,8 @@ int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, 
             cur = cur->next;
         }
         result = (cur == head) ? static_cast<int64_t>(seen) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    });
+    if (!ok) {
         result = -1;
     }
     return result;

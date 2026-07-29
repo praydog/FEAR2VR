@@ -3,8 +3,7 @@
 #include <windows.h>
 #include <cmath>
 
-#include <utility/Seh.hpp>
-
+#include "Memory.hpp"
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTAttachment.hpp"
 // The cull rule reads per-type fields, so it needs the concrete object classes.
@@ -35,44 +34,61 @@ struct InfoRaw {
 
 InfoRaw seh_read_info(const regenny::LTObject* obj) {
     InfoRaw r{};
-    KANANLIB_SEH_TRY {
-        r.kind = static_cast<uint8_t>(obj->type);
-        r.handle = obj->handle;
-        r.flags = obj->flags;
-        r.user_flags = obj->user_flags;
-        r.flags2 = obj->flags2;
-        r.flags3 = obj->flags3;
-        r.pos[0] = obj->position.x;
-        r.pos[1] = obj->position.y;
-        r.pos[2] = obj->position.z;
-        r.rot[0] = obj->rotation.x;
-        r.rot[1] = obj->rotation.y;
-        r.rot[2] = obj->rotation.z;
-        r.rot[3] = obj->rotation.w;
-        r.scale = obj->scale;
-        r.slot_index = obj->slot_index;
+    bool ok = true;
+    regenny::LTObjectType type{};
+    uint16_t handle = 0;
+    uint32_t flags = 0;
+    uint32_t user_flags = 0;
+    uint16_t flags2 = 0;
+    uint16_t flags3 = 0;
+    regenny::LTVector position{};
+    regenny::LTRotation rotation{};
+    float scale = 0.0f;
+    uint32_t slot_index = 0;
+    ok = ok && sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type));
+    ok = ok && sdk::mem::copy(&handle, reinterpret_cast<uintptr_t>(&obj->handle), sizeof(handle));
+    ok = ok && sdk::mem::copy(&flags, reinterpret_cast<uintptr_t>(&obj->flags), sizeof(flags));
+    ok = ok && sdk::mem::copy(&user_flags, reinterpret_cast<uintptr_t>(&obj->user_flags), sizeof(user_flags));
+    ok = ok && sdk::mem::copy(&flags2, reinterpret_cast<uintptr_t>(&obj->flags2), sizeof(flags2));
+    ok = ok && sdk::mem::copy(&flags3, reinterpret_cast<uintptr_t>(&obj->flags3), sizeof(flags3));
+    ok = ok && sdk::mem::copy(&position, reinterpret_cast<uintptr_t>(&obj->position), sizeof(position));
+    ok = ok && sdk::mem::copy(&rotation, reinterpret_cast<uintptr_t>(&obj->rotation), sizeof(rotation));
+    ok = ok && sdk::mem::copy(&scale, reinterpret_cast<uintptr_t>(&obj->scale), sizeof(scale));
+    ok = ok && sdk::mem::copy(&slot_index, reinterpret_cast<uintptr_t>(&obj->slot_index), sizeof(slot_index));
+    if (ok) {
+        r.kind = static_cast<uint8_t>(type);
+        r.handle = handle;
+        r.flags = flags;
+        r.user_flags = user_flags;
+        r.flags2 = flags2;
+        r.flags3 = flags3;
+        r.pos[0] = position.x;
+        r.pos[1] = position.y;
+        r.pos[2] = position.z;
+        r.rot[0] = rotation.x;
+        r.rot[1] = rotation.y;
+        r.rot[2] = rotation.z;
+        r.rot[3] = rotation.w;
+        r.scale = scale;
+        r.slot_index = slot_index;
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
     }
     return r;
 }
 
 // Returns 1 / 0 for the gate, or -1 on fault.
 int seh_renderable(const regenny::LTObject* obj) {
-    int result = -1;
-    KANANLIB_SEH_TRY {
-        // The engine's clause, verbatim: visible AND none of the flags2 suppressor
-        // bits. Both halves matter -- see the header.
-        const bool vis = (obj->flags & object_flags::kVisible) != 0;
-        const bool suppressed = (obj->flags2 & 0x700) != 0;
-        result = (vis && !suppressed) ? 1 : 0;
+    uint32_t flags = 0;
+    uint16_t flags2 = 0;
+    if (!sdk::mem::copy(&flags, reinterpret_cast<uintptr_t>(&obj->flags), sizeof(flags)) ||
+        !sdk::mem::copy(&flags2, reinterpret_cast<uintptr_t>(&obj->flags2), sizeof(flags2))) {
+        return -1;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = -1;
-    }
-    return result;
+    // The engine's clause, verbatim: visible AND none of the flags2 suppressor
+    // bits. Both halves matter -- see the header.
+    const bool vis = (flags & object_flags::kVisible) != 0;
+    const bool suppressed = (flags2 & 0x700) != 0;
+    return (vis && !suppressed) ? 1 : 0;
 }
 
 }  // namespace
@@ -149,36 +165,45 @@ struct AttachRaw {
 
 AttachRaw seh_read_record(const void* rec) {
     AttachRaw r{};
-    KANANLIB_SEH_TRY {
-        const auto* a = static_cast<const regenny::LTAttachment*>(rec);
-        r.child_handle = a->child_handle;
-        r.parent_handle = a->parent_handle;
-        r.socket_handle = a->socket_handle;
-        r.next = a->next;
-        r.pos[0] = a->offset_position.x;
-        r.pos[1] = a->offset_position.y;
-        r.pos[2] = a->offset_position.z;
-        r.rot[0] = a->offset_rotation.x;
-        r.rot[1] = a->offset_rotation.y;
-        r.rot[2] = a->offset_rotation.z;
-        r.rot[3] = a->offset_rotation.w;
+    const auto* a = static_cast<const regenny::LTAttachment*>(rec);
+    bool ok = true;
+    uint16_t child_handle = 0;
+    uint16_t parent_handle = 0;
+    uint32_t socket_handle = 0;
+    regenny::LTAttachment* next = nullptr;
+    regenny::LTVector offset_position{};
+    regenny::LTRotation offset_rotation{};
+    ok = ok && sdk::mem::copy(&child_handle, reinterpret_cast<uintptr_t>(&a->child_handle), sizeof(child_handle));
+    ok = ok && sdk::mem::copy(&parent_handle, reinterpret_cast<uintptr_t>(&a->parent_handle), sizeof(parent_handle));
+    ok = ok && sdk::mem::copy(&socket_handle, reinterpret_cast<uintptr_t>(&a->socket_handle), sizeof(socket_handle));
+    ok = ok && sdk::mem::copy(&next, reinterpret_cast<uintptr_t>(&a->next), sizeof(next));
+    ok = ok && sdk::mem::copy(&offset_position, reinterpret_cast<uintptr_t>(&a->offset_position), sizeof(offset_position));
+    ok = ok && sdk::mem::copy(&offset_rotation, reinterpret_cast<uintptr_t>(&a->offset_rotation), sizeof(offset_rotation));
+    if (ok) {
+        r.child_handle = child_handle;
+        r.parent_handle = parent_handle;
+        r.socket_handle = socket_handle;
+        r.next = next;
+        r.pos[0] = offset_position.x;
+        r.pos[1] = offset_position.y;
+        r.pos[2] = offset_position.z;
+        r.rot[0] = offset_rotation.x;
+        r.rot[1] = offset_rotation.y;
+        r.rot[2] = offset_rotation.z;
+        r.rot[3] = offset_rotation.w;
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
     }
     return r;
 }
 
 const void* seh_list_head(const regenny::LTObject* obj, bool* is_model) {
-    const void* head = nullptr;
-    KANANLIB_SEH_TRY {
-        head = obj->attachments;
-        *is_model = obj->type == regenny::LTObjectType::OT_MODEL;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    regenny::LTAttachment* head = nullptr;
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&head, reinterpret_cast<uintptr_t>(&obj->attachments), sizeof(head)) ||
+        !sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type))) {
         return nullptr;
     }
+    *is_model = type == regenny::LTObjectType::OT_MODEL;
     return head;
 }
 
@@ -265,23 +290,31 @@ struct StandRaw {
 // and reading them separately could straddle a move.
 StandRaw seh_stand(const regenny::LTObject* obj) {
     StandRaw r{};
-    KANANLIB_SEH_TRY {
-        r.dims[0] = obj->dims.x;
-        r.dims[1] = obj->dims.y;
-        r.dims[2] = obj->dims.z;
-        r.dims_ok = true;
-        const auto* under = obj->standing_on;
-        if (under != nullptr) {
-            r.standing_on = under;
-            r.node = obj->standing_on_node;
-            // The engine's own expression for the surface height.
-            r.surface_height = under->position.y + under->dims.y;
+    regenny::LTVector dims{};
+    regenny::LTObject* under = nullptr;
+    if (!sdk::mem::copy(&dims, reinterpret_cast<uintptr_t>(&obj->dims), sizeof(dims)) ||
+        !sdk::mem::copy(&under, reinterpret_cast<uintptr_t>(&obj->standing_on), sizeof(under))) {
+        return r;
+    }
+    r.dims[0] = dims.x;
+    r.dims[1] = dims.y;
+    r.dims[2] = dims.z;
+    r.dims_ok = true;
+    if (under != nullptr) {
+        void* node = nullptr;
+        float under_pos_y = 0.0f;
+        float under_dims_y = 0.0f;
+        if (!sdk::mem::copy(&node, reinterpret_cast<uintptr_t>(&obj->standing_on_node), sizeof(node)) ||
+            !sdk::mem::copy(&under_pos_y, reinterpret_cast<uintptr_t>(&under->position.y), sizeof(under_pos_y)) ||
+            !sdk::mem::copy(&under_dims_y, reinterpret_cast<uintptr_t>(&under->dims.y), sizeof(under_dims_y))) {
+            return r;  // any fault here invalidates the whole read, matching the original guard
         }
-        r.ok = true;
+        r.standing_on = under;
+        r.node = node;
+        // The engine's own expression for the surface height.
+        r.surface_height = under_pos_y + under_dims_y;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    r.ok = true;
     return r;
 }
 
@@ -332,15 +365,11 @@ struct ColorRaw {
 // between components and hand back a colour the object never had.
 ColorRaw seh_color(const regenny::LTObject* obj) {
     ColorRaw c{};
-    KANANLIB_SEH_TRY {
-        c.b = obj->color_b;
-        c.g = obj->color_g;
-        c.r = obj->color_r;
-        c.a = obj->color_a;
+    // All four bytes in ONE guarded read. Reading them separately would let a fade advance
+    // between components and hand back a colour the object never had. color_b..color_a are
+    // laid out contiguously in that order (see LTObject.hpp), matching ColorRaw's b,g,r,a.
+    if (sdk::mem::copy(&c.b, reinterpret_cast<uintptr_t>(&obj->color_b), 4 * sizeof(uint8_t))) {
         c.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        c.ok = false;
     }
     return c;
 }
@@ -383,16 +412,10 @@ struct Mat34Raw {
 // the object to BE one, which the caller establishes by type before we get here.
 Mat34Raw seh_read_brush_matrix(const regenny::LTObject* obj, bool inverse) {
     Mat34Raw r{};
-    KANANLIB_SEH_TRY {
-        const auto* base = reinterpret_cast<const uint8_t*>(obj);
-        const auto* src = reinterpret_cast<const float*>(base + (inverse ? 0x10C : 0xDC));
-        for (size_t i = 0; i < 12; ++i) {
-            r.m[i] = src[i];
-        }
+    const auto* base = reinterpret_cast<const uint8_t*>(obj);
+    const auto* src = reinterpret_cast<const float*>(base + (inverse ? 0x10C : 0xDC));
+    if (sdk::mem::copy(r.m, reinterpret_cast<uintptr_t>(src), sizeof(r.m))) {
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
     }
     return r;
 }
@@ -627,66 +650,117 @@ struct CullRaw {
 
 CullRaw seh_read_cull(const regenny::LTObject* obj) {
     CullRaw r{};
-    KANANLIB_SEH_TRY {
-        r.kind = static_cast<uint8_t>(obj->type);
-        r.flags3 = obj->flags3;
-        r.pos[0] = obj->position.x;
-        r.pos[1] = obj->position.y;
-        r.pos[2] = obj->position.z;
-        r.scale = obj->scale;
-        r.aabb_min[0] = obj->aabb_min.x;
-        r.aabb_min[1] = obj->aabb_min.y;
-        r.aabb_min[2] = obj->aabb_min.z;
-        r.aabb_max[0] = obj->aabb_max.x;
-        r.aabb_max[1] = obj->aabb_max.y;
-        r.aabb_max[2] = obj->aabb_max.z;
-        if (r.kind == 1) {
-            const auto* m = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            r.sphere_source = m->sphere_source;
-            r.sphere_center[0] = m->sphere_center.x;
-            r.sphere_center[1] = m->sphere_center.y;
-            r.sphere_center[2] = m->sphere_center.z;
-            r.vis_radius = m->vis_radius;
-        } else if (r.kind == 3) {
-            const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(obj);
-            r.sprite_kind = s->kind;
-            r.sprite_radius = s->radius;
-            // THE SPRITE'S OWN AABB (+0x120/+0x12C), which is NOT LTObject's at
-            // +0x48/+0x54. Using the base pair here reported 9 boxed sprites as stale
-            // volumes -- the two fields have the same name and different meanings.
-            r.sprite_aabb_min[0] = s->aabb_min.x;
-            r.sprite_aabb_min[1] = s->aabb_min.y;
-            r.sprite_aabb_min[2] = s->aabb_min.z;
-            r.sprite_aabb_max[0] = s->aabb_max.x;
-            r.sprite_aabb_max[1] = s->aabb_max.y;
-            r.sprite_aabb_max[2] = s->aabb_max.z;
-        } else if (r.kind == 6) {
-            const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(obj);
-            r.ps_volume_type = p->cull_volume_type;
-            r.ps_sphere_offset[0] = p->sphere_offset.x;
-            r.ps_sphere_offset[1] = p->sphere_offset.y;
-            r.ps_sphere_offset[2] = p->sphere_offset.z;
-            r.ps_sphere_radius = p->sphere_radius;
-            r.ps_min_offset[0] = p->aabb_min_offset.x;
-            r.ps_min_offset[1] = p->aabb_min_offset.y;
-            r.ps_min_offset[2] = p->aabb_min_offset.z;
-            r.ps_max_offset[0] = p->aabb_max_offset.x;
-            r.ps_max_offset[1] = p->aabb_max_offset.y;
-            r.ps_max_offset[2] = p->aabb_max_offset.z;
-        }
-        if (const auto* rec = obj->spatial_record; rec != nullptr) {
-            r.has_record = true;
-            for (size_t i = 0; i < 6; ++i) {
-                r.stored[i] = rec->volume[i];
-            }
-            // The engine's OWN shape tag, written by whichever setter last stored a volume.
-            r.stored_is_sphere = (rec->volume_flags & 0x80u) != 0;
-        }
-        r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    regenny::LTObjectType type{};
+    uint16_t flags3 = 0;
+    regenny::LTVector position{};
+    float scale = 0.0f;
+    regenny::LTVector aabb_min{};
+    regenny::LTVector aabb_max{};
+    bool ok = true;
+    ok = ok && sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type));
+    ok = ok && sdk::mem::copy(&flags3, reinterpret_cast<uintptr_t>(&obj->flags3), sizeof(flags3));
+    ok = ok && sdk::mem::copy(&position, reinterpret_cast<uintptr_t>(&obj->position), sizeof(position));
+    ok = ok && sdk::mem::copy(&scale, reinterpret_cast<uintptr_t>(&obj->scale), sizeof(scale));
+    ok = ok && sdk::mem::copy(&aabb_min, reinterpret_cast<uintptr_t>(&obj->aabb_min), sizeof(aabb_min));
+    ok = ok && sdk::mem::copy(&aabb_max, reinterpret_cast<uintptr_t>(&obj->aabb_max), sizeof(aabb_max));
+    if (!ok) {
         return r;
     }
+    r.kind = static_cast<uint8_t>(type);
+    r.flags3 = flags3;
+    r.pos[0] = position.x;
+    r.pos[1] = position.y;
+    r.pos[2] = position.z;
+    r.scale = scale;
+    r.aabb_min[0] = aabb_min.x;
+    r.aabb_min[1] = aabb_min.y;
+    r.aabb_min[2] = aabb_min.z;
+    r.aabb_max[0] = aabb_max.x;
+    r.aabb_max[1] = aabb_max.y;
+    r.aabb_max[2] = aabb_max.z;
+    if (r.kind == 1) {
+        const auto* m = reinterpret_cast<const regenny::LTModelObject*>(obj);
+        uint16_t sphere_source = 0;
+        regenny::LTVector sphere_center{};
+        float vis_radius = 0.0f;
+        if (!sdk::mem::copy(&sphere_source, reinterpret_cast<uintptr_t>(&m->sphere_source), sizeof(sphere_source)) ||
+            !sdk::mem::copy(&sphere_center, reinterpret_cast<uintptr_t>(&m->sphere_center), sizeof(sphere_center)) ||
+            !sdk::mem::copy(&vis_radius, reinterpret_cast<uintptr_t>(&m->vis_radius), sizeof(vis_radius))) {
+            return r;
+        }
+        r.sphere_source = sphere_source;
+        r.sphere_center[0] = sphere_center.x;
+        r.sphere_center[1] = sphere_center.y;
+        r.sphere_center[2] = sphere_center.z;
+        r.vis_radius = vis_radius;
+    } else if (r.kind == 3) {
+        const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(obj);
+        uint8_t sprite_kind = 0;
+        float sprite_radius = 0.0f;
+        regenny::LTVector sprite_aabb_min{};
+        regenny::LTVector sprite_aabb_max{};
+        if (!sdk::mem::copy(&sprite_kind, reinterpret_cast<uintptr_t>(&s->kind), sizeof(sprite_kind)) ||
+            !sdk::mem::copy(&sprite_radius, reinterpret_cast<uintptr_t>(&s->radius), sizeof(sprite_radius)) ||
+            !sdk::mem::copy(&sprite_aabb_min, reinterpret_cast<uintptr_t>(&s->aabb_min), sizeof(sprite_aabb_min)) ||
+            !sdk::mem::copy(&sprite_aabb_max, reinterpret_cast<uintptr_t>(&s->aabb_max), sizeof(sprite_aabb_max))) {
+            return r;
+        }
+        r.sprite_kind = sprite_kind;
+        r.sprite_radius = sprite_radius;
+        // THE SPRITE'S OWN AABB (+0x120/+0x12C), which is NOT LTObject's at
+        // +0x48/+0x54. Using the base pair here reported 9 boxed sprites as stale
+        // volumes -- the two fields have the same name and different meanings.
+        r.sprite_aabb_min[0] = sprite_aabb_min.x;
+        r.sprite_aabb_min[1] = sprite_aabb_min.y;
+        r.sprite_aabb_min[2] = sprite_aabb_min.z;
+        r.sprite_aabb_max[0] = sprite_aabb_max.x;
+        r.sprite_aabb_max[1] = sprite_aabb_max.y;
+        r.sprite_aabb_max[2] = sprite_aabb_max.z;
+    } else if (r.kind == 6) {
+        const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(obj);
+        uint8_t volume_type = 0;
+        regenny::LTVector sphere_offset{};
+        float sphere_radius = 0.0f;
+        regenny::LTVector min_offset{};
+        regenny::LTVector max_offset{};
+        if (!sdk::mem::copy(&volume_type, reinterpret_cast<uintptr_t>(&p->cull_volume_type), sizeof(volume_type)) ||
+            !sdk::mem::copy(&sphere_offset, reinterpret_cast<uintptr_t>(&p->sphere_offset), sizeof(sphere_offset)) ||
+            !sdk::mem::copy(&sphere_radius, reinterpret_cast<uintptr_t>(&p->sphere_radius), sizeof(sphere_radius)) ||
+            !sdk::mem::copy(&min_offset, reinterpret_cast<uintptr_t>(&p->aabb_min_offset), sizeof(min_offset)) ||
+            !sdk::mem::copy(&max_offset, reinterpret_cast<uintptr_t>(&p->aabb_max_offset), sizeof(max_offset))) {
+            return r;
+        }
+        r.ps_volume_type = volume_type;
+        r.ps_sphere_offset[0] = sphere_offset.x;
+        r.ps_sphere_offset[1] = sphere_offset.y;
+        r.ps_sphere_offset[2] = sphere_offset.z;
+        r.ps_sphere_radius = sphere_radius;
+        r.ps_min_offset[0] = min_offset.x;
+        r.ps_min_offset[1] = min_offset.y;
+        r.ps_min_offset[2] = min_offset.z;
+        r.ps_max_offset[0] = max_offset.x;
+        r.ps_max_offset[1] = max_offset.y;
+        r.ps_max_offset[2] = max_offset.z;
+    }
+    regenny::LTSpatialRecord* rec = nullptr;
+    if (!sdk::mem::copy(&rec, reinterpret_cast<uintptr_t>(&obj->spatial_record), sizeof(rec))) {
+        return r;
+    }
+    if (rec != nullptr) {
+        float volume[6]{};
+        uint8_t volume_flags = 0;
+        if (!sdk::mem::copy(volume, reinterpret_cast<uintptr_t>(&rec->volume), sizeof(volume)) ||
+            !sdk::mem::copy(&volume_flags, reinterpret_cast<uintptr_t>(&rec->volume_flags), sizeof(volume_flags))) {
+            return r;
+        }
+        r.has_record = true;
+        for (size_t i = 0; i < 6; ++i) {
+            r.stored[i] = volume[i];
+        }
+        // The engine's OWN shape tag, written by whichever setter last stored a volume.
+        r.stored_is_sphere = (volume_flags & 0x80u) != 0;
+    }
+    r.ok = true;
     return r;
 }
 
@@ -898,24 +972,32 @@ struct GeomRaw {
 
 GeomRaw seh_read_geom(const regenny::LTObject* obj) {
     GeomRaw r{};
-    KANANLIB_SEH_TRY {
-        r.pos[0] = obj->position.x;
-        r.pos[1] = obj->position.y;
-        r.pos[2] = obj->position.z;
-        r.dims[0] = obj->dims.x;
-        r.dims[1] = obj->dims.y;
-        r.dims[2] = obj->dims.z;
-        r.mn[0] = obj->aabb_min.x;
-        r.mn[1] = obj->aabb_min.y;
-        r.mn[2] = obj->aabb_min.z;
-        r.mx[0] = obj->aabb_max.x;
-        r.mx[1] = obj->aabb_max.y;
-        r.mx[2] = obj->aabb_max.z;
-        r.radius = obj->radius;
+    regenny::LTVector position{};
+    regenny::LTVector dims{};
+    regenny::LTVector aabb_min{};
+    regenny::LTVector aabb_max{};
+    float radius = 0.0f;
+    bool ok = true;
+    ok = ok && sdk::mem::copy(&position, reinterpret_cast<uintptr_t>(&obj->position), sizeof(position));
+    ok = ok && sdk::mem::copy(&dims, reinterpret_cast<uintptr_t>(&obj->dims), sizeof(dims));
+    ok = ok && sdk::mem::copy(&aabb_min, reinterpret_cast<uintptr_t>(&obj->aabb_min), sizeof(aabb_min));
+    ok = ok && sdk::mem::copy(&aabb_max, reinterpret_cast<uintptr_t>(&obj->aabb_max), sizeof(aabb_max));
+    ok = ok && sdk::mem::copy(&radius, reinterpret_cast<uintptr_t>(&obj->radius), sizeof(radius));
+    if (ok) {
+        r.pos[0] = position.x;
+        r.pos[1] = position.y;
+        r.pos[2] = position.z;
+        r.dims[0] = dims.x;
+        r.dims[1] = dims.y;
+        r.dims[2] = dims.z;
+        r.mn[0] = aabb_min.x;
+        r.mn[1] = aabb_min.y;
+        r.mn[2] = aabb_min.z;
+        r.mx[0] = aabb_max.x;
+        r.mx[1] = aabb_max.y;
+        r.mx[2] = aabb_max.z;
+        r.radius = radius;
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
     }
     return r;
 }

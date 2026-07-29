@@ -4,8 +4,7 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
-
+#include "Memory.hpp"
 #include "CClientMgr.hpp"
 #include "Modules.hpp"
 #include "interfaces/ILTModel.hpp"
@@ -82,125 +81,150 @@ struct SkelRaw {
 };
 
 bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
-            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            const auto* asset = model->record.asset;
-            if (asset != nullptr) {
-                const auto* recs = asset->node_records;
-                const auto* names = asset->node_names;
-                const uint32_t n = asset->node_count;
-                if (recs != nullptr && names != nullptr && n > 0 && n <= kMaxNodes) {
-                    out->asset = asset;
-                    out->records = recs;
-                    out->names = names;
-                    out->count = n;
-                    // A socket table is OPTIONAL: an asset may define none, so a
-                    // zero count is a normal answer and not a resolve failure.
-                    const auto* socks = asset->sockets;
-                    const uint32_t sn = asset->socket_count;
-                    if (socks != nullptr && sn > 0 && sn <= kMaxNodes) {
-                        out->sockets = socks;
-                        out->socket_count = sn;
-                    }
-
-                    // THE ENGINE'S OWN BRANCH, reproduced rather than chosen: a model
-                    // holds two per-node caches and GetNodeTransform reads whichever
-                    // the mode selector at +0x156 names. Picking one here would be
-                    // right on 193 of 215 models and silently wrong on the other 22.
-                    if (model->sphere_source != 0) {
-                        out->node_xform = model->block_130.node_transforms;
-                        out->node_dirty = model->block_130.node_dirty_stride3;
-                        out->dirty_stride = 3;
-                        out->dirty_offset = 1;  // the engine tests the SECOND byte
-                    } else {
-                        out->node_xform = model->block_120.node_transforms;
-                        out->node_dirty = model->block_120.node_dirty_stride2;
-                        out->dirty_stride = 2;
-                        out->dirty_offset = 0;
-                    }
-                    // WHICH SPACE that cache is in. Measured, not assumed: over every
-                    // clean slot, selector==0 put 297/297 bones near the model origin
-                    // and selector!=0 put 46/46 at the object's world position.
-                    out->world_space = model->sphere_source != 0;
-
-                    // BindAsset's own arithmetic, term for term. Verified live: every
-                    // pointer the engine carves out lands inside the result on
-                    // 215/215 models, including the bone palette's full extent.
-                    const auto align4 = [](uint32_t v) { return v + 3u - ((v + 3u) & 3u); };
-                    const uint32_t c08 = asset->region_count_a;
-                    const uint32_t c10 = asset->region_count_b;
-                    uint32_t size = align4(34u * n) + align4(31u * n + 4u * (c08 + c10)) +
-                                    align4(28u * asset->material_count);
-                    if ((obj->flags3 & 0x400) != 0) {
-                        size += align4(2u * n) + align4(48u * n);
-                    }
-                    const auto base = reinterpret_cast<uintptr_t>(model->per_node_alloc);
-                    out->alloc_base = base;
-                    out->alloc_end = (base != 0) ? base + size : 0;
-                    ok = true;
-                }
-            }
-        }
+    if (obj == nullptr) {
+        return false;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
+    // THE TYPE CHECK, preserved exactly: only an OT_MODEL object is resolved further.
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return false;
     }
-    return ok;
+    const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+
+    // The whole model struct, in ONE guarded read -- the same "read under one guard" the
+    // original relied on for internal consistency, now expressed as a single bulk copy
+    // instead of a run of individual field dereferences inside one SEH frame.
+    regenny::LTModelObject model_copy{};
+    if (!sdk::mem::copy(&model_copy, reinterpret_cast<uintptr_t>(model), sizeof(model_copy))) {
+        return false;
+    }
+    const auto* asset = model_copy.record.asset;
+    if (asset == nullptr) {
+        return false;
+    }
+
+    // Likewise the asset, in one guarded read, so records/names/count/sockets all come
+    // from the same asset generation.
+    regenny::LTModelAsset asset_copy{};
+    if (!sdk::mem::copy(&asset_copy, reinterpret_cast<uintptr_t>(asset), sizeof(asset_copy))) {
+        return false;
+    }
+
+    const auto* recs = asset_copy.node_records;
+    const auto* names = asset_copy.node_names;
+    const uint32_t n = asset_copy.node_count;
+    if (recs == nullptr || names == nullptr || n == 0 || n > kMaxNodes) {
+        return false;
+    }
+    out->asset = asset;
+    out->records = recs;
+    out->names = names;
+    out->count = n;
+    // A socket table is OPTIONAL: an asset may define none, so a
+    // zero count is a normal answer and not a resolve failure.
+    const auto* socks = asset_copy.sockets;
+    const uint32_t sn = asset_copy.socket_count;
+    if (socks != nullptr && sn > 0 && sn <= kMaxNodes) {
+        out->sockets = socks;
+        out->socket_count = sn;
+    }
+
+    // THE ENGINE'S OWN BRANCH, reproduced rather than chosen: a model
+    // holds two per-node caches and GetNodeTransform reads whichever
+    // the mode selector at +0x156 names. Picking one here would be
+    // right on 193 of 215 models and silently wrong on the other 22.
+    if (model_copy.sphere_source != 0) {
+        out->node_xform = model_copy.block_130.node_transforms;
+        out->node_dirty = model_copy.block_130.node_dirty_stride3;
+        out->dirty_stride = 3;
+        out->dirty_offset = 1;  // the engine tests the SECOND byte
+    } else {
+        out->node_xform = model_copy.block_120.node_transforms;
+        out->node_dirty = model_copy.block_120.node_dirty_stride2;
+        out->dirty_stride = 2;
+        out->dirty_offset = 0;
+    }
+    // WHICH SPACE that cache is in. Measured, not assumed: over every
+    // clean slot, selector==0 put 297/297 bones near the model origin
+    // and selector!=0 put 46/46 at the object's world position.
+    out->world_space = model_copy.sphere_source != 0;
+
+    // BindAsset's own arithmetic, term for term. Verified live: every
+    // pointer the engine carves out lands inside the result on
+    // 215/215 models, including the bone palette's full extent.
+    const auto align4 = [](uint32_t v) { return v + 3u - ((v + 3u) & 3u); };
+    const uint32_t c08 = asset_copy.region_count_a;
+    const uint32_t c10 = asset_copy.region_count_b;
+    uint32_t size = align4(34u * n) + align4(31u * n + 4u * (c08 + c10)) +
+                    align4(28u * asset_copy.material_count);
+    if ((model_copy.base.flags3 & 0x400) != 0) {
+        size += align4(2u * n) + align4(48u * n);
+    }
+    const auto base = reinterpret_cast<uintptr_t>(model_copy.per_node_alloc);
+    out->alloc_base = base;
+    out->alloc_end = (base != 0) ? base + size : 0;
+    return true;
 }
 
 // Copies a NUL-terminated name out of engine memory into `dst`. Returns the length,
 // or -1 on fault / an unterminated or non-printable run.
 int64_t seh_copy_cstr(const char* src, char* dst, size_t cap) {
-    int64_t len = -1;
-    KANANLIB_SEH_TRY {
-        if (src != nullptr) {
-            size_t i = 0;
-            bool good = true;
-            for (; i < cap - 1; ++i) {
-                const unsigned char c = static_cast<unsigned char>(src[i]);
-                if (c == 0) {
-                    break;
-                }
-                if (c < 0x20 || c > 0x7E) {
-                    good = false;
-                    break;
-                }
-                dst[i] = src[i];
-            }
-            if (good && i < cap - 1) {
-                dst[i] = '\0';
-                len = static_cast<int64_t>(i);
-            }
-        }
+    if (src == nullptr) {
+        return -1;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        len = -1;
+    // Printable and terminated within cap-1 bytes, exactly as the original loop bound it,
+    // but with no minimum length: an immediately-terminated (empty) string is still a
+    // valid answer here.
+    const auto text = sdk::mem::read_name(reinterpret_cast<uintptr_t>(src), cap - 1, /*min_length=*/0);
+    if (!text.has_value()) {
+        return -1;
     }
-    return len;
+    for (size_t i = 0; i < text->size(); ++i) {
+        dst[i] = (*text)[i];
+    }
+    dst[text->size()] = '\0';
+    return static_cast<int64_t>(text->size());
 }
 
 int64_t seh_find_name(const void* names_v, uint32_t count, const char* needle, char* scratch) {
     const auto* names = static_cast<const char* const*>(names_v);
-    int64_t found = -1;
-    KANANLIB_SEH_TRY {
-        for (uint32_t i = 0; i < count; ++i) {
-            const char* nm = names[i];
-            if (nm == nullptr) {
-                continue;
+    for (uint32_t i = 0; i < count; ++i) {
+        const char* nm = nullptr;
+        if (!sdk::mem::copy(&nm, reinterpret_cast<uintptr_t>(&names[i]), sizeof(nm))) {
+            return -1;  // any fault anywhere aborts the whole search, matching the original guard
+        }
+        if (nm == nullptr) {
+            continue;
+        }
+        bool matched = false;
+        for (size_t j = 0; j < kMaxName; ++j) {
+            char ca = 0;
+            if (!sdk::mem::copy(&ca, reinterpret_cast<uintptr_t>(nm + j), sizeof(ca))) {
+                return -1;
             }
-            if (equals_i(nm, needle, kMaxName)) {
-                found = static_cast<int64_t>(i);
+            char cb = needle[j];
+            if (ca >= 'A' && ca <= 'Z') {
+                ca = static_cast<char>(ca + 32);
+            }
+            if (cb >= 'A' && cb <= 'Z') {
+                cb = static_cast<char>(cb + 32);
+            }
+            if (ca != cb) {
+                break;
+            }
+            if (ca == '\0') {
+                matched = true;
                 break;
             }
         }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
+        if (matched) {
+            (void)scratch;
+            return static_cast<int64_t>(i);
+        }
     }
     (void)scratch;
-    return found;
+    return -1;
 }
 
 struct NodeRaw {
@@ -214,138 +238,153 @@ struct NodeRaw {
 };
 
 bool seh_read_node(const void* records, uint32_t count, size_t index, NodeRaw* out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        if (index < count) {
-            const auto* nd = static_cast<const regenny::LTModelNode*>(records) + index;
-            out->parent = nd->parent_index;
-            out->first_child_offset = nd->first_child_offset;
-            out->child_count = nd->child_count;
-            out->pos_a = nd->inverse_bind_position;
-            out->rot_a = nd->inverse_bind_rotation;
-            out->pos_b = nd->anim_fallback_position;
-            out->rot_b = nd->anim_getter_rotation;
-            ok = true;
-        }
+    if (index >= count) {
+        return false;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
+    const auto* nd = static_cast<const regenny::LTModelNode*>(records) + index;
+    uint8_t parent = 0;
+    uint8_t first_child_offset = 0;
+    uint8_t child_count = 0;
+    regenny::LTVector pos_a{};
+    regenny::LTRotation rot_a{};
+    regenny::LTVector pos_b{};
+    regenny::LTRotation rot_b{};
+    bool ok = true;
+    ok = ok && sdk::mem::copy(&parent, reinterpret_cast<uintptr_t>(&nd->parent_index), sizeof(parent));
+    ok = ok && sdk::mem::copy(&first_child_offset, reinterpret_cast<uintptr_t>(&nd->first_child_offset), sizeof(first_child_offset));
+    ok = ok && sdk::mem::copy(&child_count, reinterpret_cast<uintptr_t>(&nd->child_count), sizeof(child_count));
+    ok = ok && sdk::mem::copy(&pos_a, reinterpret_cast<uintptr_t>(&nd->inverse_bind_position), sizeof(pos_a));
+    ok = ok && sdk::mem::copy(&rot_a, reinterpret_cast<uintptr_t>(&nd->inverse_bind_rotation), sizeof(rot_a));
+    ok = ok && sdk::mem::copy(&pos_b, reinterpret_cast<uintptr_t>(&nd->anim_fallback_position), sizeof(pos_b));
+    ok = ok && sdk::mem::copy(&rot_b, reinterpret_cast<uintptr_t>(&nd->anim_getter_rotation), sizeof(rot_b));
+    if (!ok) {
+        return false;
     }
-    return ok;
+    out->parent = parent;
+    out->first_child_offset = first_child_offset;
+    out->child_count = child_count;
+    out->pos_a = pos_a;
+    out->rot_a = rot_a;
+    out->pos_b = pos_b;
+    out->rot_b = rot_b;
+    return true;
 }
 
 // Walks parent links into a POD buffer. Returns the count written, or -1 if the
 // chain did not terminate within the node count (which means a corrupt parent).
 int64_t seh_walk_parents(const void* records, uint32_t count, size_t start, size_t* out,
                          size_t cap) {
-    int64_t written = -1;
-    KANANLIB_SEH_TRY {
-        const auto* nodes = static_cast<const regenny::LTModelNode*>(records);
-        size_t n = 0, cur = start;
-        bool terminated = false;
-        while (n < cap) {
-            out[n++] = cur;
-            const uint8_t parent = nodes[cur].parent_index;
-            if (parent == 255) {
-                terminated = true;
-                break;
-            }
-            if (parent >= count || parent >= cur) {
-                break;  // topological order guarantees parent < cur; refuse a loop
-            }
-            cur = parent;
+    const auto* nodes = static_cast<const regenny::LTModelNode*>(records);
+    size_t n = 0, cur = start;
+    bool terminated = false;
+    while (n < cap) {
+        out[n++] = cur;
+        uint8_t parent = 0;
+        if (!sdk::mem::copy(&parent, reinterpret_cast<uintptr_t>(&nodes[cur].parent_index), sizeof(parent))) {
+            return -1;
         }
-        if (terminated) {
-            written = static_cast<int64_t>(n);
+        if (parent == 255) {
+            terminated = true;
+            break;
         }
+        if (parent >= count || parent >= cur) {
+            break;  // topological order guarantees parent < cur; refuse a loop
+        }
+        cur = parent;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        written = -1;
-    }
-    return written;
+    return terminated ? static_cast<int64_t>(n) : -1;
 }
 
 // Reads material_names[index] out of the model's std::string array.
 int64_t seh_copy_material(const regenny::LTModelObject* model, uint32_t index, char* dst,
                           size_t cap) {
-    int64_t len = -1;
-    KANANLIB_SEH_TRY {
-        const auto* arr = model->material_names;
-        if (arr != nullptr && index < model->material_count) {
-            const auto& s = arr[index];
-            if (s.size <= s.capacity && s.size < cap) {
-                // capacity >= 16 means the body moved to the heap and buf holds the
-                // pointer; below that the body IS buf.
-                const char* data = (s.capacity >= 16)
-                                       ? *reinterpret_cast<const char* const*>(s.buf)
-                                       : reinterpret_cast<const char*>(s.buf);
-                if (data != nullptr) {
-                    for (uint32_t i = 0; i < s.size; ++i) {
-                        dst[i] = data[i];
-                    }
-                    dst[s.size] = '\0';
-                    len = static_cast<int64_t>(s.size);
-                }
-            }
+    regenny::StdString* arr = nullptr;
+    uint32_t material_count = 0;
+    if (!sdk::mem::copy(&arr, reinterpret_cast<uintptr_t>(&model->material_names), sizeof(arr)) ||
+        !sdk::mem::copy(&material_count, reinterpret_cast<uintptr_t>(&model->material_count), sizeof(material_count))) {
+        return -1;
+    }
+    if (arr == nullptr || index >= material_count) {
+        return -1;
+    }
+    regenny::StdString s{};
+    if (!sdk::mem::copy(&s, reinterpret_cast<uintptr_t>(&arr[index]), sizeof(s))) {
+        return -1;
+    }
+    if (!(s.size <= s.capacity && s.size < cap)) {
+        return -1;
+    }
+    // capacity >= 16 means the body moved to the heap and buf holds the
+    // pointer; below that the body IS buf.
+    const char* data = (s.capacity >= 16) ? *reinterpret_cast<const char* const*>(s.buf)
+                                          : reinterpret_cast<const char*>(s.buf);
+    if (data == nullptr) {
+        return -1;
+    }
+    if (s.capacity >= 16) {
+        // The string body lives on the engine's heap; fetch it through the guard.
+        if (!sdk::mem::copy(dst, reinterpret_cast<uintptr_t>(data), s.size)) {
+            return -1;
+        }
+    } else {
+        // The body is inline in `s.buf`, already copied into local memory above.
+        for (uint32_t i = 0; i < s.size; ++i) {
+            dst[i] = data[i];
         }
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        len = -1;
-    }
-    return len;
+    dst[s.size] = '\0';
+    return static_cast<int64_t>(s.size);
 }
 
 int64_t seh_material_count(const regenny::LTModelObject* model) {
-    int64_t n = -1;
-    KANANLIB_SEH_TRY {
-        const uint32_t c = model->material_count;
-        if (model->material_names != nullptr && c <= kMaxMaterials) {
-            n = static_cast<int64_t>(c);
-        }
+    uint32_t c = 0;
+    regenny::StdString* names = nullptr;
+    if (!sdk::mem::copy(&c, reinterpret_cast<uintptr_t>(&model->material_count), sizeof(c)) ||
+        !sdk::mem::copy(&names, reinterpret_cast<uintptr_t>(&model->material_names), sizeof(names))) {
+        return -1;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
+    if (names == nullptr || c > kMaxMaterials) {
+        return -1;
     }
-    return n;
+    return static_cast<int64_t>(c);
 }
 
 // Two one-line pointer reads that exist only because __try cannot share a function
 // with anything that unwinds -- the callers build a std::string, so the guarded
 // read has to live out here.
 const char* seh_name_ptr(const void* names, size_t index) {
+    const auto* arr = static_cast<const char* const*>(names);
     const char* p = nullptr;
-    KANANLIB_SEH_TRY {
-        p = static_cast<const char* const*>(names)[index];
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        p = nullptr;
+    if (!sdk::mem::copy(&p, reinterpret_cast<uintptr_t>(&arr[index]), sizeof(p))) {
+        return nullptr;
     }
     return p;
 }
 
 const char* seh_asset_filename(const regenny::LTModelObject* model) {
-    const char* p = nullptr;
-    KANANLIB_SEH_TRY {
-        const auto* asset = model->record.asset;
-        if (asset != nullptr) {
-            p = asset->filename;
-        }
+    regenny::LTModelAsset* asset = nullptr;
+    if (!sdk::mem::copy(&asset, reinterpret_cast<uintptr_t>(&model->record.asset), sizeof(asset)) ||
+        asset == nullptr) {
+        return nullptr;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        p = nullptr;
+    char* p = nullptr;
+    if (!sdk::mem::copy(&p, reinterpret_cast<uintptr_t>(&asset->filename), sizeof(p))) {
+        return nullptr;
     }
     return p;
 }
 
 const regenny::LTModelObject* as_model(const regenny::LTObject* obj) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        ok = obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL;
+    if (obj == nullptr) {
+        return nullptr;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
+    // THE TYPE CHECK, preserved exactly: only the guarded byte access moved to sdk::mem.
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return nullptr;
     }
-    return ok ? reinterpret_cast<const regenny::LTModelObject*>(obj) : nullptr;
+    return reinterpret_cast<const regenny::LTModelObject*>(obj);
 }
 
 }  // namespace
@@ -542,25 +581,18 @@ namespace {
 // ">= base" happily accepts a read past the end of a smaller new block.
 bool seh_bone_matrix(const void* obj_v, size_t index, size_t count, uintptr_t alloc_base,
                      uintptr_t alloc_end, float* out12) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        const auto* model = static_cast<const regenny::LTModelObject*>(obj_v);
-        const auto* mats = model->node_matrices;
-        const auto first = reinterpret_cast<uintptr_t>(mats);
-        const auto want_end = first + sizeof(regenny::LTMatrix3x4) * (index + 1);
-        if (mats != nullptr && alloc_base != 0 && alloc_end > alloc_base && index < count &&
-            first >= alloc_base && want_end <= alloc_end) {
-            const float* src = mats[index].m;
-            for (int i = 0; i < 12; ++i) {
-                out12[i] = src[i];
-            }
-            ok = true;
-        }
+    const auto* model = static_cast<const regenny::LTModelObject*>(obj_v);
+    regenny::LTMatrix3x4* mats = nullptr;
+    if (!sdk::mem::copy(&mats, reinterpret_cast<uintptr_t>(&model->node_matrices), sizeof(mats))) {
+        return false;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
+    const auto first = reinterpret_cast<uintptr_t>(mats);
+    const auto want_end = first + sizeof(regenny::LTMatrix3x4) * (index + 1);
+    if (mats == nullptr || alloc_base == 0 || alloc_end <= alloc_base || index >= count ||
+        first < alloc_base || want_end > alloc_end) {
+        return false;
     }
-    return ok;
+    return sdk::mem::copy(out12, reinterpret_cast<uintptr_t>(mats + index), sizeof(float) * 12);
 }
 
 }  // namespace
@@ -617,28 +649,40 @@ struct AnimRaw {
 // seam that produces an "index out of range" that never actually happened.
 AnimRaw seh_anim(const regenny::LTObject* obj) {
     AnimRaw r{};
-    KANANLIB_SEH_TRY {
-        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
-            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            const auto* asset = model->record.asset;
-            if (asset != nullptr) {
-                r.index = model->record.anim_index;
-                r.index_b = model->record.current_anim;
-                r.fraction = model->record.anim_fraction;
-                r.node_a = model->record.node_a;
-                r.node_b = model->record.node_b;
-                const auto* first = asset->anim_names.first;
-                const auto* last = asset->anim_names.last;
-                if (first != nullptr && last >= first) {
-                    r.anim_count = static_cast<uint32_t>(last - first);
-                }
-                r.ok = true;
-            }
-        }
+    if (obj == nullptr) {
+        return r;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return r;
     }
+    const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+    // The record and the asset's table length, in one guarded read each, so a caller
+    // gets the value and its bound from as close to the same instant as sdk::mem allows.
+    regenny::LTModelObject model_copy{};
+    if (!sdk::mem::copy(&model_copy, reinterpret_cast<uintptr_t>(model), sizeof(model_copy))) {
+        return r;
+    }
+    const auto* asset = model_copy.record.asset;
+    if (asset == nullptr) {
+        return r;
+    }
+    regenny::LTModelAsset asset_copy{};
+    if (!sdk::mem::copy(&asset_copy, reinterpret_cast<uintptr_t>(asset), sizeof(asset_copy))) {
+        return r;
+    }
+    r.index = model_copy.record.anim_index;
+    r.index_b = model_copy.record.current_anim;
+    r.fraction = model_copy.record.anim_fraction;
+    r.node_a = model_copy.record.node_a;
+    r.node_b = model_copy.record.node_b;
+    const auto* first = asset_copy.anim_names.first;
+    const auto* last = asset_copy.anim_names.last;
+    if (first != nullptr && last >= first) {
+        r.anim_count = static_cast<uint32_t>(last - first);
+    }
+    r.ok = true;
     return r;
 }
 
@@ -683,27 +727,26 @@ SocketRaw seh_socket(const void* base, size_t index, size_t count, size_t node_c
     if (base == nullptr || index >= count) {
         return r;
     }
-    KANANLIB_SEH_TRY {
-        const auto* s = static_cast<const regenny::LTModelSocket*>(base) + index;
-        // The engine bounds this itself when it uses the socket -- GetSocketTransform
-        // hands node_index straight to GetNodeTransform, which range-checks against
-        // node_count. Checking here means a caller never receives an index it cannot
-        // then feed back into node_name()/bone_matrix().
-        if (s->node_index < node_count) {
-            r.node_index = s->node_index;
-            r.pos[0] = s->position.x;
-            r.pos[1] = s->position.y;
-            r.pos[2] = s->position.z;
-            r.rot[0] = s->rotation.x;
-            r.rot[1] = s->rotation.y;
-            r.rot[2] = s->rotation.z;
-            r.rot[3] = s->rotation.w;
-            r.name_ptr = s->name;
-            r.ok = true;
-        }
+    const auto* s = static_cast<const regenny::LTModelSocket*>(base) + index;
+    regenny::LTModelSocket copy{};
+    if (!sdk::mem::copy(&copy, reinterpret_cast<uintptr_t>(s), sizeof(copy))) {
+        return r;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
+    // The engine bounds this itself when it uses the socket -- GetSocketTransform
+    // hands node_index straight to GetNodeTransform, which range-checks against
+    // node_count. Checking here means a caller never receives an index it cannot
+    // then feed back into node_name()/bone_matrix().
+    if (copy.node_index < node_count) {
+        r.node_index = copy.node_index;
+        r.pos[0] = copy.position.x;
+        r.pos[1] = copy.position.y;
+        r.pos[2] = copy.position.z;
+        r.rot[0] = copy.rotation.x;
+        r.rot[1] = copy.rotation.y;
+        r.rot[2] = copy.rotation.z;
+        r.rot[3] = copy.rotation.w;
+        r.name_ptr = copy.name;
+        r.ok = true;
     }
     return r;
 }
@@ -718,24 +761,6 @@ namespace {
 constexpr uintptr_t kAssetPhysicsNodeCount = 0x08;
 constexpr uintptr_t kAssetWeightSetCount = 0x38;
 constexpr uintptr_t kAssetChildModelCount = 0x52;  // u16
-
-// One guarded read, in the same style as the rest of this file: a freed or rebound asset faults here and
-// yields nullopt rather than a plausible count.
-bool seh_read_asset_field(uintptr_t at, void* out, size_t bytes) {
-    if (at == 0 || out == nullptr) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
 }  // namespace
 
 std::optional<uint32_t> ModelSkeleton::physics_node_count() const {
@@ -743,8 +768,7 @@ std::optional<uint32_t> ModelSkeleton::physics_node_count() const {
         return std::nullopt;
     }
     uint32_t v = 0;
-    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetPhysicsNodeCount,
-                              &v, sizeof(v))) {
+    if (!sdk::mem::copy(&v, reinterpret_cast<uintptr_t>(m_asset) + kAssetPhysicsNodeCount, sizeof(v))) {
         return std::nullopt;
     }
     return v;
@@ -755,8 +779,7 @@ std::optional<uint32_t> ModelSkeleton::weight_set_count() const {
         return std::nullopt;
     }
     uint32_t v = 0;
-    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetWeightSetCount,
-                              &v, sizeof(v))) {
+    if (!sdk::mem::copy(&v, reinterpret_cast<uintptr_t>(m_asset) + kAssetWeightSetCount, sizeof(v))) {
         return std::nullopt;
     }
     return v;
@@ -767,8 +790,7 @@ std::optional<uint32_t> ModelSkeleton::child_model_count() const {
         return std::nullopt;
     }
     uint16_t v = 0;
-    if (!seh_read_asset_field(reinterpret_cast<uintptr_t>(m_asset) + kAssetChildModelCount,
-                              &v, sizeof(v))) {
+    if (!sdk::mem::copy(&v, reinterpret_cast<uintptr_t>(m_asset) + kAssetChildModelCount, sizeof(v))) {
         return std::nullopt;
     }
     return v;
@@ -840,21 +862,29 @@ NodeXformRaw seh_node_xform(const void* xform, const void* dirty, size_t stride,
     if (xform == nullptr || dirty == nullptr) {
         return r;
     }
-    KANANLIB_SEH_TRY {
-        const auto* t = static_cast<const regenny::LTNodeTransform*>(xform) + index;
-        r.pos[0] = t->position.x;
-        r.pos[1] = t->position.y;
-        r.pos[2] = t->position.z;
-        r.rot[0] = t->rotation.x;
-        r.rot[1] = t->rotation.y;
-        r.rot[2] = t->rotation.z;
-        r.rot[3] = t->rotation.w;
-        r.dirty = static_cast<const uint8_t*>(dirty)[stride * index + offset];
-        r.ok = true;
+    // BOTH READS UNDER ONE GUARD, which is the point: the engine may clear the dirty flag and rewrite the
+    // slot at any moment, and reading them under separate guards leaves a window where a "clean" answer
+    // comes back holding stale bytes. The migration to sdk::mem briefly widened that window by issuing two
+    // guarded copies back to back; sdk::mem::guarded takes a whole body, so the single guard is restored.
+    //
+    // The two addresses are unrelated -- a transform array and a dirty-flag array with its own stride -- so
+    // no single bulk copy can span them. A guarded BODY can, which is exactly why that primitive exists.
+    const bool ok = sdk::mem::guarded([&] {
+        const regenny::LTNodeTransform& t = static_cast<const regenny::LTNodeTransform*>(xform)[index];
+        r.pos[0] = t.position.x;
+        r.pos[1] = t.position.y;
+        r.pos[2] = t.position.z;
+        r.rot[0] = t.rotation.x;
+        r.rot[1] = t.rotation.y;
+        r.rot[2] = t.rotation.z;
+        r.rot[3] = t.rotation.w;
+        r.dirty = *(static_cast<const uint8_t*>(dirty) + stride * index + offset);
+    });
+    if (!ok) {
+        // A fault part-way through may have written some of r, so nothing partially filled escapes.
+        return NodeXformRaw{};
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    r.ok = true;
     return r;
 }
 
@@ -895,25 +925,43 @@ namespace {
 // null-check the record, then hand back its name POINTER for the caller to copy
 // through seh_copy_cstr (nesting SEH frames is the mistake this split avoids).
 const char* seh_anim_name_ptr(const regenny::LTObject* obj) {
-    const char* name = nullptr;
-    KANANLIB_SEH_TRY {
-        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
-            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            const auto* asset = model->record.asset;
-            if (asset != nullptr) {
-                const auto* first = asset->anim_records.first;
-                const auto* last = asset->anim_records.last;
-                if (first != nullptr && last > first) {
-                    const size_t n = static_cast<size_t>(last - first);
-                    const size_t i = model->record.current_anim;
-                    if (i < n && first[i].record != nullptr) {
-                        name = first[i].record->name;
-                    }
-                }
-            }
-        }
+    if (obj == nullptr) {
+        return nullptr;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return nullptr;
+    }
+    const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+    regenny::LTModelObject model_copy{};
+    if (!sdk::mem::copy(&model_copy, reinterpret_cast<uintptr_t>(model), sizeof(model_copy))) {
+        return nullptr;
+    }
+    const auto* asset = model_copy.record.asset;
+    if (asset == nullptr) {
+        return nullptr;
+    }
+    regenny::LTModelAsset asset_copy{};
+    if (!sdk::mem::copy(&asset_copy, reinterpret_cast<uintptr_t>(asset), sizeof(asset_copy))) {
+        return nullptr;
+    }
+    const auto* first = asset_copy.anim_records.first;
+    const auto* last = asset_copy.anim_records.last;
+    if (first == nullptr || last <= first) {
+        return nullptr;
+    }
+    const size_t n = static_cast<size_t>(last - first);
+    const size_t i = model_copy.record.current_anim;
+    if (i >= n) {
+        return nullptr;
+    }
+    regenny::LTAnimRecordSlot slot{};
+    if (!sdk::mem::copy(&slot, reinterpret_cast<uintptr_t>(first + i), sizeof(slot)) || slot.record == nullptr) {
+        return nullptr;
+    }
+    char* name = nullptr;
+    if (!sdk::mem::copy(&name, reinterpret_cast<uintptr_t>(&slot.record->name), sizeof(name))) {
         return nullptr;
     }
     return name;
@@ -921,27 +969,38 @@ const char* seh_anim_name_ptr(const regenny::LTObject* obj) {
 
 // Returns 1/0 for the bit, or -1 on fault or an out-of-range piece.
 int seh_piece_hidden(const regenny::LTObject* obj, size_t index) {
-    int result = -1;
-    KANANLIB_SEH_TRY {
-        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
-            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            // THE BOUND IS THE ASSET'S PIECE COUNT, not the model's material count.
-            // An earlier version used material_count and was WRONG: the two differ on
-            // 17 of 34 live assets, so a grunt (7 pieces, 3 materials) would have had
-            // four of its pieces refused. ILTModel::GetPieceName bounds by this field.
-            // The second bound is the mask's own width -- two dwords, pinned by
-            // material_names starting immediately after it.
-            const auto* asset = model->record.asset;
-            if (asset != nullptr && index < asset->piece_count && index < 64) {
-                const uint32_t word = model->piece_hide_bits[index >> 5];
-                result = ((word & (1u << (index & 31))) != 0) ? 1 : 0;
-            }
-        }
+    if (obj == nullptr) {
+        return -1;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = -1;
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return -1;
     }
-    return result;
+    const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+    regenny::LTModelObject model_copy{};
+    if (!sdk::mem::copy(&model_copy, reinterpret_cast<uintptr_t>(model), sizeof(model_copy))) {
+        return -1;
+    }
+    const auto* asset = model_copy.record.asset;
+    if (asset == nullptr) {
+        return -1;
+    }
+    uint32_t piece_count = 0;
+    if (!sdk::mem::copy(&piece_count, reinterpret_cast<uintptr_t>(&asset->piece_count), sizeof(piece_count))) {
+        return -1;
+    }
+    // THE BOUND IS THE ASSET'S PIECE COUNT, not the model's material count.
+    // An earlier version used material_count and was WRONG: the two differ on
+    // 17 of 34 live assets, so a grunt (7 pieces, 3 materials) would have had
+    // four of its pieces refused. ILTModel::GetPieceName bounds by this field.
+    // The second bound is the mask's own width -- two dwords, pinned by
+    // material_names starting immediately after it.
+    if (index >= piece_count || index >= 64) {
+        return -1;
+    }
+    const uint32_t word = model_copy.piece_hide_bits[index >> 5];
+    return ((word & (1u << (index & 31))) != 0) ? 1 : 0;
 }
 
 }  // namespace
@@ -983,22 +1042,38 @@ struct PieceRaw {
 
 PieceRaw seh_piece(const regenny::LTObject* obj, size_t index, bool want_name) {
     PieceRaw r{};
-    KANANLIB_SEH_TRY {
-        if (obj != nullptr && obj->type == regenny::LTObjectType::OT_MODEL) {
-            const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
-            const auto* asset = model->record.asset;
-            if (asset != nullptr) {
-                r.count = asset->piece_count;
-                r.ok = true;
-                if (want_name && index < r.count && asset->piece_names != nullptr) {
-                    r.name_ptr = asset->piece_names[index];
-                }
-            }
+    if (obj == nullptr) {
+        return r;
+    }
+    regenny::LTObjectType type{};
+    if (!sdk::mem::copy(&type, reinterpret_cast<uintptr_t>(&obj->type), sizeof(type)) ||
+        type != regenny::LTObjectType::OT_MODEL) {
+        return r;
+    }
+    const auto* model = reinterpret_cast<const regenny::LTModelObject*>(obj);
+    regenny::LTModelAsset* asset = nullptr;
+    if (!sdk::mem::copy(&asset, reinterpret_cast<uintptr_t>(&model->record.asset), sizeof(asset)) ||
+        asset == nullptr) {
+        return r;
+    }
+    uint32_t piece_count = 0;
+    if (!sdk::mem::copy(&piece_count, reinterpret_cast<uintptr_t>(&asset->piece_count), sizeof(piece_count))) {
+        return r;
+    }
+    char* name_ptr = nullptr;
+    if (want_name && index < piece_count) {
+        char** piece_names = nullptr;
+        if (!sdk::mem::copy(&piece_names, reinterpret_cast<uintptr_t>(&asset->piece_names), sizeof(piece_names))) {
+            return r;  // any fault here invalidates the whole read, matching the original guard
+        }
+        if (piece_names != nullptr &&
+            !sdk::mem::copy(&name_ptr, reinterpret_cast<uintptr_t>(&piece_names[index]), sizeof(name_ptr))) {
+            return r;
         }
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    r.count = piece_count;
+    r.name_ptr = name_ptr;
+    r.ok = true;
     return r;
 }
 
@@ -1098,23 +1173,26 @@ Xform compose(const Xform& parent, const Xform& child) {
 // The owning object's own transform, read under a guard. LTObject carries ONE uniform
 // scale rather than the reference's vector, which is why `s` is a single float here.
 bool seh_object_xform(const void* obj_v, Xform* out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        const auto* obj = static_cast<const regenny::LTObject*>(obj_v);
-        out->p[0] = obj->position.x;
-        out->p[1] = obj->position.y;
-        out->p[2] = obj->position.z;
-        out->q[0] = obj->rotation.x;
-        out->q[1] = obj->rotation.y;
-        out->q[2] = obj->rotation.z;
-        out->q[3] = obj->rotation.w;
-        out->s = obj->scale;
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto* obj = static_cast<const regenny::LTObject*>(obj_v);
+    regenny::LTVector position{};
+    regenny::LTRotation rotation{};
+    float scale = 0.0f;
+    bool ok = true;
+    ok = ok && sdk::mem::copy(&position, reinterpret_cast<uintptr_t>(&obj->position), sizeof(position));
+    ok = ok && sdk::mem::copy(&rotation, reinterpret_cast<uintptr_t>(&obj->rotation), sizeof(rotation));
+    ok = ok && sdk::mem::copy(&scale, reinterpret_cast<uintptr_t>(&obj->scale), sizeof(scale));
+    if (!ok) {
         return false;
     }
-    return ok;
+    out->p[0] = position.x;
+    out->p[1] = position.y;
+    out->p[2] = position.z;
+    out->q[0] = rotation.x;
+    out->q[1] = rotation.y;
+    out->q[2] = rotation.z;
+    out->q[3] = rotation.w;
+    out->s = scale;
+    return true;
 }
 
 }  // namespace
@@ -1267,21 +1345,19 @@ GetSocketTransformFn resolve_get_socket_transform() {
     if (iface == nullptr || exe == nullptr) {
         return nullptr;
     }
-    GetSocketTransformFn fn = nullptr;
-    KANANLIB_SEH_TRY {
-        const auto* vt = *reinterpret_cast<void* const* const*>(iface);
-        if (vt == nullptr) {
-            return nullptr;
-        }
-        const auto entry = reinterpret_cast<uintptr_t>(vt[kSlotGetSocketTransform]);
-        if (entry - exe->base == kGetSocketTransformRva) {
-            fn = reinterpret_cast<GetSocketTransformFn>(entry);
-        }
+    void* const* vt = nullptr;
+    if (!sdk::mem::copy(&vt, reinterpret_cast<uintptr_t>(iface), sizeof(vt)) || vt == nullptr) {
+        return nullptr;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        fn = nullptr;
+    void* entry_ptr = nullptr;
+    if (!sdk::mem::copy(&entry_ptr, reinterpret_cast<uintptr_t>(&vt[kSlotGetSocketTransform]), sizeof(entry_ptr))) {
+        return nullptr;
     }
-    return fn;
+    const auto entry = reinterpret_cast<uintptr_t>(entry_ptr);
+    if (entry - exe->base != kGetSocketTransformRva) {
+        return nullptr;
+    }
+    return reinterpret_cast<GetSocketTransformFn>(entry);
 }
 
 // __stdcall, THREE stack dwords, and the caller's ECX is dead -- all read off 0x42C958 itself, where
@@ -1307,10 +1383,9 @@ GetBindPoseFn resolve_get_bind_pose() {
 int64_t seh_call_get_bind_pose(GetBindPoseFn fn, const void* obj, unsigned index,
                                ModelSkeleton::Pose* out) {
     int64_t r = -1;
-    KANANLIB_SEH_TRY {
-        r = fn(obj, index, out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            r = fn(obj, index, out);
+        })) {
         r = -1;
     }
     return r;
@@ -1319,10 +1394,9 @@ int64_t seh_call_get_bind_pose(GetBindPoseFn fn, const void* obj, unsigned index
 int64_t seh_call_get_socket_transform(GetSocketTransformFn fn, const void* obj,
                                       uint32_t handle, float* out, int world_space) {
     int64_t r = -1;
-    KANANLIB_SEH_TRY {
-        r = fn(obj, handle, out, world_space);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            r = fn(obj, handle, out, world_space);
+        })) {
         r = -1;
     }
     return r;
@@ -1341,14 +1415,8 @@ int64_t ModelSkeleton::engine_iface_gate_byte() {
     if (iface == nullptr) {
         return -1;
     }
-    int64_t v = -1;
-    KANANLIB_SEH_TRY {
-        v = *(reinterpret_cast<const uint8_t*>(iface) + 16);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        v = -1;
-    }
-    return v;
+    const auto v = sdk::mem::read_u8(reinterpret_cast<uintptr_t>(iface) + 16);
+    return v.has_value() ? static_cast<int64_t>(*v) : -1;
 }
 
 namespace {

@@ -29,6 +29,7 @@
 #include "sdk/EngineVars.hpp"
 #include "sdk/Input.hpp"
 #include "sdk/Common.hpp"
+#include "sdk/Console.hpp"
 #include "sdk/Physics.hpp"
 #include "sdk/Resources.hpp"
 #include "sdk/Vtables.hpp"
@@ -4147,6 +4148,96 @@ std::string build_shader_params_json() {
         }
     }
     json_append_double(out, "resources_roundtrip", static_cast<double>(res_roundtrip), 0);
+    // Settings whose type tag disagrees with their bytes. Two exist in this build, both unread by the
+    // executable, so the disagreement is invisible to the engine and visible only to a consumer.
+    const auto ev_suspicious = sdk::EngineVars::suspicious_int_entries();
+    json_append_double(out, "enginevars_suspicious_count", static_cast<double>(ev_suspicious.size()), 0);
+    bool ev_susp_named = !ev_suspicious.empty();
+    bool ev_susp_extrapolate = false;
+    for (const auto& e : ev_suspicious) {
+        if (e.name.empty()) {
+            ev_susp_named = false;
+        }
+        if (e.name.rfind("MaxExtrapolate", 0) == 0) {
+            ev_susp_extrapolate = true;
+        }
+    }
+    json_append_bool(out, "enginevars_suspicious_named", ev_susp_named);
+    json_append_bool(out, "enginevars_suspicious_is_extrapolate", ev_susp_extrapolate);
+
+    // ---- THE CONSOLE REGISTRY THE GAME ACTUALLY DISPATCHES AGAINST -------------------------------
+    //
+    // Two independently-derived sets meet here. The engine's static descriptor table publishes its own
+    // count (34, written as a literal by the initialiser), and the live circular list is walked until it
+    // returns to its head. If the walk is right, EVERY static command must also appear in the live list --
+    // a cross-check that needs neither set to be trusted.
+    const auto con_stats = sdk::Console::stats();
+    const auto con_live = sdk::Console::all();
+    const auto con_static = sdk::Console::static_commands();
+    json_append_bool(out, "console_stats_readable", con_stats.has_value());
+    json_append_double(out, "console_static_count", static_cast<double>(con_static.size()), 0);
+    json_append_double(out, "console_live_total", static_cast<double>(con_live.size()), 0);
+    if (con_stats.has_value()) {
+        json_append_double(out, "console_from_exe", static_cast<double>(con_stats->from_exe), 0);
+        json_append_double(out, "console_from_modules", static_cast<double>(con_stats->from_modules), 0);
+        json_append_double(out, "console_distinct_names", static_cast<double>(con_stats->distinct_names), 0);
+        json_append_double(out, "console_inconsistent_nodes",
+                           static_cast<double>(con_stats->inconsistent_nodes), 0);
+        json_append_double(out, "console_unreadable_names",
+                           static_cast<double>(con_stats->unreadable_names), 0);
+        json_append_bool(out, "console_hit_cap", con_stats->hit_cap);
+    }
+
+    // Every static command present in the live list: the cross-check described above.
+    size_t con_static_in_live = 0;
+    for (const auto& sc : con_static) {
+        for (const auto& lc : con_live) {
+            if (lc.name == sc.name) {
+                ++con_static_in_live;
+                break;
+            }
+        }
+    }
+    json_append_double(out, "console_static_in_live", static_cast<double>(con_static_in_live), 0);
+
+    // The game-registered commands a VR mod actually reaches for. None of these are in the engine's table,
+    // so finding them proves the walk sees past the static 34.
+    size_t con_player_cmds = 0;
+    for (const char* want : {"GetPlayerPos", "GetPlayerOrientation", "SetPlayerOrientation"}) {
+        if (sdk::Console::find(want).has_value()) {
+            ++con_player_cmds;
+        }
+    }
+    json_append_double(out, "console_player_commands", static_cast<double>(con_player_cmds), 0);
+
+    // A handler resolves to a real address in a real module, and the module is NOT the exe for a
+    // game-registered command.
+    bool con_handler_ok = false;
+    bool con_handler_outside_exe = false;
+    if (const auto h = sdk::Console::find("GetPlayerPos")) {
+        con_handler_ok = h->handler != 0 && !h->module.empty();
+        con_handler_outside_exe = !h->from_exe;
+    }
+    json_append_bool(out, "console_handler_resolved", con_handler_ok);
+    json_append_bool(out, "console_handler_outside_exe", con_handler_outside_exe);
+
+    // An engine command resolves INSIDE the exe -- the other side of the same question.
+    bool con_engine_in_exe = false;
+    if (const auto h = sdk::Console::find("RestartRender")) {
+        con_engine_in_exe = h->from_exe && h->handler != 0;
+    }
+    json_append_bool(out, "console_engine_in_exe", con_engine_in_exe);
+
+    // Case-insensitive lookup finds what exact lookup finds, and an absent name is refused by both.
+    json_append_bool(out, "console_ci_finds_exact",
+                     sdk::Console::find_insensitive("restartrender").has_value() &&
+                         sdk::Console::find("restartrender") == std::nullopt);
+    json_append_bool(out, "console_absent_refused",
+                     !sdk::Console::find("NoSuchConsoleCommandHere").has_value() &&
+                         !sdk::Console::handler_of("NoSuchConsoleCommandHere").has_value());
+    json_append_bool(out, "console_null_object_refused",
+                     !sdk::Console::read_object(0).has_value() && !sdk::Console::node_is_consistent(0));
+
     json_append_bool(out, "resources_absent_refused",
                      !sdk::Resources::find("no_such_resource_anywhere.xyz").has_value());
     json_append_bool(out, "resources_null_refused", !sdk::Resources::read(0).has_value());

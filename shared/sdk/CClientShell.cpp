@@ -2,7 +2,7 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "interfaces/IClientShell.hpp"
 #include <utility/Module.hpp>
@@ -43,15 +43,9 @@ using GetShellTimeFn = double(*)();
 namespace {
 
 bool call_shell_time(uintptr_t fn, double* out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
+    return sdk::mem::guarded([&] {
         *out = reinterpret_cast<GetShellTimeFn>(fn)();
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
+    });
 }
 
 } // namespace
@@ -103,17 +97,13 @@ struct LocalIdsRaw {
 
 LocalIdsRaw seh_local_ids(sdk::CClientShell* shell) {
     LocalIdsRaw r{};
-    KANANLIB_SEH_TRY {
+    r.ok = sdk::mem::guarded([&] {
         const auto* s = reinterpret_cast<const regenny::CClientShell*>(shell);
         for (int i = 0; i < 4; ++i) {
             r.ids[i] = s->local_client_ids[i];
         }
         r.frame_interval = s->frame_interval;
-        r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    });
     return r;
 }
 
@@ -181,15 +171,11 @@ struct LocalPlayerRaw {
 
 LocalPlayerRaw seh_local_player(sdk::CClientShell* shell, unsigned index) {
     LocalPlayerRaw r{};
-    KANANLIB_SEH_TRY {
+    r.ok = sdk::mem::guarded([&] {
         const auto* s = reinterpret_cast<const regenny::CClientShell*>(shell);
         r.handle = s->local_player_handles[index];
         r.object = s->local_player_objects[index];
-        r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    });
     return r;
 }
 
@@ -278,45 +264,33 @@ constexpr size_t kSlotPostUpdate = 3;
 constexpr size_t kSlotUpdate = 4;
 
 uintptr_t seh_vtable_slot(const void* iface, size_t slot) {
-    uintptr_t out = 0;
-    KANANLIB_SEH_TRY {
-        const auto* vt = *reinterpret_cast<void* const* const*>(iface);
-        if (vt != nullptr) {
-            out = reinterpret_cast<uintptr_t>(vt[slot]);
-        }
+    const auto vt = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(iface));
+    if (!vt.has_value() || *vt == 0) {
+        return 0;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        out = 0;
-    }
-    return out;
+    return sdk::mem::read_ptr(*vt + slot * sizeof(void*)).value_or(0);
 }
 
 // Slot 1 is `return "CGameClientShell";` -- a pure return of a constant, so calling it has no side
 // effects and needs no particular thread.
 const char* seh_call_impl_name(uintptr_t fn, const void* iface) {
     const char* out = nullptr;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         out = reinterpret_cast<const char*(__thiscall*)(const void*)>(fn)(iface);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        out = nullptr;
-    }
+    });
     return out;
 }
 
 int64_t seh_copy_name(const char* src, char* dst, size_t cap) {
     int64_t n = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         size_t i = 0;
         for (; i + 1 < cap && src[i] != '\0'; ++i) {
             dst[i] = src[i];
         }
         dst[i] = '\0';
         n = static_cast<int64_t>(i);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
+    });
     return n;
 }
 
@@ -358,17 +332,16 @@ uintptr_t GameClientShell::vtable_entry_address(size_t slot) {
     if (iface == nullptr) {
         return 0;
     }
-    uintptr_t out = 0;
-    KANANLIB_SEH_TRY {
-        auto* const* vt = *reinterpret_cast<void* const* const*>(iface);
-        if (vt != nullptr) {
-            out = reinterpret_cast<uintptr_t>(vt + slot);
-        }
+    const auto vt = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(iface));
+    if (!vt.has_value() || *vt == 0) {
+        return 0;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        out = 0;
-    }
-    return out;
+    // THE ADDRESS OF THE ENTRY, not the function stored in it. That distinction is the whole purpose of
+    // this accessor: pre_update_fn() hands out the function for introspection, while this hands out the
+    // .rdata slot a hook repoints. Returning the function here would give a consumer intending to hook a
+    // pointer it would then write THROUGH -- overwriting the method's first four code bytes instead of
+    // swapping a table entry.
+    return *vt + slot * sizeof(void*);
 }
 
 uintptr_t GameClientShell::pre_update_vtable_entry() { return vtable_entry_address(kSlotPreUpdate); }
@@ -409,14 +382,8 @@ bool GameClientShell::slots_match_mapped_shapes() {
         if (s.fn == 0) {
             return false;
         }
-        bool match = false;
-        KANANLIB_SEH_TRY {
-            match = memcmp(reinterpret_cast<const void*>(s.fn), s.want, s.len) == 0;
-        }
-        KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-            match = false;
-        }
-        if (!match) {
+        uint8_t buf[8]{};
+        if (!sdk::mem::copy(buf, s.fn, s.len) || memcmp(buf, s.want, s.len) != 0) {
             return false;
         }
     }
@@ -428,13 +395,8 @@ bool GameClientShell::pre_update_entry_returns_immediately() {
     if (fn == 0) {
         return false;
     }
-    bool empty = false;
-    KANANLIB_SEH_TRY {
-        empty = *reinterpret_cast<const uint8_t*>(fn) == 0xC3u;  // entry returns at once
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        empty = false;
-    }
+    const auto b = sdk::mem::read<uint8_t>(fn);
+    const bool empty = b.has_value() && *b == 0xC3u;  // entry returns at once
     return empty;
 }
 uintptr_t GameClientShell::update_fn() { return resolve_checked(kSlotUpdate); }

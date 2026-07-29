@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 #include "Vtables.hpp"
@@ -15,21 +15,6 @@ namespace {
 // "ILTPhysics.Client" is the name the holders request; the registry re-reads the slot every call, since a
 // resolved interface pointer is not stable across module load and unload.
 constexpr const char* kInterfaceName = "ILTPhysics.Client";
-
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
 
 // Every call below goes through the real vtable slot. Two guarded reads first -- the vtable pointer, then
 // the entry -- and a bounds check into the exe, so a stale instance faults here instead of transferring
@@ -51,10 +36,9 @@ std::optional<std::array<float, 3>> query_vector(Physics::Slot slot, uintptr_t o
     using Fn = int32_t(__thiscall*)(void*, uintptr_t, float*);
     float out[3]{};
     int32_t rc = -1;
-    KANANLIB_SEH_TRY {
-        rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), object, out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), object, out);
+        })) {
         return std::nullopt;
     }
     if (rc != Physics::kLtOk) {
@@ -97,7 +81,7 @@ std::optional<uintptr_t> Physics::slot_address(Slot slot) {
         return std::nullopt;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, vt + index * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+    if (!sdk::mem::copy(&fn, vt + index * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
         return std::nullopt;
     }
     const auto* exe = Modules::get().exe();
@@ -116,10 +100,9 @@ std::optional<float> Physics::stair_height() {
     using Fn = int32_t(__thiscall*)(void*, float*);
     float out = 0.0f;
     int32_t rc = -1;
-    KANANLIB_SEH_TRY {
-        rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), &out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), &out);
+        })) {
         return std::nullopt;
     }
     if (rc != kLtOk) {
@@ -137,10 +120,9 @@ std::optional<std::array<float, 3>> Physics::global_force() {
     using Fn = int32_t(__thiscall*)(void*, float*);
     float out[3]{};
     int32_t rc = -1;
-    KANANLIB_SEH_TRY {
-        rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), out);
+        })) {
         return std::nullopt;
     }
     if (rc != kLtOk) {
@@ -157,10 +139,9 @@ std::optional<bool> Physics::is_world_object(uintptr_t object) {
     }
     using Fn = int32_t(__thiscall*)(void*, uintptr_t);
     int32_t rc = -1;
-    KANANLIB_SEH_TRY {
-        rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), object);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!sdk::mem::guarded([&] {
+            rc = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), object);
+        })) {
         return std::nullopt;
     }
     // This one answers through the LT_YES/LT_NO pair rather than a bool, so anything else is a refusal

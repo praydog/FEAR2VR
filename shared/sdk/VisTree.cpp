@@ -2,8 +2,6 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
-
 #include "regenny/regenny/LTVisPortal.hpp"
 #include "regenny/regenny/LTVisPlane.hpp"
 #include "regenny/regenny/LTVisSector.hpp"
@@ -14,6 +12,7 @@
 #include "regenny/regenny/LTSpatialEntry.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
 
+#include "Memory.hpp"
 #include "Modules.hpp"
 #include "Object.hpp"
 
@@ -46,7 +45,7 @@ constexpr size_t kMaxSectors = 8192;
 // / a tree too large for the bitmap.
 int64_t seh_read_and_walk(const regenny::LTVisTree* tree, VisTree::TreeCheck* out, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         out->sector_count = tree->sector_count;
         out->node_count = tree->node_count;
 
@@ -54,7 +53,7 @@ int64_t seh_read_and_walk(const regenny::LTVisTree* tree, VisTree::TreeCheck* ou
         const auto* sectors = tree->sectors;
         if (root == nullptr || sectors == nullptr || out->node_count == 0 ||
             out->sector_count == 0 || out->sector_count > kMaxSectors) {
-            return -1;
+            return;
         }
 
         // Distinct sectors, tracked properly rather than inferred from a
@@ -133,10 +132,7 @@ int64_t seh_read_and_walk(const regenny::LTVisTree* tree, VisTree::TreeCheck* ou
             ++sp;
         }
         result = (sp == 0 && !overflow) ? static_cast<int64_t>(walked) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = -1;
-    }
+    });
     return result;
 }
 
@@ -212,7 +208,7 @@ namespace {
 int64_t seh_walk_world_tree(const regenny::LTWorldTreeNode* root, size_t* occupied,
                             size_t* max_depth, size_t cap) {
     int64_t result = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const regenny::LTWorldTreeNode* stack[256];
         size_t depth_of[256];
         size_t sp = 0;
@@ -255,10 +251,7 @@ int64_t seh_walk_world_tree(const regenny::LTWorldTreeNode* root, size_t* occupi
             }
         }
         result = (sp == 0 && !overflow) ? static_cast<int64_t>(walked) : -1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = -1;
-    }
+    });
     return result;
 }
 
@@ -266,7 +259,7 @@ int64_t seh_walk_world_tree(const regenny::LTWorldTreeNode* root, size_t* occupi
 // fault or if the chain did not terminate.
 const regenny::LTWorldTreeNode* seh_climb_to_root(const regenny::LTWorldTreeNode* node) {
     const regenny::LTWorldTreeNode* result = nullptr;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* p = node;
         size_t hops = 0;
         while (p != nullptr && p->parent_offset != 0 && hops < 64) {
@@ -276,10 +269,7 @@ const regenny::LTWorldTreeNode* seh_climb_to_root(const regenny::LTWorldTreeNode
             ++hops;
         }
         result = (p != nullptr && p->parent_offset == 0) ? p : nullptr;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        result = nullptr;
-    }
+    });
     return result;
 }
 
@@ -293,7 +283,7 @@ uintptr_t global_bounds_addr() {
 // Bounds + sector containment, guarded together.
 bool seh_bounds(const regenny::LTWorldClientBSP* bsp, WorldBSP::WorldTreeCheck* out) {
     bool ok = false;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto& a = bsp->bounds_min;
         const auto& b = bsp->bounds_max;
         out->bounds_ordered = a.x <= b.x && a.y <= b.y && a.z <= b.z;
@@ -318,10 +308,7 @@ bool seh_bounds(const regenny::LTWorldClientBSP* bsp, WorldBSP::WorldTreeCheck* 
             }
         }
         ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
+    });
     return ok;
 }
 
@@ -342,11 +329,10 @@ std::optional<WorldBSP::WorldTreeCheck> WorldBSP::check(size_t max_nodes) {
     }
     WorldTreeCheck out{};
     const regenny::LTWorldTreeNode* root = nullptr;
-    KANANLIB_SEH_TRY {
+    if (!sdk::mem::guarded([&] {
         out.stored_node_count = bsp->world_tree_node_count;
         root = bsp->world_tree_root;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    })) {
         return std::nullopt;
     }
     if (root == nullptr || out.stored_node_count == 0) {
@@ -389,10 +375,10 @@ struct SectorRaw {
 
 SectorRaw seh_read_sector(const regenny::LTVisTree* tree, size_t index) {
     SectorRaw r{};
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* arr = tree->sectors;
         if (arr == nullptr || index >= tree->sector_count) {
-            return r;
+            return;
         }
         const auto& s = arr[index];
         r.mn[0] = s.aabb_min.x;
@@ -404,10 +390,7 @@ SectorRaw seh_read_sector(const regenny::LTVisTree* tree, size_t index) {
         r.plane_count = s.plane_count;
         r.planes = s.planes;
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
-    }
+    });
     return r;
 }
 
@@ -433,13 +416,10 @@ std::optional<size_t> VisTree::sector_count() {
     }
     size_t n = 0;
     bool ok = false;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         n = tree->sector_count;
         ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
+    });
     return ok ? std::optional<size_t>{n} : std::nullopt;
 }
 
@@ -467,7 +447,7 @@ struct PlaneRaw {
 
 int64_t seh_copy_planes(const void* src, size_t count, PlaneRaw* out) {
     int64_t n = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* p = static_cast<const regenny::LTVisPlane*>(src);
         for (size_t i = 0; i < count; ++i) {
             out[i].n[0] = p[i].normal.x;
@@ -477,10 +457,7 @@ int64_t seh_copy_planes(const void* src, size_t count, PlaneRaw* out) {
             out[i].code = p[i].corner_code;
         }
         n = static_cast<int64_t>(count);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
+    });
     return n;
 }
 
@@ -544,12 +521,12 @@ constexpr float kSplitSlop = 0.5f;
 int64_t seh_leaf_sectors(const regenny::LTVisTree* tree, const float p[3], size_t* out,
                          size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* root = tree->root;
         const auto* sectors = tree->sectors;
         const uint32_t sector_count = tree->sector_count;
         if (root == nullptr || sectors == nullptr || sector_count == 0) {
-            return -1;
+            return;
         }
         const regenny::LTVisTreeNode* stack[128];
         size_t sp = 0;
@@ -608,7 +585,7 @@ int64_t seh_leaf_sectors(const regenny::LTVisTree* tree, const float p[3], size_
                 continue;  // leaf: nothing below it
             }
             if (sp + 2 > 128) {
-                return -1;
+                return;
             }
             const float v = p[node->split_axis] - node->split_value;
             if (v < -kSplitSlop) {
@@ -621,10 +598,7 @@ int64_t seh_leaf_sectors(const regenny::LTVisTree* tree, const float p[3], size_
             }
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -688,14 +662,14 @@ struct PortalRaw {
 
 PortalRaw seh_read_portal(const regenny::LTVisTree* tree, size_t index) {
     PortalRaw r{};
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* table = tree->portals;
         if (table == nullptr || index >= tree->portal_count) {
-            return r;
+            return;
         }
         const auto* p = table[index];
         if (p == nullptr) {
-            return r;
+            return;
         }
         r.sector_base = reinterpret_cast<uintptr_t>(tree->sectors);
         r.sector_count = tree->sector_count;
@@ -721,10 +695,7 @@ PortalRaw seh_read_portal(const regenny::LTVisTree* tree, size_t index) {
             r.verts[v][2] = p->vertices[v].z;
         }
         r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
-    }
+    });
     return r;
 }
 
@@ -758,18 +729,19 @@ constexpr size_t kMaxPortalVertices = 64;
 int64_t seh_portal_polygon(const regenny::LTVisTree* tree, size_t index, float (*out)[3],
                            size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* table = tree->portals;
         if (table == nullptr || index >= tree->portal_count) {
-            return -1;
+            return;
         }
         const auto* p = table[index];
         if (p == nullptr) {
-            return -1;
+            return;
         }
         const uint32_t n = p->vertex_count;
         if (n == 0 || n > max_out) {
-            return n == 0 ? 0 : -1;
+            found = n == 0 ? 0 : -1;
+            return;
         }
         // The declared array is four long; past that the vertices simply continue in the
         // record, which is what "variable-length" means here.
@@ -780,10 +752,7 @@ int64_t seh_portal_polygon(const regenny::LTVisTree* tree, size_t index, float (
             out[i][2] = v[i].z;
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -816,13 +785,10 @@ std::optional<size_t> VisTree::portal_count() {
     }
     size_t n = 0;
     bool ok = false;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         n = tree->portal_count;
         ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
+    });
     return ok ? std::optional<size_t>{n} : std::nullopt;
 }
 
@@ -866,18 +832,19 @@ namespace {
 int64_t seh_sector_portal_indices(const regenny::LTVisTree* tree, size_t sector_index,
                                   size_t* out, size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* sectors = tree->sectors;
         const auto* portals = tree->portals;
         const uint32_t pcount = tree->portal_count;
         if (sectors == nullptr || portals == nullptr) {
-            return -1;
+            return;
         }
         const auto& sec = sectors[sector_index];
         const size_t n_listed = sec.portal_count;
         const auto* arr = reinterpret_cast<const regenny::LTVisPortal* const*>(sec.portals);
         if (n_listed == 0 || arr == nullptr) {
-            return 0;
+            found = 0;
+            return;
         }
         // `portals` is a table of POINTERS, so it is NOT the base to difference against --
         // the portal bodies follow the table in one allocation. Compute the index from the body
@@ -916,28 +883,22 @@ int64_t seh_sector_portal_indices(const regenny::LTVisTree* tree, size_t sector_
             }
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
 int64_t seh_sector_bytes(const regenny::LTVisTree* tree, size_t sector_index, uint32_t* stored,
                          uint32_t* pcount) {
     int64_t ok = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* sectors = tree->sectors;
         if (sectors == nullptr) {
-            return -1;
+            return;
         }
         *stored = sectors[sector_index].index;
         *pcount = sectors[sector_index].portal_count;
         ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
+    });
     return ok;
 }
 
@@ -1073,12 +1034,9 @@ namespace {
 // unwinds, and objects_near's vectors are exactly that.
 const regenny::LTWorldTreeNode* seh_world_tree_root(const regenny::LTWorldClientBSP* bsp) {
     const regenny::LTWorldTreeNode* r = nullptr;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         r = bsp->world_tree_root;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r = nullptr;
-    }
+    });
     return r;
 }
 
@@ -1102,7 +1060,7 @@ constexpr float kBoundarySlop = 0.01f;
 int64_t seh_objects_near(const regenny::LTWorldTreeNode* root, float px, float pz,
                          uintptr_t* out, size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const regenny::LTWorldTreeNode* stack[128];
         size_t sp = 0;
         stack[sp++] = root;
@@ -1152,10 +1110,7 @@ int64_t seh_objects_near(const regenny::LTWorldTreeNode* root, float px, float p
             }
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -1193,14 +1148,11 @@ std::optional<bool> WorldBSP::is_linked(const regenny::LTObject* obj) {
     }
     bool linked = false;
     bool ok = false;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         // Self-pointing means unlinked -- that is what the engine's remove leaves behind.
         linked = obj->world_tree_link.next != &obj->world_tree_link;
         ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
-    }
+    });
     return ok ? std::optional<bool>{linked} : std::nullopt;
 }
 
@@ -1215,7 +1167,7 @@ namespace {
 int64_t seh_find_slot(const regenny::LTWorldTreeNode* root, uintptr_t target, uintptr_t* node,
                       float* sx, float* sz, bool* leaf) {
     int64_t depth = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const regenny::LTWorldTreeNode* stack[256];
         size_t depth_of[256];
         size_t sp = 0;
@@ -1244,7 +1196,7 @@ int64_t seh_find_slot(const regenny::LTWorldTreeNode* root, uintptr_t target, ui
                     *sz = n->split_z;
                     *leaf = n->child_offset == 0;
                     depth = static_cast<int64_t>(d);
-                    return depth;
+                    return;
                 }
             }
             const uint16_t co = n->child_offset;
@@ -1259,10 +1211,7 @@ int64_t seh_find_slot(const regenny::LTWorldTreeNode* root, uintptr_t target, ui
                 ++sp;
             }
         }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        depth = -1;
-    }
+    });
     return depth;
 }
 
@@ -1323,7 +1272,7 @@ namespace {
 int64_t seh_slot_for_bounds(const regenny::LTWorldTreeNode* root, const regenny::LTObject* obj,
                             uintptr_t* node_out, float* sx, float* sz, bool* leaf) {
     int64_t depth = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const float min_x = obj->aabb_min.x, min_z = obj->aabb_min.z;
         const float max_x = obj->aabb_max.x, max_z = obj->aabb_max.z;
         const auto* node = root;
@@ -1366,10 +1315,7 @@ int64_t seh_slot_for_bounds(const regenny::LTWorldTreeNode* root, const regenny:
                 sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
             ++d;
         }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        depth = -1;
-    }
+    });
     return depth;
 }
 
@@ -1468,12 +1414,12 @@ namespace {
 int64_t seh_sphere_sectors(const regenny::LTVisTree* tree, const float c[3], float radius,
                            size_t* out, size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* root = tree->root;
         const auto* sectors = tree->sectors;
         const uint32_t sector_count = tree->sector_count;
         if (root == nullptr || sectors == nullptr || sector_count == 0) {
-            return -1;
+            return;
         }
         const regenny::LTVisTreeNode* stack[128];
         size_t sp = 0;
@@ -1538,10 +1484,7 @@ int64_t seh_sphere_sectors(const regenny::LTVisTree* tree, const float c[3], flo
             }
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -1669,12 +1612,12 @@ namespace {
 int64_t seh_box_sectors(const regenny::LTVisTree* tree, const QueryBox& q, size_t* out,
                         size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* root = tree->root;
         const auto* sectors = tree->sectors;
         const uint32_t sector_count = tree->sector_count;
         if (root == nullptr || sectors == nullptr || sector_count == 0) {
-            return -1;
+            return;
         }
         const regenny::LTVisTreeNode* stack[128];
         size_t sp = 0;
@@ -1741,10 +1684,7 @@ int64_t seh_box_sectors(const regenny::LTVisTree* tree, const QueryBox& q, size_
             }
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -1792,10 +1732,10 @@ namespace {
 int64_t seh_record_sectors(const regenny::LTObject* obj, const regenny::LTVisSector* sectors,
                            uint32_t sector_count, size_t* out, size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* rec = obj->spatial_record;
         if (rec == nullptr) {
-            return -1;
+            return;
         }
         size_t n = 0;
         const auto* e = static_cast<const regenny::LTSpatialEntry*>(
@@ -1817,10 +1757,7 @@ int64_t seh_record_sectors(const regenny::LTObject* obj, const regenny::LTVisSec
             e = e->record_next;
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
@@ -1829,7 +1766,7 @@ int64_t seh_record_sectors(const regenny::LTObject* obj, const regenny::LTVisSec
 int64_t seh_sector_objects(const regenny::LTVisSector* sector, const regenny::LTObject** out,
                            size_t max_out) {
     int64_t found = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         size_t n = 0;
         const auto* e = sector->entry_list;
         size_t guard = 0;
@@ -1847,22 +1784,16 @@ int64_t seh_sector_objects(const regenny::LTVisSector* sector, const regenny::LT
             e = e->hit_next;
         }
         found = static_cast<int64_t>(n);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        found = -1;
-    }
+    });
     return found;
 }
 
 int64_t seh_entry_count(const regenny::LTObject* obj) {
     int64_t n = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* rec = obj->spatial_record;
         n = rec == nullptr ? -1 : static_cast<int64_t>(rec->entry_count);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
+    });
     return n;
 }
 
@@ -2097,7 +2028,7 @@ constexpr size_t kSlotIsPointOutsideWorld = 16;
 
 int64_t seh_read_bounds(uintptr_t min_addr, uintptr_t max_addr, float* out) {
     int64_t ok = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* mn = reinterpret_cast<const float*>(min_addr);
         const auto* mx = reinterpret_cast<const float*>(max_addr);
         for (size_t i = 0; i < 3; ++i) {
@@ -2105,10 +2036,7 @@ int64_t seh_read_bounds(uintptr_t min_addr, uintptr_t max_addr, float* out) {
             out[3 + i] = mx[i];
         }
         ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
+    });
     return ok;
 }
 
@@ -2116,17 +2044,14 @@ int64_t seh_read_bounds(uintptr_t min_addr, uintptr_t max_addr, float* out) {
 // ignores `this`, but it is still reached as a virtual so the call site matches the engine's.
 int64_t seh_call_outside(const void* iface, const float* point) {
     int64_t r = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto* vt = *reinterpret_cast<void* const* const*>(iface);
         auto fn = reinterpret_cast<int(__stdcall*)(const float*)>(vt[kSlotIsPointOutsideWorld]);
         if (fn == nullptr) {
-            return -1;
+            return;
         }
         r = fn(point) != 0 ? 1 : 0;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r = -1;
-    }
+    });
     return r;
 }
 
@@ -2224,7 +2149,7 @@ namespace {
 // MAX_PATH is what the engine itself uses when it reads world-relative names from a stream.
 int64_t seh_copy_cstr(const char* src, char* out, size_t cap) {
     int64_t n = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         size_t i = 0;
         for (; i + 1 < cap; ++i) {
             const char c = src[i];
@@ -2235,10 +2160,7 @@ int64_t seh_copy_cstr(const char* src, char* out, size_t cap) {
         }
         out[i] = '\0';
         n = static_cast<int64_t>(i);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        n = -1;
-    }
+    });
     return n;
 }
 
@@ -2289,23 +2211,20 @@ constexpr uintptr_t kServerBspPtrRva = 0x6F6BBC - 0x400000;
 
 int64_t seh_read_flags(const regenny::LTWorldClientBSP* bsp, uint8_t* a, uint8_t* b) {
     int64_t ok = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         *a = bsp->world_attached;
         *b = bsp->world_attached_2;
         ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
+    });
     return ok;
 }
 
 int64_t seh_read_server_bounds(uintptr_t ptr_slot, float* out) {
     int64_t ok = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         const auto obj = *reinterpret_cast<const uintptr_t*>(ptr_slot);
         if (obj == 0) {
-            return -1;
+            return;
         }
         // Same layout position as the client's: bounds at +0x04 and +0x10.
         const auto* mn = reinterpret_cast<const float*>(obj + 0x04);
@@ -2315,10 +2234,7 @@ int64_t seh_read_server_bounds(uintptr_t ptr_slot, float* out) {
             out[3 + i] = mx[i];
         }
         ok = 1;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        ok = -1;
-    }
+    });
     return ok;
 }
 

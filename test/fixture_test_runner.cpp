@@ -4130,6 +4130,75 @@ int main(int argc, char** argv) {
             check(json_bool(body, "resources_absent_refused", rs_absent) && rs_absent,
                   "a name that is not in the registry yields nothing");
 
+            // ---- THE CONSOLE REGISTRY, AND WHY THE STATIC TABLE IS THE WRONG ANSWER ---------------
+            //
+            // The engine publishes a command table of 34 and a count to match, and three independent
+            // derivations agree on that 34: the literal the initialiser writes, the global ListCommands
+            // compares against, and a pattern scan of the table. It is still the wrong answer to the
+            // question a consumer asks, because the list the console DISPATCHES against holds the game
+            // DLLs' registrations too -- 118 against 34 on this build.
+            //
+            // The cross-check needs neither number trusted: every command in the static table must also
+            // appear in the live list, since the list is built from the table and then added to.
+            bool cs_readable = false, cs_hcap = true;
+            check(json_bool(body, "console_stats_readable", cs_readable) && cs_readable,
+                  "the console registry walks");
+            check(json_bool(body, "console_hit_cap", cs_hcap) && !cs_hcap,
+                  "the console walk terminates on its own, not on a cap");
+
+            double cs_static = -1.0, cs_live = -1.0, cs_in_live = -1.0;
+            const bool csn = json_double(body, "console_static_count", cs_static) &&
+                             json_double(body, "console_live_total", cs_live) &&
+                             json_double(body, "console_static_in_live", cs_in_live);
+            check(csn && cs_static == 34.0, "the engine's static command table holds its published 34");
+            check(csn && cs_in_live == cs_static,
+                  "every static command is present in the live list the console dispatches against");
+            // THE ONE THAT MATTERS: the live list is strictly larger, which is the entire reason this class
+            // walks the list instead of reading the table. If these were ever equal, either the game DLLs
+            // failed to register or the walk stopped at the engine's own entries.
+            check(csn && cs_live > cs_static,
+                  "the live registry is larger than the engine's table -- game DLLs registered into it");
+
+            // Node consistency is checked against the owner back-pointer the registrar writes, so a node
+            // that is not a registry object is rejected rather than reported with a plausible name.
+            double cs_bad = -1.0, cs_unread = -1.0, cs_distinct = -1.0;
+            check(json_double(body, "console_inconsistent_nodes", cs_bad) && cs_bad == 0.0,
+                  "every node on the list agrees with its own owner pointer");
+            check(json_double(body, "console_unreadable_names", cs_unread) && cs_unread == 0.0,
+                  "every command on the list has a readable name");
+            check(json_double(body, "console_distinct_names", cs_distinct) && cs_distinct == cs_live,
+                  "no command name appears twice in the registry");
+
+            // Handlers resolve on BOTH sides of the module boundary, which is what proves the walk is not
+            // simply re-reading the static table: an engine command lands inside FEAR2.exe, and a
+            // game-registered one lands outside it.
+            double cs_exe = -1.0, cs_mod = -1.0;
+            bool cs_hres = false, cs_hout = false, cs_eng = false;
+            check(json_double(body, "console_from_exe", cs_exe) && cs_exe > 0.0 &&
+                      json_double(body, "console_from_modules", cs_mod) && cs_mod > 0.0 &&
+                      cs_exe + cs_mod == cs_live,
+                  "every command is attributed to a module, some to the exe and some to the game");
+            check(json_bool(body, "console_engine_in_exe", cs_eng) && cs_eng,
+                  "RestartRender's handler is inside the executable");
+            check(json_bool(body, "console_handler_resolved", cs_hres) && cs_hres,
+                  "a game-registered handler resolves to a real address in a named module");
+            check(json_bool(body, "console_handler_outside_exe", cs_hout) && cs_hout,
+                  "a game-registered handler is NOT inside the executable");
+
+            // The three commands that make this worth mapping for a VR mod. None appear in any static
+            // table, so finding them is the proof that walking the list reaches past the engine's 34.
+            double cs_player = -1.0;
+            check(json_double(body, "console_player_commands", cs_player) && cs_player == 3.0,
+                  "GetPlayerPos, GetPlayerOrientation and SetPlayerOrientation are all registered");
+
+            bool cs_ci = false, cs_absent = false, cs_null = false;
+            check(json_bool(body, "console_ci_finds_exact", cs_ci) && cs_ci,
+                  "case-insensitive lookup finds a command that exact lookup rejects");
+            check(json_bool(body, "console_absent_refused", cs_absent) && cs_absent,
+                  "a name that is not a command yields neither entry nor handler");
+            check(json_bool(body, "console_null_object_refused", cs_null) && cs_null,
+                  "a null object is refused by both the reader and the consistency check");
+
             // ---- THREE ASSET COUNTS THE ENGINE NAMED FOR ITSELF --------------------------------
             //
             // The LogModels console command writes a CSV whose header names twelve columns, and reading its

@@ -72,6 +72,24 @@ public:
         bool is_float() const;
     };
 
+    // ENTRIES WHOSE TAG DISAGREES WITH THEIR BYTES, which exist in this build and are worth knowing about
+    // before trusting read_int.
+    //
+    // The tags are right wherever the engine actually reads a variable, and that was checked against the
+    // LOAD INSTRUCTION rather than against the value: Friction (Float) is read by `fld`, ScreenWidth (Int32)
+    // by `mov`, and UpdateRate (Int32) by `fild` -- an integer load converted to float, which is the subtle
+    // case that would have looked like a mistag from the value alone.
+    //
+    // Two entries cannot be settled that way because NOTHING in the executable reads or writes them:
+    // MaxExtrapolateTime and MaxExtrapolateDist are tagged Int32 and hold 0x3F000000 and 0x42800000 --
+    // exactly 0.5f and 64.0f. The engine never notices; a consumer calling read_int gets 1056964608.
+    //
+    // So this returns entries tagged Int32 whose stored dword is absurd as an integer and ordinary as a
+    // float, using sdk::mem::looks_like_float. It is a HEURISTIC ABOUT BYTES, not a fact about the engine:
+    // the right use is auditing a table or warning a human, and the wrong use is deciding how to interpret
+    // a setting whose type the engine has already demonstrated by reading it.
+    static std::vector<Entry> suspicious_int_entries();
+
     // Number of entries the table is known to hold. Asserted rather than trusted: the walk below stops
     // on the first entry that does not look like a triplet, so a schema change shortens the result
     // instead of running off the end.

@@ -5,8 +5,7 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
-
+#include "Memory.hpp"
 #include "Modules.hpp"
 
 namespace sdk {
@@ -106,25 +105,11 @@ uintptr_t exe_at(uintptr_t offset) {
     return exe->base + offset;
 }
 
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
 
 template <typename T>
 std::optional<T> read_exe(uintptr_t offset) {
     T value{};
-    if (!seh_copy(&value, exe_at(offset), sizeof(value))) {
+    if (!mem::copy(&value, exe_at(offset), sizeof(value))) {
         return std::nullopt;
     }
     return value;
@@ -220,7 +205,7 @@ std::vector<Input::Device> Input::devices() {
         d.slot = i;
         d.address = *ptr;
         uint32_t vt = 0;
-        if (seh_copy(&vt, d.address, sizeof(vt))) {
+        if (mem::copy(&vt, d.address, sizeof(vt))) {
             d.vtable = vt;
             if (vt == kb_vt) {
                 d.kind = DeviceKind::Keyboard;
@@ -250,7 +235,7 @@ std::optional<bool> Input::key_is_down(uint8_t vk) {
         return std::nullopt;
     }
     uint8_t state = 0;
-    if (!seh_copy(&state, *dev + kKbCurrent + vk, sizeof(state))) {
+    if (!mem::copy(&state, *dev + kKbCurrent + vk, sizeof(state))) {
         return std::nullopt;
     }
     // The engine's own getter tests `== 1` rather than non-zero, so this matches it exactly instead of
@@ -264,7 +249,7 @@ std::optional<bool> Input::key_was_down(uint8_t vk) {
         return std::nullopt;
     }
     uint8_t state = 0;
-    if (!seh_copy(&state, *dev + kKbPrevious + vk, sizeof(state))) {
+    if (!mem::copy(&state, *dev + kKbPrevious + vk, sizeof(state))) {
         return std::nullopt;
     }
     return state == 1;
@@ -294,7 +279,7 @@ std::optional<std::vector<uint8_t>> Input::keys_down() {
         return std::nullopt;
     }
     uint8_t bank[kKeyStateCount]{};
-    if (!seh_copy(bank, *dev + kKbCurrent, sizeof(bank))) {
+    if (!mem::copy(bank, *dev + kKbCurrent, sizeof(bank))) {
         return std::nullopt;
     }
     std::vector<uint8_t> out;
@@ -318,11 +303,11 @@ std::optional<Input::MouseState> Input::mouse() {
     float axis[2]{};
     int32_t px = 0;
     int32_t py = 0;
-    if (!seh_copy(buttons, *dev + kMouseButtons, sizeof(buttons)) ||
-        !seh_copy(prev, *dev + kMousePrevButtons, sizeof(prev)) ||
-        !seh_copy(axis, *dev + kMouseAxisCurrent, sizeof(axis)) ||
-        !seh_copy(&px, *dev + kMousePosX, sizeof(px)) ||
-        !seh_copy(&py, *dev + kMousePosY, sizeof(py))) {
+    if (!mem::copy(buttons, *dev + kMouseButtons, sizeof(buttons)) ||
+        !mem::copy(prev, *dev + kMousePrevButtons, sizeof(prev)) ||
+        !mem::copy(axis, *dev + kMouseAxisCurrent, sizeof(axis)) ||
+        !mem::copy(&px, *dev + kMousePosX, sizeof(px)) ||
+        !mem::copy(&py, *dev + kMousePosY, sizeof(py))) {
         return std::nullopt;
     }
     MouseState s{};
@@ -402,7 +387,7 @@ uintptr_t Input::interface_vtable() {
         return 0;
     }
     uint32_t vt = 0;
-    if (!seh_copy(&vt, obj, sizeof(vt))) {
+    if (!mem::copy(&vt, obj, sizeof(vt))) {
         return 0;
     }
     return vt;
@@ -417,11 +402,11 @@ uintptr_t interface_slot(size_t slot) {
         return 0;
     }
     uint32_t vtable = 0;
-    if (!seh_copy(&vtable, obj, sizeof(vtable)) || vtable == 0) {
+    if (!mem::copy(&vtable, obj, sizeof(vtable)) || vtable == 0) {
         return 0;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+    if (!mem::copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
         return 0;
     }
     const auto* exe = Modules::get().exe();
@@ -442,10 +427,9 @@ std::optional<uint32_t> Input::engine_device_count() {
     // Returns a byte in al; the thunk adjusts `this` itself, so pass the interface pointer.
     using Fn = uint8_t(__thiscall*)(void*);
     uint8_t out = 0;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj));
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj));
+        })) {
         return std::nullopt;
     }
     return static_cast<uint32_t>(out);
@@ -458,10 +442,9 @@ namespace {
 bool call_get_key_name(uintptr_t fn, uintptr_t obj, uint32_t vk, wchar_t* buffer, int count) {
     using Fn = uint8_t(__thiscall*)(void*, uint32_t, wchar_t*, int);
     uint8_t ok = 0;
-    KANANLIB_SEH_TRY {
-        ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), vk, buffer, count);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!mem::guarded([&] {
+            ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), vk, buffer, count);
+        })) {
         return false;
     }
     return ok != 0;
@@ -498,10 +481,9 @@ std::optional<uint32_t> Input::engine_object_device_index(int object_id) {
     using Fn = uint8_t(__thiscall*)(void*, int, uint32_t*);
     uint32_t index = 0xFFFFFFFFu;
     uint8_t ok = 0;
-    KANANLIB_SEH_TRY {
-        ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), object_id, &index);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!mem::guarded([&] {
+            ok = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), object_id, &index);
+        })) {
         return std::nullopt;
     }
     if (ok == 0) {
@@ -521,10 +503,9 @@ std::optional<bool> Input::engine_binding_is_active(uintptr_t record_address) {
     }
     using Fn = uint8_t(__thiscall*)(void*, uintptr_t);
     uint8_t out = 0;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), record_address);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), record_address);
+        })) {
         return std::nullopt;
     }
     return out != 0;
@@ -541,10 +522,9 @@ std::optional<bool> Input::device_is_present(size_t index) {
     }
     using Fn = uint8_t(__thiscall*)(void*, uint8_t);
     uint8_t out = 0;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), static_cast<uint8_t>(index));
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(obj), static_cast<uint8_t>(index));
+        })) {
         return std::nullopt;
     }
     return out != 0;
@@ -563,16 +543,16 @@ std::vector<Input::BindingSet> Input::binding_sets() {
     const size_t count = (*end - *begin) / sizeof(uint32_t);
     for (size_t i = 0; i < count && i < kMaxBindingRecords; ++i) {
         uint32_t set_ptr = 0;
-        if (!seh_copy(&set_ptr, *begin + i * sizeof(uint32_t), sizeof(set_ptr)) || set_ptr == 0) {
+        if (!mem::copy(&set_ptr, *begin + i * sizeof(uint32_t), sizeof(set_ptr)) || set_ptr == 0) {
             continue;
         }
         BindingSet set{};
         set.address = set_ptr;
         uint32_t records = 0, record_count = 0;
         int8_t kind = 0;
-        if (!seh_copy(&records, set_ptr + kSetRecords, sizeof(records)) ||
-            !seh_copy(&record_count, set_ptr + kSetRecordCount, sizeof(record_count)) ||
-            !seh_copy(&kind, set_ptr + kSetKind, sizeof(kind))) {
+        if (!mem::copy(&records, set_ptr + kSetRecords, sizeof(records)) ||
+            !mem::copy(&record_count, set_ptr + kSetRecordCount, sizeof(record_count)) ||
+            !mem::copy(&kind, set_ptr + kSetKind, sizeof(kind))) {
             continue;
         }
         set.records = records;
@@ -582,7 +562,7 @@ std::vector<Input::BindingSet> Input::binding_sets() {
         set.entries.reserve(n);
         for (size_t r = 0; r < n && records != 0; ++r) {
             uint32_t raw[8]{};
-            if (!seh_copy(raw, records + r * kRecordStride, sizeof(raw))) {
+            if (!mem::copy(raw, records + r * kRecordStride, sizeof(raw))) {
                 break;
             }
             BindingRecord rec{};
@@ -654,11 +634,11 @@ uintptr_t device_slot(uintptr_t device, size_t slot) {
         return 0;
     }
     uint32_t vtable = 0;
-    if (!seh_copy(&vtable, device, sizeof(vtable)) || vtable == 0) {
+    if (!mem::copy(&vtable, device, sizeof(vtable)) || vtable == 0) {
         return 0;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+    if (!mem::copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
         return 0;
     }
     // The method must live inside the exe: these are engine-side classes, and a pointer elsewhere means
@@ -685,7 +665,7 @@ std::vector<uintptr_t> Input::device_vtable_entries(DeviceKind kind) {
     out.reserve(kDeviceVtableSlots);
     for (size_t i = 0; i < kDeviceVtableSlots; ++i) {
         uint32_t fn = 0;
-        if (!seh_copy(&fn, dev->vtable + i * sizeof(uint32_t), sizeof(fn))) {
+        if (!mem::copy(&fn, dev->vtable + i * sizeof(uint32_t), sizeof(fn))) {
             break;
         }
         // Every entry must be engine code; one outside the image would mean this is not the class the
@@ -716,15 +696,9 @@ std::optional<float> Input::object_value(int object_id) {
         return std::nullopt;
     }
     float out = 0.0f;
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return std::nullopt;
-    }
-    if (!ok) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        })) {
         return std::nullopt;
     }
     return out;
@@ -737,15 +711,9 @@ std::optional<float> Input::object_previous_value(int object_id) {
         return std::nullopt;
     }
     float out = 0.0f;
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return std::nullopt;
-    }
-    if (!ok) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        })) {
         return std::nullopt;
     }
     return out;
@@ -758,15 +726,9 @@ std::optional<bool> Input::object_changed(int object_id) {
         return std::nullopt;
     }
     bool out = false;
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        out = reinterpret_cast<ChangedFn>(fn)(reinterpret_cast<void*>(dev), object_id);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return std::nullopt;
-    }
-    if (!ok) {
+    if (!mem::guarded([&] {
+            out = reinterpret_cast<ChangedFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        })) {
         return std::nullopt;
     }
     return out;

@@ -1,7 +1,6 @@
 #include "Render.hpp"
 
-#include <utility/Seh.hpp>
-
+#include "Memory.hpp"
 #include "Modules.hpp"
 
 namespace sdk {
@@ -29,41 +28,6 @@ uintptr_t exe_at(uintptr_t offset) {
     return exe->base + offset;
 }
 
-struct PtrRead {
-    uintptr_t value;
-    bool ok;
-};
-
-PtrRead seh_read_ptr(uintptr_t at) {
-    PtrRead r{};
-    KANANLIB_SEH_TRY {
-        r.value = *reinterpret_cast<const uintptr_t*>(at);
-        r.ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return r;
-    }
-    return r;
-}
-
-// Byte-wise copy so the guard never shares a frame with a type that unwinds. The D3D
-// structs are POD, so a raw copy is exactly right for them.
-bool seh_copy(uintptr_t from, void* to, size_t bytes) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        const auto* src = reinterpret_cast<const unsigned char*>(from);
-        auto* dst = static_cast<unsigned char*>(to);
-        for (size_t i = 0; i < bytes; ++i) {
-            dst[i] = src[i];
-        }
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
 }  // namespace
 
 uintptr_t Render::adapter_info_address() {
@@ -79,8 +43,8 @@ IDirect3D9* Render::d3d9() {
     if (rec == 0) {
         return nullptr;
     }
-    const auto p = seh_read_ptr(rec + kFactory);
-    return p.ok ? reinterpret_cast<IDirect3D9*>(p.value) : nullptr;
+    const auto p = sdk::mem::read_ptr(rec + kFactory);
+    return p.has_value() ? reinterpret_cast<IDirect3D9*>(*p) : nullptr;
 }
 
 IDirect3DDevice9* Render::device() {
@@ -88,8 +52,8 @@ IDirect3DDevice9* Render::device() {
     if (rec == 0) {
         return nullptr;
     }
-    const auto p = seh_read_ptr(rec + kDevice);
-    return p.ok ? reinterpret_cast<IDirect3DDevice9*>(p.value) : nullptr;
+    const auto p = sdk::mem::read_ptr(rec + kDevice);
+    return p.has_value() ? reinterpret_cast<IDirect3DDevice9*>(*p) : nullptr;
 }
 
 std::optional<D3DDISPLAYMODE> Render::display_mode() {
@@ -100,7 +64,7 @@ std::optional<D3DDISPLAYMODE> Render::display_mode() {
         return std::nullopt;
     }
     D3DDISPLAYMODE out{};
-    if (!seh_copy(rec + kDisplayMode, &out, sizeof(out))) {
+    if (!sdk::mem::copy(&out, rec + kDisplayMode, sizeof(out))) {
         return std::nullopt;
     }
     return out;
@@ -112,7 +76,7 @@ std::optional<D3DCAPS9> Render::device_caps() {
         return std::nullopt;
     }
     D3DCAPS9 out{};
-    if (!seh_copy(rec + kCaps, &out, sizeof(out))) {
+    if (!sdk::mem::copy(&out, rec + kCaps, sizeof(out))) {
         return std::nullopt;
     }
     return out;
@@ -124,7 +88,7 @@ std::optional<D3DPRESENT_PARAMETERS> Render::present_params() {
         return std::nullopt;
     }
     D3DPRESENT_PARAMETERS out{};
-    if (!seh_copy(rec + kPresentParams, &out, sizeof(out))) {
+    if (!sdk::mem::copy(&out, rec + kPresentParams, sizeof(out))) {
         return std::nullopt;
     }
     return out;
@@ -135,8 +99,8 @@ uintptr_t Render::device_vtable() {
     if (dev == nullptr) {
         return 0;
     }
-    const auto vt = seh_read_ptr(reinterpret_cast<uintptr_t>(dev));
-    return vt.ok ? vt.value : 0;
+    const auto vt = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(dev));
+    return vt.value_or(0);
 }
 
 std::optional<bool> Render::device_vtable_writable() {
@@ -162,15 +126,15 @@ std::optional<std::string> Render::interface_impl_owner(IUnknown* iface, size_t 
     }
     // Two guarded reads: the vtable pointer, then the slot. A released or half-built
     // interface faults here rather than yielding a plausible module name.
-    const auto vt = seh_read_ptr(reinterpret_cast<uintptr_t>(iface));
-    if (!vt.ok || vt.value == 0) {
+    const auto vt = sdk::mem::read_ptr(reinterpret_cast<uintptr_t>(iface));
+    if (!vt.has_value() || *vt == 0) {
         return std::nullopt;
     }
-    const auto fn = seh_read_ptr(vt.value + method_slot * sizeof(uintptr_t));
-    if (!fn.ok || fn.value == 0) {
+    const auto fn = sdk::mem::read_ptr(*vt + method_slot * sizeof(uintptr_t));
+    if (!fn.has_value() || *fn == 0) {
         return std::nullopt;
     }
-    return Modules::owning_module_name(fn.value);
+    return Modules::owning_module_name(*fn);
 }
 
 }  // namespace sdk

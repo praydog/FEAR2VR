@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 
@@ -78,21 +78,6 @@ uintptr_t exe_base() {
     return exe == nullptr ? 0 : exe->base;
 }
 
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
 }  // namespace
 
 const Vtables::Entry* Vtables::all(size_t& count) {
@@ -133,7 +118,7 @@ std::optional<uintptr_t> Vtables::resolve(std::string_view name, size_t slot) {
         return std::nullopt;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, at + slot * sizeof(uint32_t), sizeof(fn))) {
+    if (!sdk::mem::copy(&fn, at + slot * sizeof(uint32_t), sizeof(fn))) {
         return std::nullopt;
     }
     return static_cast<uintptr_t>(fn);
@@ -152,7 +137,7 @@ std::optional<bool> Vtables::is_pure_virtual(uintptr_t vtable, size_t slot) {
         return std::nullopt;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn))) {
+    if (!sdk::mem::copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn))) {
         return std::nullopt;
     }
     return static_cast<uintptr_t>(fn) == pure;
@@ -177,7 +162,7 @@ std::optional<uintptr_t> Vtables::vtable_of(uintptr_t object) {
         return std::nullopt;
     }
     uint32_t vtable = 0;
-    if (!seh_copy(&vtable, object, sizeof(vtable)) || vtable == 0) {
+    if (!sdk::mem::copy(&vtable, object, sizeof(vtable)) || vtable == 0) {
         return std::nullopt;
     }
     return static_cast<uintptr_t>(vtable);
@@ -201,12 +186,12 @@ std::optional<std::string> Vtables::name_from_getter(uintptr_t vtable, size_t sl
         return std::nullopt;
     }
     uint32_t fn = 0;
-    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+    if (!sdk::mem::copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
         return std::nullopt;
     }
     // `mov eax, imm32` (B8) then `ret` (C3) -- the whole body of an InterfaceImplementation stub.
     uint8_t code[6]{};
-    if (!seh_copy(code, fn, sizeof(code))) {
+    if (!sdk::mem::copy(code, fn, sizeof(code))) {
         return std::nullopt;
     }
     if (code[0] != 0xB8 || code[5] != 0xC3) {
@@ -218,7 +203,7 @@ std::optional<std::string> Vtables::name_from_getter(uintptr_t vtable, size_t sl
         return std::nullopt;
     }
     char text[64]{};
-    if (!seh_copy(text, str_at, sizeof(text) - 1)) {
+    if (!sdk::mem::copy(text, str_at, sizeof(text) - 1)) {
         return std::nullopt;
     }
     text[sizeof(text) - 1] = '\0';
@@ -251,7 +236,7 @@ std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {
     v.slots_in_image = true;
     for (size_t i = 0; i < entry.slot_count; ++i) {
         uint32_t fn = 0;
-        if (!seh_copy(&fn, at + i * sizeof(uint32_t), sizeof(fn))) {
+        if (!sdk::mem::copy(&fn, at + i * sizeof(uint32_t), sizeof(fn))) {
             return std::nullopt;
         }
         ++v.slots_checked;
@@ -268,7 +253,7 @@ std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {
         if (want + 1 > sizeof(text)) {
             return std::nullopt;
         }
-        if (!seh_copy(text, after, want + 1)) {
+        if (!sdk::mem::copy(text, after, want + 1)) {
             return std::nullopt;
         }
         v.name_matches = text[want] == '\0' && std::strncmp(text, entry.name, want) == 0;
@@ -277,7 +262,7 @@ std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {
         // not an exe-range address. One slot too long would have consumed that dword and failed
         // slots_in_image instead, so the two checks still close both directions.
         uint32_t next = 0;
-        if (!seh_copy(&next, after, sizeof(next))) {
+        if (!sdk::mem::copy(&next, after, sizeof(next))) {
             return std::nullopt;
         }
         v.name_matches = next < base || next >= base + exe->size;

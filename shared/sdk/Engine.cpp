@@ -2,7 +2,7 @@
 
 #include <windows.h>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Log.hpp"
 #include "Modules.hpp"
@@ -58,25 +58,19 @@ uintptr_t resolve_hwnd_slot() {
     if (fn == 0) {
         return 0;
     }
-    uintptr_t slot = 0;
-    KANANLIB_SEH_TRY {
-        slot = *reinterpret_cast<uintptr_t*>(fn + kGetEngineHook_HWndOperand);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto slot = sdk::mem::read_ptr(fn + kGetEngineHook_HWndOperand);
+    if (!slot.has_value()) {
         LOGX("[sdk] crashed reading &hWnd operand");
         return 0;
     }
-    return slot;
+    return *slot;
 }
 
 int call_engine_hook(uintptr_t fn, const char* name, void** out) {
     int rc = -1;
-    KANANLIB_SEH_TRY {
+    sdk::mem::guarded([&] {
         rc = reinterpret_cast<GetEngineHookFn>(fn)(name, out);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
-    }
+    });
     return rc;
 }
 
@@ -84,31 +78,19 @@ int call_engine_hook(uintptr_t fn, const char* name, void** out) {
 // them under separate guards would let a frame boundary fall between and produce a
 // seconds/milliseconds mismatch that never existed.
 bool call_client_time(uintptr_t fn_s, uintptr_t fn_ms, double* out_s, uint32_t* out_ms) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
+    return sdk::mem::guarded([&] {
         *out_s = reinterpret_cast<GetTimeSecondsFn>(fn_s)();
         *out_ms = reinterpret_cast<GetTimeMillisFn>(fn_ms)();
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
+    });
 }
 
 // The engine writes THREE floats through the pointer we hand it, so the buffer is
 // sized here and not by the callee's word. A short buffer would be a stack overwrite
 // the guard could not catch, because the write would be perfectly legal.
 bool call_global_force(uintptr_t fn, float out[3]) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
+    return sdk::mem::guarded([&] {
         reinterpret_cast<GetGlobalForceFn>(fn)(out);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
+    });
 }
 
 } // namespace
@@ -136,14 +118,7 @@ void* Engine::main_hwnd() {
     if (slot == 0) {
         return nullptr;
     }
-    void* hwnd = nullptr;
-    KANANLIB_SEH_TRY {
-        hwnd = *reinterpret_cast<void**>(slot);
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return nullptr;
-    }
-    return hwnd;
+    return reinterpret_cast<void*>(sdk::mem::read_ptr(slot).value_or(0));
 }
 
 std::optional<Engine::ClientTime> Engine::client_time() {
@@ -195,19 +170,16 @@ struct ConVarRaw {
 // engine's own: ConVarTable_FindInBucket ends with `return link - 4`.
 ConVarRaw seh_convar(const void* link) {
     ConVarRaw r{};
-    KANANLIB_SEH_TRY {
-        const auto* rec = reinterpret_cast<const regenny::LTConVar*>(
-            reinterpret_cast<uintptr_t>(link) - 4);
-        r.value = rec->value;
-        r.hash = rec->name_hash;
-        r.name_ptr = rec->name;
-        r.text_ptr = rec->string_value;
-        r.next = rec->link.next;
-        r.ok = true;
+    const auto rec = sdk::mem::read<regenny::LTConVar>(reinterpret_cast<uintptr_t>(link) - 4);
+    if (!rec.has_value()) {
+        return r;
     }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        r.ok = false;
-    }
+    r.value = rec->value;
+    r.hash = rec->name_hash;
+    r.name_ptr = rec->name;
+    r.text_ptr = rec->string_value;
+    r.next = rec->link.next;
+    r.ok = true;
     return r;
 }
 
@@ -216,7 +188,7 @@ ConVarRaw seh_convar(const void* link) {
 // the std::string is built by the caller.
 bool seh_copy_str(const char* src, char* dst, size_t cap) {
     bool ok = false;
-    KANANLIB_SEH_TRY {
+    const bool guarded_ok = sdk::mem::guarded([&] {
         if (src != nullptr && cap > 0) {
             size_t i = 0;
             for (; i + 1 < cap; ++i) {
@@ -229,24 +201,19 @@ bool seh_copy_str(const char* src, char* dst, size_t cap) {
             dst[i] = '\0';
             ok = true;
         }
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
+    });
+    return guarded_ok && ok;
 }
 
 // The bucket head's next pointer, read under its own guard for the same reason.
 bool seh_bucket_next(const void* head, const void** out) {
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        *out = static_cast<const regenny::CClientMgrListLink*>(head)->next;
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    const auto v = sdk::mem::read_ptr(
+        reinterpret_cast<uintptr_t>(head) + offsetof(regenny::CClientMgrListLink, next));
+    if (!v.has_value()) {
         return false;
     }
-    return ok;
+    *out = reinterpret_cast<const void*>(*v);
+    return true;
 }
 
 constexpr size_t kConVarBuckets = 128;

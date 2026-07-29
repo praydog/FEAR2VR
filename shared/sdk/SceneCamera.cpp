@@ -3,8 +3,7 @@
 #include <cmath>
 #include <cstring>
 
-#include <utility/Seh.hpp>
-
+#include "Memory.hpp"
 #include "Modules.hpp"
 #include "interfaces/ILTRenderer.hpp"
 
@@ -51,23 +50,6 @@ uintptr_t exe_at(uintptr_t offset) {
         return 0;
     }
     return exe->base + offset;
-}
-
-// The single guarded copy. Nothing that unwinds may live in this frame, which is why the buffer
-// is a raw array supplied by the caller.
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
 }
 
 float float_at(const unsigned char* base, size_t offset) {
@@ -927,7 +909,7 @@ std::optional<uint32_t> SceneCamera::state() {
         return std::nullopt;
     }
     uint32_t value = 0;
-    if (!seh_copy(&value, at, sizeof(value))) {
+    if (!sdk::mem::copy(&value, at, sizeof(value))) {
         return std::nullopt;
     }
     return value;
@@ -968,12 +950,12 @@ uintptr_t SceneCamera::renderer_fn(RendererSlot which) {
         return 0;  // not resolved right now; the interface database clears slots
     }
     uintptr_t vftable = 0;
-    if (!seh_copy(&vftable, reinterpret_cast<uintptr_t>(renderer), sizeof(vftable)) ||
+    if (!sdk::mem::copy(&vftable, reinterpret_cast<uintptr_t>(renderer), sizeof(vftable)) ||
         vftable == 0) {
         return 0;
     }
     uintptr_t fn = 0;
-    if (!seh_copy(&fn, vftable + slot * sizeof(uintptr_t), sizeof(fn)) || fn == 0) {
+    if (!sdk::mem::copy(&fn, vftable + slot * sizeof(uintptr_t), sizeof(fn)) || fn == 0) {
         return 0;
     }
     // BOUNDS-CHECKED, because the whole point of this address is that something will hook it: a
@@ -1000,7 +982,7 @@ std::optional<SceneCameraSnapshot> SceneCamera::snapshot() {
     // ONE copy, deliberately: the render thread rewrites this record per pass, and reading it
     // field by field can splice two passes together without faulting.
     unsigned char raw[kRecordSize];
-    if (!seh_copy(raw, at, sizeof(raw))) {
+    if (!sdk::mem::copy(raw, at, sizeof(raw))) {
         return std::nullopt;
     }
 

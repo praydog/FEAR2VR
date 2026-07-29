@@ -1,12 +1,10 @@
 #include "ShaderParams.hpp"
 
 #include <cmath>
-#include <cstring>
 #include <unordered_set>
 
-#include <utility/Seh.hpp>
-
 #include "Engine.hpp"
+#include "Memory.hpp"
 #include "Modules.hpp"
 
 namespace sdk {
@@ -40,41 +38,6 @@ uintptr_t exe_at(uintptr_t offset) {
         return 0;
     }
     return exe->base + offset;
-}
-
-// A fault-guarded copy of `bytes` from `at`. The single place raw engine memory is touched.
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    // Byte-wise via memcpy: the guarded frame must hold nothing that unwinds, which MSVC
-    // enforces, so the string building in seh_read_string stays outside this function.
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
-// A fault-guarded NUL-terminated read, one byte at a time so a string ending on the last
-// mapped byte of a page still reads.
-bool seh_read_string(std::string& out, uintptr_t at, size_t max) {
-    out.clear();
-    for (size_t i = 0; i < max; ++i) {
-        char c = 0;
-        if (!seh_copy(&c, at + i, sizeof(c))) {
-            return false;
-        }
-        if (c == '\0') {
-            return true;
-        }
-        out.push_back(c);
-    }
-    return false;  // no terminator within the cap: treat as not a name
 }
 
 }  // namespace
@@ -154,7 +117,7 @@ std::optional<ShaderParam> ShaderParams::read_record(uintptr_t address) {
         return std::nullopt;
     }
     uintptr_t vftable = 0;
-    if (!seh_copy(&vftable, address, sizeof(vftable)) || vftable != expected_vftable) {
+    if (!sdk::mem::copy(&vftable, address, sizeof(vftable)) || vftable != expected_vftable) {
         return std::nullopt;
     }
 
@@ -163,18 +126,23 @@ std::optional<ShaderParam> ShaderParams::read_record(uintptr_t address) {
 
     uintptr_t name_ptr = 0;
     uint16_t type = 0;
-    if (!seh_copy(&name_ptr, address + kName, sizeof(name_ptr)) ||
-        !seh_copy(&type, address + kType, sizeof(type)) ||
-        !seh_copy(&param.binding_index, address + kBinding, sizeof(param.binding_index)) ||
-        !seh_copy(&param.value_address, address + kValuePtr, sizeof(param.value_address)) ||
-        !seh_copy(&param.size, address + kSize, sizeof(param.size)) ||
-        !seh_copy(&param.pending, address + kPending, sizeof(param.pending))) {
+    if (!sdk::mem::copy(&name_ptr, address + kName, sizeof(name_ptr)) ||
+        !sdk::mem::copy(&type, address + kType, sizeof(type)) ||
+        !sdk::mem::copy(&param.binding_index, address + kBinding, sizeof(param.binding_index)) ||
+        !sdk::mem::copy(&param.value_address, address + kValuePtr, sizeof(param.value_address)) ||
+        !sdk::mem::copy(&param.size, address + kSize, sizeof(param.size)) ||
+        !sdk::mem::copy(&param.pending, address + kPending, sizeof(param.pending))) {
         return std::nullopt;
     }
     param.type = static_cast<ShaderParamType>(type);
-    if (!seh_read_string(param.name, name_ptr, kMaxNameLength) || param.name.empty()) {
+    // read_cstring, not read_name: the original helper only required termination within the
+    // cap and a non-empty result -- no printable/min-length check -- so read_name's stricter
+    // default (ASCII-printable, >= 4 chars) would reject names read_record used to accept.
+    auto name = sdk::mem::read_cstring(name_ptr, kMaxNameLength);
+    if (!name.has_value() || name->empty()) {
         return std::nullopt;
     }
+    param.name = std::move(*name);
     return param;
 }
 
@@ -188,7 +156,7 @@ std::vector<ShaderParam> ShaderParams::all(size_t limit) {
             break;
         }
         uintptr_t next = 0;
-        if (!seh_copy(&next, cursor + kNext, sizeof(next))) {
+        if (!sdk::mem::copy(&next, cursor + kNext, sizeof(next))) {
             out.push_back(std::move(*record));
             break;
         }
@@ -222,7 +190,7 @@ bool ShaderParams::read_value(const ShaderParam& param, void* out, size_t bytes)
     if (param.value_address != param.address + kInlineValue) {
         return false;
     }
-    return seh_copy(out, param.value_address, bytes);
+    return sdk::mem::copy(out, param.value_address, bytes);
 }
 
 namespace {

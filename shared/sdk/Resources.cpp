@@ -4,7 +4,7 @@
 #include <cstring>
 #include <vector>
 
-#include <utility/Seh.hpp>
+#include "Memory.hpp"
 
 #include "Modules.hpp"
 
@@ -25,43 +25,20 @@ constexpr uintptr_t kRecRefcount = 0x10;
 constexpr uintptr_t kRecFlags = 0x16;
 constexpr uintptr_t kRecData = 0x18;
 
-bool seh_copy(void* out, uintptr_t at, size_t bytes) {
-    if (at == 0 || out == nullptr || bytes == 0) {
-        return false;
-    }
-    bool ok = false;
-    KANANLIB_SEH_TRY {
-        std::memcpy(out, reinterpret_cast<const void*>(at), bytes);
-        ok = true;
-    }
-    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-    return ok;
-}
-
-// A resource path, one guarded byte at a time. Rejected outright on a non-printable byte: a wrong pointer
-// yields binary, and returning that as a "name" would be worse than returning nothing.
+// A resource path, guarded and validated through the shared reader. Rejected outright on anything
+// non-printable or shorter than 4 characters: a wrong pointer yields binary or noise, and returning
+// that as a "name" would be worse than returning nothing.
 bool read_name(uintptr_t at, std::string& out) {
     out.clear();
     if (at < 0x10000) {
         return false;
     }
-    for (size_t i = 0; i < 260; ++i) {
-        char c = 0;
-        if (!seh_copy(&c, at + i, sizeof(c))) {
-            return false;
-        }
-        if (c == '\0') {
-            return out.size() >= 4;
-        }
-        const auto uc = static_cast<unsigned char>(c);
-        if (uc < 32 || uc >= 127) {
-            return false;
-        }
-        out.push_back(c);
+    auto name = sdk::mem::read_name(at, 260, 4);
+    if (!name.has_value()) {
+        return false;
     }
-    return false;
+    out = std::move(*name);
+    return true;
 }
 
 // The one walk every public entry point shares. `visit` returns false to stop early.
@@ -75,8 +52,8 @@ bool walk(Fn&& visit, Resources::Stats* stats) {
     for (size_t b = 0; b < Resources::kBucketCount; ++b) {
         const uintptr_t bucket = table + b * 8;
         uint32_t self_link = 0, head = 0;
-        if (!seh_copy(&self_link, bucket, sizeof(self_link)) ||
-            !seh_copy(&head, bucket + 4, sizeof(head))) {
+        if (!sdk::mem::copy(&self_link, bucket, sizeof(self_link)) ||
+            !sdk::mem::copy(&head, bucket + 4, sizeof(head))) {
             continue;
         }
         // THE ENGINE'S OWN EMPTINESS TEST is on the FIRST dword, while the first node comes from the
@@ -115,7 +92,7 @@ bool walk(Fn&& visit, Resources::Stats* stats) {
                 return true;
             }
             uint32_t next = 0;
-            if (!seh_copy(&next, node + kRecNext, sizeof(next))) {
+            if (!sdk::mem::copy(&next, node + kRecNext, sizeof(next))) {
                 break;
             }
             node = next;
@@ -217,10 +194,10 @@ std::optional<Resources::Record> Resources::read(uintptr_t record_address) {
     }
     uint32_t name_ptr = 0, refcount = 0, data = 0;
     uint8_t flags = 0;
-    if (!seh_copy(&name_ptr, record_address + kRecName, sizeof(name_ptr)) ||
-        !seh_copy(&refcount, record_address + kRecRefcount, sizeof(refcount)) ||
-        !seh_copy(&flags, record_address + kRecFlags, sizeof(flags)) ||
-        !seh_copy(&data, record_address + kRecData, sizeof(data))) {
+    if (!sdk::mem::copy(&name_ptr, record_address + kRecName, sizeof(name_ptr)) ||
+        !sdk::mem::copy(&refcount, record_address + kRecRefcount, sizeof(refcount)) ||
+        !sdk::mem::copy(&flags, record_address + kRecFlags, sizeof(flags)) ||
+        !sdk::mem::copy(&data, record_address + kRecData, sizeof(data))) {
         return std::nullopt;
     }
     Record rec{};
