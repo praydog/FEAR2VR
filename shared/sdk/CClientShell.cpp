@@ -348,6 +348,31 @@ uintptr_t resolve_checked(size_t slot) {
 
 }  // namespace
 
+uintptr_t GameClientShell::vtable_entry_address(size_t slot) {
+    // Refuse anything past the mapped slots: this mapping never measured the table's extent, so an
+    // address computed beyond entry 4 would be fabricated. See the header.
+    if (slot > kMaxMappedSlot || !available()) {
+        return 0;
+    }
+    auto* iface = interfaces::IClientShell::get();
+    if (iface == nullptr) {
+        return 0;
+    }
+    uintptr_t out = 0;
+    KANANLIB_SEH_TRY {
+        auto* const* vt = *reinterpret_cast<void* const* const*>(iface);
+        if (vt != nullptr) {
+            out = reinterpret_cast<uintptr_t>(vt + slot);
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+    }
+    return out;
+}
+
+uintptr_t GameClientShell::pre_update_vtable_entry() { return vtable_entry_address(kSlotPreUpdate); }
+
 std::optional<std::string> GameClientShell::implementation_name() {
     auto* iface = interfaces::IClientShell::get();
     if (iface == nullptr) {

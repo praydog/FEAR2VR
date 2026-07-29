@@ -171,8 +171,15 @@ public:
 // WHY THE SLOT MAP IS TRUSTWORTHY: it is not taken from the reference SDK's declaration order,
 // which does not line up. Slot 1 is IBase::_InterfaceImplementation and returns the literal
 // "CGameClientShell", so slot 0 is an implementation-only leading slot the published interface does
-// not contain -- which is what fixes the +2 offset. Corroborated by slot 2 returning immediately
-// (the reference notes PreUpdate exists for organisation only) and slot 4 being much the largest.
+// not contain -- which is what fixes the +2 offset. Corroborated by slot 4 being much the largest.
+//
+// AN EARLIER VERSION ALSO CITED "slot 2 is empty" as corroboration. That is worth almost nothing
+// here. MEASURED in gameclient.dll: one empty stub is reached by 133 code xrefs, and of its 138 data
+// xrefs, 133 are .rdata pointer-array entries -- i.e. vtable slots. So ~133 pointer-array entries share a single address. (The LIKELY cause is identical-COMDAT-folding merging
+// every retn-only method; that is an inference from the pattern, not read out of the linker.)
+// An empty slot is therefore indistinguishable from any other empty slot, so slot 2's emptiness is
+// CONSISTENT with PreUpdate without being evidence for it: the weight is on slot 1's string and the
+// call order.
 //
 // WHAT available() DOES AND DOES NOT RE-CHECK, precisely. It calls slot 1 and compares the string,
 // which is safe (a pure return of a constant) and re-verifies WHERE THE INTERFACE STARTS: the string
@@ -198,11 +205,58 @@ public:
     // PreUpdate (slot 2), Update (slot 4), PostUpdate (slot 3). All inside gameclient.dll.
     //
     // 0 when unavailable, so a caller cannot accidentally hook a null or an engine-side address.
-    // NOTE slot 2's entry returns IMMEDIATELY in this build, so hooking PreUpdate gets you a
-    // reliable per-frame callback with nothing of the game's own to preserve.
+    // update_fn() and post_update_fn() have bodies of their own and are fine to detour.
+    // pre_update_fn() IS NOT: its address is shared by ~133 pointer-array entries, so it is an INTROSPECTION
+    // address -- to hook PreUpdate, repoint pre_update_vtable_entry() below. See
+    // pre_update_entry_returns_immediately() for the measurement.
     static uintptr_t pre_update_fn();
     static uintptr_t update_fn();
     static uintptr_t post_update_fn();
+
+    // ---- WHERE TO HOOK, WHEN THE FUNCTION ADDRESS WILL NOT DO -----------------
+    //
+    // Address of a vtable ENTRY -- &vtable[slot], the pointer itself, not the function it holds.
+    //
+    // WHY THIS EXISTS: slot 2's FUNCTION address is shared by ~133 pointer-array entries across unrelated
+    // classes, so a detour there intercepts all of them. Repointing the ENTRY narrows interception to
+    // dispatch through this class's vtable -- from "every empty virtual in the DLL" down to
+    // "CGameClientShell's PreUpdate".
+    //
+    // IT IS NOT OBJECT-LOCAL, so do not read isolation into it. The entry lives in the CLASS's vtable
+    // in .rdata, shared by every instance of that class and by anything inheriting the same table.
+    // The shell being a singleton is what makes this usable, not any property of the mechanism. For
+    // genuinely per-object interception, copy the vtable and repoint that one object's vptr -- this
+    // accessor does not do that for you.
+    //
+    // WRITING TO IT: .rdata is read-only, so a caller must change page protection and restore it,
+    // must keep the replacement alive as long as anything can dispatch through the table, and should
+    // expect any other reader of the slot to see the patched pointer.
+    //
+    // WHICH TO USE. An entry patch is the NARROWER operation in general: it only affects calls
+    // dispatched through this table, whereas a detour on the function body catches every caller of
+    // that body, direct or through any other vtable that holds it. Slot 2 is the extreme case of the
+    // difference -- 133 direct call sites plus 133 pointer-array entries. (Entries, not tables: how
+    // many distinct vtables those entries belong to was never counted.)
+    //
+    // For slots 3 and 4 the two coincide, as measured rather than assumed: each of those bodies has
+    // exactly ONE data xref -- its own vtable entry -- and ZERO code xrefs, so that entry is the only
+    // STATICALLY VISIBLE route to it. A pointer computed at runtime would not appear in an xref scan,
+    // so this bounds what the binary references, not what can possibly call. Detouring those functions
+    // is fine on that basis. Entry-patching remains the answer for slot 2.
+    //
+    // BOUNDED TO THE MAPPED SLOTS (0..4). A larger index returns 0 rather than pointer arithmetic off
+    // the end of the table: this mapping only establishes where the interface starts and what those
+    // five entries are, and handing back an address computed past them would be inventing a vtable
+    // extent nothing here has measured. SEH cannot help with that -- the read would succeed and the
+    // caller would patch whatever follows.
+    static constexpr size_t kMaxMappedSlot = 4;
+
+    // 0 when unavailable or when slot > kMaxMappedSlot.
+    static uintptr_t vtable_entry_address(size_t slot);
+
+    // The hook point for PreUpdate that does not catch ~133 unrelated methods: slot 2's vtable ENTRY.
+    // Class-wide, in read-only .rdata -- see the warnings above.
+    static uintptr_t pre_update_vtable_entry();
 
     // Does PreUpdate's ENTRY return immediately? True when its first byte is `retn` (0xC3).
     //
@@ -210,10 +264,17 @@ public:
     // which claimed the function's extent -- something one byte cannot establish, since bytes
     // further in could be unreachable code, padding, or another block entirely.
     //
-    // Useful to a consumer exactly as stated: a detour on a function whose entry returns at once has
-    // no game behaviour to preserve, so it can do its work and return without calling the original.
-    // As validation it distinguishes slot 2 from a slot holding real work, but not from any other
-    // function that returns immediately.
+    // AND THE ADDRESS IS SHARED, which matters far more than the byte. MEASURED: this address has 133
+    // code xrefs, and of its 138 data xrefs, 133 are .rdata pointer-array entries -- vtable slots.
+    // CGameClientShell_Update calls the same stub twice itself for unrelated empty methods. The likely
+    // cause is identical-COMDAT-folding (/OPT:ICF) merging every retn-only method, which is an
+    // inference from the pattern rather than something read out of the linker.
+    //
+    // SO A DETOUR ON pre_update_fn() IS NOT A PreUpdate HOOK: it fires for ~133 unrelated call sites,
+    // on whatever thread reaches any of them. Use that accessor for introspection -- comparing
+    // addresses, checking shapes -- and repoint pre_update_vtable_entry() to actually hook.
+    //
+    // As validation it distinguishes slot 2 from a slot holding real work, and nothing finer.
     //
     // NOT AN INVARIANT -- it is a property of the shipped game code, which the reference SDK
     // explains ("the only benefit to having code in PreUpdate() is purely organizational"). A build
@@ -225,7 +286,9 @@ public:
     // rather than silently accepted:
     //
     //   slot 2  `retn` followed by 0xCC -- returns at once, and int3 is what MSVC places BETWEEN
-    //           functions, so the body very likely ends there. Strong evidence, not proof of extent
+    //           functions, so the body very likely ends there. Identifies nothing on its own: this is
+    //           the shared empty stub ~133 pointer-array entries reach. It catches "slot 2 now holds real
+    //           work", which is the failure that matters, and no more
     //   slot 3  `sub esp, 0x128` then pushes -- a large fixed frame, no frame pointer
     //   slot 4  `push ebp; mov ebp, esp; and esp, 0xFFFFFFC0` -- a frame pointer AND 64-byte stack
     //           alignment, which a function gets for holding aligned SSE locals. Fitting for the

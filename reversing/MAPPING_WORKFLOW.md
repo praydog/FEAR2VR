@@ -963,6 +963,31 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **AN EMPTY FUNCTION IDENTIFIES NOTHING IN THIS DLL, AND ITS ADDRESS IS NOT A HOOK TARGET.** I named
+  0x100F6680 `CGameClientShell_PreUpdate` because IClientShell slot 2 points there. Then
+  `CGameClientShell_Update` turned out to CALL that address twice, which makes no sense for PreUpdate
+  -- and the xrefs explained why: 133 code xrefs, and 133 of 138 data xrefs are `.rdata`
+  pointer-array entries. IDA had it as `nullsub_3` all along. One shared empty stub, most likely
+  /OPT:ICF folding every retn-only method (an inference from the pattern, not read from the linker).
+  
+  Three consequences, and the third is the one that would have shipped a bug:
+  1. The ADDRESS gets a neutral name (`shared_empty_stub`); the SLOT is still PreUpdate by interface
+     layout. ICF erases an address's exclusive identity, not a slot's semantics.
+  2. "Slot N is empty" is not corroboration for anything. My +2 anchor cited it; the anchor stands on
+     slot 1's string, and that citation is now marked as worth nothing.
+  3. **A DETOUR ON THAT ADDRESS IS NOT A HOOK ON THAT METHOD** -- it intercepts every one of those
+     call sites. The consumer-safe operation is repointing the VTABLE ENTRY, so `pre_update_fn()` is
+     documented as introspection-only and `pre_update_vtable_entry()` is the hook point.
+  
+  Scope, stated correctly after getting it backwards: an entry patch is NARROWER than a body detour,
+  which catches every caller of the body. For slots 3/4 they coincide -- one data xref, zero code
+  xrefs each -- but that is the only STATICALLY VISIBLE route, not proof none can be computed.
+  
+- **COUNT WHAT YOU COUNTED.** I wrote "138 vtable slots" from a raw data-xref total, then "133 tables"
+  from the classified subset. The measurement was 133 `.rdata` pointer-array ENTRIES; how many distinct
+  tables they sit in was never counted. Also `grep 'a\|b'` silently matches nothing in this shell --
+  it cost a wrong "already correct" reading of a header. Use the grep tool for alternation.
+
 - **A NAME IS THE CLAIM MOST PEOPLE READ. Retract it there first.** After narrowing the prose about
   `*fn == 0xC3` to "the entry returns immediately", the function was still called
   `pre_update_is_empty()` -- so the overclaim survived in the one place every consumer sees, while the

@@ -1069,22 +1069,32 @@ int main(int argc, char** argv) {
         check(ganch == 3,
               "all three per-frame anchors resolve INSIDE gameclient.dll");
 
-        // Slot 2's entry byte is `retn`, so it returns immediately -- which the reference SDK explains
-        // by noting PreUpdate exists for organisation only. This distinguishes slot 2 from a slot
-        // holding real work, but not from another empty slot, and it is a property of the shipped
-        // game code rather than an invariant: a build that filled it in would fail this with nothing
-        // being wrong.
+        // Slot 2's entry byte is `retn`, so it returns immediately. THIS IDENTIFIES NOTHING BY ITSELF:
+        // gameclient.dll is ICF-linked, so every empty method in the DLL shares one address -- 138
+        // vtable slots point at it, and Update calls it twice for unrelated empty methods. What the
+        // check is worth is catching "slot 2 now holds real work"; it cannot tell PreUpdate from any
+        // other empty virtual. Also a property of the shipped game code, not an invariant.
         check(gpre == 1, "slot 2's entry byte is retn -- its entry returns immediately");
 
         // AND THE PART THAT MAKES A REORDERING DETECTABLE: each of the three still has its mapped
-        // prologue, and no two of those shapes match -- slot 2 is retn+int3 padding, slot 3 opens a
-        // large fixed frame with `sub esp, 0x128`, slot 4 sets up ebp AND aligns the stack to 64 for
-        // SSE locals. Swap any two and this fails. It is still not a proof of semantics: a rebuild
+        // prologue, and no two of those shapes match -- slot 2 is the folded empty stub, slot 3 opens
+        // a large fixed frame with `sub esp, 0x128`, slot 4 sets up ebp AND aligns the stack to 64 for
+        // SSE locals. Swap any two and this fails. Note the discrimination here comes from slots 3 and
+        // 4 having distinct OWN bodies -- slot 2's contribution is only "still empty". It is still not a proof of semantics: a rebuild
         // of the same game code could change a prologue, which would show up here as a false
         // negative rather than as a wrong hook.
         int64_t gshapes = -1;
         json_int(body, "gcs_shapes", gshapes);
         check(gshapes == 1, "slots 2/3/4 still carry their mapped, mutually distinct prologues");
+
+        // THE TWO ROUTES TO SLOT 2 MUST AGREE. pre_update_fn() reads the function out of the table;
+        // pre_update_vtable_entry() hands back the address OF that table cell -- which is what a
+        // consumer patches, since slot 2's function address is shared by ~133 unrelated methods and
+        // detouring it would intercept all of them. Dereferencing the entry has to yield exactly the
+        // function the anchor reports, or one of the two is lying about which slot it describes.
+        int64_t gentry = -1;
+        json_int(body, "gcs_entry_agrees", gentry);
+        check(gentry == 1, "slot 2's vtable ENTRY dereferences to the function pre_update_fn() reports");
         printf("[fixture] game shell: interface identity + 3 anchors in gameclient.dll, slot 2 "
                "returns at once, 2/3/4 prologues distinct\n");
 

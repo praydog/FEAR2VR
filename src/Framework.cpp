@@ -886,6 +886,7 @@ std::string build_targets_json() {
     int gcs_ok = sdk::GameClientShell::available() ? 1 : 0;
     int gcs_pre_empty = sdk::GameClientShell::pre_update_entry_returns_immediately() ? 1 : 0;
     int gcs_shapes = sdk::GameClientShell::slots_match_mapped_shapes() ? 1 : 0;
+    int gcs_entry_agrees = 0;
     int gcs_in_module = 0;
     char gcs_name[64]{};
     if (const auto nm = sdk::GameClientShell::implementation_name(); nm.has_value()) {
@@ -893,6 +894,11 @@ std::string build_targets_json() {
         memcpy(gcs_name, nm->c_str(), n);
     }
     {
+        // The vtable ENTRY for slot 2 must sit inside the vtable and hold exactly the function the
+        // anchor accessor reports -- the two routes to the same slot have to agree.
+        const uintptr_t entry = sdk::GameClientShell::pre_update_vtable_entry();
+        gcs_entry_agrees = (entry != 0 && *reinterpret_cast<uintptr_t*>(entry) ==
+                                             sdk::GameClientShell::pre_update_fn()) ? 1 : 0;
         const uintptr_t fns[3] = {sdk::GameClientShell::pre_update_fn(),
                                   sdk::GameClientShell::update_fn(),
                                   sdk::GameClientShell::post_update_fn()};
@@ -1241,7 +1247,7 @@ std::string build_targets_json() {
              "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
              "\"lp_slots\":%d,\"lp_consistent\":%d,\"lp_accepted\":%d,"
-             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,"
+             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,\"gcs_entry_agrees\":%d,"
              "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
@@ -1331,7 +1337,7 @@ std::string build_targets_json() {
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
              wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
-             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes,
+             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes, gcs_entry_agrees,
              wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],

@@ -1200,10 +1200,11 @@ class CClientMgrCounterNode 0x40 {
 //           MSVC vector-deleting destructor but that is not proven, so it stays unnamed.
 //   slot 1  _InterfaceImplementation -- returns the literal "CGameClientShell", which is what
 //           anchors slot 1 to IBase and therefore slot 0 to the gap.
-//   slot 2  PreUpdate  -- its ENTRY is `retn`, so it returns at once, and the 0xCC int3 padding
-//           after it is what MSVC puts between functions, so the body very likely ends there. That
-//           matches the reference's own remark that the only benefit of code in PreUpdate is
-//           organizational. Note the byte proves the entry, not the extent.
+//   slot 2  PreUpdate  -- points at the DLL's SHARED EMPTY STUB. gameclient.dll is linked with
+//           an address that ~133 pointer-array entries reach -- measured as 133 code xrefs plus 133 .rdata
+//           pointer-array entries out of 138 data xrefs, the likely cause being identical-COMDAT
+//           folding of every retn-only method. Update itself calls it twice for other empty methods. The SLOT is PreUpdate by layout; the ADDRESS is nobody's in particular,
+//           so its emptiness corroborates nothing and a detour there fires for ~138 virtuals.
 //   slot 3  PostUpdate -- 0x1A2 bytes.
 //   slot 4  Update     -- 0x940 bytes, by far the largest of the triple.
 //
