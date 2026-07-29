@@ -963,6 +963,49 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE LOADER NAMES EVERYTHING. Read it before probing fields one at a time.** Three of
+  `LTVisSector`'s unmapped fields fell to a single decompile of `LTVisSector_LoadFromStream`,
+  because a loader has to touch every field in order and its allocation sizes give away what
+  each count is for: `alloc(20 * n)` beside a byte read names that byte the plane count,
+  `alloc(4 * n)` filled from `table[index]` names the other one a POINTER array.
+
+  It also settles derived-versus-stored for free. The asset holds only 16 bytes per plane while
+  the in-memory stride is 20, and the loader computes the difference through
+  `LTVisPlane_ComputeCornerCode` -- so `corner_code` is provably a cache, not data, because it
+  never existed in the file.
+
+  And best of all it turned last pass's MEASURED rule into a READ one. `LTVisPlane_ComputeCornerCode`
+  is, instruction for instruction, the corner rule I fitted to 125 data points: `x >= 0`,
+  `y < 0`, `z >= 0`. The measurement predicted the code exactly. Fitting a rule to a whole
+  population is sound, but reading the generator is free once you know which function to open.
+
+- **A POINTER TABLE and the objects it points at have DIFFERENT BASES.** `LTVisTree.portals` is
+  `LTVisPortal**`; the bodies follow the table in the same allocation. I converted a portal
+  pointer to an index by differencing against the table base, and every conversion silently
+  resolved nothing -- the alignment check rejected all of them, so the accessor returned an
+  empty list rather than a wrong one.
+
+  Caught only because the probe printed `listed = 0` beside `declared = 688`. Print BOTH SIDES
+  of a conversion; a lone zero from a function whose contract allows empty looks like a
+  legitimate answer. The fix computes the index from the body base and then confirms it by
+  reading `table[idx]` back, so the fast path does not depend on the contiguity the schema
+  happens to record.
+
+- **One sample cannot tell a flag from an index.** `LTVisSector+0x20` was recorded as "live 0
+  or 1" from a one-record sample. Read across all 263 sectors it is 0,1,2,...,262 -- exactly one
+  of each. It is the sector's own index, and it is loaded from the asset rather than computed.
+
+  Any field sampled on one or two records should say so, and small-integer fields deserve a
+  full-population read before they get a name. The payoff here is a free check on every
+  accessor in the file: the engine's stored index versus the pointer arithmetic used to reach
+  it, 263/263.
+
+- **"The loader writes a constant" does not mean the field IS constant.**
+  `LTVisSector_LoadFromStream` stores a literal 35 into `+0x26`, but live only 62 of 263 hold
+  35 -- the rest hold 3 or 6. Something later clears bits down (the values nest: 1, 3, 35).
+  Re-reading after half a second of gameplay changed nothing on any sector, which rules out a
+  per-frame visit stamp and leaves it a load-time classification. Recorded as flags with the
+  clearing pass unmapped, rather than named on the strength of the one writer I had read.
 - **The engine's STORED results are the best oracle available, and they are usually free.**
   Every spatial check before this compared a query against a scan built on the SDK's own
   per-sector test. But `LTSpatialRecord_CollectSphere` runs `LTVisTree_QuerySphere` with

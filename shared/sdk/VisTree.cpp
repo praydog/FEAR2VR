@@ -779,22 +779,186 @@ std::optional<VisTree::Portal> VisTree::portal(size_t index) {
     return out;
 }
 
+namespace {
+
+// The sector's own portal array: `portal_count` pointers into the tree's portal table. POD out
+// -- indices, converted here so the caller never holds a raw pointer across the SEH boundary.
+int64_t seh_sector_portal_indices(const regenny::LTVisTree* tree, size_t sector_index,
+                                  size_t* out, size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* sectors = tree->sectors;
+        const auto* portals = tree->portals;
+        const uint32_t pcount = tree->portal_count;
+        if (sectors == nullptr || portals == nullptr) {
+            return -1;
+        }
+        const auto& sec = sectors[sector_index];
+        const size_t n_listed = sec.portal_count;
+        const auto* arr = reinterpret_cast<const regenny::LTVisPortal* const*>(sec.portals);
+        if (n_listed == 0 || arr == nullptr) {
+            return 0;
+        }
+        // `portals` is a table of POINTERS, so it is NOT the base to difference against --
+        // the portal bodies follow the table in one allocation. Compute the index from the body
+        // base, then CONFIRM it by reading the table back: that keeps the fast path O(1)
+        // without trusting the contiguous layout, and the linear fallback covers the case where
+        // the layout is not what the schema recorded.
+        const auto body_base =
+            reinterpret_cast<uintptr_t>(portals) + static_cast<uintptr_t>(pcount) * sizeof(void*);
+        size_t n = 0;
+        for (size_t i = 0; i < n_listed && n < max_out; ++i) {
+            const auto* pp = arr[i];
+            if (pp == nullptr) {
+                continue;
+            }
+            const auto pa = reinterpret_cast<uintptr_t>(pp);
+            size_t idx = pcount;  // sentinel: not found
+            if (pa >= body_base) {
+                const uintptr_t off = pa - body_base;
+                if (off % sizeof(regenny::LTVisPortal) == 0) {
+                    const uintptr_t cand = off / sizeof(regenny::LTVisPortal);
+                    if (cand < pcount && portals[cand] == pp) {
+                        idx = static_cast<size_t>(cand);
+                    }
+                }
+            }
+            if (idx == pcount) {
+                for (uint32_t k = 0; k < pcount; ++k) {
+                    if (portals[k] == pp) {
+                        idx = k;
+                        break;
+                    }
+                }
+            }
+            if (idx < pcount) {
+                out[n++] = idx;
+            }
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+int64_t seh_sector_bytes(const regenny::LTVisTree* tree, size_t sector_index, uint32_t* stored,
+                         uint32_t* pcount) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        const auto* sectors = tree->sectors;
+        if (sectors == nullptr) {
+            return -1;
+        }
+        *stored = sectors[sector_index].index;
+        *pcount = sectors[sector_index].portal_count;
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+}  // namespace
+
 std::vector<VisTree::Portal> VisTree::sector_portals(size_t sector_index) {
     std::vector<Portal> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    if (const auto n = sector_count(); !n.has_value() || sector_index >= *n) {
+        return out;
+    }
+    // portal_count is a uint8, so this bound is the field's own maximum.
+    size_t idx[256]{};
+    const int64_t n = seh_sector_portal_indices(tree, sector_index, idx, 256);
+    if (n <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        if (const auto p = portal(idx[static_cast<size_t>(i)]); p.has_value()) {
+            out.push_back(*p);
+        }
+    }
+    return out;
+}
+
+std::optional<size_t> VisTree::sector_portal_count(size_t sector_index) {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    if (const auto n = sector_count(); !n.has_value() || sector_index >= *n) {
+        return std::nullopt;
+    }
+    uint32_t stored = 0, pcount = 0;
+    if (seh_sector_bytes(tree, sector_index, &stored, &pcount) < 0) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(pcount);
+}
+
+std::optional<bool> VisTree::sector_index_is_stored_index(size_t sector_index) {
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return std::nullopt;
+    }
+    if (const auto n = sector_count(); !n.has_value() || sector_index >= *n) {
+        return std::nullopt;
+    }
+    uint32_t stored = 0, pcount = 0;
+    if (seh_sector_bytes(tree, sector_index, &stored, &pcount) < 0) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(stored) == sector_index;
+}
+
+std::optional<bool> VisTree::sector_portal_links_agree(size_t sector_index) {
+    const auto listed = sector_portals(sector_index);
+    const auto declared = sector_portal_count(sector_index);
+    if (!declared.has_value()) {
+        return std::nullopt;
+    }
+    // Every element resolved to a real table entry, and every one names this sector.
+    if (listed.size() != *declared) {
+        return false;
+    }
+    for (const auto& p : listed) {
+        if (p.sector_a != sector_index && p.sector_b != sector_index) {
+            return false;
+        }
+    }
+    // And nothing naming this sector is absent from the array. This half needs the table scan
+    // the array exists to avoid, which is exactly why it belongs in a checker and not in the
+    // accessor.
     const auto total = portal_count();
     if (!total.has_value()) {
-        return out;
+        return std::nullopt;
     }
     for (size_t i = 0; i < *total; ++i) {
         const auto p = portal(i);
         if (!p.has_value()) {
             continue;
         }
-        if (p->sector_a == sector_index || p->sector_b == sector_index) {
-            out.push_back(*p);
+        if (p->sector_a != sector_index && p->sector_b != sector_index) {
+            continue;
+        }
+        bool seen = false;
+        for (const auto& l : listed) {
+            if (l.index == p->index) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            return false;
         }
     }
-    return out;
+    return true;
 }
 
 std::vector<size_t> VisTree::sector_neighbours(size_t sector_index) {

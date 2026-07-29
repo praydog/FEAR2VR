@@ -8,10 +8,10 @@ namespace regenny {
 class LTObjectRef;
 }
 namespace regenny {
-class LTSpatialRecord;
+class LTAttachment;
 }
 namespace regenny {
-class LTAttachment;
+class LTSpatialRecord;
 }
 namespace regenny {
 #pragma pack(push, 1)

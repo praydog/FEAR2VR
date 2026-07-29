@@ -858,6 +858,47 @@ int main(int argc, char** argv) {
                static_cast<long long>(ptot), static_cast<long long>(swn),
                static_cast<long long>(stot), static_cast<long long>(edges),
                static_cast<long long>(sym));
+
+        // ---- THE SECTOR'S OWN PORTAL ARRAY, and the stored index ----------------------
+        //
+        // A second representation of the same graph. LTVisSector_LoadFromStream fills each
+        // sector's array from portal indices in the asset and then calls LTVisPortal_AttachSector
+        // to write the portal's sector_a/sector_b, so the back-references asserted above are
+        // DERIVED from these arrays. Checking both directions tests the derivation the engine
+        // performs, with none of this SDK's arithmetic standing between them.
+        int64_t sip = -1, siok = -1, slp = -1, slok = -1, psum = -1, plisted = -1;
+        json_int(body, "sec_idx_probed", sip);
+        json_int(body, "sec_idx_ok", siok);
+        json_int(body, "sec_links_probed", slp);
+        json_int(body, "sec_links_ok", slok);
+        json_int(body, "sec_portal_sum", psum);
+        json_int(body, "sec_portal_listed", plisted);
+
+        // THE STRUCTURAL INVARIANT: every portal joins exactly two sectors and is listed by
+        // both, so the declared counts must sum to exactly twice the portal total. This is an
+        // equality and not a bound -- unlike the deduplicated edge count above, a portal
+        // appearing in both its sectors' arrays is the loader's own doing.
+        check(psum == 2 * ptot,
+              "the sectors' portal counts sum to EXACTLY two per portal");
+        // Every declared element resolved to a real table entry. A mismatch here means the
+        // pointer-to-index conversion is wrong, which is how this was caught the first time:
+        // the portal bodies follow the pointer TABLE in memory, so the table base is not the
+        // base to difference against, and differencing against it silently resolved nothing.
+        check(plisted == psum,
+              "EVERY portal pointer in a sector's array resolves to a table entry");
+        check(slok == slp,
+              "for EVERY sector, its portal array and the portals' back-references agree");
+
+        // The stored sector index against the index used to reach it -- the cheapest check that
+        // the stride and table base are right. A wrong stride still yields sectors that look
+        // plausible; it does not yield 0,1,2,...,n-1 in order.
+        check(sip > 0 && siok == sip,
+              "EVERY sector's stored index equals the index used to reach it");
+        printf("[fixture] sector portal arrays: %lld links over %lld sectors, both directions "
+               "agree %lld/%lld; stored indices %lld/%lld\n",
+               static_cast<long long>(plisted), static_cast<long long>(slp),
+               static_cast<long long>(slok), static_cast<long long>(slp),
+               static_cast<long long>(siok), static_cast<long long>(sip));
         if (psec >= 0 && pnb >= 0) {
             printf("[fixture] the player's sector has %lld neighbour(s)\n",
                    static_cast<long long>(pnb));

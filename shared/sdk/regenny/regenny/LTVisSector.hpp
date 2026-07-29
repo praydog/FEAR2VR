@@ -14,11 +14,13 @@ public:
     regenny::LTVector aabb_min; // 0x4
     regenny::LTVector aabb_max; // 0x10
     float unk_1C; // 0x1c
-    uint32_t unk_20; // 0x20
+    uint32_t index; // 0x20
     uint8_t plane_count; // 0x24
-    private: char pad_25[0x3]; public:
+    uint8_t portal_count; // 0x25
+    uint8_t unk_26; // 0x26
+    uint8_t unk_27; // 0x27
     regenny::LTVisPlane* planes; // 0x28
-    void* unk_2C; // 0x2c
+    void** portals; // 0x2c
 }; // Size: 0x30
 #pragma pack(pop)
 }

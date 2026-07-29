@@ -726,6 +726,37 @@ std::string build_targets_json() {
             rev_pairs += static_cast<int>(sdk::VisTree::objects_in_sector(static_cast<size_t>(i)).size());
         }
     }
+    // THE SECTOR'S OWN PORTAL ARRAY, against the portal table's back-references. Two
+    // representations of one graph, and LTVisSector_LoadFromStream derives the second from the
+    // first via LTVisPortal_AttachSector -- so this checks a real engine invariant, not my
+    // arithmetic against itself.
+    //
+    // Also the STORED SECTOR INDEX against the index used to reach it. Every accessor converts
+    // pointer to index by arithmetic on the table base; the engine writes the index into the
+    // sector too, so a wrong stride or base shows up here immediately instead of silently
+    // yielding plausible sectors.
+    int sec_idx_probed = 0, sec_idx_ok = 0, sec_links_probed = 0, sec_links_ok = 0;
+    int sec_portal_sum = 0, sec_portal_listed = 0;
+    {
+        const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < nsec; ++i) {
+            ++sec_idx_probed;
+            if (sdk::VisTree::sector_index_is_stored_index(static_cast<size_t>(i))
+                    .value_or(false)) {
+                ++sec_idx_ok;
+            }
+            sec_portal_sum +=
+                static_cast<int>(sdk::VisTree::sector_portal_count(static_cast<size_t>(i))
+                                     .value_or(0));
+            sec_portal_listed +=
+                static_cast<int>(sdk::VisTree::sector_portals(static_cast<size_t>(i)).size());
+            ++sec_links_probed;
+            if (sdk::VisTree::sector_portal_links_agree(static_cast<size_t>(i))
+                    .value_or(false)) {
+                ++sec_links_ok;
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -911,6 +942,8 @@ std::string build_targets_json() {
              "\"gate_norend_match\":%d,\"gate_norend_empty\":%d,"
              "\"rec_missing\":%d,\"rec_extra\":%d,\"rec_only_missing\":%d,"
              "\"rec_only_extra\":%d,\"rec_both\":%d,\"rec_consistent\":%d,"
+             "\"sec_idx_probed\":%d,\"sec_idx_ok\":%d,\"sec_links_probed\":%d,"
+             "\"sec_links_ok\":%d,\"sec_portal_sum\":%d,\"sec_portal_listed\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -990,7 +1023,8 @@ std::string build_targets_json() {
              rev_probed, rev_ok, rev_pairs, shape_probed, shape_agree,
              gate_rend, gate_rend_match, gate_norend, gate_norend_match, gate_norend_empty,
              rec_missing, rec_extra, rec_only_missing, rec_only_extra, rec_both,
-             rec_consistent,
+             rec_consistent, sec_idx_probed, sec_idx_ok, sec_links_probed,
+             sec_links_ok, sec_portal_sum, sec_portal_listed,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

@@ -350,9 +350,38 @@ public:
     // read faulted.
     static std::optional<Portal> portal(size_t index);
 
-    // Every portal touching `sector_index`, in table order. Empty for the one sector that
-    // has none, and for an out-of-range index.
+    // Every portal touching `sector_index`, from THE SECTOR'S OWN ARRAY. Empty for the one
+    // sector that has none, and for an out-of-range index.
+    //
+    // This reads the engine's per-sector list directly rather than scanning the portal table
+    // for matches, which is both cheaper and the primary data: LTVisSector_LoadFromStream
+    // fills this array from portal indices in the asset and then calls LTVisPortal_AttachSector
+    // to populate each portal's sector_a/sector_b, so the back-references are DERIVED from
+    // these. When the two disagree the array is right and the back-reference is wrong.
     static std::vector<Portal> sector_portals(size_t sector_index);
+
+    // Just the count, from the stored byte -- for callers sizing a buffer or testing for a
+    // dead-end room without materialising the portals.
+    static std::optional<size_t> sector_portal_count(size_t sector_index);
+
+    // DO THE TWO DIRECTIONS AGREE for this sector? Every portal in its array must name it in
+    // sector_a or sector_b, and no portal naming it may be absent from the array.
+    //
+    // Worth having as a real function rather than test scaffolding: a mod that edits world
+    // connectivity -- opening a sealed room, stitching a play space across a doorway -- has to
+    // keep both representations in step, and this is the predicate that says whether it did.
+    // Live, all 688 links pass in both directions.
+    static std::optional<bool> sector_portal_links_agree(size_t sector_index);
+
+    // Does the sector's STORED index match the index used to reach it? Every accessor here
+    // converts a pointer to an index by address arithmetic against the table base; the engine
+    // also stores the index in the sector itself, so the two can be compared. nullopt when out
+    // of range or the read faulted.
+    //
+    // This is the cheapest available check that the sector stride and table base are right --
+    // a wrong stride still yields plausible-looking sectors, but the stored indices stop
+    // matching immediately.
+    static std::optional<bool> sector_index_is_stored_index(size_t sector_index);
 
     // THE REACHABILITY QUERY: the sectors directly connected to this one. Deduplicated, and
     // `sector_index` itself is never included even if a malformed portal named it twice.
