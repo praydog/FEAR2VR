@@ -99,6 +99,12 @@ struct SceneCameraSnapshot {
     // non-finite positions beside perfectly unit-length rotations.
     bool pose_position_is_finite() const;
 
+    // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
+    // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
+    // engine gave me a real viewpoint" from "this is the 2D overlay pass" wants this rather than
+    // the mode field, since it answers from the data.
+    bool pose_is_identity(float tolerance = 1e-4f) const;
+
     // Row-major perspective puts w in column 2 and 0 at [3][3]; an orthographic matrix keeps
     // [3][3] == 1. Useful as a NECESSARY condition before treating half_view_plane as
     // tan(fov/2), since that reading is certainly meaningless for the screen pass, and this

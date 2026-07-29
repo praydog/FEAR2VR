@@ -142,6 +142,23 @@ bool SceneCameraSnapshot::pose_position_is_finite() const {
            std::isfinite(pose.position.z);
 }
 
+bool SceneCameraSnapshot::pose_is_identity(float tolerance) const {
+    if (!pose_position_is_finite() || !pose_rotation_is_unit()) {
+        return false;
+    }
+    const float components[7] = {
+        pose.position.x, pose.position.y, pose.position.z,
+        pose.rotation.x, pose.rotation.y, pose.rotation.z, pose.rotation.w,
+    };
+    const float wanted[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    for (size_t i = 0; i < 7; ++i) {
+        if (std::fabs(components[i] - wanted[i]) > tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SceneCameraSnapshot::is_orthographic_projection() const {
     // [3][3] is 1 for orthographic and 0 for row-major perspective, where w comes from z.
     return near_equal(projection[15], 1.0f, 1e-3f);

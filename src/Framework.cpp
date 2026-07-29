@@ -3324,7 +3324,7 @@ std::string build_shader_params_json() {
                  "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,"
                  "\"sc_pose_rot_unit\":%s,\"sc_pose_pos_finite\":%s,"
                  "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
-                 "\"sc_pose_qw\":%.4f,",
+                 "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
                  static_cast<long long>(scam->viewport_height()),
                  scam->viewport_valid() ? "true" : "false",
@@ -3337,7 +3337,7 @@ std::string build_shader_params_json() {
                  scam->pose_rotation_is_unit() ? "true" : "false",
                  scam->pose_position_is_finite() ? "true" : "false",
                  scam->pose.position.x, scam->pose.position.y, scam->pose.position.z,
-                 scam->pose.rotation.w);
+                 scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false");
     } else {
         snprintf(sc, sizeof(sc), "\"scene_camera\":false,");
     }

@@ -963,6 +963,12 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A CHECK THAT MATCHES JSON TEXT IS TESTING printf.** I asserted `"sc_pose_qw":1.0000` to mean "the
+  pose is identity". That check would break on a format-precision change, would pass on a pose whose
+  position was garbage, and put the predicate in the test instead of the header where a consumer can
+  reach it. Replaced with `SceneCameraSnapshot::pose_is_identity()`, which checks all seven components,
+  and the endpoint now reports that boolean. If a CHECK needs logic, the logic belongs in the class.
+
 - **A ZERO QUATERNION IS NOT A UNIT QUATERNION, SO THE OFFSET PROOF NEEDS A STATE GATE.** Unit-length
   rotation is this project's standard evidence that a transform offset is right, and it holds in every
   render PASS. It does not hold in every STATE: the scene camera record is static data, all zeroes until

@@ -3781,9 +3781,12 @@ int main(int argc, char** argv) {
         if (sc_mode == 2) {
             check(json_has(body, "\"sc_view_identity\":true"),
                   "the screen pass's view matrix is identity");
-            // The screen pass zeroes the pose, so its shape is exactly known here.
-            check(json_has(body, "\"sc_pose_qw\":1.0000"),
-                  "the screen pass's camera pose carries the identity rotation (w = 1)");
+            // The screen pass zeroes the pose entirely. Asserted through the snapshot's own
+            // pose_is_identity(), which checks all seven components -- an earlier version matched
+            // the JSON text "sc_pose_qw":1.0000, which tested printf's formatting and only ever
+            // looked at w.
+            check(json_has(body, "\"sc_pose_identity\":true"),
+                  "the screen pass's camera pose is the identity transform");
             double hx = 0.0, hy = 0.0;
             if (json_double(body, "sc_hvp_x", hx) && json_double(body, "sc_hvp_y", hy)) {
                 const double want_x = static_cast<double>(sc_w) / 2.0;
