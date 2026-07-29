@@ -963,6 +963,32 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE SELF-NAMING SCAN FOUND NO NEW NAMES AND ONE WRONG ONE -- WHICH WAS THE POINT.** Generalising the
+  string chain to all 259 Class::Method strings resolved 219 to a single function, and every one already had
+  a name: earlier passes had exhausted this seam. The value was the AGREEMENT CHECK, which flagged a function
+  named after the wrong one of its two strings.
+  
+  0x4485F3 pushes 'ILTServer::GetClientPing' on its null-argument path and 'ILTPhysics::GetPing' on its
+  uninitialised path, and it was named ILTPhysics_GetPing. Two declared methods sharing an implementation
+  would explain the pair -- but it appears in exactly ONE .rdata pointer run, CLTServer_vftable (slot 117,
+  alongside SendToServer at 108), so the server name is the corroborated one and it is now
+  CLTServer_GetClientPing. The ILTPhysics string stays UNEXPLAINED rather than disproven: a stale copy/paste
+  diagnostic is likeliest, and this binary does that elsewhere (CClientShell_DoLoadWorld pushes both
+  'CClientShell::' and 'ClientShell::'), but absence from .rdata tables would also be true of a non-virtual
+  method, one inherited into the same concrete table, or a dispatch not laid out as a static pointer run.
+  
+  The contrast is what makes the method sound: 0x42B34F ALSO self-names twice, and there the same test
+  supports both -- it sits at slot 31 of CLTModelClient_vftable AND slot 31 of CLTModelServer_vftable. Vtable
+  membership is what separates "one implementation, two owners" from "one owner, one stale string"; the
+  strings alone cannot.
+  
+- **GATES ADDED TO ida_name_from_error_strings.py, each closing a way to be wrong:** the match must be a
+  `push` (a load of the same address in the same block is not an argument); the reference must reach
+  LTLog_Printf with g_pLTErrorFormat in the SAME straight-line run, the scan stopping at any jump or return
+  rather than wandering across an unconditional jmp; and a name is applied only when exactly one function
+  qualifies. Even then a single candidate is strong evidence and not proof, since a shared string can name a
+  callee -- which is why the tool reports and only renames when asked.
+
 - **WHEN IDA HAS NO XREF, FOLLOW THE POINTER VARIABLE.** These wrappers name themselves for their error
   reports -- 'CLTClient::GetObjectPos' and so on -- but IDA recorded a data xref for only 15 of the 52
   such strings, so a plain xref walk finds almost nothing. The reason is an indirection: the code pushes the
