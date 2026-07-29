@@ -1004,8 +1004,10 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   * ADDRESS-REFERENCE EVIDENCE: the address must be NAMED somewhere, by a code store or an aligned dword in
     initialised data. All 30 qualified, 22 by a data dword ALONE -- these classes get their table address
     baked in at link time and never store it, so a code-store-only test would have rejected most of the list.
-    Enough to reject an interior coincidence, which is the gate's job; NOT enough to call any dword a vptr.
-    That was settled later, and only for 27, against the engine's interface registry.
+    It does NOT reject an interior coincidence -- the analyzer rates the same signal as WEAK precisely
+    because an interior slot's address gets referenced for patching or registration. It makes a candidate
+    worth classifying. Identity comes from slot 1's literal; table start and USE are separate, and use was
+    settled later for 27 of them against the engine's interface registry.
   * EXTENT: only recorded where a data item follows the run and no interior address looks like a table
     start -- which is STRONGLY BOUNDED, not proven. The string bounds the scanned RUN; "no interior start"
     is absence of a hit from two recognizers, so a start installed some other way would be missed. Worth

@@ -1234,10 +1234,12 @@ class CClientMgrCounterNode 0x40 {
 // base:
 //   * ADDRESS-REFERENCE EVIDENCE. Each address had to be NAMED somewhere -- a `mov [reg], offset table` in
 //     code, or an aligned dword in initialised data holding it. All 30 qualified, 22 by a data dword alone
-//     with no code store. That is enough to reject an interior coincidence, which is what this gate is for,
-//     but on its own it does NOT establish that any dword is an object's vptr: it could be a registry entry
-//     or a plain table pointer. The vptr question is settled separately and only for 27 of them -- see the
-//     registry classification below.
+//     with no code store.
+//     THIS DOES NOT REJECT AN INTERIOR COINCIDENCE, and the analyzer rates the same signal as WEAK for
+//     exactly that reason: an interior slot's address is legitimately referenced for patching or
+//     registration. What it does is make a candidate worth classifying at all. IDENTITY comes from slot 1's
+//     literal; TABLE START and USE are separate questions, and use is settled for 27 of them against the
+//     engine's interface registry -- see the VERIFIED LIVE block above.
 //   * EXTENT. Reported by reversing/ida_vtable_boundary.py, and recorded only where a defined data item
 //     follows the run AND no interior address looks like a table start. All 30 came out that way.
 //     THESE COUNTS ARE STRONGLY BOUNDED, NOT PROVEN. The trailing string bounds the SCANNED RUN; that the
