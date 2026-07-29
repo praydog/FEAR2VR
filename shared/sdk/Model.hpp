@@ -196,10 +196,43 @@ public:
     // other's inverse. ILTModel_GetBindPoseNodeTransform computes
     // `(node_index << 6) + asset->node_records + 8` and copies from there, so the pair at +0x08 is
     // the bind pose and the one at +0x24 is something else still unidentified.
+    // The record's OTHER pose: the local transform animation substitutes for a node with no key.
+    // ILTModel_GetAnimNodeTransform accumulates this up the parent chain, which is what proves it is
+    // PARENT-RELATIVE -- the one space fact in this record that rests on a reader rather than a
+    // guess. Exposed because it is the only local pose available without evaluating anything, and
+    // because composing it is how the bind pose's own space gets tested.
+    struct BindPose;
+    std::optional<BindPose> anim_fallback_pose(size_t node_index) const;
+
     struct BindPose {
         regenny::LTVector position;
         regenny::LTRotation rotation;
     };
+
+    // THE ANIMATION-FALLBACK POSE COMPOSED DOWN THE HIERARCHY, in model space.
+    //
+    // NOT A BIND OR REST POSE, and the distinction is measured rather than pedantic: composing this
+    // does NOT reproduce bind_pose() (268 of 2196 nodes, essentially the roots), so the two are
+    // different data. What the fallback pair's reader establishes is narrower -- it is the local
+    // transform ILTModel_GetAnimNodeTransform substitutes for a node with no animation key -- so
+    // this composition is what the engine would arrive at along an ALL-FALLBACK path, i.e. for a
+    // model with no animation driving those nodes. Treating it as the bind skeleton would be
+    // adopting a semantic the evidence does not support.
+    //
+    // Its value is that it is the one MODEL-SPACE skeleton available with no staleness, no
+    // evaluation and no game thread, because the fallback pair is provably parent-relative
+    // (ILTModel_GetAnimNodeTransform accumulates it up the chain) and the arithmetic is ours.
+    //
+    // Validating it against GetAnimNodeTransform on a genuinely key-free path would upgrade this
+    // from "our composition of a proven-local field" to "the engine's own answer"; that has not been
+    // done.
+    //
+    // Composition is `p_model = p_parent + R_parent * p_local` with the rotations multiplied, and it
+    // relies on parents preceding children in the record array -- which the schema records and the
+    // hierarchy checks confirm.
+    //
+    // nullopt when the index is out of range, a read faulted, or the chain is malformed.
+    std::optional<BindPose> composed_fallback_pose(size_t node_index) const;
 
     // nullopt when the index is out of range or the read faulted.
     //
@@ -237,11 +270,23 @@ public:
     // legitimately sit outside mesh bounds, and the composition's own quaternion convention here is
     // unvalidated, so a wrong order could flatter either answer.
     //
-    // That pattern is itself the finding: population statistics cannot settle a coordinate
-    // convention. What would settle it is a CONSUMER -- the bind getter has no callers inside
-    // FEAR2.exe, only its two vtable slots, so its callers live in gameclient.dll -- or an
-    // engine-produced bind-space transform to compare against. Until then: do not compose these,
-    // and do not assume they are already composed.
+    // A FOURTH TEST REFUTED THE OBVIOUS RELATIONSHIP. +0x24 is provably parent-relative, so if
+    // +0x08 were the same rest pose expressed globally, composing +0x24 from the root would
+    // reproduce it. It does not: 268 of 2196 nodes agree, which is about one per skeleton -- the
+    // roots, where composition is the identity -- and divergence starts at depth 1, worst error
+    // 163.6. So THE TWO POSES ARE NOT ONE POSE IN TWO SPACES; they are different data.
+    //
+    // THE REFERENCE SDK SAYS GLOBAL, and that is a reference and not this engine: LithTech's
+    // `ILTModel::GetBindPoseNodeTransform` is implemented as `mat = pNode->GetGlobalTransform()`.
+    // FEAR2's version differs in shape already -- it fills a position/quaternion pair, not a matrix
+    // -- so the name matching does not make the semantics match. Taken with the depth-magnitude
+    // growth and the raw values fitting the object's bounds, everything POINTS at model-space, and
+    // nothing in FEAR2 itself has confirmed it.
+    //
+    // SO THE SPACE REMAINS UNVERIFIED HERE, with a stated best guess rather than a claim. What would
+    // settle it: the bind getter has no callers inside FEAR2.exe at all -- only its two vtable slots
+    // -- so a consumer that composes its output lives in gameclient.dll, which is where to look.
+    // Until then: do not compose these, and do not assume they are already composed.
     std::optional<BindPose> bind_pose(size_t node_index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------

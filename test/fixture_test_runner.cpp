@@ -3014,25 +3014,26 @@ int main(int argc, char** argv) {
                        bmshal, bmdeep, static_cast<long long>(bdepth), bedgemean,
                        static_cast<long long>(bedge));
 
-                // A THIRD attempt, against an INDEPENDENT yardstick: the object's own bounding
-                // radius. Both forms fit it, so this does not discriminate either -- reported to
-                // record that the approach was tried and to stop the next reader repeating it.
-                // Corroboration at best: helper bones may sit outside mesh bounds, and the
-                // composition convention used to produce the second number is itself unvalidated.
-                int64_t spp = -1, sraw = -1, scomp = -1;
-                double srr = -1.0, scr = -1.0;
-                json_int(ab, "space_probed", spp);
-                json_int(ab, "space_raw_fits", sraw);
-                json_int(ab, "space_comp_fits", scomp);
-                json_double(ab, "space_raw_ratio", srr);
-                json_double(ab, "space_comp_ratio", scr);
-                check(spp > 0, "sized skeletons were available to measure against their bounds");
-                check(sraw >= 0 && sraw <= spp && scomp >= 0 && scomp <= spp,
-                      "both bound-fit counts are within the probed population");
-                printf("[fixture] bind space, bounds test also inconclusive: raw fits %lld/%lld "
-                       "(%.2f of radius), composed %lld/%lld (%.2f)\n",
-                       static_cast<long long>(sraw), static_cast<long long>(spp), srr,
-                       static_cast<long long>(scomp), static_cast<long long>(spp), scr);
+                // COMPOSING THE FALLBACK DOES NOT REPRODUCE THE BIND POSE, which is a real
+                // negative and worth keeping from drifting. +0x24 is PROVEN parent-relative, so if
+                // the two were one rest pose in two spaces, composing from the root would land on
+                // +0x08. Agreement is about one node per skeleton -- the roots, where composition is
+                // the identity -- so they are different data.
+                //
+                // The composition itself lives in ModelSkeleton::composed_fallback_pose(); this only
+                // aggregates, which is where hierarchy and quaternion logic belongs.
+                int64_t cprobed = -1, cmatch = -1;
+                double cworst = -1.0;
+                json_int(ab, "comp_probed", cprobed);
+                json_int(ab, "comp_match", cmatch);
+                json_double(ab, "comp_worst", cworst);
+                check(cprobed > 0, "the fallback pose was composed over a real population");
+                check(cmatch < cprobed / 2,
+                      "composing the local fallback does NOT reproduce the bind pose -- different data");
+                check(cworst > 1.0, "and the disagreement is large, not a rounding artefact");
+                printf("[fixture] bind vs composed fallback: %lld/%lld agree (worst %.1f) -- the two "
+                       "poses are different data\n",
+                       static_cast<long long>(cmatch), static_cast<long long>(cprobed), cworst);
 
                 check(seye >= 0 && seye <= st, "eye sockets are a reported count");
 

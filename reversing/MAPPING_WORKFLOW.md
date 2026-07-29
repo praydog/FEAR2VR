@@ -963,6 +963,39 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **IDA MCP PORT ASSIGNMENTS ARE NOT STABLE ACROSS THE SESSION. `list_instances` first, every time.**
+  Early in this session FEAR2_dump.exe was on 13339 and gameclient.dll on 13338; later they had
+  swapped. Selecting the cached port "succeeded" and `server_health` still reported FEAR2_dump --
+  which reads exactly like the silent-select failure the friction notes describe, but was really a
+  no-op select onto the instance already active. Two different faults with one symptom, so the
+  filename check after selecting is what distinguishes them.
+
+- **THE REFERENCE SOURCE ANSWERS "WHAT IS THIS FOR" FASTER THAN ANY MEASUREMENT -- and is still not
+  ground truth.** After three inconclusive statistical attempts at the bind pose's coordinate space,
+  one grep of the LithTech SDK produced `mat = pNode->GetGlobalTransform()`. That is a direction in
+  seconds where measurement had produced nothing in an hour.
+  
+  It does NOT close the question. FEAR2's implementation already differs in shape -- it fills a
+  position/quaternion pair where the reference returns a matrix -- so a matching name does not carry
+  matching semantics. Recorded as the standing hypothesis, explicitly labelled reference-derived and
+  unverified here.
+  
+  Use the reference to generate hypotheses and to know what to look for; verify in the binary.
+
+- **A GOOD TEST THAT REFUTES IS STILL A GOOD TEST.** The reference hypothesis suggested a decisive
+  check needing no reference at all: +0x24 is provably parent-relative, so composing it from the root
+  should reproduce +0x08 if the two are one pose in two spaces. It does not -- 268 of 2196 nodes, i.e.
+  the roots where composition is the identity. So the two pairs are DIFFERENT DATA, which is a fact
+  worth having even though it names neither space, and it is now asserted so it cannot quietly drift.
+
+- **NAMING A HELPER AFTER WHAT YOU HOPE IT IS.** I documented the composed fallback chain as "a node's
+  rest transform" and "a reference skeleton" in the same pass that MEASURED it to be different data
+  from the bind pose. The reader only establishes the narrow role -- the local transform substituted
+  when a node has no animation key -- so the honest description is a composed animation-fallback
+  transform, and that is what it now says.
+  
+  A helper's name and comment are where an unsupported semantic quietly becomes a project assumption.
+
 - **POPULATION STATISTICS CANNOT SETTLE A COORDINATE CONVENTION. Find the consumer.** Three
   measurements were tried on whether `LTModelNode`'s bind pose is local or model-space, and all three
   failed in different ways:

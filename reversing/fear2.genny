@@ -1583,6 +1583,20 @@ class LTAnimRecordTable 0x10 {
 // getter has NO callers inside FEAR2.exe -- only its two vtable slots -- so whatever composes
 // its output lives in gameclient.dll, which is where this question has to be answered.
 //
+// A FOURTH TEST REFUTED THE RELATIONSHIP BETWEEN THE TWO POSES. Since +0x24 is provably
+// parent-relative, composing it from the root would reproduce +0x08 if that were the same
+// rest pose expressed globally. It does not: 268 of 2196 nodes agree -- roughly one per
+// skeleton, i.e. the roots where composition is the identity -- and divergence begins at
+// depth 1 with a worst error of 163.6. The two pairs are DIFFERENT POSES, not one pose in
+// two spaces, which is a fact worth having even though it does not name either space.
+//
+// THE REFERENCE SDK POINTS AT GLOBAL: LithTech's ILTModel::GetBindPoseNodeTransform is
+// `mat = pNode->GetGlobalTransform()`. Reference, not ground truth -- and FEAR2's version
+// already differs in shape, filling a position/quaternion pair rather than a matrix, so a
+// matching name does not carry matching semantics. It agrees with the depth-magnitude growth
+// and with the raw values fitting object bounds, so model-space is the standing hypothesis
+// and is recorded as exactly that.
+//
 // TESTED AND REFUTED: that the two (vector, quaternion) pairs are a transform and
 // its rigid inverse, the way LTWorldModelObject's pair is. If they were,
 // `pos_b == -(rot_a^-1 * pos_a)` and `rot_b == conjugate(rot_a)` would hold

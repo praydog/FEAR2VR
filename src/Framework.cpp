@@ -2116,7 +2116,7 @@ std::string build_objects_json() {
                api_bind_nodes = 0, api_bind_unit = 0, api_bind_finite = 0, api_bind_shared = 0,
                api_bind_shared_ok = 0, api_bind_same_array = 0, api_bind_n_shallow = 0,
                api_bind_n_deep = 0, api_bind_max_depth = 0, api_bind_n_edge = 0,
-               api_space_probed = 0, api_space_raw_fits = 0, api_space_comp_fits = 0,
+               api_comp_probed = 0, api_comp_match = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2145,7 +2145,7 @@ std::string build_objects_json() {
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
         double api_bind_mag_shallow = 0.0, api_bind_mag_deep = 0.0, api_bind_edge = 0.0;
-        double api_space_raw_ratio = 0.0, api_space_comp_ratio = 0.0;
+        double api_comp_worst = 0.0;
         float api_eye_sep_min = -1.0f, api_eye_sep_max = 0.0f, api_eye_asym_max = 0.0f;
         float api_att_worst_err = 0.0f, api_brush_worst_rt = 0.0f,
               api_brush_worst_origin = 0.0f, api_brush_worst_rot = 0.0f;
@@ -2575,87 +2575,26 @@ std::string build_objects_json() {
                         if (sk->find_socket("camera").has_value()) {
                             ++api_socket_camera;
                         }
-                        // WHICH SPACE IS THE BIND POSE IN? Use an INDEPENDENT YARDSTICK rather
-                        // than another statistic about the poses themselves: the object's own
-                        // bounding radius, which comes from a different part of the engine
-                        // entirely. A skeleton has to fit roughly inside the model it poses.
-                        //
-                        // So compose the bind pose properly down the hierarchy -- rotations
-                        // included, p_model = p_parent + R_parent * p_local -- and compare BOTH the
-                        // raw and the composed extent against that radius. Whichever fits is the
-                        // space the field is already in; if the raw values fit and composing blows
-                        // them up, they were model-space to begin with.
-                        // Skip UNSIZED objects: their radius is the constructor's zero, so it
-                        // is no yardstick at all.
-                        const auto brr = sdk::bounding_radius(obj);
-                        if (brr.has_value() && !brr->unsized && brr->radius > 1.0f &&
-                            sk->node_count() > 1) {
-                            const float br_v = brr->radius;
-                            float raw_max = 0.0f, comp_max = 0.0f;
-                            std::vector<std::array<float, 7>> world(sk->node_count());
-                            bool ok = true;
-                            for (size_t ni = 0; ni < sk->node_count() && ok; ++ni) {
-                                const auto bp = sk->bind_pose(ni);
-                                if (!bp.has_value()) {
-                                    ok = false;
-                                    break;
-                                }
-                                const float rm = std::sqrt(bp->position.x * bp->position.x +
-                                                           bp->position.y * bp->position.y +
-                                                           bp->position.z * bp->position.z);
-                                if (rm > raw_max) {
-                                    raw_max = rm;
-                                }
-                                const auto par = sk->parent_of(ni);
-                                if (!par.has_value() || *par >= ni) {
-                                    // Root, or a forward reference: start the chain here. Parents
-                                    // always precede children in this array, which the schema
-                                    // records, so a forward reference would be a broken assumption
-                                    // rather than a case to handle silently.
-                                    world[ni] = {bp->position.x, bp->position.y, bp->position.z,
-                                                 bp->rotation.x, bp->rotation.y, bp->rotation.z,
-                                                 bp->rotation.w};
-                                } else {
-                                    const auto& pw = world[*par];
-                                    // Rotate the child offset by the parent's accumulated rotation.
-                                    const float qx = pw[3], qy = pw[4], qz = pw[5], qw = pw[6];
-                                    const float vx = bp->position.x, vy = bp->position.y,
-                                                vz = bp->position.z;
-                                    const float tx = 2.0f * (qy * vz - qz * vy);
-                                    const float ty = 2.0f * (qz * vx - qx * vz);
-                                    const float tz = 2.0f * (qx * vy - qy * vx);
-                                    const float rx = vx + qw * tx + (qy * tz - qz * ty);
-                                    const float ry = vy + qw * ty + (qz * tx - qx * tz);
-                                    const float rz = vz + qw * tz + (qx * ty - qy * tx);
-                                    // Quaternion product for the accumulated rotation.
-                                    const float bx = bp->rotation.x, by = bp->rotation.y,
-                                                bz = bp->rotation.z, bw = bp->rotation.w;
-                                    world[ni] = {pw[0] + rx,
-                                                 pw[1] + ry,
-                                                 pw[2] + rz,
-                                                 qw * bx + qx * bw + qy * bz - qz * by,
-                                                 qw * by - qx * bz + qy * bw + qz * bx,
-                                                 qw * bz + qx * by - qy * bx + qz * bw,
-                                                 qw * bw - qx * bx - qy * by - qz * bz};
-                                }
-                                const float cm = std::sqrt(world[ni][0] * world[ni][0] +
-                                                           world[ni][1] * world[ni][1] +
-                                                           world[ni][2] * world[ni][2]);
-                                if (cm > comp_max) {
-                                    comp_max = cm;
-                                }
+                        // THE DECISIVE TEST, using only FEAR2's own data and the SDK's helper --
+                        // the composition itself belongs in ModelSkeleton, not here. +0x24 is PROVEN
+                        // parent-relative, so composing it from the root must reproduce +0x08 IF the
+                        // two are one rest pose in two spaces.
+                        for (size_t ni = 0; ni < sk->node_count(); ++ni) {
+                            const auto comp = sk->composed_fallback_pose(ni);
+                            const auto raw = sk->bind_pose(ni);
+                            if (!comp.has_value() || !raw.has_value()) {
+                                continue;
                             }
-                            if (ok) {
-                                ++api_space_probed;
-                                if (raw_max <= br_v * 1.5f) {
-                                    ++api_space_raw_fits;
-                                }
-                                if (comp_max <= br_v * 1.5f) {
-                                    ++api_space_comp_fits;
-                                }
-                                const double rr = raw_max / br_v, cr = comp_max / br_v;
-                                api_space_raw_ratio += rr;
-                                api_space_comp_ratio += cr;
+                            ++api_comp_probed;
+                            const float ex = comp->position.x - raw->position.x;
+                            const float ey = comp->position.y - raw->position.y;
+                            const float ez = comp->position.z - raw->position.z;
+                            const double err = std::sqrt(ex * ex + ey * ey + ez * ez);
+                            if (err < 0.05) {
+                                ++api_comp_match;
+                            }
+                            if (err > api_comp_worst) {
+                                api_comp_worst = err;
                             }
                         }
                         // THE BIND POSE IS ASSET DATA, so every object sharing an asset must
@@ -2858,11 +2797,9 @@ std::string build_objects_json() {
         .f("bind_mag_deep", api_bind_n_deep ? api_bind_mag_deep / api_bind_n_deep : 0.0, 3)
         .u("bind_n_edge", api_bind_n_edge)
         .f("bind_edge_mean", api_bind_n_edge ? api_bind_edge / api_bind_n_edge : 0.0, 3)
-        .u("space_probed", api_space_probed)
-        .u("space_raw_fits", api_space_raw_fits)
-        .u("space_comp_fits", api_space_comp_fits)
-        .f("space_raw_ratio", api_space_probed ? api_space_raw_ratio / api_space_probed : 0.0, 3)
-        .f("space_comp_ratio", api_space_probed ? api_space_comp_ratio / api_space_probed : 0.0, 3)
+        .u("comp_probed", api_comp_probed)
+        .u("comp_match", api_comp_match)
+        .f("comp_worst", api_comp_worst, 4)
         .u("socket_eyes", api_socket_eyes)
         .u("eye_geom", api_eye_geom)
         .u("eye_level", api_eye_level)

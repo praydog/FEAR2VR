@@ -1286,6 +1286,110 @@ int64_t seh_read_bind_pose(const void* records, size_t index, float* out) {
 
 }  // namespace
 
+namespace {
+
+int64_t seh_read_fallback_pose(const void* records, size_t index, float* out) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        const auto* n = static_cast<const regenny::LTModelNode*>(records) + index;
+        out[0] = n->anim_fallback_position.x;
+        out[1] = n->anim_fallback_position.y;
+        out[2] = n->anim_fallback_position.z;
+        out[3] = n->anim_fallback_rotation.x;
+        out[4] = n->anim_fallback_rotation.y;
+        out[5] = n->anim_fallback_rotation.z;
+        out[6] = n->anim_fallback_rotation.w;
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<ModelSkeleton::BindPose>
+ModelSkeleton::anim_fallback_pose(size_t node_index) const {
+    if (m_records == nullptr || node_index >= m_count) {
+        return std::nullopt;
+    }
+    float v[7]{};
+    if (seh_read_fallback_pose(m_records, node_index, v) < 0) {
+        return std::nullopt;
+    }
+    BindPose out{};
+    out.position.x = v[0];
+    out.position.y = v[1];
+    out.position.z = v[2];
+    out.rotation.x = v[3];
+    out.rotation.y = v[4];
+    out.rotation.z = v[5];
+    out.rotation.w = v[6];
+    return out;
+}
+
+std::optional<ModelSkeleton::BindPose>
+ModelSkeleton::composed_fallback_pose(size_t node_index) const {
+    if (node_index >= m_count) {
+        return std::nullopt;
+    }
+    // Walk the parent chain to the root, then compose downward. Collected first because the
+    // records store parents, not children, and composition has to start at the root.
+    size_t chain[64];
+    size_t depth = 0;
+    for (size_t at = node_index; depth < 64; ++depth) {
+        chain[depth] = at;
+        const auto par = parent_of(at);
+        if (!par.has_value()) {
+            ++depth;
+            break;
+        }
+        // Parents precede children in this array; a forward reference means a malformed chain
+        // rather than something to walk around.
+        if (*par >= at) {
+            return std::nullopt;
+        }
+        at = *par;
+    }
+    if (depth == 0 || depth >= 64) {
+        return std::nullopt;
+    }
+    BindPose out{};
+    bool first = true;
+    for (size_t i = depth; i-- > 0;) {
+        const auto local = anim_fallback_pose(chain[i]);
+        if (!local.has_value()) {
+            return std::nullopt;
+        }
+        if (first) {
+            out = *local;
+            first = false;
+            continue;
+        }
+        // Rotate the child offset into the parent's frame, then translate.
+        const float qx = out.rotation.x, qy = out.rotation.y, qz = out.rotation.z,
+                    qw = out.rotation.w;
+        const float vx = local->position.x, vy = local->position.y, vz = local->position.z;
+        const float tx = 2.0f * (qy * vz - qz * vy);
+        const float ty = 2.0f * (qz * vx - qx * vz);
+        const float tz = 2.0f * (qx * vy - qy * vx);
+        const float px = out.position.x + vx + qw * tx + (qy * tz - qz * ty);
+        const float py = out.position.y + vy + qw * ty + (qz * tx - qx * tz);
+        const float pz = out.position.z + vz + qw * tz + (qx * ty - qy * tx);
+        const float bx = local->rotation.x, by = local->rotation.y, bz = local->rotation.z,
+                    bw = local->rotation.w;
+        out.position.x = px;
+        out.position.y = py;
+        out.position.z = pz;
+        out.rotation.x = qw * bx + qx * bw + qy * bz - qz * by;
+        out.rotation.y = qw * by - qx * bz + qy * bw + qz * bx;
+        out.rotation.z = qw * bz + qx * by - qy * bx + qz * bw;
+        out.rotation.w = qw * bw - qx * bx - qy * by - qz * bz;
+    }
+    return out;
+}
+
 std::optional<ModelSkeleton::BindPose> ModelSkeleton::bind_pose(size_t node_index) const {
     if (m_records == nullptr || node_index >= m_count) {
         return std::nullopt;
