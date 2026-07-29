@@ -28,6 +28,16 @@ public:
 
     // Runtime address of CClientShell::Update (dump 0x40CC5E) -- called every
     // frame by CClientMgr::Update once a shell exists; our frame hook anchor.
+    //
+    // THIS IS THE ENGINE-SIDE WRAPPER, and knowing that matters when choosing where to hook. Its
+    // body dispatches the GAME DLL's per-frame entry points -- IClientShell slots 2, 4 and 3, in
+    // that order, which are PreUpdate, Update and PostUpdate on gameclient.dll's CGameClientShell --
+    // through the global g_pIClientShell, not through any field of this class.
+    //
+    // So a detour here runs BEFORE and AFTER the game's whole frame, which is what the framework
+    // wants. A mod needing to sit inside the game's own update, between its subsystems, wants one of
+    // those three slots instead. See the IClientShell slot map in reversing/fear2.genny for how the
+    // indices were established -- they do NOT match the reference SDK's declaration order.
     static uintptr_t update_fn();
 
     // ---- the shell's TWO CLOCKS ------------------------------------------------
