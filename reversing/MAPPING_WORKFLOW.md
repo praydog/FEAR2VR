@@ -963,6 +963,29 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **`json_has(body, "\"key\":true")` CANNOT TELL false FROM ABSENT, AND false IS OFTEN THE PASSING
+  ANSWER.** A field rename that silently failed left the endpoint emitting `sc_ortho` while the fixture
+  looked for `sc_perspective`; the missing key read as false, which was the expected answer for the affine
+  screen pass, so four checks nearly passed for the wrong reason. Added `json_bool`, which returns whether
+  the key PARSED, and asserted presence before value. Any boolean check worth making is worth parsing.
+  
+- **A snprintf FRAGMENT THAT OVERFLOWS PRODUCES INVALID JSON THAT FAILS AS "MISSING FIELD".** Adding
+  fields pushed the scene camera fragment past its 448-byte buffer, truncating mid-object. The visible
+  symptom was four unrelated check failures, not a parse error. Fragments now check snprintf's return and
+  fail loudly as a broken report.
+  
+- **CLASSIFY BY THE COEFFICIENT THAT DEFINES THE PROPERTY, RELATIVE TO ITS OWN ROW.** Perspective means
+  w depends on z, i.e. m[3][2] != 0 -- not m[3][3] == 1, which is one affine variant's normalisation.
+  And compare against the w row, not the whole matrix: a narrow FOV makes m[0][0] huge and would sink a
+  valid m[3][2] under a whole-matrix epsilon.
+  
+- **WHEN A CODE PATH IS UNREACHABLE FROM SAMPLING, BUILD ITS INPUT -- AND SAY THAT IS WHAT YOU DID.**
+  The camera record is always mid-screen-pass between frames, so the perspective predicates never run on
+  live data. Transcribing the engine's builder as a pure function gave the class a genuine consumer use
+  (a mod replacing a projection needs the engine's own convention) AND made the path testable. The test
+  comment states it exercises the class rather than corroborating the engine, so a green tick cannot be
+  misread later.
+
 - **IF A CHECK NEEDS A STATE GATE, EVERY CHECK IN THAT BLOCK NEEDS THE SAME ONE.** I gated the scene
   camera's pose invariants on the record being configured -- correctly, since it is zeroes before the
   first render pass -- while two checks above still asserted the viewport valid and its extents positive

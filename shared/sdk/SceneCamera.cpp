@@ -159,19 +159,145 @@ bool SceneCameraSnapshot::pose_is_identity(float tolerance) const {
     return true;
 }
 
-bool SceneCameraSnapshot::is_orthographic_projection() const {
-    // [3][3] is 1 for orthographic and 0 for row-major perspective, where w comes from z.
-    return near_equal(projection[15], 1.0f, 1e-3f);
+namespace {
+
+// tan(fov/2) = m[3][2] / scale_coefficient, scale-invariant. nullopt unless the result is a
+// finite POSITIVE half-extent, since a negative or zero tangent is not a field of view.
+std::optional<float> fov_from(float zw, float scale_coefficient) {
+    if (!std::isfinite(scale_coefficient) || std::fabs(scale_coefficient) < 1e-12f) {
+        return std::nullopt;
+    }
+    const float half_extent = zw / scale_coefficient;
+    if (!std::isfinite(half_extent) || half_extent <= 0.0f) {
+        return std::nullopt;
+    }
+    return 2.0f * std::atan(half_extent);
+}
+
+}  // namespace
+
+std::optional<float> SceneCameraSnapshot::fov_x_radians() const {
+    if (!is_perspective_projection()) {
+        return std::nullopt;
+    }
+    return fov_from(projection[14], projection[0]);
+}
+
+std::optional<float> SceneCameraSnapshot::fov_y_radians() const {
+    if (!is_perspective_projection()) {
+        return std::nullopt;
+    }
+    return fov_from(projection[14], projection[5]);
+}
+
+bool SceneCameraSnapshot::projection_agrees_with_half_view_plane(float tolerance) const {
+    if (!is_perspective_projection() || !std::isfinite(half_view_plane_x) ||
+        !std::isfinite(half_view_plane_y)) {
+        return false;
+    }
+    return near_equal(projection[0] * half_view_plane_x, projection[14], tolerance) &&
+           near_equal(projection[5] * half_view_plane_y, projection[14], tolerance);
+}
+
+// Largest absolute coefficient of the W ROW, m[3][0..3], or 0 when any entry of the matrix is
+// non-finite.
+//
+// THE W ROW SPECIFICALLY, not the whole matrix, and the difference is a real misclassification:
+// the w row is what produces the output w, so comparing m[3][2] against it is invariant to
+// wholesale scaling WITHOUT coupling the test to the projection's dynamic range. Measured against
+// max(all 16), a legitimately narrow field of view makes m[0][0] enormous, and a perspective
+// m[3][2] of 1 can then fall under max*epsilon and read as affine.
+float SceneCameraSnapshot::projection_w_row_scale() const {
+    for (size_t i = 0; i < 16; ++i) {
+        if (!std::isfinite(projection[i])) {
+            return 0.0f;
+        }
+    }
+    float scale = 0.0f;
+    for (size_t i = 12; i < 16; ++i) {
+        const float magnitude = std::fabs(projection[i]);
+        if (magnitude > scale) {
+            scale = magnitude;
+        }
+    }
+    return scale;
+}
+
+bool SceneCameraSnapshot::is_perspective_projection() const {
+    // m[3][2] is the z -> w coupling; nonzero means w varies with depth. Compared RELATIVE to the
+    // matrix's own w row, because homogeneous matrices may be scaled wholesale and a valid
+    // perspective coefficient can then be arbitrarily small in absolute terms.
+    const float scale = projection_w_row_scale();
+    if (scale <= 0.0f) {
+        return false;
+    }
+    return std::fabs(projection[14]) > scale * 1e-6f;
+}
+
+bool SceneCameraSnapshot::is_affine_projection() const {
+    const float scale = projection_w_row_scale();
+    if (scale <= 0.0f) {
+        return false;  // a non-finite or all-zero matrix is neither, not affine by default
+    }
+    return std::fabs(projection[14]) <= scale * 1e-6f;
+}
+
+bool SceneCameraSnapshot::is_normalized_orthographic_projection() const {
+    return is_affine_projection() && near_equal(projection[15], 1.0f, 1e-3f);
 }
 
 bool SceneCameraSnapshot::projection_matches_viewport_ortho(float tolerance) const {
-    if (!viewport_valid() || !is_orthographic_projection()) {
+    if (!viewport_valid() || !is_normalized_orthographic_projection()) {
         return false;
     }
     const float want_x = 2.0f / static_cast<float>(viewport_width());
     const float want_y = -2.0f / static_cast<float>(viewport_height());
     return near_equal(projection[0], want_x, tolerance) &&
            near_equal(projection[5], want_y, tolerance);
+}
+
+namespace {
+
+// A usable frustum extent: finite and strictly positive. A negative or zero half-extent has no
+// geometric meaning and would put a zero or inverted scale in the matrix.
+bool usable_half_extent(float v) {
+    return std::isfinite(v) && v > 0.0f;
+}
+
+}  // namespace
+
+std::optional<std::array<float, 16>> SceneCamera::make_perspective_projection(float half_x,
+                                                                             float half_y,
+                                                                             float near_z) {
+    if (!usable_half_extent(half_x) || !usable_half_extent(half_y) || !std::isfinite(near_z)) {
+        return std::nullopt;
+    }
+    // Column 3 holds the translation and m[3][2] = 1 makes w = z, exactly as the engine emits.
+    return std::array<float, 16>{
+        1.0f / half_x, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f / half_y, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, -near_z,
+        0.0f, 0.0f, 1.0f, 0.0f,
+    };
+}
+
+std::optional<std::array<float, 16>> SceneCamera::make_affine_projection(float half_x, float half_y,
+                                                                        float near_z, float far_z) {
+    if (!usable_half_extent(half_x) || !usable_half_extent(half_y) || !std::isfinite(near_z) ||
+        !std::isfinite(far_z)) {
+        return std::nullopt;
+    }
+    const float k = far_z - near_z;
+    // A zero span collapses the matrix; a non-finite one poisons every coefficient.
+    if (!std::isfinite(k) || std::fabs(k) < 1e-9f) {
+        return std::nullopt;
+    }
+    return std::array<float, 16>{
+        k / half_x, 0.0f, 0.0f, 0.0f,
+        0.0f, k / half_y, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, -near_z,
+        0.0f, 0.0f, 0.0f, k,
+    };
 }
 
 uintptr_t SceneCamera::record_address() {

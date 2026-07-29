@@ -3,6 +3,7 @@
 #include <array>
 #include <unordered_map>
 #include <atomic>
+#include <cmath>
 #include <cinttypes>
 #include <cstdio>
 #include <iterator>
@@ -3314,22 +3315,28 @@ std::string build_shader_params_json() {
     // reported here is the snapshot's own method, so a consumer validating what it read runs
     // exactly this code rather than a copy of it.
     const auto scam = sdk::SceneCamera::snapshot();
-    char sc[448];
+    // Sized with headroom and CHECKED: an earlier 448 silently truncated once the projection
+    // classifiers were added, and a half-written object is invalid JSON that fails downstream as
+    // "missing field" rather than as "the report is broken".
+    char sc[1024];
+    int sc_len = 0;
     if (scam.has_value()) {
-        snprintf(sc, sizeof(sc),
+        sc_len = snprintf(sc, sizeof(sc),
                  "\"scene_camera\":true,\"sc_mode\":%u,\"sc_vp_w\":%lld,\"sc_vp_h\":%lld,"
-                 "\"sc_viewport_valid\":%s,\"sc_view_identity\":%s,\"sc_ortho\":%s,"
+                 "\"sc_viewport_valid\":%s,\"sc_view_identity\":%s,\"sc_perspective\":%s,"
                  "\"sc_ortho_matches_viewport\":%s,\"sc_proj_off_x\":%.4f,"
                  "\"sc_proj_off_y\":%.4f,\"sc_hvp_x\":%.4f,\"sc_hvp_y\":%.4f,"
                  "\"sc_depth_min\":%.4f,\"sc_depth_max\":%.4f,"
                  "\"sc_pose_rot_unit\":%s,\"sc_pose_pos_finite\":%s,"
                  "\"sc_pose_x\":%.3f,\"sc_pose_y\":%.3f,\"sc_pose_z\":%.3f,"
-                 "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,",
+                 "\"sc_pose_qw\":%.4f,\"sc_pose_identity\":%s,"
+                 "\"sc_affine\":%s,\"sc_w_row_scale\":%.6f,\"sc_fov_present\":%s,"
+                 "\"sc_fov_y_deg\":%.3f,\"sc_proj_agrees_hvp\":%s,",
                  scam->mode, static_cast<long long>(scam->viewport_width()),
                  static_cast<long long>(scam->viewport_height()),
                  scam->viewport_valid() ? "true" : "false",
                  scam->view_is_identity() ? "true" : "false",
-                 scam->is_orthographic_projection() ? "true" : "false",
+                 scam->is_perspective_projection() ? "true" : "false",
                  scam->projection_matches_viewport_ortho() ? "true" : "false",
                  scam->proj_center_offset_x, scam->proj_center_offset_y,
                  scam->half_view_plane_x, scam->half_view_plane_y,
@@ -3337,11 +3344,92 @@ std::string build_shader_params_json() {
                  scam->pose_rotation_is_unit() ? "true" : "false",
                  scam->pose_position_is_finite() ? "true" : "false",
                  scam->pose.position.x, scam->pose.position.y, scam->pose.position.z,
-                 scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false");
+                 scam->pose.rotation.w, scam->pose_is_identity() ? "true" : "false",
+                 scam->is_affine_projection() ? "true" : "false",
+                 scam->projection_w_row_scale(),
+                 scam->fov_y_radians().has_value() ? "true" : "false",
+                 scam->fov_y_radians().has_value()
+                     ? (*scam->fov_y_radians() * 57.2957795f) : 0.0f,
+                 scam->projection_agrees_with_half_view_plane() ? "true" : "false");
     } else {
-        snprintf(sc, sizeof(sc), "\"scene_camera\":false,");
+        sc_len = snprintf(sc, sizeof(sc), "\"scene_camera\":false,");
+    }
+    if (sc_len < 0 || static_cast<size_t>(sc_len) >= sizeof(sc)) {
+        return "{\"ok\":false,\"error\":\"scene camera fragment truncated\"}";
     }
     out += sc;
+
+    // EXERCISING THE PERSPECTIVE PATH, which sampling cannot reach: the engine leaves the record
+    // in its affine screen pass between frames, so fov_*_radians() and the projection/half-plane
+    // identity never run on live data. Building a matrix with SceneCamera's own builder -- itself a
+    // transcription of LTMatrix_BuildPerspectiveProjection -- runs the real predicates on a matrix
+    // of known shape. This is a check of the CLASS, and not runtime corroboration of the engine.
+    //
+    // The scaled repeat is the point of the exercise: homogeneous matrices are scale-equivalent, so
+    // the classifier and the FOV must survive multiplying every coefficient by a constant.
+    constexpr float kProbeHalfX = 2.2651f;
+    constexpr float kProbeHalfY = 0.6371f;
+    sdk::SceneCameraSnapshot probe{};
+    probe.half_view_plane_x = kProbeHalfX;
+    probe.half_view_plane_y = kProbeHalfY;
+    const auto probe_matrix =
+        sdk::SceneCamera::make_perspective_projection(kProbeHalfX, kProbeHalfY, 4.3f);
+    if (probe_matrix.has_value()) {
+        probe.projection = *probe_matrix;
+    }
+    const auto probe_fov_y = probe.fov_y_radians();
+
+    sdk::SceneCameraSnapshot scaled = probe;
+    for (auto& coefficient : scaled.projection) {
+        coefficient *= 137.5f;
+    }
+    const auto scaled_fov_y = scaled.fov_y_radians();
+
+    sdk::SceneCameraSnapshot affine_probe{};
+    affine_probe.half_view_plane_x = kProbeHalfX;
+    affine_probe.half_view_plane_y = kProbeHalfY;
+    const auto affine_matrix =
+        sdk::SceneCamera::make_affine_projection(kProbeHalfX, kProbeHalfY, 4.3f, 100000.0f);
+    if (affine_matrix.has_value()) {
+        affine_probe.projection = *affine_matrix;
+    }
+
+    // REJECTION COVERAGE. A builder that quietly accepts a degenerate frustum is the failure this
+    // guards, so the probe asserts the refusals as well as the successes.
+    const bool rejects_zero_extent =
+        !sdk::SceneCamera::make_perspective_projection(0.0f, kProbeHalfY, 4.3f).has_value();
+    const bool rejects_negative_extent =
+        !sdk::SceneCamera::make_perspective_projection(kProbeHalfX, -1.0f, 4.3f).has_value();
+    const bool rejects_zero_span =
+        !sdk::SceneCamera::make_affine_projection(kProbeHalfX, kProbeHalfY, 4.3f, 4.3f).has_value();
+
+    // The value a correct implementation must recover, computed here from the input rather than
+    // hard-coded, so the expectation cannot drift away from the probe.
+    const float want_fov_y = 2.0f * atanf(kProbeHalfY);
+
+    char pr[512];
+    const int pr_len = snprintf(pr, sizeof(pr),
+             "\"probe_perspective\":%s,\"probe_agrees\":%s,\"probe_fov_y\":%.6f,"
+             "\"probe_fov_y_want\":%.6f,\"probe_scaled_perspective\":%s,"
+             "\"probe_scaled_fov_y\":%.6f,\"probe_affine_is_affine\":%s,"
+             "\"probe_affine_fov_present\":%s,\"probe_built\":%s,"
+             "\"probe_rejects_zero_extent\":%s,\"probe_rejects_negative_extent\":%s,"
+             "\"probe_rejects_zero_span\":%s,",
+             probe.is_perspective_projection() ? "true" : "false",
+             probe.projection_agrees_with_half_view_plane() ? "true" : "false",
+             probe_fov_y.value_or(-1.0f), want_fov_y,
+             scaled.is_perspective_projection() ? "true" : "false",
+             scaled_fov_y.value_or(-1.0f),
+             affine_probe.is_affine_projection() ? "true" : "false",
+             affine_probe.fov_y_radians().has_value() ? "true" : "false",
+             (probe_matrix.has_value() && affine_matrix.has_value()) ? "true" : "false",
+             rejects_zero_extent ? "true" : "false",
+             rejects_negative_extent ? "true" : "false",
+             rejects_zero_span ? "true" : "false");
+    if (pr_len < 0 || static_cast<size_t>(pr_len) >= sizeof(pr)) {
+        return "{\"ok\":false,\"error\":\"probe fragment truncated\"}";
+    }
+    out += pr;
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer

@@ -73,6 +73,30 @@ bool json_has(const std::string& body, const char* needle) {
     return body.find(needle) != std::string::npos;
 }
 
+// Parse a boolean field, distinguishing ABSENT from false -- which json_has cannot.
+//
+// Why this exists: a check written as json_has(body, "\"key\":true") reads false for a key that
+// was renamed, misspelled or lost to a truncated buffer, and "false" is often the passing answer.
+// A misnamed field and a silently truncated JSON fragment both nearly slipped through this suite
+// that way. Returns false when the key is missing or the value is not exactly true/false.
+bool json_bool(const std::string& body, const char* key, bool& out) {
+    const std::string needle = std::string{"\""} + key + "\":";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) {
+        return false;
+    }
+    const size_t v = p + needle.size();
+    if (body.compare(v, 4, "true") == 0) {
+        out = true;
+        return true;
+    }
+    if (body.compare(v, 5, "false") == 0) {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
 bool json_hex(const std::string& body, const char* key, uint32_t& out) {
     const std::string needle = std::string{"\""} + key + "\":\"";
     const size_t p = body.find(needle);
@@ -3730,6 +3754,61 @@ int main(int argc, char** argv) {
         check(json_has(body, "\"camera_dir\":true"),
               "k_vWorldSpaceCameraDir reads through the typed float3 accessor");
 
+        // ---- THE PERSPECTIVE PATH, EXERCISED ON A KNOWN MATRIX ------------------------
+        //
+        // Sampling cannot reach it: the engine leaves its camera record in the affine screen pass
+        // between frames, so fov_*_radians() and the projection/half-plane identity never run on
+        // live data. The DLL therefore builds a matrix with SceneCamera's own builder -- a
+        // transcription of LTMatrix_BuildPerspectiveProjection -- and runs the real predicates on
+        // it. This tests the CLASS. It is not runtime corroboration of the engine, and the
+        // comments below say so rather than letting a green tick imply otherwise.
+        {
+            bool built = false;
+            check(json_bool(body, "probe_built", built) && built,
+                  "both projection builders accept a valid frustum");
+            bool p_persp = false, p_agrees = false;
+            check(json_bool(body, "probe_perspective", p_persp) && p_persp,
+                  "a matrix built like the engine's classifies as perspective");
+            check(json_bool(body, "probe_agrees", p_agrees) && p_agrees,
+                  "m[0][0] * half_x == m[3][2] on that matrix (the identity behind fov)");
+
+            // THE FOV MUST BE RECOVERED, and against a value the DLL computes from the same input
+            // rather than a literal, so the expectation cannot drift from the probe.
+            double got = -1.0, want = -2.0;
+            check(json_double(body, "probe_fov_y", got) &&
+                      json_double(body, "probe_fov_y_want", want) &&
+                      got > want - 1e-4 && got < want + 1e-4,
+                  "fov_y_radians() recovers 2*atan(half_y) from the matrix");
+
+            // THE SCALE INVARIANCE, which is the whole reason the classifier measures m[3][2]
+            // against the w row instead of an absolute epsilon: homogeneous matrices are
+            // scale-equivalent, so multiplying every coefficient must change nothing.
+            bool s_persp = false;
+            double s_fov = -1.0;
+            check(json_bool(body, "probe_scaled_perspective", s_persp) && s_persp,
+                  "the same matrix scaled by a constant still classifies as perspective");
+            check(json_double(body, "probe_scaled_fov_y", s_fov) &&
+                      s_fov > got - 1e-4 && s_fov < got + 1e-4,
+                  "and yields the same field of view (scale invariance)");
+
+            // The affine form must refuse to produce a field of view.
+            bool a_affine = false, a_fov = true;
+            check(json_bool(body, "probe_affine_is_affine", a_affine) && a_affine,
+                  "a matrix built by the affine builder classifies as affine");
+            check(json_bool(body, "probe_affine_fov_present", a_fov) && !a_fov,
+                  "and yields no field of view");
+
+            // REJECTION, because a builder that quietly accepts a degenerate frustum hands back a
+            // matrix that still looks usable -- a zero scale coefficient with m[3][2] intact.
+            bool r0 = false, r1 = false, r2 = false;
+            check(json_bool(body, "probe_rejects_zero_extent", r0) && r0,
+                  "the perspective builder rejects a zero half-extent");
+            check(json_bool(body, "probe_rejects_negative_extent", r1) && r1,
+                  "the perspective builder rejects a negative half-extent");
+            check(json_bool(body, "probe_rejects_zero_span", r2) && r2,
+                  "the affine builder rejects a zero depth span");
+        }
+
         // ---- THE SCENE CAMERA RECORD -------------------------------------------------
         //
         // Taken as ONE snapshot in the DLL, because the render thread rewrites this record per
@@ -3756,6 +3835,53 @@ int main(int argc, char** argv) {
             check(sc_w > 0 && sc_h > 0, "a configured camera reports positive viewport extents");
         }
 
+        // ---- PROJECTION CLASSIFICATION, AND THE CONTRACT AROUND FOV ------------------
+        //
+        // The two classifiers must be mutually exclusive and exhaustive on any finite matrix, and
+        // that is checkable in every state rather than only in a 3D pass. A matrix reading as both,
+        // or neither, means the w-row test or the finite check is broken.
+        //
+        // Declared out here because the orthographic identity further down needs `affine` too.
+        bool persp = false, affine = false;
+        if (configured) {
+            // json_bool, NOT json_has: a renamed or truncated field reads as `false` to json_has,
+            // and false is the passing answer for one of these two. That is exactly how a
+            // mislabelled field and a truncated JSON buffer both nearly passed here.
+            const bool persp_ok = json_bool(body, "sc_perspective", persp);
+            const bool affine_ok = json_bool(body, "sc_affine", affine);
+            check(persp_ok && affine_ok,
+                  "both projection classifiers are present and parse as booleans");
+            if (persp_ok && affine_ok) {
+                check(persp != affine,
+                      "the projection classifies as exactly one of perspective or affine");
+            }
+            double wrow = -1.0;
+            check(json_double(body, "sc_w_row_scale", wrow) && wrow > 0.0,
+                  "the projection's w row has a positive scale (its yardstick is usable)");
+
+            // THE GATE IS THE CONTRACT, and it is what two earlier passes could not enforce. FOV
+            // is derived as m[3][2]/m[0][0], meaningless without a z->w coupling, so the accessor
+            // must REFUSE on an affine matrix. The engine's screen pass is the only pass observable
+            // from outside a render hook, so that refusal is what should happen here, and asserting
+            // it defends the precondition even though the FOV VALUE cannot be exercised from here.
+            bool fov_present = false, agrees = false;
+            check(json_bool(body, "sc_fov_present", fov_present) &&
+                      json_bool(body, "sc_proj_agrees_hvp", agrees),
+                  "the fov and projection-agreement fields are present and parse");
+            if (affine) {
+                check(!fov_present,
+                      "fov_y_radians() refuses an affine projection (the precondition holds)");
+                check(!agrees,
+                      "the projection/half-plane identity refuses an affine projection too");
+            } else if (persp) {
+                // A perspective snapshot: the identity m[0][0]*half_x == m[3][2] applies, tying the
+                // matrix to the scalar pair the engine publishes separately.
+                check(agrees,
+                      "the perspective projection's scale agrees with the stored half-extents");
+                check(fov_present, "a perspective projection yields a field of view");
+            }
+        }
+
         // THE INVARIANT THAT EARNS ITS KEEP. For an orthographic pass the projection must
         // satisfy [0][0] == 2/width and [1][1] == -2/height. Those floats and the viewport ints
         // are written at different moments by the render thread, so the identity fails on a wrong
@@ -3763,7 +3889,7 @@ int main(int argc, char** argv) {
         // two regions only -- a tear confined to the view, derived or trailing matrices would
         // still pass, so this is not an atomicity check on the whole record. Gated on the
         // projection actually being orthographic, since the identity does not apply otherwise.
-        if (json_has(body, "\"sc_ortho\":true")) {
+        if (configured && affine) {
             check(json_has(body, "\"sc_ortho_matches_viewport\":true"),
                   "the orthographic projection matches its own viewport (2/w, -2/h) -- ties the "
                   "matrix to the rect");
@@ -3807,10 +3933,10 @@ int main(int argc, char** argv) {
                       "(what fixed the units of k_vHalfViewPlane)");
             }
         }
-        printf("[fixture] scene camera: mode %lld, viewport %lldx%lld, ortho %s\n",
+        printf("[fixture] scene camera: mode %lld, viewport %lldx%lld, projection %s\n",
                static_cast<long long>(sc_mode), static_cast<long long>(sc_w),
                static_cast<long long>(sc_h),
-               json_has(body, "\"sc_ortho\":true") ? "yes" : "no");
+               json_has(body, "\"sc_perspective\":true") ? "perspective" : "affine");
         printf("[fixture] shader params: %lld records, %lld bound, %lld pending upload, "
                "screen %.0fx%.0f\n",
                static_cast<long long>(count), static_cast<long long>(bound),

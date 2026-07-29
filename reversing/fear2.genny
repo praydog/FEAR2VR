@@ -1481,8 +1481,61 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // THE PROJECTION BRANCHES ON THE MODE: 0 -> sub_610560(depthMin), 1 -> sub_6105DA(depthMin,
-// depthMax), otherwise the stored matrix via sub_610658/sub_60C2FE.
+// // ---- THE PROJECTION BUILDERS, AND WHAT THEY PROVE ABOUT THE HALF-PLANE ----
+//
+// THE HALF-PLANE UNITS ARE NOW PROVEN, not inferred from a ratio. Two earlier passes could only
+// say "consistent with tan(fov/2)"; LTMatrix_BuildPerspectiveProjection settles it. The caller does
+// `lea eax, [ebx+30h]` -- the SceneCamera's half view-plane pair -- and the builder emits
+//
+//     [ 1/halfX   0        0    0     ]
+//     [ 0         1/halfY  0    0     ]
+//     [ 0         0        1  -near   ]
+//     [ 0         0        1    0     ]      m[3][2] = 1, so w = z
+//
+// A perspective projection's x scale IS 1/tan(fovX/2). Here it is literally 1/halfX, so
+// halfX = tan(fovX/2), and the reciprocals the engine caches in k_vHalfViewPlane are exactly these
+// matrix scales -- which finally explains WHY it stores them at all.
+//
+// LTMatrix_BuildAffineProjection (mode 1) is a DIFFERENT matrix, not a rescaled one, and checking
+// that mattered because homogeneous matrices are scale-equivalent and the mislabel would have been
+// invisible. With k = far - near:
+//
+//     [ k/halfX   0        0    0     ]
+//     [ 0         k/halfY  0    0     ]
+//     [ 0         0        1  -near   ]
+//     [ 0         0        0    k     ]      m[3][2] = 0, so w ignores z
+//
+// Scaling the perspective matrix by k would give m[2][2] = k, m[2][3] = -k*near, m[3][2] = k and
+// m[3][3] = 0. This has m[2][2] = 1, m[2][3] = -near, m[3][2] = 0, m[3][3] = k: the nonzero moved
+// from m[3][2] to m[3][3], which no scaling can do.
+//
+// SO THE CLASSIFIER MUST KEY ON m[3][2], NOT m[3][3]. Three shapes exist here:
+//
+//     builder                                m[3][2]  m[3][3]  m[0][0]
+//     LTMatrix_BuildPerspectiveProjection       1        0      1/halfX
+//     LTMatrix_BuildAffineProjection            0       f-n     (f-n)/halfX
+//     the screen pass's stored matrix           0        1      2/width
+//
+// An earlier version of sdk::SceneCamera tested m[3][3] == 1, which quietly meant "the screen
+// pass's normalisation" and mislabelled mode 1. And the comparison must be RELATIVE to the w row
+// m[3][0..3] -- not to the whole matrix's largest coefficient, because a narrow field of view makes
+// m[0][0] enormous and a perspective m[3][2] of 1 then falls under max*epsilon and reads as affine.
+//
+// tan(fov/2) = m[3][2] / m[0][0] is the scale-invariant form, and the one the SDK uses.
+//
+// LTMatrix4x4_SetRowMajor16 (0x60C23C) is why every builder's argument list reads directly as the
+// matrix: it stores 16 floats to [ecx+0x00..0x3C] in argument order. Row-major with translation in
+// the last column, which a live read of the screen pass independently confirmed.
+//
+// THE PERSPECTIVE PATH IS NOT REACHABLE BY SAMPLING. 4000 consecutive reads of the record all found
+// mode 2: the engine leaves it in the affine screen pass between frames, since the UI draws last.
+// The 3D pass does write this record -- k_vHalfViewPlane still holds (2.2651, 0.6371) from one --
+// but mode 2 overwrites the record afterwards while the shader parameter keeps its older value.
+// So sdk::SceneCamera exposes the builders as pure functions, and the suite exercises the
+// classifiers and fov_*_radians() on a matrix of known shape. Building one with the engine's own
+// layout recovers 65.002 degrees vertical from half_y = 0.6371, and multiplying every coefficient
+// by 137.5 returns the identical angle. That tests the CLASS; it is not corroboration of the engine.
+
 //
 // EXPOSED AS sdk::SceneCamera, and the shape of that class is dictated by a hazard: THE RENDER
 // THREAD REWRITES THIS RECORD ONCE PER PASS. A field-by-field read can pair one pass's viewport

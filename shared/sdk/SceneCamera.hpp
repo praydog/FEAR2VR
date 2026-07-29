@@ -99,22 +99,60 @@ struct SceneCameraSnapshot {
     // non-finite positions beside perfectly unit-length rotations.
     bool pose_position_is_finite() const;
 
+    // ---- THE FIELD OF VIEW, NOW ESTABLISHED RATHER THAN GUESSED --------------------
+    //
+    // LTMatrix_BuildPerspectiveProjection builds m[0][0] = 1/half_x with m[3][2] = 1, and a
+    // perspective projection's x scale IS 1/tan(fov_x/2). So half_x = tan(fov_x/2), read off the
+    // builder rather than inferred from a ratio -- which is what two earlier passes could not do
+    // and why they exposed no FOV at all.
+    //
+    // Derived from the MATRIX, not from half_view_plane, and by the scale-invariant ratio
+    // tan(fov/2) = m[3][2] / m[0][0]. That form survives the wholesale scaling homogeneous
+    // matrices permit, so it stays correct if a pass hands over a matrix scaled by anything.
+    //
+    // nullopt unless the projection is perspective -- which is the precondition the earlier
+    // passes could not check and therefore declined to expose.
+    std::optional<float> fov_x_radians() const;
+    std::optional<float> fov_y_radians() const;
+
+    // Does the projection's x scale agree with the stored half-extent? For a perspective pass
+    // m[0][0] * half_x must equal m[3][2]. Ties the MATRIX to the SCALAR pair the engine
+    // publishes as k_vHalfViewPlane, two regions written at different moments, so it is both an
+    // offset check and the evidence behind fov_x_radians(). False for a non-perspective pass.
+    bool projection_agrees_with_half_view_plane(float tolerance = 0.02f) const;
+
     // Is the pose the identity -- position at the origin and rotation (0, 0, 0, 1)? True of the
     // engine's screen pass, whose camera is not a camera at all. A consumer distinguishing "the
     // engine gave me a real viewpoint" from "this is the 2D overlay pass" wants this rather than
     // the mode field, since it answers from the data.
     bool pose_is_identity(float tolerance = 1e-4f) const;
 
-    // Row-major perspective puts w in column 2 and 0 at [3][3]; an orthographic matrix keeps
-    // [3][3] == 1. Useful as a NECESSARY condition before treating half_view_plane as
-    // tan(fov/2), since that reading is certainly meaningless for the screen pass, and this
-    // tells the passes apart from the data rather than by trusting `mode`.
+    // ---- WHAT KIND OF PROJECTION IS THIS ------------------------------------------
     //
-    // NOT SUFFICIENT, though: a false answer only rules out THIS orthographic shape. It does
-    // not establish that the projection is a standard unit-depth perspective matrix, nor that
-    // the half-plane extents are taken at unit depth, so the tan(fov/2) reading stays
-    // provisional until the perspective builder (sub_610560 / sub_6105DA) is read.
-    bool is_orthographic_projection() const;
+    // Both tests key on m[3][2], the coefficient that makes the output w depend on z. That is
+    // the SCALE-INVARIANT discriminator, which matters because homogeneous matrices are
+    // scale-equivalent and this engine ships two affine variants with different overall scales:
+    //
+    //     builder                              m[3][2]  m[3][3]  m[0][0]
+    //     LTMatrix_BuildPerspectiveProjection     1        0      1/half_x
+    //     LTMatrix_BuildAffineProjection          0       f-n     (f-n)/half_x
+    //     the screen pass's stored matrix         0        1      2/width
+    //
+    // An earlier version of this class tested m[3][3] == 1, which quietly meant "the screen
+    // pass's normalisation" and mislabelled the mode-1 matrix.
+    bool is_perspective_projection() const;
+
+    // Largest absolute coefficient of the W ROW m[3][0..3]; 0 when any matrix entry is
+    // non-finite. Exposed because it is the yardstick the classifiers use, and a consumer writing
+    // its own relative comparison wants this one rather than an absolute epsilon -- or the whole
+    // matrix's maximum, which couples the comparison to the projection's dynamic range and can
+    // read a narrow-FOV perspective matrix as affine.
+    float projection_w_row_scale() const;
+    bool is_affine_projection() const;
+
+    // The screen pass's specific NORMALISED orthographic shape: affine AND m[3][3] == 1, which
+    // is what makes the 2/width identity below exact. Narrower than "not perspective".
+    bool is_normalized_orthographic_projection() const;
 
     // The verified invariant: for an orthographic pass, [0][0] == 2/width and [1][1] == -2/height.
     //
@@ -122,13 +160,41 @@ struct SceneCameraSnapshot {
     // projection floats, which the render thread writes at different moments, so it detects a
     // tear BETWEEN THOSE TWO REGIONS. It is a partial check, not an atomicity proof: a write
     // that tore only the view, derived or trailing matrices would still satisfy it. Returns
-    // false for a perspective projection, where the identity does not apply; check
-    // is_orthographic_projection() first.
+    // false for anything but a normalised orthographic matrix, where the identity does not
+    // apply; check is_normalized_orthographic_projection() first.
     bool projection_matches_viewport_ortho(float tolerance = 0.02f) const;
 };
 
 class SceneCamera {
 public:
+    // ---- BUILDING A PROJECTION IN THE ENGINE'S OWN LAYOUT ---------------------------
+    //
+    // Transcribed from LTMatrix_BuildPerspectiveProjection (0x610560) and
+    // LTMatrix_BuildAffineProjection (0x6105DA), including their row-major order and the
+    // translation-in-column-3 convention that a live read of the screen pass confirmed.
+    //
+    // A consumer that wants to REPLACE a projection -- a per-eye frustum, a changed field of
+    // view -- needs one built the way the engine builds them, not the way some other convention
+    // would. That is what these are for. They also make the classifiers and fov_*_radians()
+    // exercisable on a known matrix, which matters because the engine leaves this record in its
+    // affine screen pass between frames: the perspective path is not reachable by sampling.
+    //
+    //   perspective:  [ 1/hx  0     0   0    ]      affine (k = far - near):
+    //                 [ 0     1/hy  0   0    ]        [ k/hx  0     0   0     ]
+    //                 [ 0     0     1  -near ]        [ 0     k/hy  0   0     ]
+    //                 [ 0     0     1   0    ]        [ 0     0     1  -near  ]
+    //                                                 [ 0     0     0   k     ]
+    // BOTH RETURN nullopt RATHER THAN A MALFORMED MATRIX. A zero or non-finite half-extent would
+    // otherwise produce a matrix with a zero scale coefficient that still classifies as
+    // perspective -- usable-looking and wrong, which is the worst thing a builder can hand back.
+    // Requires finite, strictly positive half-extents, a finite near plane, and for the affine
+    // form a non-zero finite depth span.
+    static std::optional<std::array<float, 16>> make_perspective_projection(float half_x,
+                                                                           float half_y,
+                                                                           float near_z);
+    static std::optional<std::array<float, 16>> make_affine_projection(float half_x, float half_y,
+                                                                      float near_z, float far_z);
+
     // Address of the record (g_SceneRenderer+8), or 0 when the exe is not mapped.
     static uintptr_t record_address();
 
