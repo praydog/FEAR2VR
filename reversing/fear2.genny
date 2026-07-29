@@ -4492,10 +4492,11 @@ class LTInputDeviceMouse 0x30 {
 //     holder +324  ->  LTRotation rotation          norm 1.000000
 //     holder +600  ->  engine LTObject, type 1 (OT_MODEL), dims (40, 95, 40)
 //
-// THE MODEL AT +600 IS THE SAME OBJECT sdk::CClientShell::local_player() NAMES, and that is proven rather
-// than assumed: its asset filename reads char\player\player\fp_playerm05.mdl and its dims are (40, 95, 40),
-// exactly the pair already recorded for the shell's player slot. Two unrelated routes -- a game-side manager
-// and the engine's shell -- reaching one object.
+// THE MODEL AT +600 IS *NOT* THE OBJECT sdk::CClientShell::local_player() NAMES -- THIS PARAGRAPH ORIGINALLY
+// CLAIMED IT WAS, "proven rather than assumed", ON THE EVIDENCE BELOW. Read the correction further down
+// ("TWO CO-LOCATED PLAYER MODELS") before using any of it. The evidence was: its asset filename reads
+// char\player\player\fp_playerm05.mdl and its dims are (40, 95, 40), exactly the pair recorded for the
+// shell's player slot, at exactly the same world position. All true, and all shared by a duplicate.
 //
 // THE ANCHOR AT +188 IS DIMENSIONLESS, CLIENT-ONLY, AND SITS 70.95 UNITS ABOVE THE MODEL'S ORIGIN, with a
 // full delta of (-8.911, 70.948, -0.177). Its rotation is BIT-IDENTICAL to the holder's, while its position
@@ -4511,3 +4512,34 @@ class LTInputDeviceMouse 0x30 {
 // say which one it means.
 //
 // 961 checks, 0 failures.
+
+// ---- TWO CO-LOCATED PLAYER MODELS, AND WHY ASSET-PLUS-DIMS IS NOT IDENTITY -------------------------
+//
+// Last pass I matched the model at holder+600 against CClientShell::local_player on asset filename, dims and
+// world position, found all three equal, and recorded them as ONE OBJECT "proven by two unrelated routes".
+// Pointer equality refutes it:
+//
+//     holder + 600                 0x1C760D68   handle 0xFFFF   flags 0x00020021
+//     CClientShell::local_player   0x2C6C2688   handle 0x1CE2   flags 0x000000B9
+//
+// Both are vtbl_OT_MODEL, both at (2191.95, 1501.11, -2233.60), both dims (40, 95, 40), both
+// char\player\player\fp_playerm05.mdl. THE GAME KEEPS A CLIENT-ONLY DUPLICATE of the player model beside the
+// server-backed one, and asset, dims and position are exactly what a duplicate shares.
+//
+// THE DISCRIMINATOR IS THE ENGINE'S OWN: CLTClient_IsServerObject's entire body is `handle != 0xFFFF`. The
+// holder's model is client-created; the shell's is server-backed. Exposed as sdk::PlayerMgr::is_server_backed
+// because it is the only field that separates them, and a consumer moving or hiding "the player model" gets
+// a local change or a replicated one depending purely on which it happens to hold.
+//
+// > Matching on every attribute a duplicate also has is not identification. The three fields I compared were
+// > chosen because they were easy to read, not because anything made them unique -- and the one field that
+// > IS a discriminator was already documented in this file, on LTObject.handle.
+//
+// The view anchor at holder+188 is client-created too, and is further characterised now: engine class
+// vtbl_LTObject_OT_NORMAL, dims (0,0,0), and flags 0x00000000 -- NO OBJECT FLAGS AT ALL, so it can neither
+// render nor collide. Carrying a transform is the only thing it does, which is the strongest statement
+// available for "view anchor" short of a code path. Still not called the camera.
+//
+// EXPOSED AS sdk::PlayerMgr: manager, the four slots and first-occupied semantics the game's own commands
+// use, the holder pose (validated by the unit-quaternion test rather than trusted), both engine objects,
+// is_server_backed, eye_offset and anchor_rotation_matches_pose. 977 checks.

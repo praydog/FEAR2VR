@@ -4213,6 +4213,69 @@ int main(int argc, char** argv) {
             check(json_bool(body, "console_api_slots_distinct", cs_sd) && cs_sd,
                   "the three console API slots are three different functions");
 
+            // ---- THE GAME'S PLAYER, AND TWO MODELS THAT LOOK IDENTICAL -----------------------------
+            //
+            // gameclient keeps its own player pose in a holder, and that holder owns two engine objects: a
+            // transform-only view anchor and a player model. The model shares asset, dims and world
+            // position with the object CClientShell::local_player returns -- which an earlier pass took for
+            // identity and called proven. It is not the same object.
+            //
+            // So the checks assert BOTH halves: same description, different objects, told apart by the
+            // engine's own server/client discriminator. Asserting only "co-located" or only "distinct"
+            // would let the confusion back in.
+            bool pm_mgr = false, pm_read = false, pm_unit = false;
+            check(json_bool(body, "pmgr_manager_resolved", pm_mgr) && pm_mgr,
+                  "the game's player manager resolves");
+            check(json_bool(body, "pmgr_player_read", pm_read) && pm_read,
+                  "the first occupied player slot reads as a player");
+            check(json_bool(body, "pmgr_rotation_unit", pm_unit) && pm_unit,
+                  "the game-side pose carries a unit quaternion");
+
+            double pm_slots = -1.0, pm_first = -1.0;
+            check(json_double(body, "pmgr_occupied_slots", pm_slots) && pm_slots >= 1.0 &&
+                      pm_slots <= 4.0,
+                  "between one and four player slots are occupied");
+            check(json_double(body, "pmgr_first_slot", pm_first) && pm_first >= 0.0 && pm_first < 4.0,
+                  "the first occupied slot is a valid index");
+
+            bool pm_distinct = false, pm_colocated = false, pm_client = false, pm_server = false;
+            check(json_bool(body, "pmgr_models_are_distinct", pm_distinct) && pm_distinct,
+                  "the holder's model is NOT the object the shell hands out");
+            check(json_bool(body, "pmgr_models_co_located", pm_colocated) && pm_colocated,
+                  "yet both player models sit at exactly the same world position");
+            check(json_bool(body, "pmgr_holder_model_client_only", pm_client) && pm_client,
+                  "the holder's model is client-created, with no server counterpart");
+            check(json_bool(body, "pmgr_shell_model_server_backed", pm_server) && pm_server,
+                  "the shell's model IS server-backed -- the discriminator that separates them");
+
+            // The anchor carries a transform and nothing else. No flags means it cannot render or collide,
+            // no dims means it has no extent -- which is the whole basis for calling it a view anchor, so it
+            // is asserted rather than described in a comment.
+            bool pm_af = false, pm_ad = false, pm_ac = false, pm_ar = false;
+            check(json_bool(body, "pmgr_anchor_no_flags", pm_af) && pm_af,
+                  "the view anchor has no object flags at all");
+            check(json_bool(body, "pmgr_anchor_no_dims", pm_ad) && pm_ad,
+                  "the view anchor has zero dimensions");
+            check(json_bool(body, "pmgr_anchor_client_only", pm_ac) && pm_ac,
+                  "the view anchor is client-created");
+            check(json_bool(body, "pmgr_anchor_rot_matches", pm_ar) && pm_ar,
+                  "the anchor's rotation is bit-identical to the game-side pose");
+
+            // The eye offset a VR mod needs, and its shape is the check: the anchor sits ABOVE the model by
+            // most of the offset's length, which is what an eye height looks like and what a mis-offset
+            // field would not produce.
+            double pm_eye_y = -1.0, pm_eye_len = -1.0;
+            const bool pme = json_double(body, "pmgr_eye_offset_y", pm_eye_y) &&
+                             json_double(body, "pmgr_eye_offset_len", pm_eye_len);
+            check(pme && pm_eye_y > 40.0 && pm_eye_y < 120.0,
+                  "the view anchor sits an eye height above the model's origin");
+            check(pme && pm_eye_len > pm_eye_y && pm_eye_len < pm_eye_y * 1.5,
+                  "that offset is mostly vertical rather than pointing off sideways");
+
+            bool pm_bounds = false;
+            check(json_bool(body, "pmgr_bounds_refused", pm_bounds) && pm_bounds,
+                  "an out-of-range slot and a null holder are both refused");
+
             // ---- ONE CONSOLE VARIABLE, TWO REPRESENTATIONS -----------------------------------------
             //
             // EngineVars derives a variable's typed storage from the engine's built-in descriptor table.

@@ -32,6 +32,7 @@
 #include "sdk/Console.hpp"
 #include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
+#include "sdk/PlayerMgr.hpp"
 #include "sdk/Resources.hpp"
 #include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
@@ -4277,6 +4278,70 @@ std::string build_shader_params_json() {
                          !sdk::Console::variable_record("").has_value());
     const auto cvar_apply = sdk::Console::variable_float("ApplyWorldOffset");
     json_append_double(out, "cvar_apply_world_offset", cvar_apply.value_or(-1.0f), 3);
+
+    // ---- THE GAME'S OWN PLAYER, AND THE OBJECT IDENTITY THAT TIES IT TO THE ENGINE'S -------------
+    //
+    // gameclient's player manager reaches the same engine model object CClientShell::local_player names, by
+    // a completely unrelated route. That agreement is the check worth making: two independent paths to one
+    // pointer cannot both be a lucky offset.
+    const auto pm_player = sdk::PlayerMgr::local_player();
+    json_append_bool(out, "pmgr_manager_resolved", sdk::PlayerMgr::manager() != 0);
+    json_append_double(out, "pmgr_occupied_slots",
+                       static_cast<double>(sdk::PlayerMgr::occupied_slot_count()), 0);
+    json_append_double(out, "pmgr_first_slot",
+                       static_cast<double>(sdk::PlayerMgr::first_occupied_slot().value_or(99)), 0);
+    json_append_bool(out, "pmgr_player_read", pm_player.has_value());
+    if (pm_player.has_value()) {
+        json_append_bool(out, "pmgr_rotation_unit", pm_player->pose.rotation_is_unit());
+        json_append_bool(out, "pmgr_has_anchor", pm_player->view_anchor != 0);
+        json_append_bool(out, "pmgr_has_model", pm_player->model_object != 0);
+        // TWO CO-LOCATED PLAYER MODELS, not one. The holder's model and the shell's share asset, dims and
+        // position -- which is what an earlier pass mistook for identity -- and differ by the engine's own
+        // server/client discriminator. Both halves are asserted: same description, different objects.
+        bool same_pointer = true;
+        bool same_position = false;
+        if (const auto shell_player = sdk::CClientShell::local_player(0)) {
+            const auto shell_obj = reinterpret_cast<uintptr_t>(shell_player->object);
+            same_pointer = shell_obj == pm_player->model_object;
+            std::array<float, 3> a{};
+            std::array<float, 3> b{};
+            if (sdk::mem::copy(a.data(), shell_obj + 0x14, sizeof(a)) &&
+                sdk::mem::copy(b.data(), pm_player->model_object + 0x14, sizeof(b))) {
+                same_position = a == b;
+            }
+            json_append_bool(out, "pmgr_shell_model_server_backed",
+                             sdk::PlayerMgr::is_server_backed(shell_obj).value_or(false));
+        }
+        json_append_bool(out, "pmgr_models_are_distinct", !same_pointer);
+        json_append_bool(out, "pmgr_models_co_located", same_position);
+        json_append_bool(out, "pmgr_holder_model_client_only",
+                         sdk::PlayerMgr::is_server_backed(pm_player->model_object).value_or(true) == false);
+        json_append_bool(out, "pmgr_anchor_client_only",
+                         sdk::PlayerMgr::is_server_backed(pm_player->view_anchor).value_or(true) == false);
+        // The anchor is transform-only: no flags, no dims. That is what makes it a view anchor rather than
+        // a thing in the world, and it is asserted rather than described.
+        const auto anchor_flags = sdk::mem::read_u32(pm_player->view_anchor + 0x3C);
+        std::array<float, 3> anchor_dims{};
+        const bool dims_ok =
+            sdk::mem::copy(anchor_dims.data(), pm_player->view_anchor + 0x64, sizeof(anchor_dims));
+        json_append_bool(out, "pmgr_anchor_no_flags", anchor_flags.value_or(1u) == 0u);
+        json_append_bool(out, "pmgr_anchor_no_dims",
+                         dims_ok && anchor_dims[0] == 0.0f && anchor_dims[1] == 0.0f &&
+                             anchor_dims[2] == 0.0f);
+        json_append_bool(out, "pmgr_anchor_rot_matches",
+                         sdk::PlayerMgr::anchor_rotation_matches_pose(0).value_or(false));
+        if (const auto eye = sdk::PlayerMgr::eye_offset(0)) {
+            json_append_double(out, "pmgr_eye_offset_y", (*eye)[1], 3);
+            json_append_double(out, "pmgr_eye_offset_len",
+                               std::sqrt((*eye)[0] * (*eye)[0] + (*eye)[1] * (*eye)[1] +
+                                         (*eye)[2] * (*eye)[2]),
+                               3);
+        }
+    }
+    // An out-of-range slot and an empty one are both refused.
+    json_append_bool(out, "pmgr_bounds_refused",
+                     !sdk::PlayerMgr::slot(4).has_value() && !sdk::PlayerMgr::player(4).has_value() &&
+                         !sdk::PlayerMgr::read_pose(0).has_value());
 
     // The game-registered commands a VR mod actually reaches for. None of these are in the engine's table,
     // so finding them proves the walk sees past the static 34.
