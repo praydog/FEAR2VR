@@ -70,6 +70,33 @@ public:
     };
     std::optional<Children> children_of(size_t index) const;
 
+    // ---- DERIVED HIERARCHY QUERIES ----------------------------------------------
+    //
+    // parent_of() and children_of() are one step. These are the walks every skeletal consumer ends
+    // up writing -- and writing carefully, because a malformed chain must not spin. The guard belongs
+    // here once rather than at each call site.
+    //
+    // The walk relies on a property this suite measures rather than assumes: every non-root parent
+    // index is LESS than its own index (34/34 assets), so a chain strictly descends and terminates.
+    // A forward or self reference is treated as malformed and reported, not walked around.
+
+    // How many steps to the root; 0 for the root itself. nullopt when the index is out of range or
+    // the chain is malformed. Live the deepest skeleton is 11.
+    static constexpr size_t kMaxNodeDepth = 64;
+    std::optional<size_t> node_depth(size_t index) const;
+
+    // The chain from `index` up to and including the root, nearest first. Empty when the index is out
+    // of range or the chain is malformed -- which is distinguishable from a valid root, since a root
+    // yields exactly itself.
+    //
+    // This is what "which limb is this bone on" needs: test whether a known node appears in the
+    // chain, without every caller re-walking parents by hand.
+    std::vector<size_t> node_chain_to_root(size_t index) const;
+
+    // Is `ancestor` on `index`'s path to the root? False when either index is out of range, and false
+    // for a node against itself -- an ancestor is strictly above.
+    bool node_has_ancestor(size_t index, size_t ancestor) const;
+
     // Each node stores TWO (position, rotation) pairs. Which is which is NOT
     // established -- the obvious reading, that the second is the first's rigid
     // inverse, was tested and fails on most nodes (see fear2.genny's LTModelNode).

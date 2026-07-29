@@ -2116,6 +2116,9 @@ std::string build_objects_json() {
                api_bind_nodes = 0, api_bind_unit = 0, api_bind_finite = 0, api_bind_shared = 0,
                api_bind_shared_ok = 0, api_bind_same_array = 0, api_bind_n_shallow = 0,
                api_bind_n_deep = 0, api_bind_max_depth = 0, api_bind_n_edge = 0,
+               api_hier_probed = 0, api_hier_depth_ok = 0, api_hier_max_depth = 0,
+               api_hier_roots = 0, api_hier_root_zero = 0, api_hier_step_ok = 0,
+               api_hier_anc_ok = 0, api_hier_self_ok = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
                api_node_xform_clean_sane = 0, api_camera_node_clean = 0,
                api_dims_ok = 0, api_dims_nonneg = 0, api_dims_zero = 0,
@@ -2573,6 +2576,39 @@ std::string build_objects_json() {
                         if (sk->find_socket("camera").has_value()) {
                             ++api_socket_camera;
                         }
+                        // DERIVED HIERARCHY QUERIES, exercised as a consumer would: the walking and
+                        // the malformed-chain guard live in ModelSkeleton, so this only aggregates.
+                        for (size_t ni = 0; ni < sk->node_count(); ++ni) {
+                            ++api_hier_probed;
+                            const auto d = sk->node_depth(ni);
+                            if (!d.has_value()) {
+                                continue;  // malformed chain -- counted by the shortfall
+                            }
+                            ++api_hier_depth_ok;
+                            if (*d > api_hier_max_depth) {
+                                api_hier_max_depth = *d;
+                            }
+                            const auto par = sk->parent_of(ni);
+                            if (!par.has_value()) {
+                                ++api_hier_roots;
+                                if (*d == 0) {
+                                    ++api_hier_root_zero;
+                                }
+                                continue;
+                            }
+                            // depth(child) == depth(parent) + 1, and the parent must be an ancestor.
+                            // Two independent consequences of one walk.
+                            if (const auto pd = sk->node_depth(*par);
+                                pd.has_value() && *d == *pd + 1) {
+                                ++api_hier_step_ok;
+                            }
+                            if (sk->node_has_ancestor(ni, *par)) {
+                                ++api_hier_anc_ok;
+                            }
+                            if (!sk->node_has_ancestor(ni, ni)) {
+                                ++api_hier_self_ok;
+                            }
+                        }
                         // THE BIND POSE IS ASSET DATA, so every object sharing an asset must
                         // report the SAME bind pose for the same node. That is the check which
                         // distinguishes asset data from a per-object cache -- had the offset been a
@@ -2765,6 +2801,14 @@ std::string build_objects_json() {
         .u("bind_finite", api_bind_finite)
         .u("bind_shared", api_bind_shared)
         .u("bind_shared_ok", api_bind_shared_ok)
+        .u("hier_probed", api_hier_probed)
+        .u("hier_depth_ok", api_hier_depth_ok)
+        .u("hier_max_depth", api_hier_max_depth)
+        .u("hier_roots", api_hier_roots)
+        .u("hier_root_zero", api_hier_root_zero)
+        .u("hier_step_ok", api_hier_step_ok)
+        .u("hier_anc_ok", api_hier_anc_ok)
+        .u("hier_self_ok", api_hier_self_ok)
         .u("bind_same_array", api_bind_same_array)
         .u("bind_max_depth", api_bind_max_depth)
         .u("bind_n_shallow", api_bind_n_shallow)

@@ -2973,6 +2973,42 @@ int main(int argc, char** argv) {
                 json_int(ab, "bind_finite", bfin);
                 json_int(ab, "bind_shared", bshared);
                 json_int(ab, "bind_shared_ok", bsharedok);
+                // ---- DERIVED HIERARCHY QUERIES --------------------------------------------
+                //
+                // node_depth / node_chain_to_root / node_has_ancestor put the guarded walk in the
+                // SDK once instead of at every call site. The checks are consequences of ONE walk
+                // seen from different angles, and they PARTITION the population, which is what makes
+                // the agreement mean something rather than being a restatement.
+                int64_t hp = -1, hdok = -1, hmax = -1, hroots = -1, hrz = -1, hstep = -1, hanc = -1,
+                        hself = -1;
+                json_int(ab, "hier_probed", hp);
+                json_int(ab, "hier_depth_ok", hdok);
+                json_int(ab, "hier_max_depth", hmax);
+                json_int(ab, "hier_roots", hroots);
+                json_int(ab, "hier_root_zero", hrz);
+                json_int(ab, "hier_step_ok", hstep);
+                json_int(ab, "hier_anc_ok", hanc);
+                json_int(ab, "hier_self_ok", hself);
+                check(hp > 0, "nodes were walked");
+
+                // No malformed chains: every node reaches its root within the guard. This is the
+                // property the walk relies on, so it is asserted rather than assumed.
+                check(hdok == hp, "EVERY node has a well-formed chain to its root");
+                check(hmax > 0 && hmax < 64, "the deepest chain is within the depth guard");
+
+                // Roots and non-roots must ADD UP to the population -- the shape that turns three
+                // agreeing counts into a real check.
+                check(hroots > 0 && hroots < hp, "the population splits into roots and non-roots");
+                check(hrz == hroots, "EVERY root has depth zero");
+                check(hstep == hp - hroots,
+                      "depth(child) == depth(parent) + 1 for EVERY non-root");
+                check(hanc == hp - hroots, "a node's parent is always among its ancestors");
+                check(hself == hp - hroots, "and no node is its own ancestor");
+                printf("[fixture] hierarchy: %lld nodes, %lld roots at depth 0, %lld links step by "
+                       "one (max depth %lld)\n",
+                       static_cast<long long>(hp), static_cast<long long>(hroots),
+                       static_cast<long long>(hstep), static_cast<long long>(hmax));
+
                 check(bnodes > 0, "bind poses were read, so the checks are not vacuous");
                 check(bunit == bnodes, "EVERY bind rotation is unit-length");
                 check(bfin == bnodes, "EVERY bind position is finite");

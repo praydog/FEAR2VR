@@ -1307,6 +1307,49 @@ int64_t seh_read_fallback_position(const void* records, size_t index, float* out
 
 }  // namespace
 
+std::vector<size_t> ModelSkeleton::node_chain_to_root(size_t index) const {
+    std::vector<size_t> out;
+    if (index >= m_count) {
+        return out;
+    }
+    size_t at = index;
+    for (size_t steps = 0; steps < kMaxNodeDepth; ++steps) {
+        out.push_back(at);
+        const auto par = parent_of(at);
+        if (!par.has_value()) {
+            return out;  // reached the root
+        }
+        // A chain must strictly descend. Anything else is malformed, and reporting that is better
+        // than silently returning a partial path.
+        if (*par >= at) {
+            return {};
+        }
+        at = *par;
+    }
+    return {};  // ran past the depth guard: malformed
+}
+
+std::optional<size_t> ModelSkeleton::node_depth(size_t index) const {
+    const auto chain = node_chain_to_root(index);
+    if (chain.empty()) {
+        return std::nullopt;
+    }
+    return chain.size() - 1;
+}
+
+bool ModelSkeleton::node_has_ancestor(size_t index, size_t ancestor) const {
+    if (index == ancestor) {
+        return false;  // strictly above
+    }
+    const auto chain = node_chain_to_root(index);
+    for (size_t i = 1; i < chain.size(); ++i) {
+        if (chain[i] == ancestor) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<regenny::LTVector>
 ModelSkeleton::anim_fallback_position(size_t node_index) const {
     if (m_records == nullptr || node_index >= m_count) {
