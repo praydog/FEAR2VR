@@ -1674,6 +1674,36 @@ int main(int argc, char** argv) {
                 check(aaddr == ahnd,
                       "sdk::is_server_object matches handle presence exactly (the "
                       "engine's CLTClient::IsServerObject is that same comparison)");
+
+                // ATTACHMENTS. The load-bearing assertion is the LAST one: every
+                // attachment that reports a socket must resolve that socket to a bone
+                // NAME through the model API. That crosses two subsystems -- the
+                // attachment record's socket field and the model asset's node table --
+                // so it fails if either offset moves, and it is the consequence of the
+                // biconditional that identified the field (a socket is an index exactly
+                // when the owner is a model).
+                int64_t awa = -1, aat = -1, aco = -1, aso = -1, asn = -1;
+                json_int(ab, "with_attachments", awa);
+                json_int(ab, "attachments", aat);
+                json_int(ab, "att_child_ok", aco);
+                json_int(ab, "att_socketed", aso);
+                json_int(ab, "att_socket_named", asn);
+                check(awa > 0, "some objects carry attachments");
+                check(aat >= awa,
+                      "every attachment list holds at least one record (no empty heads)");
+                // REPORTED, not required equal: a record may name a handle whose table
+                // slot is not live, and the engine's own walker skips those. Live 327
+                // of 362 resolve, so demanding all of them would fail on a truth.
+                check(aco >= 0 && aco <= aat,
+                      "resolved attachment children are a reported fraction of records");
+                check(aso >= 0 && aso <= aat,
+                      "socketed attachments are a subset of all attachments");
+                check(asn == aso,
+                      "EVERY socketed attachment resolves its socket to a bone name");
+                printf("[fixture] attachments: %lld records on %lld objects, %lld resolved, "
+                       "%lld on bones\n",
+                       static_cast<long long>(aat), static_cast<long long>(awa),
+                       static_cast<long long>(aco), static_cast<long long>(aso));
             }
         }
 

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "regenny/regenny/LTObject.hpp"
 #include "regenny/regenny/LTRotation.hpp"
@@ -115,5 +116,53 @@ std::optional<bool> is_renderable(const regenny::LTObject* obj);
 // slot_index agrees completely (present on exactly the same 3248 objects), so a
 // caller need not check both.
 std::optional<bool> is_server_object(const regenny::LTObject* obj);
+
+// ---- ATTACHMENTS -------------------------------------------------------------
+//
+// What is riding on this object, and where. For a VR mod this is the question behind
+// "where is the weapon" and "what is on the player's back": FEAR 2 hangs a list of
+// attachment records off every object that has children mounted on it (live, 139 of
+// 3583 objects do, holding 362 records between them).
+//
+// One record per attached object, in the engine's own list order.
+struct Attachment {
+    // The attached object, already resolved through the engine's handle table using
+    // the engine's own rule (slot tag must be live). NULLPTR IS A NORMAL RESULT: live,
+    // 327 of 362 records resolve and 35 do not, because a record can name a handle
+    // whose slot is not live. The engine's own walker checks this before touching the
+    // child, and so should a caller.
+    const regenny::LTObject* child;
+
+    // The raw handle, kept even when the child does not resolve -- useful for logging
+    // and for noticing that a specific attachment went stale.
+    uint16_t child_handle;
+
+    // WHICH BONE the child rides, as an index into the PARENT's skeleton. nullopt when
+    // the parent is not a model, which is the engine's own condition: the field holds a
+    // node index exactly when the owner is OT_MODEL (27/27 live) and the sentinel 127
+    // otherwise (335/335). Note the sentinel is 127 here and NOT -1, whatever the
+    // reference SDK says.
+    //
+    // To get the bone's NAME, compose with the model API rather than expecting it
+    // here:
+    //     if (auto skel = sdk::ModelSkeleton::from_object(parent); skel && a.socket)
+    //         auto name = skel->node_name(*a.socket);   // e.g. "L_Shoulder"
+    std::optional<size_t> socket;
+
+    // The record's own offset transform. Live these are all zero and identity
+    // respectively, so they are UNEXERCISED in the sampled state -- do not assume they
+    // are always neutral, and do not assume they are meaningful either.
+    regenny::LTVector offset_position;
+    regenny::LTRotation offset_rotation;
+};
+
+// Empty when the object has no attachments, is null, or the walk faulted -- a caller
+// that needs to tell those apart does not exist yet, and inventing the distinction
+// would mean inventing a failure mode.
+//
+// The walk is BOUNDED AND CYCLE-CHECKED even though live lists are short (1..16 long,
+// no cycles over 139 lists): this reads a live mutating structure, and a torn list
+// must return a short answer rather than hang the caller's frame.
+std::vector<Attachment> attachments(const regenny::LTObject* obj);
 
 }  // namespace sdk

@@ -11,6 +11,9 @@ namespace regenny {
 class LTSpatialRecord;
 }
 namespace regenny {
+class LTAttachment;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class LTObject {
 public:
@@ -44,7 +47,7 @@ public:
     private: char pad_90[0x18]; public:
     uint32_t slot_index; // 0xa8
     regenny::CClientMgrListLink list_link; // 0xac
-    private: char pad_b4[0x4]; public:
+    regenny::LTAttachment* attachments; // 0xb4
     regenny::CClientMgrListLink owned_list; // 0xb8
     private: char pad_c0[0x4]; public:
     regenny::LTWorldTreeLink world_tree_link; // 0xc4

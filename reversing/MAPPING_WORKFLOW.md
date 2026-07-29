@@ -963,6 +963,29 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A probe loop that forgets to ADVANCE reports inflated counts that look real.**
+  While classifying attachment sockets I wrote a walk that read `record + 0x20`, did
+  the classification, and never assigned `cur = record->next`. It re-read the FIRST
+  record of every list 64 times and reported "768 model sockets in range, 8128
+  sentinels" -- ratios that were perfectly consistent, conclusions that were
+  perfectly wrong, and no error anywhere.
+
+  What exposed it was ARITHMETIC, not suspicion: 768 + 8128 = 8896 = 139 x 64, i.e.
+  every list had run exactly to the iteration cap. A total that is a clean multiple of
+  your own loop bound is never a coincidence.
+
+  Two habits fall out, and both are cheap:
+  1. **Print the record count and compare it against an independently-derived total.**
+     The correct walk found 362 records; the broken one found 8896. Either number
+     alone looks fine.
+  2. **Walk with cycle detection from the start** -- a visited set, and a distinct
+     report for "terminated" versus "hit the cap". The corrected walk reported 139
+     lists, 362 records, lengths 1..16, zero cycles, which is a sentence a broken walk
+     cannot produce.
+
+  Note the SDK version of this walk carries the cycle guard into shipped code for a
+  different reason -- the engine's list can be torn mid-frame -- so the test habit and
+  the production requirement happen to agree here.
 - **THE ENGINE NAMES ITS OWN FUNCTIONS. Read the error strings first.** This is the
   highest-yield technique in this file and it should be tried before any behavioural
   classification, because when it applies it gives an EXACT name, not a guess.

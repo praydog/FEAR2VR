@@ -885,7 +885,9 @@ std::string build_objects_json() {
     {
         size_t api_objects = 0, api_renderable = 0, api_info_ok = 0, api_camera_bit = 0,
                api_cameras = 0, api_with_handle = 0, api_with_slot = 0,
-               api_identities_agree = 0, api_addressable = 0;
+               api_identities_agree = 0, api_addressable = 0, api_with_attachments = 0,
+               api_attachments = 0, api_att_child_ok = 0, api_att_socketed = 0,
+               api_att_socket_named = 0;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -925,19 +927,45 @@ std::string build_objects_json() {
                     if (const auto a = sdk::is_server_object(obj); a.value_or(false)) {
                         ++api_addressable;
                     }
+                    // ATTACHMENTS, walked the way a mod would: for every object, ask
+                    // what rides on it, and for the ones mounted on a bone resolve the
+                    // socket to a NAME through the model API. That composition is the
+                    // whole point of the field being an index rather than a string.
+                    const auto atts = sdk::attachments(obj);
+                    if (!atts.empty()) {
+                        ++api_with_attachments;
+                        api_attachments += atts.size();
+                        const auto skel = sdk::ModelSkeleton::from_object(obj);
+                        for (const auto& at : atts) {
+                            if (at.child != nullptr) {
+                                ++api_att_child_ok;
+                            }
+                            if (at.socket.has_value()) {
+                                ++api_att_socketed;
+                                if (skel.has_value() && *at.socket < skel->node_count() &&
+                                    skel->node_name(*at.socket).has_value()) {
+                                    ++api_att_socket_named;
+                                }
+                            }
+                        }
+                    }
                 }
                 if (const auto r = sdk::is_renderable(obj); r.value_or(false)) {
                     ++api_renderable;
                 }
             }
         }
-        char ab[384];
+        char ab[640];
         const int abw = snprintf(ab, sizeof(ab),
                  ",\"object_api\":{\"objects\":%zu,\"info_ok\":%zu,\"renderable\":%zu,"
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
-                 "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu}",
+                 "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu,"
+                 "\"with_attachments\":%zu,\"attachments\":%zu,\"att_child_ok\":%zu,"
+                 "\"att_socketed\":%zu,\"att_socket_named\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
-                 api_with_handle, api_with_slot, api_identities_agree, api_addressable);
+                 api_with_handle, api_with_slot, api_identities_agree, api_addressable,
+                 api_with_attachments, api_attachments, api_att_child_ok,
+                 api_att_socketed, api_att_socket_named);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {
