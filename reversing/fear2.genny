@@ -1198,9 +1198,19 @@ class CClientMgrCounterNode 0x40 {
 // pointer variable, so name -> global is a decoded relationship, not a guess from adjacency. Verified
 // live for all seven (holder+8 == &g_pXxx, and holder+4 reads back the expected name).
 //
-// AND THE VTABLE IS A SECOND, INDEPENDENT ROUTE: since one vtable serves one interface name, two
-// holders sharing a vtable are holders for the same interface. Useful when a name string is not to
-// hand -- e.g. grouping the 18 ILTOnlineService holders without reading 18 strings.
+// THE VTABLE CORROBORATES BUT MUST NOT BE USED AS IDENTITY, and the reason is specific to this DLL.
+// What was measured is narrow: among these 46 holders, 13 observed names map one-to-one onto 13
+// vtable addresses. That is an observation, not a rule -- nothing here shows two interfaces CANNOT
+// share a vtable address.
+//
+// And this is the DLL where ~133 identical retn-only methods were measured folded onto ONE address
+// (see shared_empty_stub). Identical CAPIHolder<T> vtables are exactly the kind of thing that folding
+// merges, and it would break the inference in the DANGEROUS direction: a folded vtable shared between
+// two interfaces makes "same vtable => same interface" false, silently. The one-to-one seen here is
+// contingent on those 13 vtables happening to differ, not on any guarantee that they must.
+//
+// So grouping holders by vtable is a cheap heuristic worth cross-checking, never the evidence.
+// Semantic identity stays where it was decoded: the name at +4 and the ppInterface at +8.
 //
 // WHY ADJACENCY IS A TRAP HERE: the seven pointers sit consecutively at 0x101FC160..0x101FC178, which
 // makes them LOOK like one table with an obvious order. They are seven separate variables, and an

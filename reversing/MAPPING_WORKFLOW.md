@@ -969,9 +969,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   another. The two I sampled differed because they belonged to two different interfaces -- the sample
   could not distinguish "per holder" from "per interface", which is exactly the question.
   
-  Counting was cheaper than hedging, and it paid: one vtable per name means the vtable is a SECOND
-  identity route independent of the +4 name string, so holders can be grouped by interface without
-  reading any strings.
+  Counting was cheaper than hedging. But the conclusion I drew from it went too far: I called the
+  vtable a second identity route, when the measured fact is only "13 observed names map one-to-one onto
+  13 addresses among these 46 holders". Nothing shows two interfaces cannot share a vtable ADDRESS --
+  and this is the very DLL where ~133 identical retn-only methods were measured folded onto one. Folding
+  identical CAPIHolder<T> vtables would break the inference in the dangerous direction, making "same
+  vtable => same interface" quietly false. Downgraded to a heuristic worth cross-checking; identity
+  stays with the name at +4 and ppInterface at +8.
+  
+  Worth naming the pattern: a one-to-one mapping observed across a sample is evidence about the sample.
+  Promoting it to a rule needs a reason the mapping CANNOT collapse -- and in this binary there is a
+  known mechanism that collapses exactly this kind of thing.
 
 - **DECODE THE RELATIONSHIP, DO NOT READ THE ADDRESSES.** Seven interface pointers sit consecutively at
   0x101FC160..0x101FC178 in gameclient.dll, so which global belongs to which interface looked obvious.
