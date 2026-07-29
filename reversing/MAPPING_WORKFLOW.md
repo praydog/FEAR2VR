@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **TRACE THE DELEGATE BEFORE DOUBTING THE CLAIM (and before shipping it).** I had "+0x24 is
+  parent-relative" from ILTModel_GetAnimNodeTransform walking the parent chain. Then I noticed its
+  combiner zeroes the output rotation to identity, read that as evidence AGAINST a plain compose, and
+  weakened the claim in the header.
+  
+  It was output INITIALISATION. One more decompile showed LTTransform_Compose doing exactly
+  `q_parent * q_child` and `p_parent + R(q_parent) * p_child` -- the standard composition, term for
+  term what the SDK helper computes. The claim was right, my doubt was wrong, and both the hedge and
+  the original overconfidence came from stopping one call short.
+  
+  A wrapper that sets up an output tells you nothing about the operation. Follow the delegate.
+
+- **A HELPER'S RETURN TYPE IS AN ASSERTION.** `anim_fallback_pose()` returned a struct named
+  `BindPose`, in the same header that spends paragraphs proving the fallback is NOT bind data. The
+  type name would have quietly taught every consumer the opposite of the finding. Renamed to
+  `NodePose`.
+  
+  When two things are measured to be different, make sure the C++ cannot be read as saying they are
+  the same.
+
 - **IDA MCP PORT ASSIGNMENTS ARE NOT STABLE ACROSS THE SESSION. `list_instances` first, every time.**
   Early in this session FEAR2_dump.exe was on 13339 and gameclient.dll on 13338; later they had
   swapped. Selecting the cached port "succeeded" and `server_health` still reported FEAR2_dump --

@@ -201,10 +201,13 @@ public:
     // PARENT-RELATIVE -- the one space fact in this record that rests on a reader rather than a
     // guess. Exposed because it is the only local pose available without evaluating anything, and
     // because composing it is how the bind pose's own space gets tested.
-    struct BindPose;
-    std::optional<BindPose> anim_fallback_pose(size_t node_index) const;
+    struct NodePose;
+    std::optional<NodePose> anim_fallback_pose(size_t node_index) const;
 
-    struct BindPose {
+    // NEUTRALLY NAMED ON PURPOSE. Both node poses come back as this, and calling it BindPose
+    // would let a consumer infer from the C++ type that the animation fallback IS bind data -- the
+    // exact conflation this header spends paragraphs warning about, and which measurement refuted.
+    struct NodePose {
         regenny::LTVector position;
         regenny::LTRotation rotation;
     };
@@ -219,9 +222,21 @@ public:
     // model with no animation driving those nodes. Treating it as the bind skeleton would be
     // adopting a semantic the evidence does not support.
     //
-    // Its value is that it is the one MODEL-SPACE skeleton available with no staleness, no
-    // evaluation and no game thread, because the fallback pair is provably parent-relative
-    // (ILTModel_GetAnimNodeTransform accumulates it up the chain) and the arithmetic is ours.
+    // THE ACCUMULATION RULE IS READ, NOT ASSUMED, and it matches this composition term for term.
+    // ILTModel_GetAnimNodeTransform walks the parent chain feeding each node's pair to
+    // LTTransform_ComposeIntoIdentity, which initialises the output rotation to identity and then
+    // calls LTTransform_Compose (0x424CEB):
+    //
+    //     out.rot = LTRotation_Multiply(parent.rot, child.rot)
+    //     out.pos = LTVector_Add(LTRotation_RotateVector(parent.rot, child.pos), parent.pos)
+    //
+    // i.e. `q_parent * q_child` and `p_parent + R(q_parent) * p_child` -- exactly what this helper
+    // computes. (The identity-zeroing briefly looked like evidence AGAINST a plain compose; it is
+    // just output initialisation before the real one.)
+    //
+    // So the field is parent-relative on the strength of the engine's own combiner, and the value
+    // here is that it is the one MODEL-SPACE candidate available with no staleness, no evaluation and
+    // no game thread.
     //
     // Validating it against GetAnimNodeTransform on a genuinely key-free path would upgrade this
     // from "our composition of a proven-local field" to "the engine's own answer"; that has not been
@@ -232,7 +247,7 @@ public:
     // hierarchy checks confirm.
     //
     // nullopt when the index is out of range, a read faulted, or the chain is malformed.
-    std::optional<BindPose> composed_fallback_pose(size_t node_index) const;
+    std::optional<NodePose> composed_fallback_pose(size_t node_index) const;
 
     // nullopt when the index is out of range or the read faulted.
     //
@@ -287,7 +302,7 @@ public:
     // settle it: the bind getter has no callers inside FEAR2.exe at all -- only its two vtable slots
     // -- so a consumer that composes its output lives in gameclient.dll, which is where to look.
     // Until then: do not compose these, and do not assume they are already composed.
-    std::optional<BindPose> bind_pose(size_t node_index) const;
+    std::optional<NodePose> bind_pose(size_t node_index) const;
 
     // ---- EYE GEOMETRY, FROM ASSET DATA ------------------------------------------
     //

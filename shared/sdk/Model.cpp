@@ -1309,7 +1309,7 @@ int64_t seh_read_fallback_pose(const void* records, size_t index, float* out) {
 
 }  // namespace
 
-std::optional<ModelSkeleton::BindPose>
+std::optional<ModelSkeleton::NodePose>
 ModelSkeleton::anim_fallback_pose(size_t node_index) const {
     if (m_records == nullptr || node_index >= m_count) {
         return std::nullopt;
@@ -1318,7 +1318,7 @@ ModelSkeleton::anim_fallback_pose(size_t node_index) const {
     if (seh_read_fallback_pose(m_records, node_index, v) < 0) {
         return std::nullopt;
     }
-    BindPose out{};
+    NodePose out{};
     out.position.x = v[0];
     out.position.y = v[1];
     out.position.z = v[2];
@@ -1329,7 +1329,7 @@ ModelSkeleton::anim_fallback_pose(size_t node_index) const {
     return out;
 }
 
-std::optional<ModelSkeleton::BindPose>
+std::optional<ModelSkeleton::NodePose>
 ModelSkeleton::composed_fallback_pose(size_t node_index) const {
     if (node_index >= m_count) {
         return std::nullopt;
@@ -1355,7 +1355,7 @@ ModelSkeleton::composed_fallback_pose(size_t node_index) const {
     if (depth == 0 || depth >= 64) {
         return std::nullopt;
     }
-    BindPose out{};
+    NodePose out{};
     bool first = true;
     for (size_t i = depth; i-- > 0;) {
         const auto local = anim_fallback_pose(chain[i]);
@@ -1390,7 +1390,7 @@ ModelSkeleton::composed_fallback_pose(size_t node_index) const {
     return out;
 }
 
-std::optional<ModelSkeleton::BindPose> ModelSkeleton::bind_pose(size_t node_index) const {
+std::optional<ModelSkeleton::NodePose> ModelSkeleton::bind_pose(size_t node_index) const {
     if (m_records == nullptr || node_index >= m_count) {
         return std::nullopt;
     }
@@ -1398,7 +1398,7 @@ std::optional<ModelSkeleton::BindPose> ModelSkeleton::bind_pose(size_t node_inde
     if (seh_read_bind_pose(m_records, node_index, v) < 0) {
         return std::nullopt;
     }
-    BindPose out{};
+    NodePose out{};
     out.position.x = v[0];
     out.position.y = v[1];
     out.position.z = v[2];
