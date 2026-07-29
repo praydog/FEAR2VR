@@ -929,6 +929,38 @@ std::string build_targets_json() {
             }
         }
     }
+    // WHICH WORLD IS LOADED. A wrong offset here does not fault -- it yields whatever bytes
+    // follow, which is why the checks are on the string's SHAPE: printable, non-empty, carrying
+    // the .wld extension the "WLDC" format implies, and with world_name() a genuine suffix of
+    // the path. Garbage passes none of those.
+    char wp_path[300]{};
+    char wp_name[300]{};
+    int wp_printable = 0, wp_len = 0;
+    {
+        if (const auto path = sdk::WorldBSP::world_path(); path.has_value()) {
+            wp_len = static_cast<int>(path->size());
+            const size_t n = path->size() < sizeof(wp_path) - 1 ? path->size() : sizeof(wp_path) - 1;
+            memcpy(wp_path, path->c_str(), n);
+            wp_printable = 1;
+            for (char c : *path) {
+                if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) {
+                    wp_printable = 0;
+                }
+            }
+        }
+        if (const auto name = sdk::WorldBSP::world_name(); name.has_value()) {
+            const size_t n = name->size() < sizeof(wp_name) - 1 ? name->size() : sizeof(wp_name) - 1;
+            memcpy(wp_name, name->c_str(), n);
+        }
+    }
+    // THE PATH CONTAINS BACKSLASHES, so it goes through the escaper instead of the format
+    // string. Emitting it raw produced invalid JSON at column 2678 -- the same trap the
+    // DatabaseMgr paths hit, which is exactly why json_escape_append already exists.
+    std::string world_json = "\"world_path\":";
+    json_escape_append(world_json, wp_path);
+    world_json += ",\"world_name\":";
+    json_escape_append(world_json, wp_name);
+    world_json += ',';
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -1123,6 +1155,7 @@ std::string build_targets_json() {
              "\"rch_comp_size\":%d,\"rch_hops_ok\":%d,"
              "\"wb_probed\":%d,\"wb_agree\":%d,\"wb_outside\":%d,\"wb_inside\":%d,"
              "\"wb_bounds_probed\":%d,\"wb_bounds_ok\":%d,"
+             "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
@@ -1210,6 +1243,7 @@ std::string build_targets_json() {
              rch_probed, rch_1hop_ok, rch_mono_ok, rch_sym_probed, rch_sym_ok,
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
+             wp_printable, wp_len,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],
              player_sector,
@@ -1239,7 +1273,8 @@ std::string build_targets_json() {
         return "{\"ok\":false,\"error\":\"targets truncated\",\"needed\":" +
                std::to_string(written) + "}";
     }
-    return buf;
+    // Splice the escaped string fields in after the '{' rather than through the format string.
+    return "{" + world_json + std::string(buf + 1);
 }
 
 // /sdk/models -- written the way a MOD would use the SDK, not the way the test

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "regenny/regenny/LTVector.hpp"
@@ -496,6 +497,30 @@ public:
         regenny::LTVector min;
         regenny::LTVector max;
     };
+
+    // ---- WHICH WORLD IS LOADED -----------------------------------------------
+    //
+    // The engine keeps the loaded .wld path in the instance at +0x4A, and hands it out through
+    // IWorldClientBSP vtable slot 9 (`lea eax, [ecx+4Ah]`). This is the first thing a mod needs
+    // for anything per-level -- a config keyed by map, a level-transition detector, deciding
+    // whether a scripted fix applies here -- and nothing else identifies the level.
+    //
+    // The buffer's CAPACITY is unverified: the schema records 44 because that is the observed
+    // string plus its terminator, not because a bound was found. So the read below scans for the
+    // terminator with a MAX_PATH cap rather than trusting 44, and is fault-guarded like every
+    // other read here.
+
+    // The path exactly as stored, e.g. "worlds\sp\m05_outershell\m05_outershell.wld".
+    // nullopt when the interface is unresolved or the read faulted; EMPTY when no world is
+    // loaded, which is a real state -- the constructor zeroes the first byte.
+    static std::optional<std::string> world_path();
+
+    // Just the map's own name, with directories and extension stripped -- "m05_outershell" for
+    // the path above. This is the form a per-level lookup key wants, and deriving it here means
+    // every consumer does not re-implement the same two searches.
+    //
+    // nullopt propagates from world_path(); empty stays empty.
+    static std::optional<std::string> world_name();
 
     // The bounds stored IN THE INSTANCE, at +0x04 and +0x10.
     static std::optional<Bounds> bounds();

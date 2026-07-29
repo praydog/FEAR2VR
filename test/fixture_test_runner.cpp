@@ -96,6 +96,41 @@ bool json_int(const std::string& body, const char* key, int64_t& out) {
     return true;
 }
 
+// Reads a JSON string value, undoing the escaping json_escape_append applies. Needed because
+// the world path is full of backslashes, so the raw and decoded forms differ and comparing the
+// raw one would silently test the escaping rather than the path.
+bool json_str(const std::string& body, const char* key, std::string& out) {
+    const std::string needle = std::string{"\""} + key + "\":\"";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) return false;
+    size_t i = p + needle.size();
+    out.clear();
+    for (; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"') return true;
+        if (c != '\\' || i + 1 >= body.size()) {
+            out.push_back(c);
+            continue;
+        }
+        const char e = body[++i];
+        switch (e) {
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        case 'u':
+            // \uXXXX -- only the control-character form the escaper emits, so the low byte is
+            // the character. Anything wider is not something this payload produces.
+            if (i + 4 < body.size()) {
+                out.push_back(static_cast<char>(strtoul(body.substr(i + 1, 4).c_str(), nullptr, 16)));
+                i += 4;
+            }
+            break;
+        default: out.push_back(e); break;
+        }
+    }
+    return false;
+}
+
 bool json_double(const std::string& body, const char* key, double& out) {
     const std::string needle = std::string{"\""} + key + "\":";
     const size_t p = body.find(needle);
@@ -1033,6 +1068,37 @@ int main(int argc, char** argv) {
                "own test (%lld in, %lld out)\n",
                static_cast<long long>(wba), static_cast<long long>(wbp),
                static_cast<long long>(wbin), static_cast<long long>(wbout));
+
+        // ---- WHICH WORLD IS LOADED ----------------------------------------------------
+        //
+        // A wrong offset here does not fault, it returns whatever bytes follow -- so the checks
+        // are on the string's SHAPE, which garbage fails on every count: printable throughout,
+        // non-empty, carrying the .wld extension the "WLDC" magic implies, and world_name()
+        // being a genuine trailing component of the path with no separator or extension left in.
+        int64_t wpr = -1, wln = -1;
+        std::string wpath, wname;
+        json_int(body, "world_printable", wpr);
+        json_int(body, "world_len", wln);
+        check(json_str(body, "world_path", wpath), "the loaded world path is reported");
+        check(json_str(body, "world_name", wname), "the loaded world name is reported");
+        check(wln > 0 && !wpath.empty(), "a world is loaded, so the path is non-empty");
+        check(wpr == 1, "EVERY character of the path is printable -- not adjacent bytes");
+        check(static_cast<int64_t>(wpath.size()) == wln,
+              "the reported length matches the string that came back");
+        check(wpath.size() >= 4 && wpath.compare(wpath.size() - 4, 4, ".wld") == 0,
+              "the path names a .wld, which is what the WLDC magic implies");
+
+        // world_name() must be the path's last component minus the extension. Checked as a
+        // relationship rather than against a literal, so it holds on any map.
+        check(!wname.empty(), "the world name is non-empty");
+        check(wname.find('\\') == std::string::npos && wname.find('/') == std::string::npos,
+              "the world name has no directory separator left in it");
+        check(wname.find('.') == std::string::npos, "the world name has no extension left in it");
+        check(wpath.find(wname) != std::string::npos,
+              "the world name is a substring of the world path");
+        check(wpath.compare(wpath.size() - wname.size() - 4, wname.size(), wname) == 0,
+              "the world name is exactly the path's final component before .wld");
+        printf("[fixture] world loaded: %s (name %s)\n", wpath.c_str(), wname.c_str());
 
         // counter_node_registered: sdk::CClientMgr::counter_node_registered()
         // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely

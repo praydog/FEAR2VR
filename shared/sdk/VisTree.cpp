@@ -2191,3 +2191,68 @@ std::optional<bool> WorldBSP::is_point_outside_world_engine(const regenny::LTVec
 }
 
 }  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// Copies a NUL-terminated string out of the process, stopping at the terminator or the cap.
+// The cap is a READ BOUND, not a claim about the buffer: the schema records 44 bytes because
+// that is the longest string observed plus its NUL, and no capacity was ever established, so
+// trusting 44 could truncate a longer map path while trusting nothing could run off the object.
+// MAX_PATH is what the engine itself uses when it reads world-relative names from a stream.
+int64_t seh_copy_cstr(const char* src, char* out, size_t cap) {
+    int64_t n = -1;
+    KANANLIB_SEH_TRY {
+        size_t i = 0;
+        for (; i + 1 < cap; ++i) {
+            const char c = src[i];
+            if (c == '\0') {
+                break;
+            }
+            out[i] = c;
+        }
+        out[i] = '\0';
+        n = static_cast<int64_t>(i);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        n = -1;
+    }
+    return n;
+}
+
+}  // namespace
+
+std::optional<std::string> WorldBSP::world_path() {
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    char buf[260]{};
+    const int64_t n = seh_copy_cstr(&bsp->world_path[0], buf, sizeof(buf));
+    if (n < 0) {
+        return std::nullopt;
+    }
+    return std::string(buf, static_cast<size_t>(n));
+}
+
+std::optional<std::string> WorldBSP::world_name() {
+    const auto path = world_path();
+    if (!path.has_value()) {
+        return std::nullopt;
+    }
+    std::string out = *path;
+    // Both separators, because the stored path uses backslashes but nothing guarantees a
+    // hand-set one would.
+    const auto slash = out.find_last_of("\\/");
+    if (slash != std::string::npos) {
+        out.erase(0, slash + 1);
+    }
+    const auto dot = out.find_last_of('.');
+    if (dot != std::string::npos) {
+        out.erase(dot);
+    }
+    return out;
+}
+
+}  // namespace sdk

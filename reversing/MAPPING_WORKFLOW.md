@@ -963,6 +963,41 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A MAGIC AND VERSION CHECK IDENTIFIES A LOADER INSTANTLY, and names its neighbours.**
+  `IWorldClientBSP` slot 12 reads two dwords and compares them against `1128549463` and `126`.
+  That constant is `"WLDC"` little-endian, so the function is the world-file entry point --
+  and everything it calls is thereby placed: it loads through slots 17 and 18, and calls slot 5
+  on failure, which independently CORROBORATES the `Unload` name I had given slot 5 from its
+  body alone. A failure path is a free second opinion on whatever it calls.
+
+  Convert unexplained comparison constants to ASCII as a reflex. Four printable bytes in a
+  version check is a format tag, and it renames the function for you.
+
+- **A getter's offset can identify a field the schema already describes.** Slot 9 is
+  `lea eax, [ecx+4Ah]`, and `+0x4A` was already recorded as the loaded `.wld` path. That makes
+  the slot `GetWorldPath` with no further work, and it cuts the other way too: the constructor
+  zeroes exactly that byte, which is what an empty path looks like. Getter offset, schema field,
+  constructor init -- three cheap facts that pin each other.
+
+- **When a wrong offset would not FAULT, assert the value's SHAPE.** `world_path()` reads a
+  character array; a wrong base returns adjacent bytes rather than crashing, and a plausible
+  string is exactly what would slip through. So the checks are: every character printable, the
+  length matching the returned string, the `.wld` extension the `WLDC` magic implies, and
+  `world_name()` being the path's final component with no separator or extension left. Garbage
+  fails all five.
+
+  Also worth noting the corroboration: the live path is 43 characters, and the schema recorded
+  the array as 44 bytes from an earlier observation -- 43 plus a terminator, arrived at
+  independently.
+
+- **Any string leaving this process must go through the escaper, not the format string.** The
+  world path is full of backslashes, so `%s` produced invalid JSON at column 2678.
+  `json_escape_append` has existed since the DatabaseMgr paths hit this exact trap, and I still
+  reached for `%s` first because the surrounding code is one big `snprintf`.
+
+  The reading side needs the inverse: the fixture gained `json_str`, which UNESCAPES. Comparing
+  the raw JSON text would have compared `\\\\` against `\\` and silently tested the escaping
+  instead of the path.
 - **A BARE ADDRESS IN A DECOMPILE MAY BE A STATIC OBJECT'S FIELD.** `IsPointOutsideWorld` reads
   six floats at `0x6F6E04..0x6F6E18` and Hex-Rays renders them as `flt_...` globals. They are
   `g_pIWorldClientBSP`'s own fields: the singleton is at a fixed `0x6F6BD8`, and

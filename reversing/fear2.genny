@@ -722,6 +722,11 @@ class LTVisTree 0x24 {
 //   * vis_tree is EMBEDDED at +0x24, which is what IWorldClientBSP's vtable
 //     slot 14 returns (`return this + 36`).
 //
+// THE FILE FORMAT IS "WLDC" VERSION 126: IWorldClientBSP_LoadFromStream (vtable slot 12)
+// reads two dwords and rejects anything but magic 0x43444C57 == 'WLDC' and version 126, then
+// loads the render data through slot 17 and the vis tree through slot 18 (IWorldClientBSP_LoadVisTree),
+// calling slot 5 (IWorldClientBSP_Unload) if either fails -- which is what confirms slot 5's name.
+//
 // world_path is the loaded world file: live
 // "worlds\sp\m05_outershell\m05_outershell.wld". Worth knowing for what the
 // "main menu" actually is -- a real level is loaded, which is why 3583 objects
@@ -739,7 +744,7 @@ class LTWorldClientBSP 0x244 {
     LTVisTree vis_tree         @0x24   // CONFIRMED embedded sub-object: IWorldClientBSP vtable slot 14 is `return this + 36`
     uint8_t unk_48             @0x48   // vtable slot 7 returns this byte (IWorldClientBSP_GetFlag48); live 1
     uint8_t unk_49             @0x49   // live 1
-    char world_path[44]        @0x4A   // CONFIRMED: the loaded .wld path. Length is the observed string + NUL; the real buffer is probably larger and its capacity is unverified.
+    char world_path[44]        @0x4A   // CONFIRMED: the loaded .wld path, and IWorldClientBSP vtable slot 9 is its getter (`lea eax, [ecx+4Ah]`) -- see sdk::WorldBSP::world_path()/world_name(). Corroborated three ways: the getter's offset, this field, and LTWorldClientBSP_Construct zeroing exactly this byte, which is what an unloaded world looks like. The 44 is 43 observed characters plus a terminator, measured again live. Length is the observed string + NUL; the real buffer is probably larger and its capacity is unverified.
     LTVector bounds_min_2      @0x22C  // CONFIRMED: the pair IWorldClientBSP_IsPointOutsideWorld actually reads. IT LOOKS LIKE A GLOBAL IN A DECOMPILE and is not: the singleton sits at a fixed 0x6F6BD8, so the compiler folded `this->bounds_min_2` into the absolute 0x6F6E04 (== 0x6F6BD8 + 0x22C), which is also why that function is __stdcall and ignores `this` despite being vtable slot 16. A later pass re-found those addresses, took them for file-scope globals, and read them off the module base -- which works only because the object is static and says the wrong thing about the layout. THE COMPARISON IS STRICT (`min > p`, `max < p`), so a point exactly ON a bound is INSIDE: confirmed by calling the engine's own function through the vtable and comparing against sdk::WorldBSP::is_point_outside_world over the centre, the six face points, six points one unit beyond each face and both extreme corners -- 15/15, 9 inside and 6 outside.
     LTVector bounds_max_2      @0x238  // CONFIRMED
 }
