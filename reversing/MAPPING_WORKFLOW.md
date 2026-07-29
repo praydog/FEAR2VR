@@ -963,6 +963,32 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **Two caches of the same shape can hold different SPACES. Check before composing.**
+  A model carries two per-node transform arrays behind a mode selector, and an earlier
+  pass mapped both as "the per-node transform cache" -- correct about the layout and
+  silent about the frame of reference. They are not the same:
+
+  ```
+  selector == 0    297 clean bones, ALL near the model origin      -> model space
+  selector != 0     46 clean bones, ALL at the object's position   -> WORLD space
+  ```
+
+  Zero exceptions either way. Composing the object's transform onto a bone that already
+  carries it put a socket **5449 units** from its owner; branching on the selector
+  brought the maximum to **137**, which is model scale.
+
+  How to notice, since the layout test cannot: pick a point the two spaces disagree
+  about and measure the distance to it. Model-space data clusters near the origin,
+  world-space data near the object. One line of arithmetic separates them, and it needs
+  no disassembly.
+
+  **And a validation worth stealing: check a signed quantity against a SEMANTIC label.**
+  Wanting to know whether the composition was oriented correctly, the test was "a
+  character's camera socket should sit above its object". It held on one model and
+  failed on the other -- which turned out to be right: the failing model was playing
+  `Corpse_surface_facedown` and its head bone reads -83. The animation NAME and the
+  bone geometry agreeing on "face down" is far stronger evidence than the naive check
+  passing would have been, and it is why that count is REPORTED rather than asserted.
 - **A TOTAL can match by accident while every element differs. Never validate a field
   by its aggregate.** Having just mapped the asset's piece count at +0x30, the endpoint
   reported 697 pieces summed over 215 models -- the exact number the socket walk had

@@ -431,6 +431,10 @@ std::string build_models_json() {
     size_t anim_nodes_in_range = 0, anim_nodes_named = 0, anim_nodes_ordered = 0;
     size_t anim_named = 0, piece_answers = 0, piece_hidden = 0;
     size_t piece_counts = 0, piece_named = 0, piece_roundtrip = 0;
+    size_t sock_xform_ok = 0, sock_xform_stale = 0, sock_xform_unit = 0;
+    size_t sock_xform_finite = 0, sock_xform_clean = 0;
+    size_t sock_camera_measured = 0, sock_camera_above = 0;
+    float sock_xform_max_dist = 0.0f, sock_camera_max_height = 0.0f;
     for (size_t si = 0; si < *taken; ++si) {
         const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[si].address);
         const auto skel = sdk::ModelSkeleton::from_object(obj);
@@ -507,6 +511,64 @@ std::string build_models_json() {
                     }
                 }
             }
+            // SOCKET WORLD TRANSFORMS. The interesting validation is not that the
+            // numbers are finite -- it is that they point the right WAY. A wrong
+            // quaternion sign convention preserves length (any Hamilton-shaped product
+            // does), so a norm check cannot catch it; putting the head below the feet
+            // can. Gravity reads (0, -980, 0), so +Y is up, and a character's `camera`
+            // socket sits at local Y = +13.7 -- it must come out ABOVE the object.
+            if (const auto sk2 = sdk::ModelSkeleton::from_object(obj); sk2.has_value()) {
+                for (size_t si = 0; si < sk2->socket_count(); ++si) {
+                    const auto wt = sk2->socket_world_transform(si);
+                    if (!wt.has_value()) {
+                        continue;
+                    }
+                    ++sock_xform_ok;
+                    if (wt->stale) {
+                        ++sock_xform_stale;
+                    }
+                    // Unit rotation: composing two unit quaternions must stay unit.
+                    const float qn = wt->rotation.x * wt->rotation.x +
+                                     wt->rotation.y * wt->rotation.y +
+                                     wt->rotation.z * wt->rotation.z +
+                                     wt->rotation.w * wt->rotation.w;
+                    if (qn > 0.98f && qn < 1.02f) {
+                        ++sock_xform_unit;
+                    }
+                    if (std::isfinite(wt->position.x) && std::isfinite(wt->position.y) &&
+                        std::isfinite(wt->position.z)) {
+                        ++sock_xform_finite;
+                    }
+                    // A CLEAN transform is the only one worth measuring geometrically.
+                    // Two numbers come out: the distance from the object (bounded by
+                    // how far a bone can be from the origin) and, for the `camera`
+                    // socket specifically, its SIGNED height -- which must be positive
+                    // if the composition is oriented correctly.
+                    if (!wt->stale) {
+                        const auto info = sdk::object_info(obj);
+                        if (info.has_value()) {
+                            const float dx = wt->position.x - info->position.x;
+                            const float dy = wt->position.y - info->position.y;
+                            const float dz = wt->position.z - info->position.z;
+                            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                            if (d > sock_xform_max_dist) {
+                                sock_xform_max_dist = d;
+                            }
+                            ++sock_xform_clean;
+                            const auto nm2 = sk2->socket(si);
+                            if (nm2.has_value() && nm2->name == "camera") {
+                                ++sock_camera_measured;
+                                if (dy > 0.0f) {
+                                    ++sock_camera_above;
+                                }
+                                if (dy > sock_camera_max_height) {
+                                    sock_camera_max_height = dy;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // The consumer flow that makes these fields worth exposing: a track's
             // node index handed to the skeleton comes back as a BONE NAME. If that
             // resolves for every model, the index is usable as an index and not just
@@ -555,7 +617,7 @@ std::string build_models_json() {
     // terrible for a JSON consumer: the reply parses as an unterminated string and
     // the failure looks like a transport bug. It returns the length it WANTED, so a
     // buffer that grew past its literal is caught here instead of downstream.
-    char sum[640];
+    char sum[1152];
     const int want = snprintf(sum, sizeof(sum),
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
              "\"handles_seen\":%zu,\"handles_round_trip\":%zu,\"handles_absent\":%zu,"
@@ -565,13 +627,20 @@ std::string build_models_json() {
              "\"anim_blending\":%zu,\"anim_nodes_in_range\":%zu,"
              "\"anim_nodes_named\":%zu,\"anim_nodes_ordered\":%zu,"
              "\"anim_named\":%zu,\"piece_answers\":%zu,\"piece_hidden\":%zu,"
-             "\"piece_counts\":%zu,\"piece_named\":%zu,\"piece_roundtrip\":%zu}",
+             "\"piece_counts\":%zu,\"piece_named\":%zu,\"piece_roundtrip\":%zu,"
+             "\"sock_xform_ok\":%zu,\"sock_xform_stale\":%zu,\"sock_xform_unit\":%zu,"
+             "\"sock_xform_finite\":%zu,\"sock_xform_clean\":%zu,"
+             "\"sock_xform_max_dist\":%.2f,\"sock_camera_measured\":%zu,"
+             "\"sock_camera_above\":%zu,\"sock_camera_max_height\":%.2f}",
              *taken, with_skeleton, resolved_wanted, emitted, handles_seen, handles_round_trip,
              handles_absent, mgr->handle_table_size().value_or(0), weapons.size(),
              everything.size(), bone_slots, bone_slots_live, models_with_palette, anim_ok,
              anim_index_in_range, anim_frac_in_range, anim_blending, anim_nodes_in_range,
              anim_nodes_named, anim_nodes_ordered, anim_named, piece_answers, piece_hidden,
-             piece_counts, piece_named, piece_roundtrip);
+             piece_counts, piece_named, piece_roundtrip, sock_xform_ok, sock_xform_stale,
+             sock_xform_unit, sock_xform_finite, sock_xform_clean,
+             static_cast<double>(sock_xform_max_dist), sock_camera_measured,
+             sock_camera_above, static_cast<double>(sock_camera_max_height));
     if (want < 0 || static_cast<size_t>(want) >= sizeof(sum)) {
         // Say so in the payload rather than shipping half a field. A reader that
         // sees this knows the numbers are missing, not that the socket broke.

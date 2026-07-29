@@ -812,6 +812,43 @@ int main(int argc, char** argv) {
         check(pnamed == pcounts, "EVERY piece resolves to a name");
         check(prt == pcounts,
               "every piece is found again by its own UPPER-CASED name");
+
+        // SOCKET WORLD TRANSFORMS -- the composed answer a VR mod consumes.
+        int64_t sxo = -1, sxu = -1, sxf = -1, sxc = -1, scm = -1, sca = -1;
+        double sxd = -1.0, sch = 0.0;
+        json_int(body, "sock_xform_ok", sxo);
+        json_int(body, "sock_xform_unit", sxu);
+        json_int(body, "sock_xform_finite", sxf);
+        json_int(body, "sock_xform_clean", sxc);
+        json_double(body, "sock_xform_max_dist", sxd);
+        json_int(body, "sock_camera_measured", scm);
+        json_int(body, "sock_camera_above", sca);
+        json_double(body, "sock_camera_max_height", sch);
+        check(sxo > 0, "socket world transforms compose");
+        // The quaternion product must preserve unit length. This checks the FORM of the
+        // transcribed multiply; it cannot catch a sign convention, which is why the
+        // distance bound below matters more.
+        check(sxu == sxo, "EVERY composed socket rotation is unit-length");
+        check(sxf == sxo, "EVERY composed socket position is finite");
+        // THE REGRESSION GUARD, and it caught a real bug. A socket must land within
+        // model scale of its object. The first implementation composed the object's
+        // transform onto bones that were ALREADY in world space -- true on the 22 models
+        // whose mode selector is set -- and that double-application put a socket
+        // 5449 units out. Correcting it brought the maximum to 137. The bound is
+        // deliberately loose: it is here to catch a wrong SPACE, not to police art.
+        check(sxd >= 0.0 && sxd < 1000.0,
+              "composed sockets land within model scale of their object");
+        // REPORTED, with the reason: "the head is above the feet" is not an invariant.
+        // Live 1 of 2 measurable camera sockets sits below its object -- and that model
+        // is playing Corpse_surface_facedown, so below is CORRECT. The animation name
+        // and the bone geometry agree, which is better evidence than the naive check
+        // would have been.
+        check(scm >= 0 && sca >= 0 && sca <= scm,
+              "camera-socket heights are a reported count, not a floor");
+        printf("[fixture] socket transforms: %lld composed, %lld clean, max dist %.1f; "
+               "camera sockets %lld measured / %lld above (max height %.1f)\n",
+               static_cast<long long>(sxo), static_cast<long long>(sxc), sxd,
+               static_cast<long long>(scm), static_cast<long long>(sca), sch);
         // REPORTED: nothing is hidden in the sampled scene, so a floor here would be
         // asserting the level's art rather than the engine's mechanism.
         check(phid >= 0 && phid <= pans,

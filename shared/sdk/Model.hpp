@@ -185,12 +185,57 @@ public:
         // True when the engine would recompute before using this. The position must
         // not be trusted; the rotation was unit on every sample either way.
         bool stale;
+        // WHICH SPACE the position/rotation are in, and this is not cosmetic: the model
+        // carries two caches and they DO NOT AGREE on space. Measured over every clean
+        // slot, split by the mode selector at +0x156:
+        //
+        //   selector == 0   297 slots, ALL near the model origin      -> model space
+        //   selector != 0    46 slots, ALL near the object position   -> WORLD space
+        //
+        // Zero exceptions either way, and one world-space bone sat 0.00 units from its
+        // object. A caller that composes with the object's transform unconditionally
+        // double-applies it on the second group -- which is exactly the bug that
+        // produced a 5449-unit socket offset before this flag existed.
+        bool world_space;
     };
 
     // nullopt when the index is out of range, the cache is absent, or the read
     // faulted. A STALE entry is still returned -- flagged -- because a caller deciding
     // "skip this frame" needs to know the difference between stale and missing.
     std::optional<NodeTransform> node_transform(size_t index) const;
+
+    // ---- SOCKET TRANSFORMS: where a named attach point actually IS ---------------
+    //
+    // This is the primitive a VR mod is ultimately after: give it "camera" or
+    // "LeftHand" and get back a position and orientation it can use. It composes the
+    // socket's offset with its bone's current transform, the way the engine's own
+    // ILTModel::GetSocketTransform does.
+    //
+    // THE MATH IS THE ENGINE'S, TRANSCRIBED RATHER THAN REDERIVED. LTTransform_Compose
+    // (dump 0x4292C7) is:
+    //     out.rotation = LTRotation_Multiply(parent.rotation, child.rotation)
+    //     out.position = parent.position + rotate(parent.rotation, child.position) * parent.scale
+    //     out.scale    = parent.scale * child.scale
+    // and the quaternion product and the rotate-by-quaternion are copied term for term
+    // out of LTRotation_Multiply (0x424C4F) and LTRotation_RotateVector (0x404C7F).
+    // Hand-rolling either would have meant guessing a sign convention; the engine's
+    // own expressions cannot disagree with the engine.
+    struct SocketTransform {
+        regenny::LTVector position;
+        regenny::LTRotation rotation;
+        float scale;
+        // Propagated from the underlying node transform. A stale socket transform is
+        // built on a stale bone, so it inherits the warning wholesale -- see
+        // node_transform() for what the flag means and how it was measured.
+        bool stale;
+    };
+
+    // In the MODEL's own space: socket offset composed with its bone's transform.
+    std::optional<SocketTransform> socket_transform(size_t socket_index) const;
+
+    // In WORLD space: the above, composed once more with the owning object's own
+    // position/rotation/scale. This is what a mod attaches something to.
+    std::optional<SocketTransform> socket_world_transform(size_t socket_index) const;
 
 private:
     // The engine's per-object allocation, reconstructed from BindAsset's own size
@@ -205,7 +250,9 @@ private:
     const void* m_records{};
     const void* m_names{};
     size_t m_count{};
-    // Per-ASSET like the node data above: two models sharing an asset share sockets.
+    // Which space the active node cache is in; the two caches differ, so this decides
+    // whether a world transform still needs the object composed onto it.
+    bool m_world_space{};
     const void* m_sockets{};
     size_t m_socket_count{};
     // The ACTIVE node-transform cache and its dirty array, already resolved through

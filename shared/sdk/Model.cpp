@@ -73,6 +73,7 @@ struct SkelRaw {
     const void* node_dirty;
     uint32_t dirty_stride;
     uint32_t dirty_offset;
+    bool world_space;
 };
 
 bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
@@ -114,6 +115,10 @@ bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
                         out->dirty_stride = 2;
                         out->dirty_offset = 0;
                     }
+                    // WHICH SPACE that cache is in. Measured, not assumed: over every
+                    // clean slot, selector==0 put 297/297 bones near the model origin
+                    // and selector!=0 put 46/46 at the object's world position.
+                    out->world_space = model->sphere_source != 0;
 
                     // BindAsset's own arithmetic, term for term. Verified live: every
                     // pointer the engine carves out lands inside the result on
@@ -359,6 +364,7 @@ std::optional<ModelSkeleton> ModelSkeleton::from_object(const regenny::LTObject*
     s.m_node_dirty = raw.node_dirty;
     s.m_dirty_stride = raw.dirty_stride;
     s.m_dirty_offset = raw.dirty_offset;
+    s.m_world_space = raw.world_space;
     return s;
 }
 
@@ -818,6 +824,8 @@ std::optional<ModelSkeleton::NodeTransform> ModelSkeleton::node_transform(size_t
     out.rotation.w = r.rot[3];
     // Non-zero is the engine's own test -- it recomputes rather than reading the slot.
     out.stale = r.dirty != 0;
+    // Which space the active cache is in -- see the header; the two caches differ.
+    out.world_space = m_world_space;
     return out;
 }
 
@@ -977,6 +985,171 @@ std::optional<size_t> model_find_piece(const regenny::LTObject* obj, const char*
         }
     }
     return std::nullopt;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// A local transform triple, matching the engine's 0x20-byte layout in meaning if not
+// in storage: position, rotation, uniform scale.
+struct Xform {
+    float p[3];
+    float q[4];  // x, y, z, w -- w last, as LTRotation stores it
+    float s;
+};
+
+// LTRotation_Multiply (dump 0x424C4F), term for term. Transcribed rather than written
+// from a formula: quaternion conventions differ by sign in several places and the
+// engine's own expression is the only one guaranteed to agree with the engine.
+void quat_mul(const float a[4], const float b[4], float out[4]) {
+    out[0] = b[0] * a[3] + a[0] * b[3] + b[2] * a[1] - b[1] * a[2];
+    out[1] = b[1] * a[3] - b[2] * a[0] + a[1] * b[3] + a[2] * b[0];
+    out[2] = b[2] * a[3] + b[1] * a[0] - a[1] * b[0] + a[2] * b[3];
+    out[3] = b[3] * a[3] - b[0] * a[0] - b[1] * a[1] - a[2] * b[2];
+}
+
+// LTRotation_RotateVector (dump 0x404C7F), term for term -- the conjugate sandwich
+// written out, negations included exactly as the engine has them.
+void quat_rotate(const float q[4], const float v[3], float out[3]) {
+    const float t0 = q[3] * v[0] + v[2] * q[1] - v[1] * q[2];
+    const float t1 = v[1] * q[3] - q[0] * v[2] + q[2] * v[0];
+    const float t2 = v[1] * q[0] + q[3] * v[2] - v[0] * q[1];
+    const float nx = -q[0];
+    const float t3 = nx * v[0] - v[1] * q[1] - q[2] * v[2];
+    const float ny = -q[1];
+    const float nz = -q[2];
+    const float w = q[3];
+    out[0] = nx * t3 + w * t0 + nz * t1 - ny * t2;
+    out[1] = ny * t3 - nz * t0 + w * t1 + nx * t2;
+    out[2] = nz * t3 + ny * t0 - nx * t1 + w * t2;
+}
+
+// LTTransform_Compose (dump 0x4292C7): parent then child.
+Xform compose(const Xform& parent, const Xform& child) {
+    Xform out{};
+    quat_mul(parent.q, child.q, out.q);
+    float rotated[3];
+    quat_rotate(parent.q, child.p, rotated);
+    for (int i = 0; i < 3; ++i) {
+        out.p[i] = parent.p[i] + rotated[i] * parent.s;
+    }
+    out.s = parent.s * child.s;
+    return out;
+}
+
+// The owning object's own transform, read under a guard. LTObject carries ONE uniform
+// scale rather than the reference's vector, which is why `s` is a single float here.
+bool seh_object_xform(const void* obj_v, Xform* out) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        const auto* obj = static_cast<const regenny::LTObject*>(obj_v);
+        out->p[0] = obj->position.x;
+        out->p[1] = obj->position.y;
+        out->p[2] = obj->position.z;
+        out->q[0] = obj->rotation.x;
+        out->q[1] = obj->rotation.y;
+        out->q[2] = obj->rotation.z;
+        out->q[3] = obj->rotation.w;
+        out->s = obj->scale;
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::socket_transform(size_t socket_index) const {
+    const auto sock = socket(socket_index);
+    if (!sock.has_value()) {
+        return std::nullopt;
+    }
+    const auto node = node_transform(sock->node_index);
+    if (!node.has_value()) {
+        return std::nullopt;
+    }
+    Xform parent{};
+    parent.p[0] = node->position.x;
+    parent.p[1] = node->position.y;
+    parent.p[2] = node->position.z;
+    parent.q[0] = node->rotation.x;
+    parent.q[1] = node->rotation.y;
+    parent.q[2] = node->rotation.z;
+    parent.q[3] = node->rotation.w;
+    // The bone transform carries no scale of its own in the cached record; the engine
+    // supplies 1.0 at this point (LTModelObject_TransformFromRecord passes the literal).
+    parent.s = 1.0f;
+
+    Xform child{};
+    child.p[0] = sock->position.x;
+    child.p[1] = sock->position.y;
+    child.p[2] = sock->position.z;
+    child.q[0] = sock->rotation.x;
+    child.q[1] = sock->rotation.y;
+    child.q[2] = sock->rotation.z;
+    child.q[3] = sock->rotation.w;
+    child.s = 1.0f;
+
+    const Xform r = compose(parent, child);
+    SocketTransform out{};
+    out.position.x = r.p[0];
+    out.position.y = r.p[1];
+    out.position.z = r.p[2];
+    out.rotation.x = r.q[0];
+    out.rotation.y = r.q[1];
+    out.rotation.z = r.q[2];
+    out.rotation.w = r.q[3];
+    out.scale = r.s;
+    out.stale = node->stale;
+    return out;
+}
+
+std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::socket_world_transform(size_t socket_index) const {
+    const auto local = socket_transform(socket_index);
+    if (!local.has_value() || m_object == nullptr) {
+        return std::nullopt;
+    }
+    // IF THE BONE CACHE IS ALREADY IN WORLD SPACE, composing with the object again
+    // double-applies its position. Measured: on the 22 models whose selector is set,
+    // every clean bone sits AT the object's world position, and composing anyway put a
+    // socket 5449 units away. So the socket transform is already world-space here and
+    // is returned unchanged.
+    if (m_world_space) {
+        return local;
+    }
+    Xform world{};
+    if (!seh_object_xform(m_object, &world)) {
+        return std::nullopt;
+    }
+    Xform child{};
+    child.p[0] = local->position.x;
+    child.p[1] = local->position.y;
+    child.p[2] = local->position.z;
+    child.q[0] = local->rotation.x;
+    child.q[1] = local->rotation.y;
+    child.q[2] = local->rotation.z;
+    child.q[3] = local->rotation.w;
+    child.s = local->scale;
+
+    const Xform r = compose(world, child);
+    SocketTransform out{};
+    out.position.x = r.p[0];
+    out.position.y = r.p[1];
+    out.position.z = r.p[2];
+    out.rotation.x = r.q[0];
+    out.rotation.y = r.q[1];
+    out.rotation.z = r.q[2];
+    out.rotation.w = r.q[3];
+    out.scale = r.s;
+    out.stale = local->stale;
+    return out;
 }
 
 }  // namespace sdk
