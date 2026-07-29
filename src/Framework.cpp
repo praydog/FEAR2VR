@@ -1345,7 +1345,9 @@ std::string build_objects_json() {
                api_cull_sane = 0, api_cull_compared = 0, api_cull_current = 0,
                api_tree_asked = 0, api_tree_linked = 0, api_tree_nonempty = 0,
                api_tree_self_found = 0,
-               api_tree_nonwm = 0, api_tree_nonwm_found = 0, api_tree_wm_missed = 0;
+               api_tree_nonwm = 0, api_tree_nonwm_found = 0, api_tree_wm_missed = 0,
+               api_tree_miss_slot_found = 0, api_tree_miss_max_depth = 0,
+               api_tree_miss_at_leaf = 0, api_tree_hit_slot_probed = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -1544,6 +1546,18 @@ std::string build_objects_json() {
                                     // from LTWorldTree_FindNodeForObject, and it is exactly
                                     // what makes the other 669 work.
                                     ++api_tree_wm_missed;
+                                    // WHERE is it actually parked? Compare the node the
+                                    // engine chose against what the descent visits.
+                                    if (const auto sl = sdk::WorldBSP::tree_slot(obj);
+                                        sl.has_value()) {
+                                        ++api_tree_miss_slot_found;
+                                        if (sl->depth > api_tree_miss_max_depth) {
+                                            api_tree_miss_max_depth = sl->depth;
+                                        }
+                                        if (sl->leaf) {
+                                            ++api_tree_miss_at_leaf;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1756,7 +1770,9 @@ std::string build_objects_json() {
                  "\"cull_sane\":%zu,\"cull_compared\":%zu,\"cull_current\":%zu,"
                  "\"tree_asked\":%zu,\"tree_linked\":%zu,\"tree_nonempty\":%zu,"
                  "\"tree_self_found\":%zu,\"tree_nonwm\":%zu,"
-                 "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu}",
+                 "\"tree_nonwm_found\":%zu,\"tree_wm_missed\":%zu,"
+                 "\"miss_slot_found\":%zu,\"miss_max_depth\":%zu,\"miss_at_leaf\":%zu,"
+                 "\"hit_max_depth\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1775,7 +1791,8 @@ std::string build_objects_json() {
                  api_cull_ok, api_cull_sphere, api_cull_box, api_cull_none,
                  api_cull_sane, api_cull_compared, api_cull_current,
                  api_tree_asked, api_tree_linked, api_tree_nonempty, api_tree_self_found,
-                 api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed);
+                 api_tree_nonwm, api_tree_nonwm_found, api_tree_wm_missed,
+                 api_tree_miss_slot_found, api_tree_miss_max_depth, api_tree_miss_at_leaf);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

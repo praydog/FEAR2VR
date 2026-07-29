@@ -252,13 +252,24 @@ public:
     // Objects the index holds along the path covering `point`, nearest node last. Empty
     // when no world is loaded, the point is outside the tree, or a read faulted.
     //
-    // A KNOWN LIMIT, measured and not yet explained. Every indexed NON-worldmodel is found
-    // by a query at its own position (669 of 669), which is what proves the descent. But 235
-    // of 1473 indexed WORLDMODELS are not. Two explanations were tested and refuted: result
-    // truncation (raising the cap from 256 to 4096 recovered 3 of them) and a position lying
-    // outside the object's own AABB (zero of the 235). So a proximity query is reliable for
-    // models, sprites, particles and cameras, and incomplete for level brushes -- prefer
-    // brush_transform()/cull_volume() when what you want is a specific worldmodel.
+    // A KNOWN LIMIT, narrowed by measurement across four passes. Every indexed
+    // NON-worldmodel is found by a query at its own position (669 of 669), which is what
+    // proves the descent. 235 of 1473 indexed WORLDMODELS are not. What has been RULED OUT:
+    //
+    //   * result truncation           raising the cap 256 -> 4096 recovered 3, not 235
+    //   * position outside its AABB   zero of the 235
+    //   * a split-boundary tie        branching on |p - split| <= 0.01 changed nothing
+    //   * not being in this tree      tree_slot() finds all 235
+    //   * parked at an internal node  all 235 sit at LEAVES, max depth 5, same as the hits
+    //
+    // So they are in the tree the descent walks, at leaves, and the descent reaches a
+    // DIFFERENT leaf. The remaining untested explanation is a stale link: the engine relinks
+    // from LTObject_SetPos / SetPosRot / SetDims / SetFlags, so a brush moved by any other
+    // route keeps the node it was linked at. Doors, lifts and platforms are worldmodels.
+    //
+    // Practically: a proximity query is reliable for models, sprites, particles and cameras,
+    // and incomplete for level brushes -- prefer cull_volume() or find_models() when what you
+    // want is a specific worldmodel.
     //
     // These are ENGINE POINTERS, valid for this frame only -- the one place this SDK hands
     // them out, because a proximity query whose results were copies could not be used to
@@ -271,6 +282,23 @@ public:
     //
     // nullopt when `obj` is null or the read faulted -- distinct from a definite `false`.
     static std::optional<bool> is_linked(const regenny::LTObject* obj);
+
+    // WHICH NODE holds this object, found by walking the tree and looking for the list it
+    // is on. That is a useful answer on its own -- two objects in the same node are spatial
+    // neighbours by the engine's own bucketing, a cheaper proximity test than any distance
+    // computation -- and it is also the only way to tell whether objects_near() reached the
+    // right place.
+    //
+    // `depth` is 0 at the root. nullopt when the object is not linked, no world is loaded,
+    // or the walk faulted.
+    struct TreeSlot {
+        uintptr_t node;   // the LTWorldTreeNode holding it; identity and diagnostics only
+        size_t depth;     // 0 = root
+        float split_x;    // the node's own split planes, for reasoning about neighbours
+        float split_z;
+        bool leaf;        // child_offset == 0
+    };
+    static std::optional<TreeSlot> tree_slot(const regenny::LTObject* obj);
 };
 
 } // namespace sdk

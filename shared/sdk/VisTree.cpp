@@ -850,18 +850,34 @@ const regenny::LTWorldTreeNode* seh_world_tree_root(const regenny::LTWorldClient
 //
 // THE CONVENTION IS THE ENGINE'S, from LTWorldTree_FindNodeForObject: child index is
 // (x > split_x ? 2 : 0) + (z > split_z ? 1 : 0), children laid out contiguously at
-// `node + stride * (child_offset + k)`. A point is a degenerate box, so the straddle tests
-// that keep a real object at a parent never fire here -- but objects PARKED at those
-// parents are exactly why every node on the path is harvested, not just the leaf.
+// `node + stride * (child_offset + k)`. Objects whose AABB STRADDLES a split are linked at
+// that node rather than pushed down, which is why every node on the path is harvested and
+// not just the leaf.
+//
+// AND IT BRANCHES ON A BOUNDARY, which is not a nicety. The engine sends a box high when
+// `split <= aabb_min`, i.e. a box whose LOW EDGE SITS EXACTLY ON the split goes high; a
+// point test of `p > split` sends that same coordinate LOW. Level brushes are axis-aligned
+// grid geometry and their AABB edges land on split planes constantly, so the two disagree
+// often -- and only for worldmodels, which is exactly the population that failed to
+// self-locate before this. Following both children when the point is within kBoundarySlop
+// of a split costs a few extra candidates and removes the whole class of miss.
+constexpr float kBoundarySlop = 0.01f;
+
 int64_t seh_objects_near(const regenny::LTWorldTreeNode* root, float px, float pz,
                          uintptr_t* out, size_t max_out) {
     int64_t found = -1;
     KANANLIB_SEH_TRY {
-        const auto* node = root;
+        const regenny::LTWorldTreeNode* stack[128];
+        size_t sp = 0;
+        stack[sp++] = root;
         size_t n = 0;
-        size_t hops = 0;
-        while (node != nullptr && hops < 64) {
-            ++hops;
+        size_t guard_nodes = 0;
+        while (sp != 0 && guard_nodes < 512) {
+            ++guard_nodes;
+            const auto* node = stack[--sp];
+            if (node == nullptr) {
+                continue;
+            }
             // Harvest this node's list. The head self-points when empty, and every element
             // is an LTObject's world_tree_link, so the object is `link - offsetof`.
             const auto* head = &node->objects;
@@ -877,12 +893,27 @@ int64_t seh_objects_near(const regenny::LTWorldTreeNode* root, float px, float p
             }
             const uint16_t co = node->child_offset;
             if (co == 0) {
-                break;  // leaf
+                continue;  // leaf
             }
-            const size_t k = (px > node->split_x ? 2u : 0u) + (pz > node->split_z ? 1u : 0u);
-            node = reinterpret_cast<const regenny::LTWorldTreeNode*>(
-                reinterpret_cast<uintptr_t>(node) +
-                sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
+            const float dx = px - node->split_x;
+            const float dz = pz - node->split_z;
+            // Which x halves to follow, and which z halves. On a boundary, both.
+            const bool x_lo = dx <= kBoundarySlop;
+            const bool x_hi = dx >= -kBoundarySlop;
+            const bool z_lo = dz <= kBoundarySlop;
+            const bool z_hi = dz >= -kBoundarySlop;
+            for (size_t k = 0; k < 4; ++k) {
+                const bool want_hi_x = (k & 2u) != 0;
+                const bool want_hi_z = (k & 1u) != 0;
+                if ((want_hi_x ? x_hi : x_lo) && (want_hi_z ? z_hi : z_lo)) {
+                    if (sp >= 128) {
+                        break;
+                    }
+                    stack[sp++] = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                        reinterpret_cast<uintptr_t>(node) +
+                        sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
+                }
+            }
         }
         found = static_cast<int64_t>(n);
     }
@@ -935,6 +966,99 @@ std::optional<bool> WorldBSP::is_linked(const regenny::LTObject* obj) {
         ok = false;
     }
     return ok ? std::optional<bool>{linked} : std::nullopt;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// Walks the whole tree looking for the node whose object list contains `target`. POD out
+// params so the guard holds nothing that unwinds. Returns depth, or -1 when not found.
+int64_t seh_find_slot(const regenny::LTWorldTreeNode* root, uintptr_t target, uintptr_t* node,
+                      float* sx, float* sz, bool* leaf) {
+    int64_t depth = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::LTWorldTreeNode* stack[256];
+        size_t depth_of[256];
+        size_t sp = 0;
+        stack[sp] = root;
+        depth_of[sp] = 0;
+        ++sp;
+        size_t visited = 0;
+        while (sp != 0 && visited < 4096) {
+            --sp;
+            const auto* n = stack[sp];
+            const size_t d = depth_of[sp];
+            if (n == nullptr) {
+                continue;
+            }
+            ++visited;
+            const auto* head = &n->objects;
+            size_t guard = 0;
+            for (const auto* l = n->objects.next; l != head && l != nullptr && guard < 4096;
+                 l = l->next) {
+                ++guard;
+                const uintptr_t obj = reinterpret_cast<uintptr_t>(l) -
+                                      offsetof(regenny::LTObject, world_tree_link);
+                if (obj == target) {
+                    *node = reinterpret_cast<uintptr_t>(n);
+                    *sx = n->split_x;
+                    *sz = n->split_z;
+                    *leaf = n->child_offset == 0;
+                    depth = static_cast<int64_t>(d);
+                    return depth;
+                }
+            }
+            const uint16_t co = n->child_offset;
+            if (co == 0 || sp + 4 > 256) {
+                continue;
+            }
+            for (size_t k = 0; k < 4; ++k) {
+                stack[sp] = reinterpret_cast<const regenny::LTWorldTreeNode*>(
+                    reinterpret_cast<uintptr_t>(n) +
+                    sizeof(regenny::LTWorldTreeNode) * (static_cast<size_t>(co) + k));
+                depth_of[sp] = d + 1;
+                ++sp;
+            }
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        depth = -1;
+    }
+    return depth;
+}
+
+}  // namespace
+
+std::optional<WorldBSP::TreeSlot> WorldBSP::tree_slot(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    const auto* root = seh_world_tree_root(bsp);
+    if (root == nullptr) {
+        return std::nullopt;
+    }
+    uintptr_t node = 0;
+    float sx = 0.0f, sz = 0.0f;
+    bool leaf = false;
+    const int64_t d =
+        seh_find_slot(root, reinterpret_cast<uintptr_t>(obj), &node, &sx, &sz, &leaf);
+    if (d < 0) {
+        return std::nullopt;
+    }
+    TreeSlot out{};
+    out.node = node;
+    out.depth = static_cast<size_t>(d);
+    out.split_x = sx;
+    out.split_z = sz;
+    out.leaf = leaf;
+    return out;
 }
 
 }  // namespace sdk

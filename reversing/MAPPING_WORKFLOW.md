@@ -963,6 +963,26 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **When guesses keep failing, stop guessing and build the accessor that MEASURES.** Four
+  hypotheses about the 235 worldmodels that a spatial query cannot find were tested and
+  refuted: truncation (raising the cap recovered 3), a position outside the object's own AABB
+  (zero), a split-boundary tie between the engine's `split <= aabb_min` and a point's
+  `p > split` (branching on it changed nothing), and being absent from the tree.
+
+  The pass that made progress did not add a fifth guess -- it added `WorldBSP::tree_slot()`,
+  which searches the tree for the node actually holding an object. That converted the mystery
+  into facts: all 235 ARE in the tree, all 235 sit at LEAVES, at the same maximum depth as
+  the 669 that work. Two structural explanations died at once, and the guess space collapsed
+  to one candidate (a stale link -- the engine relinks only from SetPos/SetPosRot/SetDims/
+  SetFlags, so a brush moved by another route keeps its old node).
+
+  The accessor is also the better deliverable: two objects in the same node are spatial
+  neighbours by the engine's own bucketing, which is a cheaper proximity test than any
+  distance computation. A diagnostic worth writing is usually worth exporting.
+
+  And write the elimination list down where the consumer reads it. Five ruled-out causes in
+  the header are worth more than "known limit", because the next person to look starts from
+  the surviving candidate instead of re-running the four that failed.
 - **SELF-LOCATION is the oracle for any spatial index.** Extracting a proximity query from
   `WorldBSP::check` needed a quadtree descent, and the reusable trick is that an index must
   be able to find the thing it indexed: the engine linked each object at the node covering

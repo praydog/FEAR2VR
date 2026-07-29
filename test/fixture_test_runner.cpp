@@ -2130,6 +2130,22 @@ int main(int argc, char** argv) {
                        static_cast<long long>(tlink), static_cast<long long>(task),
                        static_cast<long long>(tnwf), static_cast<long long>(tnw),
                        static_cast<long long>(twm));
+                // AND WHERE THE MISSES ACTUALLY SIT, which is what turned this from a guess
+                // into a bounded fact: tree_slot() finds ALL of them, every one at a LEAF,
+                // at the same maximum depth as the objects that do self-locate. So they are
+                // genuinely in the tree the descent walks -- the descent simply reaches a
+                // different leaf. That rules out "not indexed" and "parked at an internal
+                // node the descent skips", which were the two structural explanations.
+                int64_t msf = -1, mmd = -1, mal = -1;
+                json_int(ab, "miss_slot_found", msf);
+                json_int(ab, "miss_max_depth", mmd);
+                json_int(ab, "miss_at_leaf", mal);
+                check(msf == twm,
+                      "EVERY unlocated object is still findable in the tree by slot search");
+                check(mal == twm, "EVERY unlocated object is parked at a LEAF, not an internal node");
+                check(mmd >= 0 && mmd < 32, "slot depths are inside the tree's own bound");
+                printf("[fixture] unlocated worldmodels: %lld, all at leaves, max depth %lld\n",
+                       static_cast<long long>(twm), static_cast<long long>(mmd));
                 check(bt > 0, "the level carries world models to transform against");
                 // THE API CONTRACT: every object the type gate admits must answer BOTH
                 // directions. A gap here means the gate and the field offsets disagree.
