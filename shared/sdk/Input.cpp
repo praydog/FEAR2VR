@@ -365,6 +365,138 @@ std::optional<bool> Input::window_is_iconic() {
     return ::IsIconic(reinterpret_cast<HWND>(hwnd)) != 0;
 }
 
+// ---- the engine's object namespace ---------------------------------------------------------------
+
+namespace {
+
+// Vtable slots on an input device, all confirmed by who calls them:
+//   1 = ObjectChanged(id) -> bool     (LTInput_ObjectChanged reaches it at +4)
+//   2 = Poll()                        (CLTInput_PollDevices, +8)
+//   3 = GetObjectValue(id) -> float   (LTInput_GetObjectValue, +12)
+//   4 = GetPreviousObjectValue(id)    (LTInput_GetPreviousObjectValue, +16)
+constexpr size_t kSlotObjectChanged = 1;
+constexpr size_t kSlotGetValue = 3;
+constexpr size_t kSlotGetPreviousValue = 4;
+
+using ValueFn = float(__thiscall*)(void*, int);
+using ChangedFn = bool(__thiscall*)(void*, int);
+
+// Resolve the device a given object id belongs to, refusing joystick ids for the reason stated in the
+// header. Returns the device address, or 0.
+uintptr_t device_for_object(int object_id) {
+    switch (Input::classify_object(object_id)) {
+    case Input::ObjectClass::Keyboard:
+        return Input::device(Input::DeviceKind::Keyboard).transform([](const Input::Device& d) {
+            return d.address;
+        }).value_or(0);
+    case Input::ObjectClass::Mouse:
+        return Input::device(Input::DeviceKind::Mouse).transform([](const Input::Device& d) {
+            return d.address;
+        }).value_or(0);
+    default:
+        return 0;
+    }
+}
+
+// Read a vtable slot, guarded: a half-built or freed device faults here rather than handing back a
+// plausible function pointer.
+uintptr_t device_slot(uintptr_t device, size_t slot) {
+    if (device == 0) {
+        return 0;
+    }
+    uint32_t vtable = 0;
+    if (!seh_copy(&vtable, device, sizeof(vtable)) || vtable == 0) {
+        return 0;
+    }
+    uint32_t fn = 0;
+    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+        return 0;
+    }
+    // The method must live inside the exe: these are engine-side classes, and a pointer elsewhere means
+    // this is not the object this mapping describes.
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || fn < exe->base || fn >= exe->base + exe->size) {
+        return 0;
+    }
+    return fn;
+}
+
+}  // namespace
+
+Input::ObjectClass Input::classify_object(int object_id) {
+    // Mirrors LTInput_DeviceIndexForObject exactly, including the keyboard fallthrough.
+    if (static_cast<unsigned>(object_id - 2000) <= 0x15u) {
+        return ObjectClass::Joystick;
+    }
+    if (static_cast<unsigned>(object_id - 1000) <= 6u) {
+        return ObjectClass::Mouse;
+    }
+    return ObjectClass::Keyboard;
+}
+
+std::optional<float> Input::object_value(int object_id) {
+    const uintptr_t dev = device_for_object(object_id);
+    const uintptr_t fn = device_slot(dev, kSlotGetValue);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    float out = 0.0f;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    if (!ok) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<float> Input::object_previous_value(int object_id) {
+    const uintptr_t dev = device_for_object(object_id);
+    const uintptr_t fn = device_slot(dev, kSlotGetPreviousValue);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    float out = 0.0f;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<ValueFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    if (!ok) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<bool> Input::object_changed(int object_id) {
+    const uintptr_t dev = device_for_object(object_id);
+    const uintptr_t fn = device_slot(dev, kSlotObjectChanged);
+    if (fn == 0) {
+        return std::nullopt;
+    }
+    bool out = false;
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        out = reinterpret_cast<ChangedFn>(fn)(reinterpret_cast<void*>(dev), object_id);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+    if (!ok) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 // ---- the subclass window procedure ---------------------------------------------------------------
 
 std::optional<Input::WndProcChain> Input::wndproc_chain() {

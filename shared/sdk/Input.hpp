@@ -189,6 +189,57 @@ public:
     // flag as much as the dimensions.
     static std::optional<WindowGeometry> window_geometry();
 
+    // ---- THE ENGINE'S INPUT OBJECT NAMESPACE ------------------------------------------
+    //
+    // Everything the engine binds to is addressed by an "object id", and the whole namespace is four
+    // lines of LTInput_DeviceIndexForObject:
+    //
+    //     2000..2021  ->  device index (kind + 2), i.e. slots 2..5   -- 22 joystick objects
+    //     1000..1006  ->  device index 1, the MOUSE
+    //     anything else -> device index 0, the KEYBOARD (virtual-key codes)
+    //
+    // NOTE THAT THE KEYBOARD IS THE FALLTHROUGH, not a range: id 5000 resolves to the keyboard and reads
+    // whatever byte sits at that offset rather than being rejected. classify_object() reproduces that
+    // faithfully instead of pretending the engine validates, because a consumer passing a bad id needs to
+    // know it will get an answer rather than an error.
+    //
+    // JOYSTICK IDS DO NOT DISPATCH. LTInput_ObjectChanged rejects device indices 2..5 outright, so no
+    // binding on a 2000-range object can fire through the path CLTInput_Poll drives. Whether some other
+    // path serves them is NOT established, which is why classify_object reports Joystick honestly while
+    // the accessors below refuse those ids.
+    //
+    // WHY GO THROUGH THIS AT ALL when key_is_down() reads the bank directly: this is the namespace the
+    // engine's own bindings speak, so a consumer inspecting or replicating a binding needs the same
+    // addressing. It is also a genuinely independent path to the same state -- the accessors below call
+    // the device's own vtable methods rather than reading fields -- and the suite cross-checks the two
+    // against each other across all 256 keys and every mouse object.
+
+    enum class ObjectClass {
+        Keyboard,  // device 0; virtual-key codes, and the fallthrough for unrecognised ids
+        Mouse,     // device 1; ids 1000..1006
+        Joystick,  // devices 2..5; ids 2000..2021, which the binding dispatch rejects
+    };
+
+    static ObjectClass classify_object(int object_id);
+
+    // Current value through the device's own getter (vtable slot 3). 1.0/0.0 for digital objects; for
+    // mouse 1003/1004 it is the centre-relative position, and for 1005/1006 the axis float.
+    //
+    // nullopt when the object's device is absent or the read faulted, and for JOYSTICK ids, which this
+    // SDK refuses rather than guessing which of slots 2..5 a given kind would select.
+    static std::optional<float> object_value(int object_id);
+
+    // The previous frame's value (vtable slot 4), which is what the engine's own edge and threshold logic
+    // compares against.
+    static std::optional<float> object_previous_value(int object_id);
+
+    // The device's own change test (vtable slot 1) -- `previous != current`, NOT "is it down". This is
+    // what decides whether a binding's handler fires, so bindings are EDGE-TRIGGERED.
+    //
+    // Mouse 1003/1004 always answer false: a continuous position axis never reports a change, which is
+    // why the engine routes those through a threshold accumulator instead.
+    static std::optional<bool> object_changed(int object_id);
+
     // ---- THE WINDOW-MESSAGE KEY QUEUE -------------------------------------------------
     //
     // Filled by LTInput_QueueKeyDown / LTInput_QueueKeyUp straight out of the window procedure, as

@@ -4100,6 +4100,106 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
 
+    // ---- THE OBJECT NAMESPACE, CROSS-CHECKED AGAINST THE RAW BANKS ----------------------------
+    //
+    // Two genuinely independent paths to the same state: object_value() calls the device's own vtable
+    // getter, while key_is_down() reads the state byte directly. They must agree on every key, and a
+    // disagreement would mean one of the two mappings is wrong -- which is exactly the error neither
+    // path can detect alone.
+    size_t obj_checked = 0, obj_value_agrees = 0, obj_prev_agrees = 0, obj_changed_agrees = 0;
+    for (uint32_t vk = 0; vk < sdk::Input::kKeyStateCount; ++vk) {
+        const auto now = sdk::Input::key_is_down(static_cast<uint8_t>(vk));
+        const auto before = sdk::Input::key_was_down(static_cast<uint8_t>(vk));
+        const auto value = sdk::Input::object_value(static_cast<int>(vk));
+        const auto prev = sdk::Input::object_previous_value(static_cast<int>(vk));
+        const auto changed = sdk::Input::object_changed(static_cast<int>(vk));
+        if (!now.has_value() || !before.has_value() || !value.has_value() || !prev.has_value() ||
+            !changed.has_value()) {
+            continue;
+        }
+        ++obj_checked;
+        if ((*value == 1.0f) == *now) {
+            ++obj_value_agrees;
+        }
+        if ((*prev == 1.0f) == *before) {
+            ++obj_prev_agrees;
+        }
+        // The engine's change test is `previous != current`, so it must equal the edge computed from the
+        // two banks this SDK reads separately.
+        if (*changed == (*now != *before)) {
+            ++obj_changed_agrees;
+        }
+    }
+    json_append_double(out, "input_object_keys_checked", static_cast<double>(obj_checked), 0);
+    json_append_double(out, "input_object_value_agrees", static_cast<double>(obj_value_agrees), 0);
+    json_append_double(out, "input_object_prev_agrees", static_cast<double>(obj_prev_agrees), 0);
+    json_append_double(out, "input_object_changed_agrees", static_cast<double>(obj_changed_agrees), 0);
+
+    // The mouse side of the same comparison, plus the two facts that are structural rather than
+    // stateful: position axes never report a change, and joystick ids are refused.
+    size_t mouse_btn_checked = 0, mouse_btn_agrees = 0;
+    const auto mouse_for_obj = sdk::Input::mouse();
+    if (mouse_for_obj.has_value()) {
+        for (int i = 0; i < 3; ++i) {
+            const auto value = sdk::Input::object_value(1000 + i);
+            if (!value.has_value()) {
+                continue;
+            }
+            ++mouse_btn_checked;
+            if ((*value == 1.0f) == mouse_for_obj->buttons[static_cast<size_t>(i)]) {
+                ++mouse_btn_agrees;
+            }
+        }
+    }
+    json_append_double(out, "input_object_mouse_btn_checked", static_cast<double>(mouse_btn_checked), 0);
+    json_append_double(out, "input_object_mouse_btn_agrees", static_cast<double>(mouse_btn_agrees), 0);
+
+    // 1005/1006 read the very same floats MouseState::axis exposes, so these must be bit-identical --
+    // a weaker result would mean the axis offsets are wrong in one of the two readings.
+    const auto axis0 = sdk::Input::object_value(1005);
+    const auto axis1 = sdk::Input::object_value(1006);
+    json_append_bool(out, "input_object_axis_matches",
+                     mouse_for_obj.has_value() && axis0.has_value() && axis1.has_value() &&
+                         *axis0 == mouse_for_obj->axis[0] && *axis1 == mouse_for_obj->axis[1]);
+
+    // The position axes: the engine computes exactly what look_delta reproduces, so when the SDK is
+    // willing to report a delta at all the two must match. While the window is iconic the SDK refuses
+    // and the engine's getter still returns its ~34480 garbage, so there is nothing to compare.
+    const auto pos_x = sdk::Input::object_value(1003);
+    const auto pos_y = sdk::Input::object_value(1004);
+    json_append_bool(out, "input_object_position_readable", pos_x.has_value() && pos_y.has_value());
+    json_append_bool(out, "input_object_position_matches_delta",
+                     mouse_for_obj.has_value() && mouse_for_obj->look_delta_valid &&
+                         pos_x.has_value() && pos_y.has_value() &&
+                         *pos_x == mouse_for_obj->look_delta[0] &&
+                         *pos_y == mouse_for_obj->look_delta[1]);
+
+    const auto ch1003 = sdk::Input::object_changed(1003);
+    const auto ch1004 = sdk::Input::object_changed(1004);
+    json_append_bool(out, "input_object_position_never_changes",
+                     ch1003.has_value() && ch1004.has_value() && !*ch1003 && !*ch1004);
+
+    // Joystick ids are refused by this SDK because the dispatch rejects them too.
+    json_append_bool(out, "input_object_joystick_refused",
+                     !sdk::Input::object_value(2000).has_value() &&
+                         !sdk::Input::object_value(2021).has_value());
+
+    // The namespace's boundaries, including the keyboard FALLTHROUGH: an id past the joystick range is
+    // not rejected, it reads as a keyboard object. Encoded as a single bool so a boundary slip anywhere
+    // in the classifier fails one check.
+    using OC = sdk::Input::ObjectClass;
+    json_append_bool(out, "input_object_classify_boundaries",
+                     sdk::Input::classify_object(0) == OC::Keyboard &&
+                         sdk::Input::classify_object(999) == OC::Keyboard &&
+                         sdk::Input::classify_object(1000) == OC::Mouse &&
+                         sdk::Input::classify_object(1006) == OC::Mouse &&
+                         sdk::Input::classify_object(1007) == OC::Keyboard &&
+                         sdk::Input::classify_object(1999) == OC::Keyboard &&
+                         sdk::Input::classify_object(2000) == OC::Joystick &&
+                         sdk::Input::classify_object(2021) == OC::Joystick &&
+                         sdk::Input::classify_object(2022) == OC::Keyboard &&
+                         sdk::Input::classify_object(5000) == OC::Keyboard);
+
     const auto chain = sdk::Input::wndproc_chain();
     json_append_bool(out, "input_wndproc_readable", chain.has_value());
     if (chain.has_value()) {

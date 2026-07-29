@@ -3330,8 +3330,9 @@ struct CLTInput {
     void* devices[6]          @0x04   // CONFIRMED six slots: LTInput_AttachDeviceArray zeroes exactly 0x18 bytes here, and CLTInput_PollDevices iterates 0..5 calling each one's vtable slot 2. Live, slot 0 holds the KEYBOARD (vtable 0x67807C) and slot 1 the MOUSE (vtable 0x678050), both identified from their own code rather than slot order since this binary carries no RTTI. The other four are null without a gamepad attached.
     uint8_t unmapped_1C[0x30] @0x1C   // Bounded, not mapped: the second memset in LTInput_AttachDeviceArray clears exactly these 0x30 bytes and stops before the flag below. What they hold is unknown.
     uint32_t input_enabled    @0x4C   // CONFIRMED the gate LTInput_TranslateWindowMessage tests before touching any device (`this[18]`): cleared on WM_CANCELMODE, set on WM_NCACTIVATE, and every device reset on both edges. INDEPENDENT of the simulation gate -- measured 1 while the window was iconic and g_ClientGlob_bClientActive read 0, so "no input" has two separate possible causes.
-    void* poll_list_begin     @0x54   // CONFIRMED an iterator pair CLTInput_Poll walks after polling the devices (`this[21]`/`this[22]`), dereferencing each element as a float and passing it to sub_46B9A4. WHAT the list holds is unmapped.
-    void* poll_list_end       @0x58   // CONFIRMED the end sentinel of the pair above; the loop terminates when the iterator compares equal to it.
+    void* binding_list_base   @0x50   // CONFIRMED the container both CLTInput_Poll and LTInput_DestroyBindingSet pass as the second argument when constructing iterators over the registered BINDING SETS. Live 0.
+    void* binding_list_a      @0x54   // The two dwords the iterators are constructed FROM (`this[21]`, `this[22]`). THAT MUCH IS CONFIRMED -- which of them is begin and which is end is NOT: an earlier version of this file labelled them poll_list_begin/poll_list_end and marked it CONFIRMED, which was a guess. Reading the +0x54 value as a {next, prev, value} node yielded no recognisable structure, so the node layout is unestablished too. The elements are BINDING SET POINTERS, not floats: LTInput_DispatchBindingSet's parameter is typed float by IDA only because the container deref is float-typed, and its body immediately reads *(u32*)(p + 24) as a record count.
+    void* binding_list_b      @0x58   // The second of the pair above; same caveat.
 }
 }
 
@@ -3530,3 +3531,67 @@ struct CLTInput {
 // that the look delta is refused, the renderer reads shut down, and simulation reads gated.
 //
 // 827 checks, 0 failures.
+
+// ---- THE BINDING SYSTEM: HOW INPUT BECOMES AN ACTION ---------------------------------------------
+//
+// CLTInput_Poll does two things per frame: poll the six device slots, then walk a list of BINDING SETS
+// and fire the handlers whose objects changed. That second half is the action layer.
+//
+// THE OBJECT NAMESPACE is four lines, LTInput_DeviceIndexForObject (0x46CA7E):
+//     2000..2021   -> device index (kind + 2), i.e. slots 2..5   -- 22 joystick objects
+//     1000..1006   -> device index 1, the MOUSE
+//     anything else-> device index 0, the KEYBOARD (virtual-key codes)
+// The keyboard is the FALLTHROUGH rather than a range, so id 5000 resolves to the keyboard and reads
+// whatever byte sits at that offset instead of being rejected. 1000..1006 matches exactly the seven ids
+// LTInputDevice_Mouse_GetObjectValue decodes, which is independent corroboration of that decode.
+//
+// JOYSTICK IDS NEVER DISPATCH: LTInput_ObjectChanged rejects device indices 2..5 outright, so a binding
+// on a 2000-range object cannot fire through the path CLTInput_Poll drives. Whether some other path
+// serves them is NOT ESTABLISHED. Also note that with the set's kind byte at its initial -1, EVERY
+// lookup returns 0 -- keyboard and mouse included -- so a freshly allocated set is inert by construction.
+//
+// THE DEVICE VTABLE, each slot confirmed by who calls it rather than by position:
+//     slot 0  destructor (LTMem_Free)
+//     slot 1  ObjectChanged(id) -> bool    <- reached at +4 by LTInput_ObjectChanged
+//     slot 2  Poll()                       <- CLTInput_PollDevices, +8
+//     slot 3  GetObjectValue(id) -> float  <- LTInput_GetObjectValue, +12
+//     slot 4  GetPreviousObjectValue(id)   <- LTInput_GetPreviousObjectValue, +16
+//
+// SLOT 1 IS NOT "IS IT DOWN". It is `previous != current`: the keyboard's implementation is literally
+// `this[vk + 260] != this[vk + 4]`. So THE BINDING DISPATCH IS EDGE-TRIGGERED. The mouse's version
+// returns false unconditionally for 1003/1004, because a continuous position axis never reports a
+// change -- which is exactly why the threshold path below exists.
+//
+// A BINDING SET (header 0x20 bytes, from LTInput_AllocBindingSet):
+//     +0x00  pointer to an array of 32-byte records
+//     +0x18  record count
+//     +0x1C  device kind byte, initialised to -1
+//
+// A RECORD (32 bytes):
+//     +0x00  handler context arg 0
+//     +0x04  handler function pointer, called as handler(ctx0, ctx1)
+//     +0x08  handler context arg 1
+//     +0x0C  back-pointer to the owning set header
+//     +0x10  primary object id    (-1 = empty)
+//     +0x14  alternate object id  (-1 = empty)
+//     +0x18  modifier for the primary    (-1 = none)
+//     +0x1C  modifier for the alternate  (-1 = none)
+// So every action carries a PRIMARY and an ALTERNATE binding, each with an optional modifier. Without a
+// modifier the handler fires on ObjectChanged alone; with one it goes through the threshold evaluator.
+//
+// LTInput_EvaluateThresholdBinding (0x46B880) is ANALOG-TO-DIGITAL WITH HYSTERESIS, and it is how a
+// continuous axis drives a digital action: take current minus previous value, feed a positive delta into
+// a rising accumulator until it crosses a threshold (latch on, clear both), feed a negative delta into a
+// falling one to latch off. The per-binding state holds threshold at +0x08, falling at +0x0C, rising at
+// +0x10 and the latch at +0x14. It returns whether the latch changed, which is what fires the handler.
+//
+// EXPOSED AS sdk::Input's object namespace -- classify_object, object_value, object_previous_value and
+// object_changed -- which routes through the DEVICE'S OWN VTABLE rather than reading fields. That makes
+// it a second, independent path to state this SDK already reads directly, and the suite compares the two:
+// across all 256 keyboard objects the vtable getter agrees with the raw current bank, the previous getter
+// with the raw previous bank, and the engine's change test with the edge derived from both -- 256/256 on
+// each. Neither path can detect its own offsets being wrong; disagreement between them can. Mouse objects
+// 1000-1002 agree with the button bank, 1005/1006 are bit-identical to the mapped axis floats, and
+// 1003/1004 equal the reproduced look delta whenever the window geometry makes one meaningful.
+//
+// 843 checks, 0 failures.

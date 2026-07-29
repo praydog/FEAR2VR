@@ -4052,6 +4052,69 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- THE ENGINE'S OBJECT NAMESPACE, AGAINST THE RAW BANKS -------------------------
+            //
+            // THE STRONGEST CHECK IN THIS SECTION, because the two sides are genuinely independent:
+            // object_value() calls the device's own vtable getter, key_is_down() reads the state byte.
+            // Neither can detect its own offset being wrong; disagreement between them can.
+            double o_checked = -1.0, o_val = -1.0, o_prev = -1.0, o_chg = -1.0;
+            const bool objs = json_double(body, "input_object_keys_checked", o_checked) &&
+                              json_double(body, "input_object_value_agrees", o_val) &&
+                              json_double(body, "input_object_prev_agrees", o_prev) &&
+                              json_double(body, "input_object_changed_agrees", o_chg);
+            check(objs && o_checked == 256.0,
+                  "all 256 keyboard objects read through the engine's own getters");
+            check(objs && o_val == o_checked,
+                  "the vtable getter agrees with the raw current bank on every key");
+            check(objs && o_prev == o_checked,
+                  "and with the raw previous bank on every key");
+            // The engine's test is `previous != current`; this SDK derives the edge from two separately
+            // mapped banks. Agreement on all 256 means both banks are right, not just self-consistent.
+            check(objs && o_chg == o_checked,
+                  "and its change test matches the edge derived from both banks");
+
+            double mb_checked = -1.0, mb_agrees = -1.0;
+            check(json_double(body, "input_object_mouse_btn_checked", mb_checked) &&
+                      json_double(body, "input_object_mouse_btn_agrees", mb_agrees) &&
+                      mb_checked == 3.0 && mb_agrees == 3.0,
+                  "mouse objects 1000-1002 agree with the raw button bank");
+            bool ax_ok = false;
+            check(json_bool(body, "input_object_axis_matches", ax_ok) && ax_ok,
+                  "mouse objects 1005/1006 are bit-identical to the mapped axis floats");
+
+            // STRUCTURAL, not stateful: a continuous position axis never reports a change, which is why
+            // the engine needs a threshold accumulator to turn one into a digital action.
+            bool never_ch = false;
+            check(json_bool(body, "input_object_position_never_changes", never_ch) && never_ch,
+                  "position axes 1003/1004 never report a change");
+
+            // Refused deliberately: LTInput_ObjectChanged rejects device indices 2..5, so no binding on a
+            // joystick object can fire, and this SDK will not guess which slot a kind would select.
+            bool joy_ref = false;
+            check(json_bool(body, "input_object_joystick_refused", joy_ref) && joy_ref,
+                  "joystick object ids are refused rather than guessed at");
+
+            // The namespace's edges in one check, including the KEYBOARD FALLTHROUGH -- id 5000 is not
+            // rejected, it reads as a keyboard object, and a consumer needs to know that.
+            bool cls_ok = false;
+            check(json_bool(body, "input_object_classify_boundaries", cls_ok) && cls_ok,
+                  "the object classifier's boundaries match the engine's four-line resolver");
+
+            // The position axes compute precisely what look_delta reproduces, so they must match WHENEVER
+            // the SDK is willing to report a delta. Conditional rather than absolute: while the window is
+            // iconic the SDK refuses and the engine's getter still returns its garbage, so there is
+            // nothing to compare and asserting a match would fail for a documented reason.
+            bool delta_valid = false, delta_match = false;
+            json_bool(body, "input_mouse_look_delta_valid", delta_valid);
+            json_bool(body, "input_object_position_matches_delta", delta_match);
+            if (delta_valid) {
+                check(delta_match,
+                      "objects 1003/1004 equal the reproduced look delta exactly");
+            } else {
+                check(!delta_match,
+                      "with no usable window geometry, no delta comparison is claimed");
+            }
+
             // Every synthetic-input entry point resolves inside the exe. These are the addresses a mod
             // drives to feed the engine input that did not come from a window message, so a stale one
             // would be a hook into nothing.
