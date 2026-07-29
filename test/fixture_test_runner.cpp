@@ -1057,8 +1057,10 @@ int main(int argc, char** argv) {
         // that needs to run inside the game's frame rather than bracketing it, so the slot map has to
         // stay true against the live build rather than being trusted from a one-off read.
         //
-        // THE IDENTITY CHECK IS THE LOAD-BEARING ONE: slot 1 is IBase::_InterfaceImplementation and
-        // returns a literal, so calling it verifies the whole +2 anchor rather than assuming it.
+        // THE IDENTITY CHECK covers WHERE THE INTERFACE STARTS -- slot 1 returning its literal is
+        // what proves slot 0 is implementation-only, i.e. the +2 anchor. It does NOT cover which of
+        // 2/3/4 is which: a build that reordered those would pass everything checked here. These are
+        // sanity checks against a shifted or foreign interface, not a proof of the assignment.
         int64_t gok = -1, ganch = -1, gpre = -1;
         json_int(body, "gcs_ok", gok);
         json_int(body, "gcs_anchors", ganch);
@@ -1067,13 +1069,24 @@ int main(int argc, char** argv) {
         check(ganch == 3,
               "all three per-frame anchors resolve INSIDE gameclient.dll");
 
-        // A slot-specific fingerprint, and the only one available: PreUpdate is a lone `retn` in this
-        // build, which the reference SDK explains by noting it exists for organisation only. Asserted
-        // because a shifted vtable would put something else at slot 2 -- but it is a property of the
-        // shipped game code, so a build that fills it in would fail this without anything being wrong.
-        check(gpre == 1, "slot 2 is an EMPTY function, the expected PreUpdate fingerprint");
-        printf("[fixture] game shell: identity verified, 3 anchors in gameclient.dll, PreUpdate "
-               "empty\n");
+        // Slot 2's entry byte is `retn`, so it returns immediately -- which the reference SDK explains
+        // by noting PreUpdate exists for organisation only. This distinguishes slot 2 from a slot
+        // holding real work, but not from another empty slot, and it is a property of the shipped
+        // game code rather than an invariant: a build that filled it in would fail this with nothing
+        // being wrong.
+        check(gpre == 1, "slot 2's entry byte is retn -- it returns immediately");
+
+        // AND THE PART THAT MAKES A REORDERING DETECTABLE: each of the three still has its mapped
+        // prologue, and no two of those shapes match -- slot 2 is retn+int3 padding, slot 3 opens a
+        // large fixed frame with `sub esp, 0x128`, slot 4 sets up ebp AND aligns the stack to 64 for
+        // SSE locals. Swap any two and this fails. It is still not a proof of semantics: a rebuild
+        // of the same game code could change a prologue, which would show up here as a false
+        // negative rather than as a wrong hook.
+        int64_t gshapes = -1;
+        json_int(body, "gcs_shapes", gshapes);
+        check(gshapes == 1, "slots 2/3/4 still carry their mapped, mutually distinct prologues");
+        printf("[fixture] game shell: interface identity + 3 anchors in gameclient.dll, slot 2 "
+               "returns at once, 2/3/4 prologues distinct\n");
 
         // ---- THE LOCAL PLAYER'S TWO FORMS ---------------------------------------------
         //

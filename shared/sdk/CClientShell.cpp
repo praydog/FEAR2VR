@@ -376,6 +376,41 @@ bool GameClientShell::available() {
 
 uintptr_t GameClientShell::pre_update_fn() { return resolve_checked(kSlotPreUpdate); }
 
+// Prologue bytes as read from this build. Each is only as long as it needs to be to separate the
+// three slots from one another.
+bool GameClientShell::slots_match_mapped_shapes() {
+    static constexpr uint8_t kPreUpdate[] = {0xC3, 0xCC};                          // retn + int3 pad
+    static constexpr uint8_t kPostUpdate[] = {0x81, 0xEC, 0x28, 0x01, 0x00, 0x00};  // sub esp, 128h
+    static constexpr uint8_t kUpdate[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xC0};      // ebp frame, align 64
+
+    const struct {
+        uintptr_t fn;
+        const uint8_t* want;
+        size_t len;
+    } slots[] = {
+        {pre_update_fn(), kPreUpdate, sizeof(kPreUpdate)},
+        {post_update_fn(), kPostUpdate, sizeof(kPostUpdate)},
+        {update_fn(), kUpdate, sizeof(kUpdate)},
+    };
+
+    for (const auto& s : slots) {
+        if (s.fn == 0) {
+            return false;
+        }
+        bool match = false;
+        KANANLIB_SEH_TRY {
+            match = memcmp(reinterpret_cast<const void*>(s.fn), s.want, s.len) == 0;
+        }
+        KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+            match = false;
+        }
+        if (!match) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool GameClientShell::pre_update_is_empty() {
     const auto fn = pre_update_fn();
     if (fn == 0) {
@@ -383,7 +418,7 @@ bool GameClientShell::pre_update_is_empty() {
     }
     bool empty = false;
     KANANLIB_SEH_TRY {
-        empty = *reinterpret_cast<const uint8_t*>(fn) == 0xC3u;  // lone retn
+        empty = *reinterpret_cast<const uint8_t*>(fn) == 0xC3u;  // entry returns at once
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         empty = false;

@@ -885,6 +885,7 @@ std::string build_targets_json() {
     // assumption is wrong.
     int gcs_ok = sdk::GameClientShell::available() ? 1 : 0;
     int gcs_pre_empty = sdk::GameClientShell::pre_update_is_empty() ? 1 : 0;
+    int gcs_shapes = sdk::GameClientShell::slots_match_mapped_shapes() ? 1 : 0;
     int gcs_in_module = 0;
     char gcs_name[64]{};
     if (const auto nm = sdk::GameClientShell::implementation_name(); nm.has_value()) {
@@ -1240,7 +1241,7 @@ std::string build_targets_json() {
              "\"world_printable\":%d,\"world_len\":%d,"
              "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
              "\"lp_slots\":%d,\"lp_consistent\":%d,\"lp_accepted\":%d,"
-             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,"
+             "\"gcs_ok\":%d,\"gcs_anchors\":%d,\"gcs_pre_empty\":%d,\"gcs_shapes\":%d,"
              "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
@@ -1330,7 +1331,7 @@ std::string build_targets_json() {
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
              wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
-             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty,
+             lp_slots, lp_consistent, lp_accepted, gcs_ok, gcs_in_module, gcs_pre_empty, gcs_shapes,
              wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],

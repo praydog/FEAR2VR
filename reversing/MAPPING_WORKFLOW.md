@@ -963,6 +963,22 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **"RE-VERIFIED AT RUNTIME" MUST NAME WHICH PART IS RE-VERIFIED.** Calling IClientShell slot 1 and
+  matching "CGameClientShell" re-checks WHERE THE INTERFACE STARTS -- the string proves slot 1 is
+  IBase's single virtual, hence slot 0 is implementation-only, hence the +2. It does not touch WHICH
+  of slots 2/3/4 is which: reorder those and the identity check and the module-containment check both
+  still pass. I wrote that it meant "a wrong slot map refuses to hand out addresses", which was one
+  claim too many.
+  
+  The fix was cheap and worth doing rather than just narrowing the prose: each slot has a PROLOGUE,
+  and the three are mutually distinct (retn+int3 padding; `sub esp, 0x128`; ebp frame with
+  `and esp, -64` for SSE locals). Comparing those makes the plausible failure -- a reordering --
+  detectable. Still not semantics: it cannot tell PreUpdate from any other empty function, and a
+  rebuild could change a prologue, which shows up as a false negative rather than a wrong hook.
+  
+  Also: `*fn == 0xC3` proves the ENTRY returns immediately, not that the body is one byte. Here the
+  0xCC int3 padding after it is what actually evidences an empty body -- the compiler's filler.
+
 - **A SLOT MAP CAN BE RE-VERIFIED AT RUNTIME, SO DO THAT INSTEAD OF TRUSTING THE READ.** The
   IClientShell anchor rests on slot 1 returning the literal "CGameClientShell". That is not just
   static evidence -- slot 1 is a pure return of a constant, so the SDK can CALL it and compare the

@@ -174,10 +174,14 @@ public:
 // not contain -- which is what fixes the +2 offset. Corroborated by slot 2 being a single `retn`
 // (the reference notes PreUpdate exists for organisation only) and slot 4 being much the largest.
 //
-// AND IT IS RE-VERIFIED AT RUNTIME rather than assumed: available() calls slot 1 and compares the
-// string. That call is a pure return of a constant, so it is safe to make, and it means a wrong slot
-// map or a different game build refuses to hand out addresses instead of returning something
-// arbitrary to hook.
+// WHAT available() DOES AND DOES NOT RE-CHECK, precisely. It calls slot 1 and compares the string,
+// which is safe (a pure return of a constant) and re-verifies WHERE THE INTERFACE STARTS: the string
+// proves slot 1 is IBase's single virtual, so slot 0 is implementation-only and the published
+// interface begins at slot 2. That is the +2 anchor.
+//
+// It does NOT by itself re-check WHICH of slots 2/3/4 is which -- the identity string and module
+// containment would all still hold if those three were reordered. For that, see
+// slots_match_mapped_shapes() below, which checks each one's prologue.
 class GameClientShell {
 public:
     // Slot 1's string, which is the interface's own name for its implementation. nullopt when the
@@ -198,18 +202,39 @@ public:
     // reliable per-frame callback with nothing of the game's own to preserve.
     static uintptr_t pre_update_fn();
 
-    // IS PreUpdate ACTUALLY EMPTY in this build? True when its first byte is a lone `retn` (0xC3).
+    // Does PreUpdate RETURN IMMEDIATELY? True when its first byte is `retn` (0xC3).
     //
-    // Two uses, and both are real. For a consumer: hooking an empty function means there is no game
-    // behaviour to preserve, so a detour can do its work and return without calling the original.
-    // For validation: an empty body is the one slot-specific fingerprint available here, so this
-    // doubles as a check that slot 2 really is PreUpdate rather than something a shifted vtable put
-    // in its place.
+    // That is what the byte proves and all it proves -- the ENTRY POINT returns at once. It says
+    // nothing about bytes further in, which may be unreachable code, padding or another block
+    // entirely; this is not a claim that the function is one byte long.
+    //
+    // Still useful to a consumer, and that is the point: a detour on a function whose entry returns
+    // immediately has no game behaviour to preserve, so it can do its work and return without
+    // calling the original. As validation it is weaker than it looks -- it distinguishes slot 2 from
+    // a slot holding real work, but not from another empty slot.
     //
     // NOT AN INVARIANT -- it is a property of the shipped game code, which the reference SDK
     // explains ("the only benefit to having code in PreUpdate() is purely organizational"). A build
     // that fills it in would report false without anything being wrong.
     static bool pre_update_is_empty();
+
+    // Do slots 2, 3 and 4 still have the PROLOGUES they had when this map was made? This is the
+    // per-slot evidence available at runtime, and what makes a reordering of the three detectable
+    // rather than silently accepted:
+    //
+    //   slot 2  `retn` followed by 0xCC int3 padding -- returns at once, and the padding is the
+    //           compiler's filler, so there is genuinely no further body
+    //   slot 3  `sub esp, 0x128` then pushes -- a large fixed frame, no frame pointer
+    //   slot 4  `push ebp; mov ebp, esp; and esp, 0xFFFFFFC0` -- a frame pointer AND 64-byte stack
+    //           alignment, which a function gets for holding aligned SSE locals. Fitting for the
+    //           heavyweight of the three, and quite distinct from slot 3's shape.
+    //
+    // WHAT THIS IS WORTH: it distinguishes the mapped assignment from the plausible failure -- the
+    // three being reordered -- because no two of these shapes match. It is NOT a proof of semantics:
+    // it cannot tell PreUpdate from any other empty function, and a rebuild of the same game code
+    // could legitimately change a prologue. Use it as a gate before hooking, and expect a false
+    // negative on a different build rather than a wrong hook.
+    static bool slots_match_mapped_shapes();
     static uintptr_t update_fn();
     static uintptr_t post_update_fn();
 };
