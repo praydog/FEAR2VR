@@ -4213,6 +4213,51 @@ int main(int argc, char** argv) {
             check(json_bool(body, "console_api_slots_distinct", cs_sd) && cs_sd,
                   "the three console API slots are three different functions");
 
+            // ---- ONE CONSOLE VARIABLE, TWO REPRESENTATIONS -----------------------------------------
+            //
+            // EngineVars derives a variable's typed storage from the engine's built-in descriptor table.
+            // Console asks the live console, which returns a heap record whose first field is the value as
+            // a float. THE ADDRESSES ARE DIFFERENT THINGS and the numbers must still agree.
+            //
+            // An earlier version of this check asserted the ADDRESSES matched and reported 0 of 3. That
+            // failure is what established the record layout -- so the address difference is asserted here
+            // POSITIVELY, to keep the two mechanisms from being quietly conflated again.
+            double cv_checked = -1.0, cv_value = -1.0, cv_string = -1.0, cv_addr = -1.0;
+            const bool cvn = json_double(body, "cvar_routes_checked", cv_checked) &&
+                             json_double(body, "cvar_value_agree", cv_value) &&
+                             json_double(body, "cvar_string_agree", cv_string) &&
+                             json_double(body, "cvar_addr_differs", cv_addr);
+            check(cvn && cv_checked >= 3.0, "both variable routes answer for several built-ins");
+            check(cvn && cv_value == cv_checked,
+                  "the live record's float equals the descriptor's typed value for every one");
+            check(cvn && cv_string == cv_checked,
+                  "the engine's own decimal rendering parses back to its float for every one");
+            check(cvn && cv_addr == cv_checked,
+                  "the record is NOT the descriptor's storage -- two representations, not one address");
+
+            // The record names itself, so a successful lookup already evidences the name field: variable()
+            // refuses any record whose own +0x10 name is not the one queried.
+            bool cv_named = false;
+            check(json_bool(body, "cvar_record_self_named", cv_named) && cv_named,
+                  "the variable record carries its own name and a non-zero hash");
+
+            // THE ASYMMETRY THAT MAKES THE ENGINE ROUTE WORTH HAVING: a variable created at runtime exists
+            // for the live lookup and not in the built-in table. Both halves are asserted, because either
+            // alone would also pass if the two routes were the same mechanism.
+            bool cv_rt_engine = false, cv_rt_table = true, cv_absent = false;
+            check(json_bool(body, "cvar_runtime_via_engine", cv_rt_engine) && cv_rt_engine,
+                  "a runtime-created variable is found by the engine's lookup");
+            check(json_bool(body, "cvar_runtime_in_table", cv_rt_table) && !cv_rt_table,
+                  "that same variable is absent from the built-in descriptor table");
+            check(json_bool(body, "cvar_absent_refused", cv_absent) && cv_absent,
+                  "an unknown name and an empty name are both refused");
+
+            // ApplyWorldOffset reads 1.0 -- the default the reference documents for it, and what makes
+            // GetPlayerPos add the source world offset rather than skip it.
+            double cv_apply = -1.0;
+            check(json_double(body, "cvar_apply_world_offset", cv_apply) && cv_apply == 1.0,
+                  "ApplyWorldOffset holds the documented default of 1.0");
+
             // The three commands that make this worth mapping for a VR mod. None appear in any static
             // table, so finding them is the proof that walking the list reaches past the engine's 34.
             double cs_player = -1.0;

@@ -4435,3 +4435,79 @@ class LTInputDeviceMouse 0x30 {
 // > addresses seen when the live list was first walked.
 //
 // 952 checks, 0 failures.
+
+// ---- A CONSOLE VARIABLE HAS TWO HOMES, AND A FAILED PREDICTION FOUND THE SECOND -------------------
+//
+// ILTClient slot 71 (vtbl+284) is `return a1 ? *(float*)a1 : 0.0` -- it dereferences whatever slot 69
+// (CLTClient_GetConsoleVariable) returned as a float. I read that as "slot 69 returns the variable's storage
+// address", which would have made it the same address sdk::EngineVars derives from the built-in descriptor
+// table, and asserted they matched.
+//
+// THE ASSERTION REPORTED 0 OF 3. EngineVars gives ScreenWidth's storage as exe+0x2E3490 holding int32 5120;
+// the live lookup returns a HEAP address whose first dword is 0x45A00000 -- float 5120.0. Two different
+// objects holding one number.
+//
+// THE RUNTIME RECORD, read out once the address was known. Both string pointers aim INSIDE the record:
+//
+//     +0x00  float   value                       5120.0
+//     +0x04  ptr     unmapped (heap)
+//     +0x08  ptr     owning source (exe data, near the console source block)
+//     +0x0C  uint32  name hash                   0xA4F9A2E2
+//     +0x10  char*   name          -> +0x28      "ScreenWidth"
+//     +0x14  char*   value_string  -> +0x18      "5120.000000"
+//
+// So ONE variable carries its value in three forms and the descriptor holds a fourth. Live all four agree:
+// the record's float, its own decimal rendering parsed back, and the descriptor's typed int32 -- 3 of 3 on
+// every name checked. The suite now asserts the addresses DIFFER, positively, so the two mechanisms cannot be
+// quietly conflated again.
+//
+// AND THE TWO ROUTES ARE NOT INTERCHANGEABLE. Variables created at runtime exist only in the live structure:
+// SetConsoleVariableFloat CREATES on assignment, which is how the game gets ApplyWorldOffset and the
+// OrbitalSS settings. ApplyWorldOffset is found by the engine's lookup, absent from the descriptor table, and
+// reads exactly 1.0 -- the default the reference documents for it.
+//
+// > A getter that dereferences its argument tells you the argument is a pointer to that type. It does not
+// > tell you WHICH object the pointer names, and there were two candidates holding the same number.
+//
+// ---- THE SOURCE WORLD OFFSET ----------------------------------------------------------------------
+//
+// ILTClient slot 86 (vtbl+344) = CLTClient_GetSourceWorldOffset: copies three globals into an out-vector.
+// Live (6656, -256, -4864) -- grid-aligned multiples of 256, a coordinate-space translation. NOTHING in
+// FEAR2.exe writes those three globals; the only references are the three fld instructions in the getter, so
+// they are filled indirectly during world load. "No writer" is not "constant".
+//
+// IDENTIFIED BY TWO SOURCES AGREEING ON CONTROL FLOW, not by a name. The reference calls
+// g_pLTClient->GetSourceWorldOffset(vOffset) only when the console variable ApplyWorldOffset is non-zero,
+// defaulting to 1.0 when the track is empty. ConsoleCmd_GetPlayerPos does exactly that: reads the tracked
+// variable through slot 71, substitutes 1.0 when the track is empty, adds this vector when non-zero. Same
+// default, same gate. So what GetPlayerPos PRINTS is not the raw field.
+//
+// ---- THE PLAYER HAS TWO POSES, AND THE GAME OWNS ONE OF THEM --------------------------------------
+//
+// From g_pPlayerMgr's first occupied slot, the object at +252 is a gameclient transform holder, and it links
+// to the engine on both sides:
+//
+//     holder +188  ->  engine LTObject, type 0 (OT_NORMAL), dims (0,0,0), handle 0xFFFF (client-created)
+//     holder +300  ->  LTVector   position          (2183.038, 1572.056, -2233.772)
+//     holder +324  ->  LTRotation rotation          norm 1.000000
+//     holder +600  ->  engine LTObject, type 1 (OT_MODEL), dims (40, 95, 40)
+//
+// THE MODEL AT +600 IS THE SAME OBJECT sdk::CClientShell::local_player() NAMES, and that is proven rather
+// than assumed: its asset filename reads char\player\player\fp_playerm05.mdl and its dims are (40, 95, 40),
+// exactly the pair already recorded for the shell's player slot. Two unrelated routes -- a game-side manager
+// and the engine's shell -- reaching one object.
+//
+// THE ANCHOR AT +188 IS DIMENSIONLESS, CLIENT-ONLY, AND SITS 70.95 UNITS ABOVE THE MODEL'S ORIGIN, with a
+// full delta of (-8.911, 70.948, -0.177). Its rotation is BIT-IDENTICAL to the holder's, while its position
+// differs from the holder's in the low bits -- so the rotation is copied wholesale and the position is
+// maintained by a separate path (or lags a frame).
+//
+// CALLING IT THE CAMERA IS NOT ESTABLISHED. Eye height, an exact rotation copy, no dimensions and no server
+// object are all consistent with a view anchor and none of them is a code path that says so. It is recorded
+// for what it measurably is.
+//
+// AND NOTE THESE ARE NOT LTObject OFFSETS: the engine keeps position at +0x14 and rotation at +0x20. The game
+// maintains its own pose beside the engine's, so "the player's position" has two answers and a consumer must
+// say which one it means.
+//
+// 961 checks, 0 failures.

@@ -30,6 +30,7 @@
 #include "sdk/Input.hpp"
 #include "sdk/Common.hpp"
 #include "sdk/Console.hpp"
+#include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
 #include "sdk/Resources.hpp"
 #include "sdk/Vtables.hpp"
@@ -4221,6 +4222,61 @@ std::string build_shader_params_json() {
     json_append_bool(out, "console_api_slots_distinct",
                      con_s1 != 0 && con_s2 != 0 && con_s3 != 0 && con_s1 != con_s2 && con_s2 != con_s3 &&
                          con_s1 != con_s3);
+
+    // TWO INDEPENDENT REPRESENTATIONS OF ONE VARIABLE, compared by VALUE. EngineVars derives the
+    // descriptor's typed storage from the built-in table; Console asks the live console and gets a heap
+    // record whose first field is the value as a float. The ADDRESSES differ -- an earlier version of this
+    // check compared them and reported 0 of 3, which is what established the record layout -- but the
+    // numbers must agree, and the record's own decimal string must agree with both.
+    size_t cvar_checked = 0, cvar_value_agree = 0, cvar_string_agree = 0, cvar_addr_differs = 0;
+    for (const char* nm : {"ScreenWidth", "ScreenHeight", "UpdateRate"}) {
+        const auto viaTable = sdk::EngineVars::find(nm);
+        const auto viaEngine = sdk::Console::variable(nm);
+        if (!viaTable.has_value() || !viaEngine.has_value()) {
+            continue;
+        }
+        ++cvar_checked;
+        if (viaTable->address != viaEngine->record) {
+            ++cvar_addr_differs;
+        }
+        if (const auto as_int = sdk::EngineVars::read_int(nm)) {
+            if (static_cast<float>(*as_int) == viaEngine->value) {
+                ++cvar_value_agree;
+            }
+        }
+        // The engine's own rendering of the value must parse back to the same number.
+        if (!viaEngine->value_string.empty()) {
+            const double parsed = std::strtod(viaEngine->value_string.c_str(), nullptr);
+            if (std::fabs(parsed - static_cast<double>(viaEngine->value)) < 0.001) {
+                ++cvar_string_agree;
+            }
+        }
+    }
+    json_append_double(out, "cvar_routes_checked", static_cast<double>(cvar_checked), 0);
+    json_append_double(out, "cvar_value_agree", static_cast<double>(cvar_value_agree), 0);
+    json_append_double(out, "cvar_string_agree", static_cast<double>(cvar_string_agree), 0);
+    json_append_double(out, "cvar_addr_differs", static_cast<double>(cvar_addr_differs), 0);
+
+    // The record names itself: variable() refuses a record whose own name is not the one queried, so a
+    // successful lookup is already evidence the +0x10 field is the name.
+    bool cvar_self_named = false;
+    if (const auto sw = sdk::Console::variable("ScreenWidth")) {
+        cvar_self_named = sw->name == "ScreenWidth" && sw->name_hash != 0 && sw->record != 0;
+    }
+    json_append_bool(out, "cvar_record_self_named", cvar_self_named);
+
+    // A runtime-created variable: present to the engine's lookup, absent from the built-in table. The game
+    // registers ApplyWorldOffset this way, which is the asymmetry that makes the engine route worth having.
+    const bool cvar_rt_engine = sdk::Console::variable_exists("ApplyWorldOffset");
+    const bool cvar_rt_table = sdk::EngineVars::find("ApplyWorldOffset").has_value();
+    json_append_bool(out, "cvar_runtime_via_engine", cvar_rt_engine);
+    json_append_bool(out, "cvar_runtime_in_table", cvar_rt_table);
+    json_append_bool(out, "cvar_absent_refused",
+                     !sdk::Console::variable_exists("NoSuchConsoleVariableHere") &&
+                         !sdk::Console::variable_float("NoSuchConsoleVariableHere").has_value() &&
+                         !sdk::Console::variable_record("").has_value());
+    const auto cvar_apply = sdk::Console::variable_float("ApplyWorldOffset");
+    json_append_double(out, "cvar_apply_world_offset", cvar_apply.value_or(-1.0f), 3);
 
     // The game-registered commands a VR mod actually reaches for. None of these are in the engine's table,
     // so finding them proves the walk sees past the static 34.

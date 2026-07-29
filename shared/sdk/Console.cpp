@@ -1,6 +1,7 @@
 #include "Console.hpp"
 
 #include <algorithm>
+#include <string>
 #include <cctype>
 
 #include "Memory.hpp"
@@ -347,6 +348,74 @@ std::optional<Console::RegisterProgramFn> Console::register_program_fn() {
         return std::nullopt;
     }
     return reinterpret_cast<RegisterProgramFn>(fn);
+}
+
+std::optional<uintptr_t> Console::variable_record(std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    const auto fn = find_variable_fn();
+    if (!fn.has_value()) {
+        return std::nullopt;
+    }
+
+    // string_view is not guaranteed NUL-terminated and the engine takes a C string.
+    const std::string owned{name};
+
+    void* result = nullptr;
+    if (!mem::guarded([&] { result = (*fn)(owned.c_str()); })) {
+        return std::nullopt;
+    }
+    if (result == nullptr) {
+        return std::nullopt;  // the engine's own answer for "no such variable"
+    }
+    return reinterpret_cast<uintptr_t>(result);
+}
+
+std::optional<Console::Variable> Console::variable(std::string_view name) {
+    const auto at = variable_record(name);
+    if (!at.has_value()) {
+        return std::nullopt;
+    }
+
+    Variable v{};
+    v.record = *at;
+    const auto value = mem::read_f32(*at + kVarValue);
+    const auto hash = mem::read_u32(*at + kVarNameHash);
+    const auto name_ptr = mem::read_ptr(*at + kVarName);
+    if (!value.has_value() || !hash.has_value() || !name_ptr.has_value()) {
+        return std::nullopt;
+    }
+    // A minimum of 1: console variable names are long, but nothing here should reject a short one on a
+    // rule invented for this reader.
+    auto read_name = mem::read_name(*name_ptr, 128, 1);
+    if (!read_name.has_value() || *read_name != name) {
+        // The record's own name must be the one asked for. A mismatch means either the lookup returned
+        // something else or this layout is wrong, and both are worse than reporting absence.
+        return std::nullopt;
+    }
+
+    v.value = *value;
+    v.name_hash = *hash;
+    v.name = std::move(*read_name);
+    if (const auto str_ptr = mem::read_ptr(*at + kVarValueString)) {
+        if (auto text = mem::read_cstring(*str_ptr, 64)) {
+            v.value_string = std::move(*text);
+        }
+    }
+    return v;
+}
+
+std::optional<float> Console::variable_float(std::string_view name) {
+    const auto at = variable_record(name);
+    if (!at.has_value()) {
+        return std::nullopt;
+    }
+    return mem::read_f32(*at + kVarValue);
+}
+
+bool Console::variable_exists(std::string_view name) {
+    return variable_record(name).has_value();
 }
 
 }  // namespace sdk

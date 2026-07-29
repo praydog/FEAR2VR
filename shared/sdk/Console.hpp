@@ -228,6 +228,66 @@ public:
     static std::optional<FindVariableFn> find_variable_fn();
     static std::optional<SetVariableFloatFn> set_variable_float_fn();
     static std::optional<RegisterProgramFn> register_program_fn();
+
+    //
+    // A CONSOLE VARIABLE, BY NAME, FROM THE LIVE CONSOLE -- and this one DOES call the engine, deliberately.
+    //
+    // WHAT SLOT 69 RETURNS IS A RUNTIME RECORD ON THE HEAP, not the descriptor's storage. That correction
+    // came from a check that failed: EngineVars derives ScreenWidth's storage as 0x6E3490 in the exe's data,
+    // while this lookup returns a heap address, and an assertion that the two matched reported 0 of 3. What
+    // slot 71 dereferences is the record's FIRST FIELD, which is the value as a float.
+    //
+    // The record describes itself, with both string pointers aimed at buffers inside it:
+    //
+    //     +0x00  float   value                 5120.0
+    //     +0x04  ptr     unmapped (heap)
+    //     +0x08  ptr     owning source (exe data)
+    //     +0x0C  uint32  name hash
+    //     +0x10  char*   name           -> +0x28, inline    "ScreenWidth"
+    //     +0x14  char*   value_string   -> +0x18, inline    "5120.000000"
+    //
+    // SO ONE VARIABLE CARRIES ITS VALUE IN THREE FORMS and the static descriptor holds a fourth. They agree
+    // numerically -- float 5120.0, the text "5120.000000", and the descriptor's int32 5120 -- which is the
+    // cross-check the suite makes, VALUES rather than addresses.
+    //
+    // WHY THIS REACHES FURTHER THAN sdk::EngineVars. EngineVars walks the built-in descriptor table, which is
+    // the right tool for the 107 entries it holds and cannot see anything else. Variables created at runtime
+    // -- SetConsoleVariableFloat creates on assignment, which is how the game gets ApplyWorldOffset,
+    // OrbitalSSRadius and friends -- exist only in the live structure this asks. Measured: ApplyWorldOffset
+    // is found here and absent there, and reads 1.0, the same default the reference documents.
+    //
+    // THE CALL IS A READ-ONLY TABLE SEARCH, which is why it is wrapped here while set/register are not. It
+    // walks a list the game thread also reads. Registration happens during startup, so the list is stable by
+    // the time a mod runs -- but "stable in practice" is not "synchronised", so a caller needing a guarantee
+    // should look up once and keep the record address rather than searching per frame.
+    //
+    struct Variable {
+        uintptr_t record{};        // the runtime record, stable for the process's lifetime
+        float value{};             // +0x00, and what slot 71 would return
+        uint32_t name_hash{};      // +0x0C
+        std::string name;          // +0x10, read back from the record rather than echoing the query
+        std::string value_string;  // +0x14, the engine's own decimal rendering
+    };
+
+    static constexpr uintptr_t kVarValue = 0x00;
+    static constexpr uintptr_t kVarSource = 0x08;
+    static constexpr uintptr_t kVarNameHash = 0x0C;
+    static constexpr uintptr_t kVarName = 0x10;
+    static constexpr uintptr_t kVarValueString = 0x14;
+
+    // The record for `name`, or nullopt when the live console does not know it. The name is read BACK out of
+    // the record and must match the query -- a record whose own name disagrees is refused, since that would
+    // mean the lookup or this layout is wrong.
+    static std::optional<Variable> variable(std::string_view name);
+
+    // The record's address alone, for a caller that wants to keep it and read fields itself.
+    static std::optional<uintptr_t> variable_record(std::string_view name);
+
+    // The value, guarded-read from the record rather than by calling slot 71 -- once the record is known,
+    // reading it needs no engine code.
+    static std::optional<float> variable_float(std::string_view name);
+
+    static bool variable_exists(std::string_view name);
 };
 
 }  // namespace sdk
