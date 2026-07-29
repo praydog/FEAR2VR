@@ -24,7 +24,8 @@
 //
 //     2 = int32     PhysicsClientUpdateRate 45, PhysicsMaxSteps 2, SoundMaxHardwareSounds 128
 //     1 = float     MaxFinalizeTimeMS reads 1077936128 as an int and exactly 3.0 as a float
-//     0 = UNKNOWN   one entry only (SoundTrack3DSoundCue), reading 0 either way, so undecidable
+//     0 = UNKNOWN   3 entries, including "IP" -- whose storage reads all zeros on a single-player
+//                   session, so string-buffer and integer-zero remain indistinguishable
 //
 // The type-1 case is the decisive one: a value that is nonsense as an integer and exact as a float is
 // a float. Type 0 is left explicitly unresolved rather than folded into one of the others.
@@ -63,11 +64,12 @@ public:
     // on the first entry that does not look like a triplet, so a schema change shortens the result
     // instead of running off the end.
     //
-    // THIS WAS 22 AND THAT WAS WRONG TWICE OVER: the offset used started 24 entries into the table, and
-    // the walk rejected any tag above 8 while 6 entries carry 0x00010002 -- flags in the high half. The
-    // slice looked entirely plausible, which is why the count is asserted by the suite rather than
-    // trusted here.
-    static constexpr size_t kKnownEntryCount = 106;
+    // THIS HAS BEEN WRONG TWICE, both times because a scan's own predicate set the boundary rather than
+    // the data. 22 came from starting 25 entries in and rejecting tags above 8 (6 entries carry flags in
+    // the high half). 106 came from a scan that required names of three characters or more, which
+    // excluded "IP" -- the table's first entry. Hence the count is asserted by the SUITE: a wrong extent
+    // is exactly the error a library cannot catch in itself.
+    static constexpr size_t kKnownEntryCount = 107;
 
     // Address of the table, or 0 when the exe is not mapped.
     static uintptr_t table_address();

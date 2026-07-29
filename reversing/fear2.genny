@@ -1483,18 +1483,32 @@ class CClientMgrCounterNode 0x40 {
 //
 // // ---- THE ENGINE'S BUILT-IN SETTINGS TABLE ----
 //
-// g_LTEngineVarTable at 0x6E350C: 106 entries of {const char* name, void* storage, u32 typeAndFlags},
+// g_LTEngineVarTable at 0x6E3500: 107 entries of {const char* name, void* storage, u32 typeAndFlags},
 // 12 bytes each. The engine's own knobs, each with a DIRECT storage address -- no console-variable API,
 // no hash lookup. Whatever reads a setting reads that address.
 //
-// I FIRST RECORDED THIS AS 22 ENTRIES AT 0x6E3734 AND BOTH NUMBERS WERE WRONG. That address is 24
-// entries into the table, and the walk stopped 60 short because it rejected any tag above 8 -- while 6
-// entries carry 0x00010002, which is FLAGS in the high half and the type in the low. A slice from the
-// middle of a table, bounded at both ends by artefacts of my own filter, and nothing about it looked
-// wrong: 22 plausible names, sane storage addresses, correct types, and a passing suite.
+// THE EXTENT HAS BEEN WRONG TWICE, AND BOTH TIMES MY OWN PREDICATE WAS THE BOUNDARY.
+//
+//   22 entries at 0x6E3734 -- that address is 25 entries in, and the walk stopped 60 short because it
+//     rejected any tag above 8, while 6 entries carry 0x00010002: FLAGS in the high half, type in the low.
+//   106 entries at 0x6E350C -- one entry earlier sits "IP", whose name is TWO characters, and the scan
+//     that located the table required at least three.
+//
+// Each slice was entirely convincing from the inside: plausible names, sane storage, correct types, green
+// suite. The entry before 0x6E3500 holds 0xBF800000 -- storage data, not a pointer -- which is what makes
+// that the real start.
+//
+// THE LESSON GENERALISES: when a scan's predicate defines a table's bounds, the bounds are facts about the
+// predicate until they are checked against what actually terminates the table.
 //
 // THE TAG IS TWO u16 FIELDS: low = value type, high = flags (0 on 100 entries, 1 on 6; the bit's meaning
 // is NOT established). Masking is what makes a walk reach all 106.
+//
+// THE VARIABLES' BACKING STORAGE SITS DIRECTLY BEFORE THE TABLE, 0x6E3418..0x6E34FC, which is why that
+// region looked like a gap between the two tables: MaxFinalizeTimeMS's 3.0 is the 0x40400000 at 0x6E3454,
+// PhysicsClientUpdateRate's 45 the 0x2D at 0x6E34A4, SoundMaxHardwareSounds' 128 the 0x80 at 0x6E34B0. Not
+// every setting stores there -- many point into 0x6EExxx -- but enough do that the "gap" is data the table
+// itself describes.
 //
 // AND THERE IS A SECOND TABLE BESIDE IT: g_LTEngineCommandTable at 0x6E3280, 34 entries of
 // {name, handler, 0} -- console COMMANDS with function pointers instead of storage:
@@ -1545,7 +1559,7 @@ class CClientMgrCounterNode 0x40 {
 // as a float yields 6e-44, a plausible-looking small number.
 //
 // The suite pins PausePhysics's storage to exe+0x2EE978, tying the table back to the gate that led to
-// it, asserts the walk reaches all 106 entries, and asserts the typed refusals. Values are deliberately
+// it, asserts the walk reaches all 107 entries, and asserts the typed refusals. Values are deliberately
 // NOT asserted: they are user settings. The COUNT is asserted precisely because the 22-entry slice
 // looked entirely plausible -- a wrong extent is exactly the kind of error that needs an external check
 // rather than a library's own confidence.

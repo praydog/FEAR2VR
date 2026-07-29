@@ -3904,8 +3904,11 @@ int main(int argc, char** argv) {
             // Structure is asserted, VALUES are not: these are user settings, and what a machine has
             // MaxFPS set to is not this suite's business.
             double var_count = -1.0, var_ok = -1.0, pp_off = -1.0;
-            check(json_double(body, "engine_var_count", var_count) && var_count == 106.0,
-                  "the engine variable table walks to all 106 entries");
+            // 107, and the number has moved twice: 22 (started 25 entries in, rejected flagged tags),
+            // then 106 (a scan needing 3-character names skipped "IP"). Asserted here because both wrong
+            // extents were entirely plausible from inside the walk.
+            check(json_double(body, "engine_var_count", var_count) && var_count == 107.0,
+                  "the engine variable table walks to all 107 entries, starting at \"IP\"");
             check(json_double(body, "engine_var_wellformed", var_ok) && var_ok == var_count,
                   "every entry has an in-exe storage address and a known type tag");
 

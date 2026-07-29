@@ -10,13 +10,18 @@ namespace sdk {
 
 namespace {
 
-// g_LTEngineVarTable, 106 entries of {const char* name, void* storage, u32 typeAndFlags}.
+// g_LTEngineVarTable, 107 entries of {const char* name, void* storage, u32 typeAndFlags}.
 //
-// AN EARLIER VERSION OF THIS FILE USED 0x2E3734 AND FOUND 22 ENTRIES. That address is 24 entries into
-// the table, and the walk stopped 60 entries early: it rejected any type tag above 8, and 6 of the
-// entries carry 0x00010002 -- flags in the HIGH half with the type in the low. Both ends of the slice
-// were artefacts of that, and nothing about the 22 looked wrong.
-constexpr uintptr_t kTableOffset = 0x2E350C;
+// THE START MOVED TWICE, and both times a scan's own predicate was the boundary. First reading used
+// 0x2E3734 and found 22 entries: that address is 25 entries in, and the walk stopped 60 short because it
+// rejected any tag above 8 while 6 entries carry flags in the high half. Second reading used 0x2E350C
+// and found 106: one entry earlier sits "IP", whose name is TWO characters, and the scan that located
+// the table required three.
+//
+// This walk has no minimum name length -- only non-empty -- so the start offset was its only defect.
+// The entry before the table holds 0xBF800000, storage data rather than a pointer, which is what makes
+// 0x2E3500 the real beginning.
+constexpr uintptr_t kTableOffset = 0x2E3500;
 constexpr size_t kEntryStride = 12;
 
 // A cap well above the known 22, so a corrupt table cannot spin. The walk also stops on the first

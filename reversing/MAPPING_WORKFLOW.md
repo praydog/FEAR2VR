@@ -963,8 +963,11 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
-- **A FILTER'S REJECTIONS BOUND YOUR TABLE, AND THE RESULT LOOKS FINE.** I reported the engine variable table
-  as 22 entries. It has 106. My scan started 24 entries in (I began from the entry I had chased there, not from
+- **A FILTER'S REJECTIONS BOUND YOUR TABLE, AND THE RESULT LOOKS FINE -- TWICE RUNNING.** I reported the engine
+  variable table as 22 entries, then as 106. It has 107. The second correction came from applying this very
+  lesson and walking backward: one entry earlier sits "IP", a TWO-character name that the locating scan's
+  `len >= 3` rule excluded. The terminator is real data -- 0xBF800000 immediately before the table -- and only
+  reaching it justifies a start address. My scan started 24 entries in (I began from the entry I had chased there, not from
   the table's start) and stopped 60 short because it rejected any type tag above 8 -- and 6 entries carry
   0x00010002, flags in the high half. Both bounds were artefacts of my own predicate, and the slice was
   entirely convincing: plausible names, sane addresses, correct types, passing tests. When a scan defines a
