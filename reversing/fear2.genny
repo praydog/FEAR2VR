@@ -1481,7 +1481,52 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- HOW THE ENGINE BUILDS A CAMERA TRANSFORM ----
+// // ---- WHAT THE PERSPECTIVE PASS ENTRY TAKES, AND THE TWO SURPRISES IN IT ----
+//
+// SLOT 15'S FULL SIGNATURE, read out of the wrapper (retn 14h = 20 bytes, matching five arguments):
+//
+//     SetupPassPerspective(const LTNodeTransform* camera,   position + quaternion
+//                          const float fov[2],              ANGLES IN RADIANS, x then y
+//                          const float rect[4],             NORMALISED viewport, 0..1
+//                          float depthMin, float depthMax)
+//
+// SURPRISE ONE: FOV GOES IN AS AN ANGLE. LTRenderer_FovPairToHalfViewPlane (0x610A1D) clamps each
+// component to [0, g_LTMaxFovRadians] and computes tan(angle * 0.5). So a caller sets the field of view
+// DIRECTLY in radians and builds no projection at all. The ceiling is 3.1241393, exactly 179 degrees,
+// lazily initialised from g_LTMaxFovRadiansDefault, and requests above it are CLAMPED rather than
+// refused -- asking for 180 silently yields 179.
+//
+// That also confirms half = tan(fov/2) from the INPUT side, entirely independently of the earlier
+// derivation from LTMatrix_BuildPerspectiveProjection's 1/half x scale. Two directions, same identity.
+//
+// SURPRISE TWO: THE VIEWPORT IS FRACTIONAL. LTRenderer_NormalizedRectToPixels (0x610952) clamps each
+// component to [0,1] and scales by the render target's dimensions at this+0x174, rounding with +0.5:
+//
+//     out[i] = trunc(clamp01(rect[i]) * (i even ? width : height) + 0.5)
+//
+// so {0, 0, 0.5, 1} is the left half of the target and {0.5, 0, 1, 1} the right. A side-by-side pair
+// therefore needs NO matrix work -- two calls with two transforms, two FOVs and two sub-rects.
+//
+// WHAT IS NOT AVAILABLE HERE: the projection CENTRE OFFSET is hardcoded (0, 0) by this entry -- `fldz`
+// at 0x610FB7 fills both halves of the pair passed as SetupCameraShaderParams's a4. So the off-centre
+// frustum that record+0x38 can express is NOT reachable through slot 15. Symmetric per-view FOV plus a
+// sub-rect is reachable; an asymmetric frustum would need the field written after setup, or another
+// path. This settles a question left open when the offset was first found -- the capability exists in
+// the record, and this entry never uses it.
+//
+// THE STATE MACHINE GAINED ITS FIRST STEP: SceneRenderer_BeginRenderTarget (0x610727) goes 2 -> 3, and
+// records the target dimensions at this+0x174 plus an offset pair at this+0x17C. Those dimensions are
+// exactly what the fractional viewport is multiplied by, and the offset is added to the resulting rect.
+// Full cycle: 2 -> 3 (begin target) -> 4 (configure pass) -> 3 (end pass).
+//
+// EXPOSED AS sdk::SceneCamera::kMaxFovRadians, predicted_half_view_plane() and
+// predicted_viewport_pixels(), which reproduce the engine's arithmetic INCLUDING its clamps so a
+// consumer can predict what a call will produce before making it, and compare against what the record
+// holds afterwards. Both clamp rather than reject, because the engine does.
+//
+// Also named the small math helpers this uncovered: LTMath_Clampf, LTMath_Maxf, LTMath_Minf.
+//
+// ---- HOW THE ENGINE BUILDS A CAMERA TRANSFORM ----
 //
 // THERE IS NO CAMERA OBJECT TO CONSTRUCT, which is the useful part. Renderer_MakeCubicEnvMap writes a
 // position into a stack slot, writes a quaternion into the four floats immediately after it -- forming

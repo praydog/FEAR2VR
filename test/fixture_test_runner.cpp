@@ -3900,6 +3900,23 @@ int main(int argc, char** argv) {
             check(json_double(body, "quat_branches", qbr) && qbr >= 2.0,
                   "and the negative-trace fallback branch was actually exercised (>= 2 cases)");
 
+            // THE PASS ARGUMENT MODEL, which is what a consumer needs before it can call slot 15 at
+            // all: the field of view goes in as an ANGLE and the viewport as a FRACTION. Both helpers
+            // reproduce the engine's behaviour including its CLAMPS, because the engine clamps rather
+            // than rejecting and a helper that refused would mispredict every out-of-range request.
+            bool fta = false, fch = false, fcn = false, rho = false, rco = false;
+            check(json_bool(body, "fov_tan_ok", fta) && fta,
+                  "predicted_half_view_plane(90 degrees) == tan(45) == 1");
+            check(json_bool(body, "fov_clamps_high", fch) && fch,
+                  "a FOV above 179 degrees clamps to the ceiling rather than growing");
+            check(json_bool(body, "fov_clamps_negative", fcn) && fcn,
+                  "and a negative FOV clamps to zero");
+            check(json_bool(body, "rect_halves_ok", rho) && rho,
+                  "a normalised {0,0,0.5,1} / {0.5,0,1,1} pair maps to the left and right halves of a "
+                  "5120x1440 target -- side-by-side stereo needs no matrix work");
+            check(json_bool(body, "rect_clamps_ok", rco) && rco,
+                  "an out-of-range viewport clamps to the target instead of overflowing it");
+
             // THE LOOK-AT, checked by the property a consumer depends on rather than by comparing the
             // transcription to itself: rotating +Z by the result must reproduce the requested forward.
             // That exercises both crosses, the basis column order and the quaternion conversion at

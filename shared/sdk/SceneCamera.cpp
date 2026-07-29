@@ -879,6 +879,45 @@ std::array<float, 16> SceneCamera::compose_view_projection(const std::array<floa
     return multiply_by_affine(projection, affine);
 }
 
+std::optional<std::array<float, 2>> SceneCamera::predicted_half_view_plane(float fov_x,
+                                                                          float fov_y) {
+    if (!std::isfinite(fov_x) || !std::isfinite(fov_y)) {
+        return std::nullopt;
+    }
+    // The engine CLAMPS rather than rejects, so reproduce that instead of refusing out-of-range input:
+    // a consumer predicting the result of a call it is about to make wants the engine's answer.
+    const float clamped_x = fov_x < 0.0f ? 0.0f : (fov_x > kMaxFovRadians ? kMaxFovRadians : fov_x);
+    const float clamped_y = fov_y < 0.0f ? 0.0f : (fov_y > kMaxFovRadians ? kMaxFovRadians : fov_y);
+    std::array<float, 2> out{std::tan(clamped_x * 0.5f), std::tan(clamped_y * 0.5f)};
+    if (!std::isfinite(out[0]) || !std::isfinite(out[1])) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<std::array<int32_t, 4>> SceneCamera::predicted_viewport_pixels(
+    const std::array<float, 4>& normalized_rect, int32_t target_width, int32_t target_height) {
+    if (target_width <= 0 || target_height <= 0) {
+        return std::nullopt;
+    }
+    std::array<int32_t, 4> out{};
+    for (size_t i = 0; i < 4; ++i) {
+        const float v = normalized_rect[i];
+        if (!std::isfinite(v)) {
+            return std::nullopt;
+        }
+        const float clamped = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        // Even indices scale by width, odd by height -- left, top, right, bottom.
+        const float extent = static_cast<float>((i % 2 == 0) ? target_width : target_height);
+        const float scaled = clamped * extent + 0.5f;
+        if (!std::isfinite(scaled)) {
+            return std::nullopt;
+        }
+        out[i] = static_cast<int32_t>(scaled);
+    }
+    return out;
+}
+
 size_t SceneCamera::renderer_slot_index(RendererSlot slot) {
     switch (slot) {
     case RendererSlot::SetupPassPerspective:

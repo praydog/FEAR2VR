@@ -492,6 +492,46 @@ public:
     };
     static uintptr_t renderer_fn(RendererSlot slot);
 
+    // ---- WHAT THE PERSPECTIVE PASS ENTRY ACTUALLY TAKES ------------------------------
+    //
+    // Slot 15's signature, read out of the wrapper:
+    //
+    //     SetupPassPerspective(const LTNodeTransform* camera,   // position + quaternion
+    //                          const float fov[2],              // ANGLES IN RADIANS, x then y
+    //                          const float rect[4],             // NORMALISED viewport, 0..1
+    //                          float depthMin, float depthMax)
+    //
+    // Two things there are much friendlier than expected, and both are worth knowing before writing any
+    // matrix code:
+    //
+    //   - FOV IS AN ANGLE. LTRenderer_FovPairToHalfViewPlane clamps to [0, kMaxFovRadians] and takes
+    //     tan(angle/2). So a view's field of view is set directly; no projection is built by the caller.
+    //     This also confirms half = tan(fov/2) from the input side, independently of the derivation from
+    //     the projection matrix's 1/half scale.
+    //
+    //   - THE VIEWPORT IS FRACTIONAL. LTRenderer_NormalizedRectToPixels clamps to [0,1] and scales by
+    //     the render target's dimensions, so {0,0,0.5,1} is the left half and {0.5,0,1,1} the right --
+    //     a side-by-side pair needs no matrix work at all.
+    //
+    // AND ONE THAT IS NOT: the projection CENTRE OFFSET is hardcoded (0,0) by this entry, so the
+    // off-centre frustum the record can express is not reachable through it. Symmetric per-view FOV plus
+    // a sub-rect is; an asymmetric frustum is not, without writing the field after setup.
+
+    // The engine's own FOV ceiling: 3.1241393 radians, exactly 179 degrees. Requests above it are
+    // clamped, not rejected, so asking for 180 silently yields 179.
+    static constexpr float kMaxFovRadians = 3.1241393f;
+
+    // What the engine will derive from a requested FOV pair -- the clamp then tan(angle/2). Lets a
+    // consumer predict the half view-plane a call will produce, and compare it against what the record
+    // holds afterwards. nullopt for non-finite input.
+    static std::optional<std::array<float, 2>> predicted_half_view_plane(float fov_x, float fov_y);
+
+    // What the engine will derive from a normalised viewport: each component clamped to [0,1], scaled by
+    // the target dimensions, rounded as the engine rounds (+0.5 then truncate). Returns left, top,
+    // right, bottom in PIXELS. nullopt for non-finite input or a non-positive target size.
+    static std::optional<std::array<int32_t, 4>> predicted_viewport_pixels(
+        const std::array<float, 4>& normalized_rect, int32_t target_width, int32_t target_height);
+
     // The vtable index each entry occupies, for logging and for a consumer resolving its own way.
     static size_t renderer_slot_index(RendererSlot slot);
 

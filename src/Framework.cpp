@@ -3697,6 +3697,47 @@ std::string build_shader_params_json() {
         }
     }
 
+    // THE PASS ARGUMENT MODEL. Both helpers reproduce engine behaviour a consumer has to predict before
+    // calling slot 15, so both the normal case and the CLAMPING are checked -- the engine clamps rather
+    // than rejects, and a helper that refused instead would mispredict every out-of-range request.
+    bool fov_tan_ok = false;
+    bool fov_clamps_high = false;
+    bool fov_clamps_negative = false;
+    bool rect_halves_ok = false;
+    bool rect_clamps_ok = false;
+    {
+        // 90 degrees -> tan(45) = 1.
+        const auto ninety = sdk::SceneCamera::predicted_half_view_plane(1.57079633f, 1.57079633f);
+        fov_tan_ok = ninety.has_value() && fabsf((*ninety)[0] - 1.0f) < 1e-3f &&
+                     fabsf((*ninety)[1] - 1.0f) < 1e-3f;
+
+        // Above the ceiling the engine clamps to 179 degrees, so the result must equal the ceiling's.
+        const auto ceiling = sdk::SceneCamera::predicted_half_view_plane(
+            sdk::SceneCamera::kMaxFovRadians, sdk::SceneCamera::kMaxFovRadians);
+        const auto over = sdk::SceneCamera::predicted_half_view_plane(3.2f, 3.2f);
+        fov_clamps_high = ceiling.has_value() && over.has_value() &&
+                          fabsf((*over)[0] - (*ceiling)[0]) < 1e-2f;
+
+        const auto negative = sdk::SceneCamera::predicted_half_view_plane(-1.0f, -1.0f);
+        fov_clamps_negative = negative.has_value() && fabsf((*negative)[0]) < 1e-4f;
+
+        // A side-by-side pair: the two halves of a 5120x1440 target.
+        const auto left = sdk::SceneCamera::predicted_viewport_pixels({0.0f, 0.0f, 0.5f, 1.0f},
+                                                                     5120, 1440);
+        const auto right = sdk::SceneCamera::predicted_viewport_pixels({0.5f, 0.0f, 1.0f, 1.0f},
+                                                                      5120, 1440);
+        rect_halves_ok = left.has_value() && right.has_value() &&
+                         (*left)[0] == 0 && (*left)[2] == 2560 &&
+                         (*right)[0] == 2560 && (*right)[2] == 5120 &&
+                         (*left)[1] == 0 && (*left)[3] == 1440;
+
+        // Out-of-range components clamp to the full target rather than overflowing it.
+        const auto over_rect = sdk::SceneCamera::predicted_viewport_pixels({-1.0f, -1.0f, 2.0f, 2.0f},
+                                                                          5120, 1440);
+        rect_clamps_ok = over_rect.has_value() && (*over_rect)[0] == 0 && (*over_rect)[1] == 0 &&
+                         (*over_rect)[2] == 5120 && (*over_rect)[3] == 1440;
+    }
+
     // THE LOOK-AT, VERIFIED BY WHAT IT MUST DO rather than by matching the transcription to itself:
     // rotating +Z by the result must reproduce the requested forward direction. That is the property a
     // consumer depends on, and it fails if either cross is flipped, the basis columns are swapped, or
@@ -3904,6 +3945,11 @@ std::string build_shader_params_json() {
     json_append_bool(out, "lookat_forward_ok", lookat_failures == 0);
     json_append_bool(out, "lookat_identity", lookat_identity);
     json_append_bool(out, "lookat_parallel_ok", lookat_handles_parallel);
+    json_append_bool(out, "fov_tan_ok", fov_tan_ok);
+    json_append_bool(out, "fov_clamps_high", fov_clamps_high);
+    json_append_bool(out, "fov_clamps_negative", fov_clamps_negative);
+    json_append_bool(out, "rect_halves_ok", rect_halves_ok);
+    json_append_bool(out, "rect_clamps_ok", rect_clamps_ok);
     json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
     json_append_bool(out, "tolerance_guards_hold", tolerance_guard_failures == 0);
     json_append_bool(out, "mismatch_detected", mismatch_detect_failures == 0);

@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **READ THE ENTRY POINT'S ARGUMENTS BEFORE BUILDING ANYTHING TO FEED IT.** I mapped the projection
+  builders, both matrix multiplies, the quaternion conversions and a look-at before reading what slot 15
+  actually takes. It takes the field of view as an ANGLE and the viewport as a FRACTION of the render
+  target -- so a side-by-side stereo pair is two calls with two transforms, two FOVs and two sub-rects, and
+  most of the matrix machinery is for READING what the engine produced, not for producing it. Worth doing
+  the cheap signature read first next time.
+  
+- **MIRROR THE ENGINE'S CLAMPS, DO NOT IMPROVE ON THEM.** FOV above 179 degrees is clamped, not rejected;
+  a viewport outside 0..1 is clamped too. A helper that returned nullopt for those would mispredict every
+  out-of-range call a consumer makes, which is the opposite of useful. Predict what the engine WILL do.
+  
+- **A SECOND, INDEPENDENT ROUTE TO THE SAME IDENTITY IS WORTH TAKING.** half = tan(fov/2) was derived from
+  the projection matrix's 1/half scale two passes ago. The input side proves it directly: the entry takes an
+  angle and computes tan(angle/2). Same identity, opposite direction, no shared assumption.
+
 - **TWO ENGINE FUNCTIONS THAT INVERT EACH OTHER ARE A FREE TEST.** LTRotation_ToMatrix3x4 and
   LTRotation_FromMatrix3x4 are separate functions transcribed separately, so requiring the SDK's pair to
   round-trip catches a sign or index error in either -- something no single-direction check can do. Compare
