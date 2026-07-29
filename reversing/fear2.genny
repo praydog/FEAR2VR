@@ -1502,7 +1502,7 @@ class CClientMgrCounterNode 0x40 {
 // predicate until they are checked against what actually terminates the table.
 //
 // THE TAG IS TWO u16 FIELDS: low = value type, high = flags (0 on 100 entries, 1 on 6; the bit's meaning
-// is NOT established). Masking is what makes a walk reach all 106.
+// is NOT established). Masking is what makes a walk reach all 107.
 //
 // THE VARIABLES' BACKING STORAGE SITS DIRECTLY BEFORE THE TABLE, 0x6E3418..0x6E34FC, which is why that
 // region looked like a gap between the two tables: MaxFinalizeTimeMS's 3.0 is the 0x40400000 at 0x6E3454,
@@ -1520,6 +1520,11 @@ class CClientMgrCounterNode 0x40 {
 //     PrintDuplicateAnimations ListTrackedResources TrackResourceChanges StopTrackResourceChanges
 //     ListArchiveFiles
 //
+// BOTH ENDS OF THIS TABLE ARE CHECKED, having learned the extent lesson twice on the variables above.
+// Backward from 0x6E3280 the previous 12 bytes hold {0x66FC38, 0x6705B8, 0} whose handler slot is NOT a
+// function start; forward, the 34th entry is followed by {0x670E48, 0, 0} -- a name pointer with a NULL
+// handler. So 34 is bounded by the data at both ends rather than by a scan's predicate.
+//
 // Distinguishing the two took reading the second dword: a function START means a command, a .data
 // address means a variable. That is also why the variable scan had rejected the command table -- its
 // second dword points into .text, not .data.
@@ -1528,6 +1533,9 @@ class CClientMgrCounterNode 0x40 {
 // the engine on whatever thread the caller happens to be on, which deserves its own design rather than a
 // getter that happens to work.
 //
+// A SAMPLE OF THE VARIABLE NAMES -- 22 of the 107, the ones reached by the first (wrong) reading of the
+// table, kept because they are the settings a mod is most likely to want. This list is NOT the table.
+//
 //     ShowOnlineServiceAccess  PhysicsDebugAllocator  PausePhysics  PhysicsClientUpdateRate
 //     PhysicsServerUpdateRate  PhysicsClientThreads   PhysicsServerThreads  PhysicsMaxSteps
 //     UpdateCharacterRigidBody SoundMaxHardwareSounds SoundMaxSoftwareSounds
@@ -1535,12 +1543,26 @@ class CClientMgrCounterNode 0x40 {
 //     SoundMaxNonPlayerWeaponSoundLimit SoundEnableEAXReverb SoundFilterDeferChanges
 //     SoundTrack3DSoundCue     BackgroundResourceLoading  MaxFPS  MaxFinalizeTimeMS  DropRate
 //
-// TYPE TAGS DECODED FROM LIVE VALUES, not assumed:
+// TYPE TAGS DECODED FROM LIVE VALUES, not assumed. Census: 3 string / 11 float / 93 int = 107, asserted
+// by the suite so that a slice or a mis-masked tag surfaces as a total that falls short.
 //     2 = int32    PhysicsClientUpdateRate 45, PhysicsMaxSteps 2, SoundMaxHardwareSounds 128
 //     1 = float    MaxFinalizeTimeMS reads 1077936128 as an int and EXACTLY 3.0 as a float
-//     0 = NOT ESTABLISHED -- one entry (SoundTrack3DSoundCue), reading 0 either way
-// The float case is the decisive one: nonsense as an integer, exact as a float. Type 0 stays unresolved
-// rather than folded into a neighbour.
+//     0 = STRING POINTER (IP, ShowUpdateTimesOfClass, SoundTrack3DSoundCue)
+//
+//         THE SIZE IS MEASURED, not assumed: every type-0 slot has another variable's storage exactly 4
+//         bytes above it -- IP at 0x6EE8F4 with UDPDebug at 0x6EE8F8, ShowUpdateTimesOfClass at 0x6EE988
+//         with BackgroundResourceLoading at 0x6EE98C, SoundTrack3DSoundCue at 0x6EE994 with ConsoleLeft
+//         at 0x6EE998. Four bytes cannot hold an inline character buffer, so the slot holds a POINTER.
+//         The spacing is recomputed from the live table on EVERY suite run rather than trusted from this
+//         note, since it is the whole evidential basis for the accessor.
+//
+//         THE MEANING comes from the three names, all of which take a textual value: an address, a class
+//         name, a sound cue name. All three read NULL on an ordinary single-player session, consistent
+//         with "unset" -- so no non-null string has ever been observed, and sdk::EngineVars::read_string
+//         says exactly that at its declaration. A caller getting a non-null result is the first such
+//         observation.
+//
+// The float case is the decisive one for the int/float split: nonsense as an integer, exact as a float.
 //
 // HOW IT WAS FOUND, and the route generalises: chasing what gates CClientMgr__Update's physics block
 // (`cmp dword_6EE978, 0` / `jnz` past the whole block) led to a global with NO WRITER ANYWHERE IN THE
