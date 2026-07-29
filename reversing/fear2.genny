@@ -1481,7 +1481,46 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- FOUR CLOCKS, AND WHICH ONE ANSWERS "IS THE ENGINE RUNNING" ----
+// // ---- THE ENGINE'S BUILT-IN SETTINGS TABLE ----
+//
+// g_LTEngineVarTable at 0x6E3734: 22 entries of {const char* name, void* storage, u32 type}, 12 bytes
+// each. The engine's own knobs, each with a DIRECT storage address -- no console-variable API, no hash
+// lookup. Whatever reads a setting reads that address.
+//
+//     ShowOnlineServiceAccess  PhysicsDebugAllocator  PausePhysics  PhysicsClientUpdateRate
+//     PhysicsServerUpdateRate  PhysicsClientThreads   PhysicsServerThreads  PhysicsMaxSteps
+//     UpdateCharacterRigidBody SoundMaxHardwareSounds SoundMaxSoftwareSounds
+//     SoundUseSecondaryReverbs SoundMaxImpactSoundLimit SoundMaxPlayerWeaponSoundLimit
+//     SoundMaxNonPlayerWeaponSoundLimit SoundEnableEAXReverb SoundFilterDeferChanges
+//     SoundTrack3DSoundCue     BackgroundResourceLoading  MaxFPS  MaxFinalizeTimeMS  DropRate
+//
+// TYPE TAGS DECODED FROM LIVE VALUES, not assumed:
+//     2 = int32    PhysicsClientUpdateRate 45, PhysicsMaxSteps 2, SoundMaxHardwareSounds 128
+//     1 = float    MaxFinalizeTimeMS reads 1077936128 as an int and EXACTLY 3.0 as a float
+//     0 = NOT ESTABLISHED -- one entry (SoundTrack3DSoundCue), reading 0 either way
+// The float case is the decisive one: nonsense as an integer, exact as a float. Type 0 stays unresolved
+// rather than folded into a neighbour.
+//
+// HOW IT WAS FOUND, and the route generalises: chasing what gates CClientMgr__Update's physics block
+// (`cmp dword_6EE978, 0` / `jnz` past the whole block) led to a global with NO WRITER ANYWHERE IN THE
+// EXE -- two readers and one lone data reference. A global that is read but never written, with exactly
+// one pointer to it, is a settings slot; that pointer sat inside this table, and the entry named it
+// PausePhysics.
+//
+// PausePhysics READ 0 ON A LIVE GAME, so it is NOT why an unfocused game stops simulating -- but it is a
+// supported way to stop it deliberately, and the physics block's other gates are a world check and the
+// clock object's +0x28.
+//
+// EXPOSED AS sdk::EngineVars, walking the table by VALIDATION rather than a count: both pointers must
+// land inside the exe and the tag must be known, so a different build shortens the result instead of
+// running into unrelated data. read_int and read_float are typed against the table's own tag and REFUSE
+// the wrong one -- which matters because a wrong-typed read is not obviously wrong: an int setting read
+// as a float yields 6e-44, a plausible-looking small number.
+//
+// The suite pins PausePhysics's storage to exe+0x2EE978, tying the table back to the gate that led to
+// it, and asserts the typed refusals. Values are deliberately NOT asserted: they are user settings.
+//
+// ---- FOUR CLOCKS, AND WHICH ONE ANSWERS "IS THE ENGINE RUNNING" ----
 //
 // Measured across two requests two seconds apart, with a level loaded:
 //

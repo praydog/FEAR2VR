@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A GLOBAL THAT IS READ BUT NEVER WRITTEN, WITH ONE POINTER TO IT, IS A SETTINGS SLOT.** Chasing the flag
+  that gates CClientMgr__Update's physics block turned up `dword_6EE978` with two readers, zero writers
+  anywhere in the exe, and a single data reference. That reference was a slot in a static
+  {name, storage, type} table -- 22 engine settings with direct storage addresses. The absence of writers was
+  the clue: something outside the code sets it, so a name for it must exist in data.
+  
+- **DECODE A TYPE TAG BY FINDING THE VALUE THAT IS NONSENSE THE OTHER WAY.** Tags 1 and 2 were
+  indistinguishable across most entries, since small ints and small floats both look plausible.
+  MaxFinalizeTimeMS settled it: 1077936128 as an int, exactly 3.0 as a float. One entry that can only be one
+  thing beats a dozen that could be either -- and the single tag-0 entry reads 0 both ways, so it stays
+  unresolved rather than guessed.
+  
+- **WALK A TABLE BY VALIDATION, NOT BY A COUNT YOU MEASURED.** sdk::EngineVars stops when a name or storage
+  pointer falls outside the exe or the tag is unknown, so a build with a different table returns fewer entries
+  instead of reading into whatever follows. The known count is then asserted by the SUITE, which is where a
+  build difference should surface -- not silently inside the walk.
+
 - **"THE ENGINE IS STOPPED" NEEDED WALKING BACK TOO -- THERE ARE THREE LAYERS, NOT ONE.** Having just corrected
   "the engine parks in mode 2", I replaced it with "the whole engine is stopped", which was also too strong. The
   frame hook fires at ~170/s throughout: the main loop pumps, while simulation and rendering are separately

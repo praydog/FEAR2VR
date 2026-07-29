@@ -3897,6 +3897,36 @@ int main(int argc, char** argv) {
             check(json_double(body, "renderer_state", rst) && rst >= 0.0,
                   "the scene renderer's state reads");
 
+            // THE ENGINE'S BUILT-IN SETTINGS TABLE. 22 triplets of {name, storage, type}, each with a
+            // direct address -- the knobs the engine consults itself, reachable without any
+            // console-variable API.
+            //
+            // Structure is asserted, VALUES are not: these are user settings, and what a machine has
+            // MaxFPS set to is not this suite's business.
+            double var_count = -1.0, var_ok = -1.0, pp_off = -1.0;
+            check(json_double(body, "engine_var_count", var_count) && var_count == 22.0,
+                  "the engine variable table walks to 22 entries");
+            check(json_double(body, "engine_var_wellformed", var_ok) && var_ok == var_count,
+                  "every entry has an in-exe storage address and a known type tag");
+
+            // The load-bearing cross-check: the table's slot for PausePhysics must be the very global
+            // CClientMgr__Update tests before its physics block. Static reversing found the flag first
+            // and the table second, so agreement ties the two together.
+            check(json_double(body, "engine_var_pause_physics_off", pp_off) && pp_off == 0x2EE978,
+                  "PausePhysics's storage is exe+0x2EE978 -- the global the physics gate reads");
+
+            // TYPE DISCRIMINATION, which is what makes the accessors safe. MaxFinalizeTimeMS is a float
+            // and PhysicsClientUpdateRate an int; each must read through its own accessor and be REFUSED
+            // by the other. That matters because a wrong-typed read is not obviously wrong -- an int
+            // setting read as a float gives 6e-44, a plausible-looking small number.
+            bool fread = false, iread = false, refuses = false;
+            check(json_bool(body, "engine_var_float_read", fread) && fread,
+                  "a float-typed setting reads through read_float");
+            check(json_bool(body, "engine_var_int_read", iread) && iread,
+                  "an int-typed setting reads through read_int");
+            check(json_bool(body, "engine_var_refuses_wrong_type", refuses) && refuses,
+                  "and each accessor REFUSES the other's type rather than reinterpreting the bytes");
+
             // TWO MAPPINGS, ONE CLOCK. k_fTime is fmod(engine seconds, 1000), and the two sides are
             // reached completely differently -- the engine clock by calling an accessor located by byte
             // pattern, k_fTime by walking a linked list of shader parameter records. Nothing forces them

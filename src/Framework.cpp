@@ -26,6 +26,7 @@
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
+#include "sdk/EngineVars.hpp"
 #include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
 #include "sdk/ShaderParams.hpp"
@@ -3370,6 +3371,24 @@ std::string build_shader_params_json() {
     const auto frame_clock = sdk::ShaderParams::frame_time();
     const auto clock_agrees = sdk::ShaderParams::frame_time_matches_engine_clock();
     const auto engine_clock = sdk::Engine::client_time();
+
+    // The engine's built-in settings table. Reported structurally -- how many entries walked, whether
+    // the two typed accessors refuse the wrong type -- rather than by value, since these are user
+    // settings and a machine's numbers are not this suite's business.
+    const auto engine_vars = sdk::EngineVars::all();
+    const auto pause_physics = sdk::EngineVars::find("PausePhysics");
+    const auto finalize_ms = sdk::EngineVars::read_float("MaxFinalizeTimeMS");
+    const auto rate = sdk::EngineVars::read_int("PhysicsClientUpdateRate");
+    // Typed refusal: MaxFinalizeTimeMS is a float, so an int read must fail, and vice versa.
+    const bool refuses_wrong_type =
+        !sdk::EngineVars::read_int("MaxFinalizeTimeMS").has_value() &&
+        !sdk::EngineVars::read_float("PhysicsClientUpdateRate").has_value();
+    size_t vars_in_exe = 0;
+    for (const auto& v : engine_vars) {
+        if (v.address != 0 && v.type <= 2) {
+            ++vars_in_exe;
+        }
+    }
     const auto end_fn = sdk::SceneCamera::renderer_fn(Slot::EndPass);
     const auto draw_fn = sdk::SceneCamera::renderer_fn(Slot::DrawScene);
     const auto draw_list_fn = sdk::SceneCamera::renderer_fn(Slot::DrawObjectList);
@@ -3941,6 +3960,18 @@ std::string build_shader_params_json() {
     json_append_double(out, "pass_beginframe_off", static_cast<double>(anchor_offset(begin_frame_fn)), 0);
     json_append_double(out, "pass_begintarget_off", static_cast<double>(anchor_offset(begin_target_fn)), 0);
     json_append_double(out, "pass_endtarget_off", static_cast<double>(anchor_offset(end_target_fn)), 0);
+    json_append_double(out, "engine_var_count", static_cast<double>(engine_vars.size()), 0);
+    json_append_double(out, "engine_var_wellformed", static_cast<double>(vars_in_exe), 0);
+    json_append_bool(out, "engine_var_pause_physics_found", pause_physics.has_value());
+    // Reported as an exe-relative OFFSET, like the vtable anchors: an absolute address would encode
+    // this machine's load base into the suite.
+    json_append_double(out, "engine_var_pause_physics_off",
+                       static_cast<double>(anchor_offset(
+                           pause_physics.has_value() ? pause_physics->address : 0)), 0);
+    json_append_bool(out, "engine_var_float_read", finalize_ms.has_value());
+    json_append_double(out, "engine_var_float_value", finalize_ms.value_or(-1.0f), 4);
+    json_append_bool(out, "engine_var_int_read", rate.has_value());
+    json_append_bool(out, "engine_var_refuses_wrong_type", refuses_wrong_type);
     json_append_double(out, "frame_time", frame_clock.value_or(-1.0f), 5);
     json_append_double(out, "engine_seconds",
                        engine_clock.has_value() ? engine_clock->seconds : -1.0, 5);
