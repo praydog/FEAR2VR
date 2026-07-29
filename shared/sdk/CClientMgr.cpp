@@ -17,6 +17,7 @@
 #include "regenny/regenny/LTSpatialRecord.hpp"
 #include "regenny/regenny/LTSpriteObject.hpp"
 #include "regenny/regenny/LTVisPlane.hpp"
+#include "regenny/regenny/StdString.hpp"
 #include "regenny/regenny/LTVisSector.hpp"
 #include "regenny/regenny/LTWorldModelObject.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
@@ -610,13 +611,94 @@ int64_t seh_check_model_lists(const regenny::CClientMgrListLink* head, size_t ma
                 if (obj->record.asset != nullptr) {
                     ++*asset_ok;
                 }
-                if (obj->asset_dup == obj->record.asset) {
+                // THREE offsets reach the model's asset: record.asset (0xEC),
+                // block_120.asset (0x12C) and block_130.asset (0x130). All three
+                // agreeing is the assertion; any one drifting means a sub-object
+                // boundary moved.
+                if (obj->block_120.asset == obj->record.asset &&
+                    obj->block_130.asset == obj->record.asset) {
                     ++*dup_ok;
                 }
                 const auto& q = obj->cached_rotation;
                 const float mag2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
                 if (mag2 > 0.99f && mag2 < 1.01f) {
                     ++*rot_ok;
+                }
+                ++sampled;
+            }
+            ++n;
+            cur = cur->next;
+        }
+        result = (cur == head) ? static_cast<int64_t>(sampled) : -1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}
+
+// POD-only SEH helper for the material-name arrays. Reaches through two pointer
+// levels (model -> string array -> heap body), so every length is bounded before
+// it is used. Returns the number of models sampled, or -1 on fault.
+int64_t seh_check_materials(const regenny::CClientMgrListLink* head, size_t max,
+                            size_t* models, size_t* strings_total, size_t* terminated,
+                            size_t* size_ok, size_t* cap_ok, size_t* printable,
+                            size_t* max_count, size_t cap) {
+    // A material path is a filename; anything beyond this is a decode failure,
+    // not a long name. Bounding before the read is what keeps a bad offset from
+    // turning into a huge copy.
+    constexpr uint32_t kMaxLen = 1024;
+    constexpr uint32_t kSmallBuf = 16;
+    int64_t result = -1;
+    KANANLIB_SEH_TRY {
+        const regenny::CClientMgrListLink* cur = head->next;
+        size_t n = 0, sampled = 0;
+        while (cur != head && n < cap) {
+            if (sampled < max) {
+                const auto* obj = reinterpret_cast<const regenny::LTModelObject*>(
+                    reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                const auto* arr = obj->material_names;
+                const uint32_t count = obj->material_count;
+                if (arr != nullptr && count > 0 && count <= 64) {
+                    ++*models;
+                    if (count > *max_count) {
+                        *max_count = count;
+                    }
+                    for (uint32_t i = 0; i < count; ++i) {
+                        const auto& s = arr[i];
+                        ++*strings_total;
+                        if (s.capacity >= kSmallBuf - 1) {
+                            ++*cap_ok;
+                        }
+                        if (s.size <= s.capacity) {
+                            ++*size_ok;
+                        }
+                        if (s.size > kMaxLen || s.size > s.capacity) {
+                            continue;  // do not decode a length we do not trust
+                        }
+                        // capacity >= 16 means the body moved to the heap and buf
+                        // holds the pointer; otherwise the body IS buf.
+                        const char* data = (s.capacity >= kSmallBuf)
+                                               ? *reinterpret_cast<const char* const*>(s.buf)
+                                               : reinterpret_cast<const char*>(s.buf);
+                        if (data == nullptr) {
+                            continue;
+                        }
+                        if (data[s.size] == '\0') {
+                            ++*terminated;
+                        }
+                        bool ok = s.size > 0;
+                        for (uint32_t k = 0; k < s.size; ++k) {
+                            const unsigned char c = static_cast<unsigned char>(data[k]);
+                            if (c < 0x20 || c > 0x7E) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (ok) {
+                            ++*printable;
+                        }
+                    }
                 }
                 ++sampled;
             }
@@ -775,6 +857,22 @@ std::optional<CClientMgr::ModelListCheck> CClientMgr::check_model_lists(size_t m
         return std::nullopt;
     }
     out.sampled = static_cast<size_t>(n);
+    return out;
+}
+
+std::optional<CClientMgr::MaterialCheck> CClientMgr::check_model_materials(size_t max) const {
+    constexpr size_t kModelType = 1;
+    if (regenny() == nullptr || kModelType >= object_list_count()) {
+        return std::nullopt;
+    }
+    MaterialCheck out{};
+    const int64_t n = seh_check_materials(&regenny()->object_lists[kModelType], max, &out.models,
+                                         &out.strings_total, &out.terminated, &out.size_le_capacity,
+                                         &out.capacity_sane, &out.nonempty_printable,
+                                         &out.max_count, max_object_walk);
+    if (n < 0) {
+        return std::nullopt;
+    }
     return out;
 }
 

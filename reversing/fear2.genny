@@ -1280,6 +1280,50 @@ class LTModelRecord 0x34 {
     uint32_t unk_30          @0x30   // NOT written by the ctor, and live it is 0 on 215/215. Included to carry the record up to the owning model's list_head at +0x100; the boundary is inferred from that adjacency, not proven.
 }
 
+// MSVC's std::string as this build lays it out: 28 bytes (0x1C), which is the
+// _SECURE_SCL shape -- a _Container_proxy pointer ahead of the usual 24-byte
+// body. The stride was not guessed: LTModelObject's string-array destructor
+// (0x429771) is `for (i = count; i; --i) { ~string(p); p += 28; }`, so 28 comes
+// from the engine's own pointer arithmetic.
+//
+// `buf` is the small-string buffer AND, once the string outgrows it, the heap
+// pointer -- genny has no union, so read it as: capacity >= 16 means the data is
+// at *(char**)buf, otherwise the data is buf itself. CONFIRMED live over 476
+// strings reached this way: every one is NUL-terminated at [size], and 442 of
+// them are non-empty printable ASCII (the other 34 are empty).
+class StdString 0x1C {
+    void* proxy       @0x00   // _Container_proxy; present only because this build compiles with _SECURE_SCL
+    uint8_t buf[16]   @0x04   // small-string buffer, or a char* when capacity >= 16
+    uint32_t size     @0x14   // length, NOT counting the terminator
+    uint32_t capacity @0x18   // _Myres; >= 15 always, and >= size
+}
+
+// The sub-object OT_MODEL_ctor builds at LTModelObject+0x120 (ctor 0x4257CE,
+// which zeroes four dwords; dtor 0x428CAC). Its span is pinned by adjacency at
+// both ends: four dwords is 0x10, and the next sub-object starts at 0x130.
+class LTModelBlock120 0x10 {
+    void* unk_00          @0x00   // live a heap pointer unique to each model (215 distinct, none null)
+    void* unk_04          @0x04   // live likewise unique per model
+    void* unk_08          @0x08   // live likewise unique per model
+    LTModelAsset* asset   @0x0C   // CONFIRMED equal to the owning model's record.asset on 215/215 -- the THIRD offset that reaches the same pointer (record.asset at 0xEC, here at 0x12C, and LTModelBlock130.asset at 0x130)
+}
+
+// The sub-object OT_MODEL_ctor builds at LTModelObject+0x130 (ctor 0x42CE7D;
+// dtor 0x42DA6C). Span pinned the same way: the ctor writes through +0x20, and
+// the model's next field sits at 0x154 == 0x130 + 0x24.
+class LTModelBlock130 0x24 {
+    LTModelAsset* asset   @0x00   // CONFIRMED equal to the owning model's record.asset on 215/215. The ctor nulls it, so the binding happens later, at load.
+    uint32_t unk_04       @0x04   // ctor writes 0
+    uint32_t unk_08       @0x08   // ctor writes 0
+    uint32_t unk_0C       @0x0C   // ctor writes 0
+    uint32_t unk_10       @0x10   // ctor writes 0
+    uint32_t unk_14       @0x14   // ctor writes 0
+    uint8_t unk_18        @0x18   // ctor writes 0
+    uint8_t unk_19        @0x19   // ctor writes 0
+    uint32_t unk_1C       @0x1C   // ctor writes 0xFFFFFFFF and live it is STILL 0xFFFFFFFF on 215/215 -- a "none" sentinel nothing in a loaded level sets
+    float unk_20          @0x20   // ctor writes 1.0 and live it is STILL exactly 1.0 on 215/215 -- unexercised in this scene, so its role is unmapped
+}
+
 // The concrete class behind object type 1. 408 bytes (0x198) from its bank's
 // element_size, and the class is now CLOSED at that boundary: the cached
 // rotation below ends at exactly 0x198.
@@ -1293,8 +1337,11 @@ class LTModelObject 0x198 {
     LTModelRecord record     @0xCC    // CONFIRMED: the embedded record, linked into list_head below. Holds `asset`, which is why no separate asset field appears on this class.
     CClientMgrListLink list_head @0x100   // CONFIRMED list head: the ctor self-points both halves (an empty list) and then links `record` in. Live it is never empty for that reason. Members are recovered as LTModelRecord addresses.
     uint32_t list_count      @0x108   // CONFIRMED the list's OWN stored count: it equals the walked member count on 215/215, and the ctor increments it to 1 as it links `record`. Live distribution 1 (x184), 2 (x6), 3 (x12), 4 (x9), 5 (x3), 6 (x1) -- so one embedded record plus up to five extras. All 289 members across 215 models bind the SAME asset as their owner (289/289), which is what identifies them as LTModelRecords; why a model wants several is unmapped.
-    void* owned_120          @0x120   // ctor constructs a sub-object here (0x4257CE) and the dtor destroys it (0x428CAC). Live this first dword is a heap pointer unique to each object and far from it, so it is an owned allocation rather than an embedded self-reference. Pointee unmapped.
-    LTModelAsset* asset_dup  @0x130   // CONFIRMED equal to record.asset on 215/215 -- two independent routes to one pointer, which is why this is worth recording rather than folding away. The ctor constructs a sub-object here (0x42CE7D) and the dtor destroys it (0x42DA6C), so this is the first field of that sub-object and the asset is reachable through it.
+    StdString* material_names @0x114  // CONFIRMED an OWNED ARRAY of std::string: the model's teardown calls 0x429771(this+0x114, this+0x118), which is `for (i = count; i; --i) { ~string(p); p += 28; }`. So this is the base and material_count is the length, and the 28-byte stride is the engine's own arithmetic rather than an assumption about MSVC. Live these are MATERIAL PATHS -- e.g. "weapons\_global\shellcasings\assault_rifle_new\mat\assault_rifle_casing1.mat" -- 476 strings across 215 models, every one NUL-terminated at [size]. This is the first place in the mapping where an object says in plain text WHAT it is.
+    uint32_t material_count   @0x118  // CONFIRMED the array length, from the same destructor call. Live it takes six distinct values with a maximum of 8, and 1 is by far the most common (125 of 215); 34 of the 476 strings are empty. (An earlier note here said "1..6" -- that was an artefact of a probe that capped its own loop at 8, not a measurement. The in-process check reports the true maximum.)
+    uint32_t unk_11C          @0x11C  // ctor writes 0; live it is a non-null pointer unique to each model (215 distinct). Owner unmapped -- no teardown call in OT_MODEL_dtor_body reaches it directly.
+    LTModelBlock120 block_120 @0x120  // CONFIRMED sub-object (see its class); its `asset` is a third route to the model's asset
+    LTModelBlock130 block_130 @0x130  // CONFIRMED sub-object (see its class); its `asset` is the second route
     uint16_t sphere_source   @0x156   // CONFIRMED branch selector in OT_MODEL_GetCullVolume. The two branches differ in MORE than where they read from, which is why both exist: non-zero takes the centre from sphere_center and the radius from asset->radius UNSCALED; zero takes the centre from LTObject.position and the radius from vis_radius * LTObject.scale. Since asset->radius == vis_radius on 215/215, the real distinction is explicit-centre-and-unscaled versus object-centre-and-scaled. Live: 22 non-zero / 193 zero of 215.
     LTVector sphere_center   @0x160   // CONFIRMED: the cull-sphere centre used when sphere_source != 0 (a world position, copied out directly rather than added to LTObject.position). PROVENANCE, from the ctor: it is initialised by copying base.position. That is why it is stale on most objects -- live it still equals base.position on only 12 of 215 -- and why the 193 objects with sphere_source == 0 can safely ignore it.
     float vis_radius         @0x16C   // CONFIRMED: multiplied by LTObject.scale to give branch B's cull radius. Live > 0 on 215/215. It is a CACHE of the shared asset->radius -- the two are equal on 215/215 objects -- so a mod must not treat them as independent knobs. An earlier note said "the sampled models all read exactly 100.0", which was true only of the six models sampled then; across all 34 assets the values are 20/25/100/120/200/240 and more.

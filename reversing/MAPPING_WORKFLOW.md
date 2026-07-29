@@ -189,6 +189,27 @@ for the full evidence trail this recipe produced).
   worldmodels, one asset field instead of a list of records each holding one.
   So: before declaring a field on a class, check whether a ctor hands some
   sub-range of the object to another function. If it does, that range is a class.
+- **A TEARDOWN LOOP hands you a container's base, its length AND its element
+  stride at once -- take the stride from the code, never from your knowledge of
+  the library.** LTModelObject's cleanup calls `0x429771(this+0x114, this+0x118)`,
+  which is `for (i = count; i; --i) { ~string(p); p += 28; }`. That single loop
+  says: 0x114 is an array base, 0x118 is its length, the element is a
+  std::string, and the element is 28 bytes. Three of those four are structure you
+  would otherwise have to infer, and the fourth -- 28 -- is the one worth
+  dwelling on. MSVC's std::string is 24 bytes in the shape most people remember
+  and 28 with `_SECURE_SCL`; had the stride been assumed rather than read, every
+  string after the first would decode from the wrong address. Reading it made the
+  layout a measurement instead of a bet, and the payoff was immediate: those
+  strings are MATERIAL PATHS ("weapons\_global\shellcasings\...\
+  assault_rifle_casing1.mat"), the first field in this mapping where an object
+  says in plain text what it IS. For recon that is worth more than a dozen
+  numeric fields -- identifying an object by path beats inferring it from
+  geometry.
+  Generally: destructors are the best place to learn container SHAPE, the way
+  constructors are the best place to learn field OWNERSHIP. A dtor must know
+  exactly how many elements there are and how far apart they sit; a ctor must
+  know which sub-object each range belongs to. Neither has the option of being
+  vague, which is what makes both more reliable than any reader you find later.
 - **A MISSING switch case is proof of impossibility, and it upgrades an
   observation into a theorem.** OT_LIGHT's object list reads 0 entries in every
   live sample, which for a long time was only recorded as "consistent with it

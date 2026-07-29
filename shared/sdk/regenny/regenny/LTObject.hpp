@@ -5,10 +5,10 @@
 #include "LTVector.hpp"
 #include "LTWorldTreeLink.hpp"
 namespace regenny {
-class LTObjectRef;
+class LTSpatialRecord;
 }
 namespace regenny {
-class LTSpatialRecord;
+class LTObjectRef;
 }
 namespace regenny {
 #pragma pack(push, 1)

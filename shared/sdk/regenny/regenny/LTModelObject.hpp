@@ -1,11 +1,13 @@
 #pragma once
 #include "CClientMgrListLink.hpp"
+#include "LTModelBlock120.hpp"
+#include "LTModelBlock130.hpp"
 #include "LTModelRecord.hpp"
 #include "LTObject.hpp"
 #include "LTRotation.hpp"
 #include "LTVector.hpp"
 namespace regenny {
-class LTModelAsset;
+class StdString;
 }
 namespace regenny {
 #pragma pack(push, 1)
@@ -15,11 +17,13 @@ public:
     regenny::LTModelRecord record; // 0xcc
     regenny::CClientMgrListLink list_head; // 0x100
     uint32_t list_count; // 0x108
-    private: char pad_10c[0x14]; public:
-    void* owned_120; // 0x120
-    private: char pad_124[0xc]; public:
-    regenny::LTModelAsset* asset_dup; // 0x130
-    private: char pad_134[0x22]; public:
+    private: char pad_10c[0x8]; public:
+    regenny::StdString* material_names; // 0x114
+    uint32_t material_count; // 0x118
+    uint32_t unk_11C; // 0x11c
+    regenny::LTModelBlock120 block_120; // 0x120
+    regenny::LTModelBlock130 block_130; // 0x130
+    private: char pad_154[0x2]; public:
     uint16_t sphere_source; // 0x156
     private: char pad_158[0x8]; public:
     regenny::LTVector sphere_center; // 0x160

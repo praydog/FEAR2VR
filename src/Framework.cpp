@@ -412,6 +412,23 @@ std::string build_objects_json() {
         out += "null";
     }
 
+    // Material names: an owned std::string array whose base, length and stride
+    // all come from the engine's own teardown loop. Every count here is a string
+    // checked against ITSELF -- terminator at [size], size within capacity.
+    out += ",\"model_materials\":";
+    if (const auto mc = mgr->check_model_materials(8192); mc.has_value()) {
+        char cb[320];
+        snprintf(cb, sizeof(cb),
+                 "{\"models\":%zu,\"strings_total\":%zu,\"terminated\":%zu,"
+                 "\"size_le_capacity\":%zu,\"capacity_sane\":%zu,"
+                 "\"nonempty_printable\":%zu,\"max_count\":%zu}",
+                 mc->models, mc->strings_total, mc->terminated, mc->size_le_capacity,
+                 mc->capacity_sane, mc->nonempty_printable, mc->max_count);
+        out += cb;
+    } else {
+        out += "null";
+    }
+
     // Bounding geometry across every type. Same self-check shape: these are
     // identities SetDims establishes, so a divergence means a moved offset in
     // the culling inputs (dims / radius / AABB).

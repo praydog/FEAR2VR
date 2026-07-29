@@ -736,6 +736,46 @@ int main(int argc, char** argv) {
             }
         }
 
+        // MATERIAL NAMES. Every check is a std::string against ITSELF: the byte
+        // at [size] is the terminator, size fits inside capacity, and capacity is
+        // at least the small-buffer minimum. Nothing external is consulted, so
+        // there is no baseline to drift and no sibling structure to be wrong.
+        //
+        // That the array's base, length AND 28-byte stride all come from the
+        // engine's own teardown loop is what makes this safe to walk at all: a
+        // guessed stride would land mid-string and every one of these would fail
+        // at once, which is exactly the behaviour wanted from a decode check.
+        {
+            const size_t cp = body.find("\"model_materials\":");
+            check(cp != std::string::npos, "objects report includes the material check");
+            if (json_has(body, "\"model_materials\":null")) {
+                check(false, "material walk completed");
+            } else if (cp != std::string::npos) {
+                const size_t end = body.find('}', cp);
+                const std::string cb = body.substr(cp, end - cp + 1);
+                int64_t models = -1, total = -1, term = -1, sizeok = -1, capok = -1, pr = -1, mx = -1;
+                json_int(cb, "models", models);
+                json_int(cb, "strings_total", total);
+                json_int(cb, "terminated", term);
+                json_int(cb, "size_le_capacity", sizeok);
+                json_int(cb, "capacity_sane", capok);
+                json_int(cb, "nonempty_printable", pr);
+                json_int(cb, "max_count", mx);
+
+                check(models > 0, "models with material arrays exist");
+                check(total >= models, "every such model contributes at least one string");
+                check(term == total, "every material string is NUL-terminated at [size]");
+                check(sizeok == total, "every material string's size fits within its capacity");
+                check(capok == total, "every material string's capacity is at least the small buffer");
+                check(mx >= 1, "material_count is at least one where an array exists");
+                // Printability is REPORTED, not asserted: empty strings are legal
+                // and 34 of them exist live. Asserting it would be asserting that
+                // no model has an unset material slot.
+                check(pr > 0 && pr <= total,
+                      "printable non-empty paths are a sane fraction (empties are legal)");
+            }
+        }
+
         // Bounding geometry across every object type. These are identities the
         // engine's own SetDims establishes (aabb = position +/- dims, radius =
         // |dims| + 0.1), so every live object must satisfy them. They guard the

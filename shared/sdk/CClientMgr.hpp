@@ -328,6 +328,39 @@ public:
         size_t member_asset_ok;    // members whose asset equals their owner's
     };
 
+    // ---- OT_MODEL material names (an owned std::string array) ------------
+    //
+    // LTModelObject::material_names is an array of MSVC std::string, length in
+    // material_count. Both facts come from the engine's own teardown:
+    // 0x429771(base, count) runs `~string(p); p += 28` that many times, so the
+    // base, the length AND the 28-byte stride are the engine's arithmetic rather
+    // than an assumption about which STL this build used.
+    //
+    // Live these hold MATERIAL PATHS -- "weapons\_global\shellcasings\...\
+    // assault_rifle_casing1.mat" -- which makes this the first field in the
+    // mapping that states in plain text what an object IS. Worth having for
+    // recon: identifying an object by path beats inferring it from geometry.
+    //
+    // Every check here is a std::string against ITSELF, which is the strongest
+    // form available (see TESTING.MD): the byte at [size] must be the
+    // terminator, size must not exceed capacity, and capacity must be at least
+    // the small-buffer size. No baseline, no sibling structure. A wrong stride
+    // or a wrong field offset breaks all three at once.
+    struct MaterialCheck {
+        size_t models;             // models with a non-null array and a sane count
+        size_t strings_total;      // strings visited
+        size_t terminated;         // byte at [size] is NUL
+        size_t size_le_capacity;   // size <= capacity
+        size_t capacity_sane;      // capacity >= 15 (the small-buffer minimum)
+        size_t nonempty_printable; // non-empty and printable ASCII throughout
+        size_t max_count;          // largest material_count seen
+    };
+
+    // Walks up to `max` type-1 objects. nullopt on fault or a walk that did not
+    // terminate. Reads string bodies, so it reaches through two pointer levels --
+    // SEH-guarded, and every length is bounded before use.
+    std::optional<MaterialCheck> check_model_materials(size_t max) const;
+
     // Walks up to `max` type-1 objects. nullopt on fault or a walk that did not
     // terminate.
     std::optional<ModelListCheck> check_model_lists(size_t max) const;
