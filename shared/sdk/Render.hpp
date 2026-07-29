@@ -101,7 +101,13 @@ public:
     //
     // `method_slot` defaults to 2 (Release), which every COM interface has. nullopt when
     // the interface is null, a read faulted, or the method address is in no module.
-    static std::optional<std::string> interface_impl_owner(void* iface, size_t method_slot = 2);
+    //
+    // Takes IUnknown* rather than void* so a caller cannot pass something that is not a
+    // COM interface at all. Every D3D9 interface is single-inheritance COM, so the
+    // IUnknown* and the concrete pointer share one vtable slot 0 -- the conversion does
+    // not move the pointer and slot indices stay meaningful.
+    static std::optional<std::string> interface_impl_owner(IUnknown* iface,
+                                                           size_t method_slot = 2);
 };
 
 }  // namespace sdk

@@ -452,7 +452,12 @@ std::string build_targets_json() {
              // the device is the real runtime.
              "\"d3d9\":\"0x%08" PRIXPTR "\",\"d3d9_impl\":\"%s\","
              "\"device\":\"0x%08" PRIXPTR "\",\"device_impl\":\"%s\","
-             "\"device_type\":%u,"
+             // device_type is D3DCAPS9's FIRST field. The three after it are chosen to be
+             // FAR from the base -- MaxTextureWidth in the middle, the two shader versions
+             // near the very end -- so that a wrong base or a wrong struct size shows up.
+             // The leading fields alone would still look right.
+             "\"device_type\":%u,\"caps_max_tex_w\":%u,"
+             "\"caps_vs\":\"0x%08X\",\"caps_ps\":\"0x%08X\","
              // The desktop mode the engine recorded, and what it is actually presenting.
              "\"display_w\":%u,\"display_h\":%u,\"display_hz\":%u,\"display_fmt\":%u,"
              "\"bb_w\":%u,\"bb_h\":%u,\"bb_fmt\":%u,\"bb_count\":%u,"
@@ -515,6 +520,9 @@ std::string build_targets_json() {
              sdk::Render::interface_impl_owner(sdk::Render::device())
                  .value_or(std::string{"(none)"}).c_str(),
              caps.has_value() ? static_cast<unsigned>(caps->DeviceType) : 0u,
+             caps.has_value() ? static_cast<unsigned>(caps->MaxTextureWidth) : 0u,
+             caps.has_value() ? static_cast<unsigned>(caps->VertexShaderVersion) : 0u,
+             caps.has_value() ? static_cast<unsigned>(caps->PixelShaderVersion) : 0u,
              dmode.Width, dmode.Height, dmode.RefreshRate,
              static_cast<unsigned>(dmode.Format),
              pparams.BackBufferWidth, pparams.BackBufferHeight,

@@ -549,6 +549,34 @@ int main(int argc, char** argv) {
         check(dtype == D3DDEVTYPE_HAL || dtype == D3DDEVTYPE_REF ||
                   dtype == D3DDEVTYPE_SW,
               "the cached caps report a legal D3DDEVTYPE");
+
+        // THE CAPS STRUCT'S FULL EXTENT, which the leading fields cannot establish. A
+        // wrong base or a wrong sizeof would still give a legal DeviceType at +0x00, so
+        // these three are read from FAR inside D3DCAPS9 -- MaxTextureWidth in the middle,
+        // the two shader versions near the end.
+        //
+        // The shader versions are the sharp check, because they are not free values: D3D
+        // encodes them as tokens with a fixed high word, 0xFFFE for vertex and 0xFFFF for
+        // pixel. Reading 0xFFFE0300 and 0xFFFF0300 (both 3.0) at those displacements is a
+        // fingerprint no misaligned read produces, and it is what makes returning the WHOLE
+        // struct honest rather than a guess past the fields we happened to measure.
+        int64_t mtw = -1;
+        uint32_t vs = 0, ps = 0;
+        json_int(body, "caps_max_tex_w", mtw);
+        check(json_hex(body, "caps_vs", vs) && json_hex(body, "caps_ps", ps),
+              "the caps report both shader versions");
+        check(mtw >= 2048,
+              "MaxTextureWidth is at least the D3D9 baseline, deep inside the struct");
+        check((vs & 0xFFFF0000u) == 0xFFFE0000u,
+              "VertexShaderVersion carries D3D's 0xFFFE token prefix");
+        check((ps & 0xFFFF0000u) == 0xFFFF0000u,
+              "PixelShaderVersion carries D3D's 0xFFFF token prefix");
+        // The game is a 2009 shader title; anything below 2.0 could not render it.
+        check((vs & 0xFFFFu) >= 0x0200 && (ps & 0xFFFFu) >= 0x0200,
+              "both shader models meet the 2.0 the engine's renderer needs");
+        printf("[fixture] caps: max texture %lld, vs %u.%u, ps %u.%u\n",
+               static_cast<long long>(mtw), (vs >> 8) & 0xFF, vs & 0xFF,
+               (ps >> 8) & 0xFF, ps & 0xFF);
         // REPORTED: HAL vs REF is the machine's business, but a fallback to the reference
         // rasteriser is worth seeing in the log -- the engine itself warns about it.
         printf("[fixture] presenting %lldx%lld fmt %lld x%lld, swap %lld, depth %lld, "

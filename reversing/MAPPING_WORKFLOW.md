@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **To prove a struct's EXTENT, read its far fields -- and prefer fields with a fixed
+  encoding.** Having taken the real `D3DCAPS9` at renderer+0x0C, the obvious check was its
+  first two fields (DeviceType 1, AdapterOrdinal 0). Those would read correctly for a base
+  that was wrong about the struct's SIZE, or off by a member somewhere later.
+
+  The fields that actually settle it are deep and self-identifying: `MaxTextureWidth`
+  (16384, mid-struct) and the two shader versions near the end, which D3D encodes as tokens
+  with a fixed high word -- 0xFFFE for vertex, 0xFFFF for pixel. Reading exactly
+  `0xFFFE0300` and `0xFFFF0300` at those displacements is a fingerprint a misaligned read
+  does not produce, and it is what makes returning the whole struct honest instead of a
+  guess past the prefix we measured.
+
+  Generalise: when a struct is large, pick check fields for (1) distance from the base and
+  (2) a constrained encoding -- magic prefixes, version tokens, tagged enums, bit patterns.
+  A field that can hold any integer proves the least.
 - **To ask "is this interface hooked", ask where its METHODS are -- never where its vtable
   is.** I shipped `d3d9_vtable_owner()` reporting the module that owns an interface's vtable
   POINTER, and it happened to work: the Steam overlay's proxy `IDirect3D9` has a static

@@ -150,7 +150,7 @@ std::optional<D3DPRESENT_PARAMETERS> Render::present_params() {
     return out;
 }
 
-std::optional<std::string> Render::interface_impl_owner(void* iface, size_t method_slot) {
+std::optional<std::string> Render::interface_impl_owner(IUnknown* iface, size_t method_slot) {
     if (iface == nullptr) {
         return std::nullopt;
     }
