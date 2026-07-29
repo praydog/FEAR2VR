@@ -7,10 +7,10 @@
 #include "LTRotation.hpp"
 #include "LTVector.hpp"
 namespace regenny {
-class StdString;
+class LTMatrix3x4;
 }
 namespace regenny {
-class LTMatrix3x4;
+class StdString;
 }
 namespace regenny {
 #pragma pack(push, 1)

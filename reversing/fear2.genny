@@ -766,33 +766,30 @@ class LTObjectRef 0x28 {
 // Live: 139 objects hold lists, 362 records total, every list terminates (lengths
 // 1..16, checked with cycle detection), zero cycles.
 //
-// THE PLAYER'S OWN LIST, which is the case a VR mod cares about: two records, the
-// weapon and a placeholder.
+// THE PLAYER'S OWN LIST, which is the case a VR mod cares about: two records, and the
+// pass that mapped them is why this class's socket field is now named correctly.
 //
-//   child 7395  parent_node 0 (Null)    weapons\shotgun_clip\shotgun_clip.mdl  6 nodes, 5 sockets
-//   child 7396  parent_node 1 (Pelvis)  engine\default.mdl                     0 sockets
+//   child 7395  socket_handle 0 -> `RightHand`  weapons\shotgun_clip\shotgun_clip.mdl
+//   child 7396  socket_handle 1 -> `LeftHand`   engine\default.mdl
 //
-// AND A MEASURED AGREEMENT WORTH MORE THAN THE MAPPING ITSELF: the weapon object's own
-// position equals, to 0.000, the world transform this project composes independently for
-// the player's `RightHand` SOCKET -- (2153.78, 1554.84, -2227.71) from both. The engine
-// computes placement with its arithmetic through ILTCommon slot 8; we compose ours from
-// the asset's socket record and the bone cache. Two unrelated producers of one point,
-// agreeing exactly, is the strongest confirmation the composition is correct that this
-// project has.
+// AND A MEASURED AGREEMENT WORTH MORE THAN THE MAPPING ITSELF: each child's own position
+// equals, to 0.000, the world transform this project composes independently for that
+// socket -- (2153.78, 1554.84, -2227.71) and (2132.06, 1560.98, -2230.70). The engine
+// computes placement with its arithmetic (ILTModel_GetSocketTransform, then
+// LTTransform_Compose with the record's own offset); we compose ours from the asset's
+// socket record and the bone cache. Two unrelated producers of one point, agreeing
+// exactly, is the strongest confirmation the composition is correct that this project has.
 //
-// BUT NOTE THE DISCREPANCY, because it is unresolved rather than explained: the record
-// names parent_node 0 (`Null`), NOT node 38 (`R_Hand`) which is what the `RightHand`
-// socket rides. So the engine's placement of this child does NOT come from simply
-// evaluating parent_node's bone -- either ILTCommon slot 8 consults something else for
-// first-person weapons, or the FP weapon system places it by another path and this record
-// tracks it. The AGREEMENT is measured; the ROUTE is not mapped. Do not write code that
-// assumes parent_node is where the child will end up.
+// It is also what CORRECTED the field: an earlier pass read the same values as node
+// indices, got plausible bone names out (`Null`, `Pelvis`), and recorded a discrepancy it
+// could not explain -- the child was nowhere near the bone the record supposedly named.
+// The discrepancy was the evidence, not a curiosity. See socket_handle below.
 class LTAttachment 0x30 {
     LTVector offset_position   @0x00   // the child's offset from its attach point. Live all zero on 362/362, which is what an attachment pinned directly to a socket looks like -- so the field is UNEXERCISED here, not proven to be a position.
     LTRotation offset_rotation @0x0C   // live the IDENTITY quaternion (0,0,0,1) on 362/362: the w component at +0x18 reads exactly 1.0. Same caveat as the position -- unit-length and identity is consistent with a rotation and does not prove one.
     uint16_t child_handle      @0x1C   // CONFIRMED the ATTACHED (child) object's handle: the engine's walker resolves exactly this field through CClientMgr_HandleToObject to get the object it then moves. Live all 362 values are DISTINCT -- each child is attached once -- and 327 of 362 resolve to a live object. The other 35 fail the table's tag check, i.e. they name a handle whose slot is not live: stale or not-yet-created children, which the walker skips by design.
     uint16_t parent_handle     @0x1E   // CONFIRMED the OWNER's handle, by identity rather than inference: resolving this field returns the very object whose +0xB4 list the record is on, on 362/362 records with ZERO exceptions. It takes exactly 139 distinct values -- one per list -- and the multiplicities match each list's length (one owner appears 16 times, matching its 16-record list). CLTCommonClient_GetAttachmentObjects (0x4055F8) hands this field out as the PARENT and +0x1C as the child, which fixes which is which.
-    uint32_t parent_node       @0x20   // CONFIRMED a MODEL NODE INDEX when the parent is a model and a sentinel when it is not -- a clean biconditional over all 362 records: for the 27 whose owner is OT_MODEL the value is strictly inside that model's asset node_count (27/27, none outside), and for the 335 whose owner is not a model it is exactly 127 (335/335, no other value). Resolved through node_names the model cases are real bones: L_Shoulder x9, Torso x9, Neck x5, R_Shoulder x2, Pelvis x1, Null x1. The reference SDK calls this "Model node index (if the parent is not a model, this is -1)"; FEAR 2 agrees on the concept and differs on the sentinel, which is 127 here and NOT -1. // RENAMED FROM `socket`: it indexes NODES, and this project has both a socket index space and a node index space -- the engine even unifies them in its socket-handle argument, where a handle addresses sockets FIRST and then nodes (see LTModelAsset.socket_count). A field called `socket` holding a node index is a trap a consumer can fall into silently, since both are size_t and both are in range.
+    uint32_t socket_handle     @0x20   // CONFIRMED a UNIFIED SOCKET HANDLE, from the engine's own call chain rather than from a live distribution: LTObject_UpdateAttachmentsRecursive asks ILTCommon slot 8 (CLTCommonShared_GetAttachmentTransform, 0x44E7A0), which tests `parent->type != OT_MODEL || field == -1` and otherwise fetches ILTModel (ILTCommon slot 18) and calls its slot 3 -- ILTModel_GetSocketTransform -- passing THIS FIELD as the socket handle. That accessor addresses SOCKETS first and falls through to NODES beyond socket_count (see LTModelAsset.socket_count). // TWO EARLIER CLAIMS HERE WERE WRONG AND ARE RETRACTED. (1) It was named `parent_node` and documented as a NODE index because all 27 model-parent values land inside node_count -- but they land inside socket_count too (27/27 both ways, measured), so "in range" distinguished nothing. Resolved as node indices they even produced plausible bone names (L_Shoulder, Torso, Neck), which is why the wrong reading survived several passes. (2) The sentinel is -1, exactly as the reference SDK says; an earlier note "corrected" the reference to 127 on the strength of 335/335 non-model records holding 127. Those 335 are never read: the engine short-circuits on `type != OT_MODEL` first. Live 0 records hold -1, so the real sentinel is simply unexercised in this state. // WHAT SETTLED IT was where the child actually SITS: the player's two records hold 0 and 1, which as socket handles are `RightHand` and `LeftHand`, and both children sit at exactly those sockets' world positions (2153.78,1554.84,-2227.71) and (2132.06,1560.98,-2230.70) -- to 0.000, against an independent composition. As node indices the same values name `Null` and `Pelvis`, which is nowhere near either child.
     LTAttachment* next         @0x24   // CONFIRMED the list link, from the walker's own `v2 = *(_DWORD *)(v2 + 36)` advance. Live every chain terminates at null.
     uint32_t unk_28            @0x28   // live 0 on every record sampled
     uint32_t unk_2C            @0x2C   // small integers, live 70/71/76 on the three records dumped. Unmapped; included to carry the class past the reference's 0x28 end, which FEAR 2 clearly exceeds.

@@ -1922,18 +1922,29 @@ int main(int argc, char** argv) {
                        static_cast<long long>(so), static_cast<long long>(son));
 
                 // ATTACHMENTS. The load-bearing assertion is the LAST one: every
-                // attachment that reports a socket must resolve that socket to a bone
-                // NAME through the model API. That crosses two subsystems -- the
-                // attachment record's socket field and the model asset's node table --
-                // so it fails if either offset moves, and it is the consequence of the
-                // biconditional that identified the field (a socket is an index exactly
-                // when the owner is a model).
-                int64_t awa = -1, aat = -1, aco = -1, aso = -1, asn = -1;
+                // attachment that reports a handle must resolve it in the ENGINE'S UNIFIED
+                // SPACE, and -- the load-bearing part -- the child must actually SIT at
+                // the transform we compose for that handle.
+                //
+                // THE PREVIOUS VERSION OF THIS CHECK PASSED WHILE THE MAPPING WAS WRONG.
+                // It resolved the handle as a NODE index and asserted that every one
+                // produced a bone name; it counted 27/27 for several passes. Socket handles
+                // are small, so they land inside node_count too, and the names that came
+                // back looked like real bones. Asking "did a table accept this index" can
+                // never distinguish two overlapping index spaces. Asking "is the child
+                // where this says it is" can, because only one reading puts it there.
+                int64_t awa = -1, aat = -1, aco = -1, aso = -1, are = -1;
+                int64_t ais = -1, ame = -1, apl = -1;
+                double aerr = -1.0;
                 json_int(ab, "with_attachments", awa);
                 json_int(ab, "attachments", aat);
                 json_int(ab, "att_child_ok", aco);
                 json_int(ab, "att_socketed", aso);
-                json_int(ab, "att_socket_named", asn);
+                json_int(ab, "att_resolved", are);
+                json_int(ab, "att_is_socket", ais);
+                json_int(ab, "att_measured", ame);
+                json_int(ab, "att_placed", apl);
+                json_double(ab, "att_worst_err", aerr);
                 check(awa > 0, "some objects carry attachments");
                 check(aat >= awa,
                       "every attachment list holds at least one record (no empty heads)");
@@ -1944,8 +1955,24 @@ int main(int argc, char** argv) {
                       "resolved attachment children are a reported fraction of records");
                 check(aso >= 0 && aso <= aat,
                       "socketed attachments are a subset of all attachments");
-                check(asn == aso,
-                      "EVERY socketed attachment resolves its socket to a bone name");
+                check(are == aso,
+                      "EVERY attachment handle resolves inside the unified socket/node space");
+                // REPORTED: which side of the split a handle falls on is the art's choice.
+                // Live all 27 are sockets, but a model CAN legitimately name a bare node.
+                check(ais >= 0 && ais <= are,
+                      "handles resolving to sockets are a reported fraction");
+                // THE REAL ONE. Two independent producers of one point: the engine placed
+                // the child, we composed the handle. Tolerance is tight on purpose --
+                // live the worst disagreement across the whole level is 0.0005 units, so
+                // anything that breaks the composition moves this by orders of magnitude.
+                check(apl == ame,
+                      "EVERY attached child sits at the transform we compose for its handle");
+                check(ame == 0 || (aerr >= 0.0 && aerr < 0.05),
+                      "the WORST engine-vs-SDK placement disagreement stays sub-unit");
+                printf("[fixture] attachments: %lld handles, %lld sockets, %lld/%lld placed "
+                       "(worst %.4f)\n",
+                       static_cast<long long>(are), static_cast<long long>(ais),
+                       static_cast<long long>(apl), static_cast<long long>(ame), aerr);
 
                 // MODEL SOCKETS -- the art's own named attach points. Three
                 // requirements, all of them things a consumer depends on:
@@ -2006,7 +2033,7 @@ int main(int argc, char** argv) {
                        static_cast<long long>(st), static_cast<long long>(scam),
                        static_cast<long long>(seye));
                 printf("[fixture] attachments: %lld records on %lld objects, %lld resolved, "
-                       "%lld on bones\n",
+                       "%lld with an attach handle\n",
                        static_cast<long long>(aat), static_cast<long long>(awa),
                        static_cast<long long>(aco), static_cast<long long>(aso));
             }

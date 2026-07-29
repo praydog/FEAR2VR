@@ -963,6 +963,39 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **"The value is in range" is not evidence when two index spaces overlap.** The
+  attachment field at +0x20 was mapped as a NODE index because all 27 live model-parent
+  values fall inside `node_count`. They also fall inside `socket_count` -- both, 27/27.
+  Worse, resolving them as node indices returned *plausible bone names* (`L_Shoulder`,
+  `Torso`, `Neck`, `Pelvis`, `Null`), and a fixture assertion confirmed "EVERY socketed
+  attachment resolves its socket to a bone name" for several passes. It passed because a
+  table accepted the index, which is all it ever tested.
+
+  A range test cannot separate overlapping spaces. What separated them:
+
+  1. **The engine's own call.** `CLTCommonShared_GetAttachmentTransform` passes the field
+     to `ILTModel_GetSocketTransform` -- a *unified* accessor addressing sockets first and
+     nodes beyond `socket_count`. The field is a socket handle by construction.
+  2. **Where the child actually is.** As socket handles the player's 0 and 1 are
+     `RightHand`/`LeftHand`, and each child sits exactly there; as node indices they are
+     `Null`/`Pelvis`, nowhere near. Generalised: 27/27 handles resolve as sockets and
+     25/25 measurable children match our composed transform, worst error 0.0005.
+
+  So: when a field indexes something and the target has MORE THAN ONE plausible table,
+  find the engine call that consumes it, and test against a CONSEQUENCE (where does the
+  thing end up) rather than a PRECONDITION (is the index valid).
+
+- **A discrepancy you cannot explain is evidence, not a footnote.** Last pass measured the
+  weapon sitting at `RightHand` while the record "named" node 0 (`Null`), wrote it up as an
+  open question, and moved on. That mismatch WAS the disproof of the node reading -- it
+  just needed to be treated as data rather than as an oddity to be documented around.
+
+- **Do not "correct" the reference on the strength of a live distribution.** The same field
+  had a note claiming the sentinel was 127, "NOT -1, whatever the reference SDK says",
+  because 335/335 non-model records held 127. The engine tests `== -1` and never reads
+  those 335 -- the type check short-circuits first. The reference was right; 127 was
+  unread data. When live data contradicts a reference, look for the code that READS the
+  field before deciding which is wrong.
 - **The best test for derived arithmetic is a place the ENGINE already wrote the answer.**
   Our socket composition (asset socket record + bone cache + object transform) had been
   checked only against plausibility bounds -- is the point near the body, is it finite.

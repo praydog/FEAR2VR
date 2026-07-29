@@ -1162,6 +1162,69 @@ ModelSkeleton::socket_world_transform(size_t socket_index) const {
     return out;
 }
 
+std::optional<ModelSkeleton::ResolvedHandle>
+ModelSkeleton::resolve_socket_handle(size_t handle) const {
+    // The engine's own split, from ILTModel_GetSocketTransform: sockets first, then nodes
+    // at `handle - socket_count`.
+    if (handle < m_socket_count) {
+        return ResolvedHandle{HandleKind::Socket, handle};
+    }
+    const size_t node = handle - m_socket_count;
+    if (node < m_count) {
+        return ResolvedHandle{HandleKind::Node, node};
+    }
+    return std::nullopt;
+}
+
+std::optional<ModelSkeleton::SocketTransform>
+ModelSkeleton::socket_handle_transform(size_t handle) const {
+    const auto r = resolve_socket_handle(handle);
+    if (!r.has_value()) {
+        return std::nullopt;
+    }
+    if (r->kind == HandleKind::Socket) {
+        return socket_world_transform(r->index);
+    }
+    // The NODE path. A bare node transform is not a socket transform: it carries no
+    // socket offset, so the composition is the object against the bone alone -- and it
+    // needs the same world-space guard, for the same reason.
+    const auto bone = node_transform(r->index);
+    if (!bone.has_value()) {
+        return std::nullopt;
+    }
+    SocketTransform out{};
+    out.scale = 1.0f;
+    out.stale = bone->stale;
+    if (bone->world_space) {
+        out.position = bone->position;
+        out.rotation = bone->rotation;
+        return out;
+    }
+    Xform world{};
+    if (m_object == nullptr || !seh_object_xform(m_object, &world)) {
+        return std::nullopt;
+    }
+    Xform child{};
+    child.p[0] = bone->position.x;
+    child.p[1] = bone->position.y;
+    child.p[2] = bone->position.z;
+    child.q[0] = bone->rotation.x;
+    child.q[1] = bone->rotation.y;
+    child.q[2] = bone->rotation.z;
+    child.q[3] = bone->rotation.w;
+    child.s = 1.0f;
+    const Xform c = compose(world, child);
+    out.position.x = c.p[0];
+    out.position.y = c.p[1];
+    out.position.z = c.p[2];
+    out.rotation.x = c.q[0];
+    out.rotation.y = c.q[1];
+    out.rotation.z = c.q[2];
+    out.rotation.w = c.q[3];
+    out.scale = c.s;
+    return out;
+}
+
 }  // namespace sdk
 
 namespace sdk {
@@ -1189,7 +1252,7 @@ std::optional<AttachedSocket> attached_socket(const regenny::LTObject* parent,
         AttachedSocket out{};
         out.object = att.child;
         out.child_handle = att.child_handle;
-        out.parent_node = att.parent_node;
+        out.socket_handle = att.socket_handle;
         out.transform = *xf;
         return out;
     }

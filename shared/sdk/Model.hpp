@@ -263,6 +263,30 @@ public:
     // defect: it is why the flag is part of the API.
     std::optional<SocketTransform> socket_world_transform(const char* name) const;
 
+    // ---- THE ENGINE'S UNIFIED SOCKET HANDLE ---------------------------------------
+    //
+    // ILTModel_GetSocketTransform takes ONE index that means two things: below
+    // socket_count it is a socket, at or above it is the node `handle - socket_count`.
+    // Every engine-facing "socket handle" lives in this space -- notably
+    // Attachment::socket_handle -- so a consumer holding such a value MUST resolve it this
+    // way and not by guessing which table it indexes. Both tables will accept a small
+    // number and both will return something plausible, which is exactly how this project
+    // spent several passes with the field named wrong.
+    enum class HandleKind { Socket, Node };
+    struct ResolvedHandle {
+        HandleKind kind;
+        size_t index;  // into sockets, or into nodes, per `kind`
+    };
+
+    // Split a handle into the table it addresses and the index within it. nullopt when
+    // the handle is past the end of both tables.
+    std::optional<ResolvedHandle> resolve_socket_handle(size_t handle) const;
+
+    // The handle's pose in WORLD space -- what the engine computes for an attachment.
+    // Dispatches to the socket or the node path exactly as ILTModel_GetSocketTransform
+    // does, so a caller reproducing engine placement uses this and nothing else.
+    std::optional<SocketTransform> socket_handle_transform(size_t handle) const;
+
 private:
     // The engine's per-object allocation, reconstructed from BindAsset's own size
     // expression, so every palette read can be bounded exactly instead of trusting
@@ -461,9 +485,10 @@ struct AttachedSocket {
     // handle if you need to remember it across frames.
     const regenny::LTObject* object;
     uint16_t child_handle;
-    // WHICH BONE of the PARENT the child is mounted on, when the parent is a model.
-    // nullopt when the record carries the engine's non-model sentinel.
-    std::optional<size_t> parent_node;
+    // WHICH ATTACH POINT of the PARENT the child rides, in the engine's unified socket
+    // handle space -- resolve it with the parent's ModelSkeleton::resolve_socket_handle(),
+    // never by indexing one table directly. nullopt when the record has no handle.
+    std::optional<size_t> socket_handle;
     // The socket's pose in WORLD space, composed the same way socket_world_transform
     // does it -- including the `stale` flag, which matters here too: a weapon's bones
     // are recomputed on the same schedule as anything else.

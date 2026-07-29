@@ -1181,7 +1181,8 @@ std::string build_objects_json() {
                api_cameras = 0, api_with_handle = 0, api_with_slot = 0,
                api_identities_agree = 0, api_addressable = 0, api_with_attachments = 0,
                api_attachments = 0, api_att_child_ok = 0, api_att_socketed = 0,
-               api_att_socket_named = 0, api_socket_total = 0, api_socket_ok = 0,
+               api_att_resolved = 0, api_att_is_socket = 0, api_att_measured = 0,
+               api_att_placed = 0, api_socket_total = 0, api_socket_ok = 0,
                api_socket_named_node = 0, api_socket_roundtrip = 0,
                api_socket_camera = 0, api_socket_eyes = 0, api_node_xform_ok = 0,
                api_node_xform_stale = 0, api_node_xform_clean = 0,
@@ -1190,6 +1191,10 @@ std::string build_objects_json() {
                api_standing = 0, api_standing_sane = 0, api_standing_node = 0,
                api_color_ok = 0, api_color_packed_ok = 0, api_color_default = 0,
                api_color_translucent = 0;
+        // The worst disagreement between the engine's placement of an attached child and
+        // our own composition for its socket handle. A float, not a count: the interesting
+        // result is the magnitude.
+        float api_att_worst_err = 0.0f;
         std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(4096);
         for (size_t t = 0; t < sdk::CClientMgr::object_list_count(); ++t) {
             const auto taken = mgr->snapshot_objects(static_cast<sdk::ObjectType>(t), snaps.data(),
@@ -1267,10 +1272,16 @@ std::string build_objects_json() {
                             ++api_color_translucent;
                         }
                     }
-                    // ATTACHMENTS, walked the way a mod would: for every object, ask
-                    // what rides on it, and for the ones mounted on a bone resolve the
-                    // socket to a NAME through the model API. That composition is the
-                    // whole point of the field being an index rather than a string.
+                    // ATTACHMENTS, walked the way a mod would: for every object, ask what
+                    // rides on it, and resolve each handle THROUGH THE ENGINE'S UNIFIED
+                    // SPACE. An earlier version of this loop resolved the handle as a node
+                    // index and counted how many produced a name -- it counted 27/27 and
+                    // was wrong, because a socket handle also lands inside node_count.
+                    //
+                    // THE REAL CHECK is placement: the engine moves each child to its
+                    // handle's transform, so the child's own position must equal what we
+                    // compose for that handle. That compares two independent producers
+                    // instead of asking one table for a plausible-looking string.
                     const auto atts = sdk::attachments(obj);
                     if (!atts.empty()) {
                         ++api_with_attachments;
@@ -1280,12 +1291,36 @@ std::string build_objects_json() {
                             if (at.child != nullptr) {
                                 ++api_att_child_ok;
                             }
-                            if (at.parent_node.has_value()) {
-                                ++api_att_socketed;
-                                if (skel.has_value() && *at.parent_node < skel->node_count() &&
-                                    skel->node_name(*at.parent_node).has_value()) {
-                                    ++api_att_socket_named;
-                                }
+                            if (!at.socket_handle.has_value() || !skel.has_value()) {
+                                continue;
+                            }
+                            ++api_att_socketed;
+                            const auto rh = skel->resolve_socket_handle(*at.socket_handle);
+                            if (!rh.has_value()) {
+                                continue;
+                            }
+                            ++api_att_resolved;
+                            if (rh->kind == sdk::ModelSkeleton::HandleKind::Socket) {
+                                ++api_att_is_socket;
+                            }
+                            const auto xf = skel->socket_handle_transform(*at.socket_handle);
+                            if (!xf.has_value() || at.child == nullptr) {
+                                continue;
+                            }
+                            const auto ci = sdk::object_info(at.child);
+                            if (!ci.has_value()) {
+                                continue;
+                            }
+                            ++api_att_measured;
+                            const float ex = ci->position.x - xf->position.x;
+                            const float ey = ci->position.y - xf->position.y;
+                            const float ez = ci->position.z - xf->position.z;
+                            const float err = std::sqrt(ex * ex + ey * ey + ez * ez);
+                            if (err > api_att_worst_err) {
+                                api_att_worst_err = err;
+                            }
+                            if (err < 0.05f) {
+                                ++api_att_placed;
                             }
                         }
                     }
@@ -1374,7 +1409,8 @@ std::string build_objects_json() {
                  "\"cameras\":%zu,\"cameras_with_bit11\":%zu,\"with_handle\":%zu,"
                  "\"with_slot\":%zu,\"identities_agree\":%zu,\"addressable\":%zu,"
                  "\"with_attachments\":%zu,\"attachments\":%zu,\"att_child_ok\":%zu,"
-                 "\"att_socketed\":%zu,\"att_socket_named\":%zu,"
+                 "\"att_socketed\":%zu,\"att_resolved\":%zu,\"att_is_socket\":%zu,"
+                 "\"att_measured\":%zu,\"att_placed\":%zu,\"att_worst_err\":%.4f,"
                  "\"socket_total\":%zu,\"socket_ok\":%zu,\"socket_named_node\":%zu,"
                  "\"socket_roundtrip\":%zu,\"socket_camera\":%zu,\"socket_eyes\":%zu,"
                  "\"node_xform_ok\":%zu,\"node_xform_stale\":%zu,\"node_xform_clean\":%zu,"
@@ -1386,7 +1422,9 @@ std::string build_objects_json() {
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
-                 api_att_socketed, api_att_socket_named, api_socket_total, api_socket_ok,
+                 api_att_socketed, api_att_resolved, api_att_is_socket,
+                 api_att_measured, api_att_placed, api_att_worst_err,
+                 api_socket_total, api_socket_ok,
                  api_socket_named_node, api_socket_roundtrip, api_socket_camera,
                  api_socket_eyes, api_node_xform_ok, api_node_xform_stale,
                  api_node_xform_clean, api_node_xform_clean_sane, api_camera_node_clean,

@@ -203,32 +203,27 @@ struct Attachment {
     // and for noticing that a specific attachment went stale.
     uint16_t child_handle;
 
-    // WHICH BONE the child rides, as an index into the PARENT's skeleton. nullopt when
-    // the parent is not a model, which is the engine's own condition: the field holds a
-    // node index exactly when the owner is OT_MODEL (27/27 live) and the sentinel 127
-    // otherwise (335/335). Note the sentinel is 127 here and NOT -1, whatever the
-    // reference SDK says.
+    // WHICH ATTACH POINT the child rides, as the engine's UNIFIED SOCKET HANDLE: it
+    // addresses the parent's SOCKETS first and falls through to skeleton NODES beyond
+    // socket_count. nullopt when the parent is not a model or the record holds the
+    // engine's sentinel -- both are the engine's own conditions, taken from
+    // CLTCommonShared_GetAttachmentTransform, which tests exactly
+    // `parent->type != OT_MODEL || handle == -1` before passing this to
+    // ILTModel_GetSocketTransform.
     //
-    // NAMED `parent_node` AND NOT `socket`, which is what both the engine's field and an
-    // earlier version of this struct called it. It indexes NODES. This project has two
-    // separate index spaces -- sockets and nodes -- and the engine itself unifies them in
-    // its socket-handle argument, where a handle addresses sockets FIRST and then nodes.
-    // Both are size_t and both are in range, so passing this to a socket accessor would
-    // return a plausible wrong answer rather than fail. Every consumer written against
-    // the old name immediately called node_name() on it, which is the tell.
+    // NAMED FOR THE SPACE IT LIVES IN, after two wrong names. It was `socket` (right by
+    // luck, wrong by reasoning) and then `parent_node` (wrong outright): all 27 live
+    // model-parent values fall inside node_count AND inside socket_count, so the range
+    // proves nothing, and resolved as node indices they even yield plausible bone names.
+    // What settled it was the child's actual position -- the player's handles 0 and 1 are
+    // sockets `RightHand` and `LeftHand`, and each child sits exactly there.
     //
-    // To get the bone's NAME, compose with the model API rather than expecting it here:
-    //     if (auto skel = sdk::ModelSkeleton::from_object(parent); skel && a.parent_node)
-    //         auto name = skel->node_name(*a.parent_node);   // e.g. "L_Shoulder"
-    std::optional<size_t> parent_node;
-
-    // A CAVEAT MEASURED, NOT GUESSED: this is the bone the RECORD names, and it is not
-    // reliably where the child ends up. The player's weapon record names node 0 (`Null`)
-    // while the weapon object actually sits at the `RightHand` socket's world position
-    // (node 38, `R_Hand`) -- confirmed to 0.000 against an independent composition. So
-    // the engine's placement of at least first-person weapons does not come from
-    // evaluating this field's bone. Use it to know what the record SAYS; read the child's
-    // own position, or attached_socket(), to know where the child IS.
+    // Resolve it the way the engine does, which is what socket_handle_transform() is for:
+    //     auto skel = sdk::ModelSkeleton::from_object(parent);
+    //     auto xf   = skel->socket_handle_transform(*a.socket_handle);   // world space
+    // Do NOT pass it to node_name() or socket() directly: one of those is wrong for any
+    // given value and both will happily return something.
+    std::optional<size_t> socket_handle;
 
     // The record's own offset transform. Live these are all zero and identity
     // respectively, so they are UNEXERCISED in the sampled state -- do not assume they

@@ -134,7 +134,7 @@ namespace {
 struct AttachRaw {
     uint16_t child_handle;
     uint16_t parent_handle;
-    uint32_t parent_node;
+    uint32_t socket_handle;
     const void* next;
     float pos[3];
     float rot[4];
@@ -147,7 +147,7 @@ AttachRaw seh_read_record(const void* rec) {
         const auto* a = static_cast<const regenny::LTAttachment*>(rec);
         r.child_handle = a->child_handle;
         r.parent_handle = a->parent_handle;
-        r.parent_node = a->parent_node;
+        r.socket_handle = a->socket_handle;
         r.next = a->next;
         r.pos[0] = a->offset_position.x;
         r.pos[1] = a->offset_position.y;
@@ -176,9 +176,13 @@ const void* seh_list_head(const regenny::LTObject* obj, bool* is_model) {
     return head;
 }
 
-// The engine's sentinel for "not mounted on a bone". 127, not -1 -- measured on
-// 335/335 non-model owners.
-constexpr uint32_t kNoParentNode = 127;
+// THE ENGINE'S sentinel, from its own comparison rather than from our sample:
+// CLTCommonShared_GetAttachmentTransform tests `handle == -1`. An earlier version of this
+// constant was 127, taken from 335/335 non-model records holding that value -- but those
+// records are never read, because the engine short-circuits on `type != OT_MODEL` first.
+// Live NO record holds -1, so this branch is unexercised in the sampled state; it is here
+// because the engine has it, not because we measured it.
+constexpr uint32_t kNoSocketHandle = 0xFFFFFFFFu;
 
 // Live lists are 1..16 long. This bound exists for a TORN list, not a long one.
 constexpr size_t kMaxRecords = 64;
@@ -212,14 +216,14 @@ std::vector<Attachment> attachments(const regenny::LTObject* obj) {
         }
         Attachment a{};
         a.child_handle = r.child_handle;
-        // Resolution needs the live manager; without it a caller still gets the
-        // handles and node indices, which is more useful than an empty answer.
+        // Resolution needs the live manager; without it a caller still gets the handles
+        // and socket handles, which is more useful than an empty answer.
         a.child = mgr != nullptr ? mgr->object_from_handle(r.child_handle) : nullptr;
-        // The node index is only meaningful when the OWNER is a model -- the engine's own
-        // condition, not a value test, so a model that happened to store 127 would still
-        // be reported as "not mounted on a bone" and a non-model never yields an index.
-        if (is_model && r.parent_node != kNoParentNode) {
-            a.parent_node = static_cast<size_t>(r.parent_node);
+        // Both conditions are the ENGINE's, copied from
+        // CLTCommonShared_GetAttachmentTransform: a non-model parent never yields a handle
+        // (the type test short-circuits before the field is read), and -1 means "none".
+        if (is_model && r.socket_handle != kNoSocketHandle) {
+            a.socket_handle = static_cast<size_t>(r.socket_handle);
         }
         a.offset_position.x = r.pos[0];
         a.offset_position.y = r.pos[1];
