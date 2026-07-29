@@ -963,6 +963,38 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE BOUNDARY LESSON IS NOW TOOLING: reversing/ida_vtable_boundary.py.** Five repetitions of one error
+  earned a script rather than another paragraph. `report(vt)` prints boundary CANDIDATES with evidence --
+  never a proven extent -- from three signals: the dword stops being a function (a string here is the
+  strongest stop available), an address inside the run is referenced from outside it (`mov [reg], offset X`
+  means a table starts at X), and a vptr-reset-shaped entry repeats. `scan_dtor_repeats(vt)` audits a count
+  someone already recorded.
+  
+  Its first two versions each embodied one half of the error it exists to prevent, which is worth
+  recording because the pair is the whole lesson:
+  * V1 STOPPED at the first dword that was not a defined function -- the TRUNCATION failure verbatim. A
+    slot may point at undefined code, a thunk, or another module.
+  * V2 continued past everything and reported the first string it found as proof. On the 2-entry table at
+    0x678C80 it printed "187 entries", because a string only bounds the whole SCANNED RUN once the scan has
+    crossed into adjacent tables -- the OVERRUN failure.
+  The fix is not a better heuristic but a different output: INLINE_DATA counts as proof for THIS table only
+  when no earlier vptr store names an interior address. Otherwise the tool prints an AMBIGUITY INTERVAL
+  [earliest credible start .. inline stop], names the leading estimate, says outright that the string does
+  not bound this table, and asks for the interior reference to be classified by hand. A tool that must
+  sometimes answer "ambiguous, here is the interval" is the honest shape for this problem.
+
+  Two more corrections during review, both worth keeping in mind when reading its output:
+  * the vptr-reset predicate must require the destination be memory via a register (o_phrase/o_displ). Any
+    `mov <anything>, imm` also matches `mov some_global, offset base` -- a static initializer or atexit
+    reset, of which this binary has many -- and counting those as destructors invents boundaries.
+  * repetition is a WARNING, not proof. MSVC emits destructor variants (scalar and vector deleting) and ICF
+    can make unrelated slots share an address, so a legitimate table can hold one pointer twice.
+  
+  Credibility matters in the signal too: only a `mov [reg], offset X` counts as TABLE_START, since a
+  reference that is not a vptr store may be a patch site or a pointer-to-table. With that in place it
+  reproduces both known answers -- 147 for CLTClient_vftable as proof, and 0x678C80 as ambiguous with a
+  leading estimate of 2, which the two independent vptr stores of off_678C88 then settle by hand.
+
 - **FIFTH BOUNDARY ERROR, AND ITS OWN OUTPUT REFUTED IT.** Having just written the boundary pattern into
   this log, I sized off_678C80 by scanning forward 151 entries and quoted statistics over them: "137
   distinct, a single _purecall, so a fully implemented class". The scan crossed multiple adjacent vtables.

@@ -1218,15 +1218,26 @@ class CClientMgrCounterNode 0x40 {
 //     `mov dword ptr [esi], offset off_678C80` -- a destructor setting the vptr, the ordinary MSVC
 //     pattern -- and that same function is CLTClient_vftable's slot 0.
 //
-// NOTHING ELSE ABOUT off_678C80 IS ESTABLISHED, and a first attempt here got it wrong in the way this
-// file keeps warning about. I scanned forward 151 entries and quoted a histogram of them; that scan
-// self-refutes, because it found the destructor THIRTEEN times, and a class has one destructor. Thirteen
-// dtor occurrences is thirteen adjacent tables sharing a folded slot 0, so the scan crossed boundaries
-// and every count derived from it -- "151 entries", "137 distinct", "one _purecall", "a fully implemented
-// class" -- is withdrawn. Its real extent needs the boundary treatment CLTClient_vftable got.
+// off_678C80 IS TWO ENTRIES, not the 151 first claimed here. That claim came from a forward scan whose own
+// output refuted it -- it found the vptr-reset destructor THIRTEEN times, and a class has one -- so the run
+// had walked through many adjacent tables. Withdrawn along with everything derived from it ("137 distinct",
+// "one _purecall", "a fully implemented class").
 //
-// Also NOT established: how off_678C80's class relates to CLTClient. Sharing slot 0 fits base/derived and
-// fits destructor folding equally, and this binary folds heavily.
+// The extent now rests on a boundary reference: 0x474A9A and 0x475A4D both do
+// `mov [esi], offset off_678C88`, so two independent sites treat the very next dword as a table start.
+//
+//   slot 0  abstract_base_dtor (0x475455) -- writes off_678C80 into [this], the MSVC base-dtor vptr reset
+//   slot 1  _purecall
+//
+// So the SHAPE is an abstract base with exactly one pure virtual, and it is stored as the vptr by 47
+// distinct sites. CLTClient_vftable shares slot 0 and overrides slot 1 with CLTClient_InterfaceImplementation
+// returning "CLTClient" -- precisely the relationship the reference SDK describes for IBase, whose single
+// virtual _InterfaceImplementation is pure. That independently corroborates the slot-1 anchor this project
+// used for CGameClientShell's +2 offset, arriving from the base's side rather than the derived one.
+//
+// STILL NOT ESTABLISHED: that those 47 share one base CLASS. One shared table is equally consistent with
+// many identical abstract-base tables folded together by /OPT:ICF, which this binary does heavily. The
+// shape is evidence; the class identity is not.
 //
 // 44 of the 147 implementations were already named from earlier passes, which the slot indices now
 // attach to the interface. A sample, and note these are the ENGINE's implementations in FEAR2.exe:
