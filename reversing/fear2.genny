@@ -1191,6 +1191,26 @@ class CClientMgrCounterNode 0x40 {
 // SetVertexShaderConstantF. They are candidates and not established device-method calls: see the receiver
 // caveat below.
 //
+// EVERY RAW-DISPLACEMENT "Present CANDIDATE" IS A COLLISION, demonstrated rather than assumed. Restricting a
+// raw `call [reg+0x44]` scan to the 90 g_Renderer readers yields exactly one hit, in sub_615CC1 -- the same
+// function that genuinely calls the device elsewhere, which makes it maximally tempting. Reading it settles it:
+//
+//     call sub_612E8B          ; returns some other object
+//     mov  edi, eax            ; edi = that object
+//     mov  eax, [edi]          ; its vtable, NOT the device's
+//     push ebx / push edi
+//     call [eax+44h]           ; +0x44 on THAT object
+//
+// The receiver is sub_612E8B's return value. Likewise the three `[reg+0x38]` "GetSwapChain" hits: two are on
+// g_pILTClient_Default_72EBDC -- an ILTClient interface in the exe, at 0x72EBDC -- and one on another local
+// object. A worked example of why displacement scanning cannot answer this question, kept because it is more
+// convincing than the warning alone.
+//
+// AND THE MISSING GetSwapChain DOES NOT WEAKEN THE SWAP-CHAIN HYPOTHESIS. Every tracker here shares the same
+// entry condition, so a swap chain obtained once from a cached device and kept in heap state would be invisible
+// to all of them, exactly as a cached-device Present would be. The hypothesis space is unchanged by these
+// scans; only a verified call site or a runtime trace moves it.
+//
 // BUT THE TWO DO NOT HAVE DIFFERENT BLIND SPOTS, which an earlier draft of this note claimed. Both START from
 // a read of g_Renderer. If Present is called on a device obtained from a heap field, a parameter or a register
 // that was never reloaded from the global, NEITHER instrument can see it -- they differ only in how they

@@ -963,6 +963,21 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A WORKED EXAMPLE OF THE DISPLACEMENT TRAP, WORTH MORE THAN THE WARNING.** Restricting a raw
+  `call [reg+0x44]` scan to the 90 g_Renderer readers gave exactly one Present candidate -- inside sub_615CC1,
+  which genuinely calls the device elsewhere, so it looked like the real thing. It is not: the receiver is
+  sub_612E8B's RETURN VALUE, with its own vtable, and 0x44 is just that object's method. The three
+  "GetSwapChain" hits are the same story, two of them on g_pILTClient_Default_72EBDC, an ILTClient interface at
+  0x72EBDC.
+  
+  One hit inside a function that DOES make device calls is the worst case for a human eye, which is why the
+  demonstration is recorded next to the rule.
+  
+- **AND THE ABSENCE OF GetSwapChain PROVES NOTHING EITHER.** I was briefly tempted to read it as weakening the
+  swap-chain hypothesis. It cannot: every tracker used here starts from a read of g_Renderer, so a swap chain
+  obtained once from a cached device and kept in heap state is invisible to all of them -- the same blind spot
+  that makes them silent about Present. Two hypotheses, one shared blind spot, no discrimination.
+
 - **TWO INSTRUMENTS THAT SHARE A PREREQUISITE DO NOT HAVE DIFFERENT BLIND SPOTS.** The vtable-register tracker
   missed cached-vtable calls, so I built a second keyed on the device PUSH instead, which locates a call
   however the vtable was obtained. It reproduced the first's distribution closely and also found no Present --
