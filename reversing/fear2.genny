@@ -4861,3 +4861,38 @@ class LTInputDeviceMouse 0x30 {
 // > the player. That is worth more than the camera work that led to it.
 //
 // 1011 checks, 0 failures.
+
+// ---- THE PLAYER OBJECT OPENS WITH 21 EVENT CHANNELS ------------------------------------------------
+//
+// Pointing the new delegate walker at the player object rather than at the camera answers a question this file
+// has had open since the game-side player was first reached: what is at the start of that object.
+//
+// +0x00..+0xA8 IS AN ARRAY OF 21 DELEGATE LIST HEADS, eight bytes each. Live they carry 89 listener attachments
+// from 22 distinct objects, between one and eleven per channel. Discovered by SCAN, not by the offsets measured
+// by hand earlier in the session, and the scan reproduces those offsets exactly.
+//
+// THAT RESOLVES AN EARLIER PUZZLE. A previous pass read the player object's first dword looking for a vtable,
+// found a heap pointer, and recorded that the object "is not polymorphic, or +0 is a member". It is the first
+// channel's `prev`. An object of this shape has no vtable at its start at all.
+//
+// THE CAMERA IS ON SIX OF THE 21, and that is confirmed from both directions: scanning the player's channels
+// finds the camera attached to six, and six of the camera's own eight delegate nodes record a subject inside the
+// player. One is a traversal of the player's lists; the other is a field in the camera. Neither is derived from
+// the other, and the suite asserts the two counts are equal rather than merely both plausible.
+//
+// A BLIND SCAN IS ONLY SAFE BECAUSE THE PREDICATE SELF-VALIDATES. A dword pair that looks like a link is
+// common; a pair whose entire chain leads to vtables carrying the shared detach method in slot 2 is not. Two
+// negative controls hold that up, and both are asserted:
+//     * scanning FEAR2.exe's image base finds ZERO channels -- real memory, no false positives
+//     * the camera's own IDLE list head is rejected: a genuine link pair, but empty, and a channel array scan
+//       wants the ones in use
+//
+// > This is the first structure in the project found by pointing a general tool at an object rather than by
+// > reading the code that touches it. The tool was built two passes ago for the camera's eight sinks; the
+// > player's twenty-one channels came out for free, and the negative controls are what make that trustworthy
+// > rather than merely fast.
+//
+// EXPOSED AS sdk::Delegates::is_delegate_list, find_channels and channels_listened_to -- the last answering
+// "what does this listener react to on that object" directly.
+//
+// 1017 checks, 0 failures.

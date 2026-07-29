@@ -4337,6 +4337,40 @@ int main(int argc, char** argv) {
             check(json_bool(body, "dlg_null_refused", dlg_null) && dlg_null,
                   "null subjects, nodes and vtables are all refused");
 
+            // ---- THE PLAYER'S EVENT CHANNELS, FOUND BY SCAN --------------------------------------
+            //
+            // The player object opens with an ARRAY of delegate list heads, so its first dword is a link's
+            // prev rather than a vtable. They are discovered here by scanning rather than by the offsets this
+            // session measured by hand, so a build that moves them fails instead of being silently missed.
+            //
+            // A blind scan is only safe because the predicate self-validates: a pair of dwords that looks like
+            // a link is common, but one whose whole chain leads to vtables carrying the shared detach method
+            // is not. Two negative controls hold that claim up -- see below.
+            double dch = -1.0, dchl = -1.0, dcc = -1.0;
+            const bool dcn = json_double(body, "dlg_channels", dch) &&
+                             json_double(body, "dlg_channel_listeners", dchl) &&
+                             json_double(body, "dlg_camera_channels", dcc);
+            check(dcn && dch >= 10.0, "the player object carries a whole array of event channels");
+            check(dcn && dchl > dch,
+                  "and they hold more listeners than there are channels -- several subscribers each");
+            check(dcn && dcc >= 3.0 && dcc <= dch, "the camera is attached to several of them");
+
+            // THE LOOP CLOSES BOTH WAYS: the channels a scan finds the camera on must number exactly the
+            // camera's own delegates whose subject lies inside the player. One side is a traversal of the
+            // player's lists, the other is a field in the camera; neither is derived from the other.
+            bool dcm = false;
+            check(json_bool(body, "dlg_camera_channels_match", dcm) && dcm,
+                  "the channels found by scan are exactly the ones the camera's own nodes name");
+
+            // NEGATIVE CONTROLS. Scanning memory that is not an object of this shape must find nothing, and
+            // the predicate must reject a genuine-but-EMPTY link pair -- the camera's own idle list head.
+            // Without these, a predicate that accepted any readable pair would pass everything above.
+            bool dsn = false, dlp = false;
+            check(json_bool(body, "dlg_scan_negative", dsn) && dsn,
+                  "scanning the executable's image base finds no delegate channels");
+            check(json_bool(body, "dlg_list_predicate_rejects", dlp) && dlp,
+                  "and an empty link pair is not mistaken for a channel in use");
+
             // TWO POSE GENERATIONS, and which one the engine carries matters to anyone reading the view.
             //
             // The +232 pair is bit-equal to the camera object's own LTObject transform; the +300 pair's

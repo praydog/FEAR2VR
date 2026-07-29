@@ -4380,6 +4380,38 @@ std::string build_shader_params_json() {
                              !sdk::Delegates::is_delegate_vtable(0) &&
                              !sdk::Delegates::is_listening(0, pm_player->holder));
 
+        // THE PLAYER'S EVENT CHANNELS, discovered by scan rather than by the offsets this session measured
+        // by hand -- so a build that moves them is found rather than silently missed.
+        const auto chans = sdk::Delegates::find_channels(pm_player->object, 0x100);
+        size_t chan_listeners = 0;
+        for (const auto& ch : chans) {
+            chan_listeners += ch.listeners;
+        }
+        json_append_double(out, "dlg_channels", static_cast<double>(chans.size()), 0);
+        json_append_double(out, "dlg_channel_listeners", static_cast<double>(chan_listeners), 0);
+        // The camera must appear on several of them, and the set must be exactly what its own nodes claim:
+        // eight delegates, of which the ones whose subject lies in the player are these channels.
+        const auto cam_chans =
+            sdk::Delegates::channels_listened_to(pm_player->object, pm_player->holder, 0x100);
+        json_append_double(out, "dlg_camera_channels", static_cast<double>(cam_chans.size()), 0);
+        size_t cam_subjects_in_player = 0;
+        for (const auto& d : cam_dels) {
+            if (d.subject >= pm_player->object && d.subject < pm_player->object + 0x100) {
+                ++cam_subjects_in_player;
+            }
+        }
+        json_append_bool(out, "dlg_camera_channels_match",
+                         !cam_chans.empty() && cam_chans.size() == cam_subjects_in_player);
+        // A scan of something that is NOT an object of this shape must find nothing -- the exe's image base
+        // is real memory with no delegate lists in it.
+        const auto* exe_mod = sdk::Modules::get().exe();
+        json_append_bool(out, "dlg_scan_negative",
+                         exe_mod != nullptr && exe_mod->base != 0 &&
+                             sdk::Delegates::find_channels(exe_mod->base, 0x100).empty());
+        json_append_bool(out, "dlg_list_predicate_rejects",
+                         !sdk::Delegates::is_delegate_list(0) &&
+                             !sdk::Delegates::is_delegate_list(pm_player->holder + 420 + 8));
+
         // A null link is refused rather than reported as an empty list.
         json_append_bool(out, "cam_link_null_refused",
                          sdk::mem::classify_link(0) == sdk::mem::LinkState::Unreadable &&

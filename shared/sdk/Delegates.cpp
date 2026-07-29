@@ -87,6 +87,59 @@ std::vector<Delegates::Listener> Delegates::listeners(uintptr_t subject_head, si
     return out;
 }
 
+bool Delegates::is_delegate_list(uintptr_t head) {
+    if (head == 0) {
+        return false;
+    }
+    // Empty and unreadable are both rejected: see the header on why a scan wants only channels in use.
+    if (mem::classify_link(head) != mem::LinkState::Linked) {
+        return false;
+    }
+    const auto found = listeners(head);
+    if (found.empty()) {
+        return false;
+    }
+    for (const auto& l : found) {
+        if (!l.vtable_valid) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<Delegates::Channel> Delegates::find_channels(uintptr_t object, size_t span) {
+    std::vector<Channel> out;
+    if (object == 0 || span < 2 * sizeof(void*)) {
+        return out;
+    }
+
+    for (uintptr_t off = 0; off + 2 * sizeof(void*) <= span; off += sizeof(void*) / 2) {
+        const auto head = object + off;
+        if (!is_delegate_list(head)) {
+            continue;
+        }
+        Channel ch{};
+        ch.offset = off;
+        ch.head = head;
+        ch.listeners = listeners(head).size();
+        out.push_back(ch);
+    }
+    return out;
+}
+
+std::vector<uintptr_t> Delegates::channels_listened_to(uintptr_t object, uintptr_t owner, size_t span) {
+    std::vector<uintptr_t> out;
+    if (owner == 0) {
+        return out;
+    }
+    for (const auto& ch : find_channels(object, span)) {
+        if (is_listening(ch.head, owner)) {
+            out.push_back(ch.offset);
+        }
+    }
+    return out;
+}
+
 bool Delegates::is_listening(uintptr_t subject_head, uintptr_t owner) {
     if (owner == 0) {
         return false;

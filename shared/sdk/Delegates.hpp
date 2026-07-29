@@ -84,6 +84,41 @@ public:
 
     // Is `owner` attached to `subject_head`? The question a consumer usually has, without building a vector.
     static bool is_listening(uintptr_t subject_head, uintptr_t owner);
+
+    //
+    // FINDING AN OBJECT'S EVENT CHANNELS.
+    //
+    // Objects here do not hold one delegate list -- they hold an ARRAY of them, one per event. The player
+    // object opens with twenty-one heads at eight-byte stride across +0x00..+0xA0, carrying between one and
+    // eleven listeners each and twenty-two distinct listener objects between them. Its very first dword is
+    // therefore the first channel's `prev`, not a vtable, which is worth knowing before reading any object of
+    // this shape as if it began with one.
+    //
+    // The predicate below is what makes a blind scan safe. A pair of dwords that happens to look like a link
+    // is common; a pair whose chain leads to nodes whose vtables ALL carry the shared detach method in slot 2
+    // is not. That is the same self-validation is_delegate_vtable provides, applied to a whole list.
+    //
+
+    // Does `head` head a list of genuine delegates? False for an unreadable pair, an empty list, or a chain
+    // containing anything that is not a delegate. Deliberately false for EMPTY: a scan looking for an object's
+    // channels wants the ones in use, and an empty pair is indistinguishable from two unrelated zero fields.
+    static bool is_delegate_list(uintptr_t head);
+
+    struct Channel {
+        uintptr_t offset{};  // byte offset within the object
+        uintptr_t head{};    // absolute address of the link pair
+        size_t listeners{};  // how many delegates are attached
+    };
+
+    // Every delegate channel in `object`'s first `span` bytes, at four-byte granularity so a channel array at
+    // an odd alignment is still found. Each hit is validated by is_delegate_list, so a false positive requires
+    // a chain of fake nodes with the real detach method in their vtables.
+    static std::vector<Channel> find_channels(uintptr_t object, size_t span = 0x100);
+
+    // Which of `object`'s channels `owner` is attached to, as byte offsets. The direct answer to "what does
+    // this listener react to on that object".
+    static std::vector<uintptr_t> channels_listened_to(uintptr_t object, uintptr_t owner,
+                                                       size_t span = 0x100);
 };
 
 }  // namespace sdk
