@@ -515,6 +515,50 @@ class LTSpatialRecord 0x40 {
     LTSpatialEntry* entry_list @0x3C   // CONFIRMED head of this record's association list, rebuilt by LTSpatialRecord_CollectSphere / _CollectAABB. Live totals: 3666 entries across 3583 records, 1699 of them empty. Per type -- OT_SPRITE 1215/224 objects, OT_WORLDMODEL 1821/1473, OT_PARTICLESYSTEM 336/278, OT_MODEL 294/215, and ZERO for both OT_NORMAL (expected: no cull volume) and OT_CAMERA (NOT expected: cameras do get an AABB volume, so why they associate with nothing is unexplained).
 }
 
+// One clipping plane of a visibility sector. Stride is 20 bytes, taken from the
+// test loop's `v7 += 20` in LTVisSector_TestSphere.
+//
+// CONFIRMED live: across every sector that has planes (19 of 263), all normals
+// are unit length to within 0.01. That is the check that makes the normal/
+// distance split real rather than assumed -- a wrong offset would give lengths
+// scattered around arbitrary values.
+class LTVisPlane 0x14 {
+    LTVector normal   @0x00   // CONFIRMED unit length on every plane of every sector that has any
+    float distance    @0x0C   // CONFIRMED: the test compares a point-distance against this
+    uint32_t unk_10   @0x10   // unmapped; part of the 20-byte stride
+}
+
+// A visibility sector: a convex region described by an AABB plus optional
+// clipping planes, holding the list of objects currently associated with it.
+// This is the far end of LTSpatialEntry.hit_head -- the thing objects associate
+// WITH.
+//
+// Layout from LTVisSector_TestSphere (0x445F38), which AABB-tests `hit + 0x04`
+// and then walks `*(uint8*)(hit + 0x24)` planes from `*(hit + 0x28)`. That also
+// pins entry_list at +0x00, since the entry's hit_head values ARE sector
+// addresses and the six floats immediately after them are the AABB.
+//
+// CONFIRMED live -- the sectors form one contiguous array, and the association
+// is verified from BOTH ends:
+//   * 263 records at stride 48 starting at a single base, every AABB ordered
+//     (min <= max componentwise).
+//   * Walking each sector's OWN list via hit_next reached 3666 entries, exactly
+//     the 3666 the object side produced, and 263/263 sectors' lists were
+//     set-equal to the entries that name them. Neither side has an entry the
+//     other does not.
+// Sector occupancy is very uneven: the busiest holds 197 entries, and 1699 of
+// the 3583 object records associate with nothing at all.
+class LTVisSector 0x30 {
+    LTSpatialEntry* entry_list @0x00   // CONFIRMED: head of this sector's entry list, threaded through LTSpatialEntry.hit_prev/hit_next. LTSpatialEntry.hit_head points AT this slot.
+    LTVector aabb_min   @0x04   // CONFIRMED: AABB-tested by LTVisSector_TestSphere; ordered against aabb_max on 263/263
+    LTVector aabb_max   @0x10   // CONFIRMED
+    float unk_1C        @0x1C   // unmapped; live 0.1 on a sampled record
+    uint32_t unk_20     @0x20   // unmapped; live 0 or 1
+    uint8_t plane_count @0x24   // CONFIRMED: the plane loop's bound, read as a BYTE. Live, only 19 of 263 sectors have any planes -- the rest are AABB-only, which is why the loop is skipped for them.
+    LTVisPlane* planes  @0x28   // CONFIRMED: base of the plane array walked at stride 20
+    void* unk_2C        @0x2C   // unmapped; on the sampled record it held the same value as planes
+}
+
 // ---- The base virtual interface (from the six object vtables) --------------
 //
 // Type <-> vtable is 1:1: walking all seven object_lists[] buckets, each type's

@@ -926,6 +926,17 @@ int main(int argc, char** argv) {
                           "every record's entry_count equals its walked entry-list length");
                     check(erok == objs, "every spatial entry names the record that lists it");
                     check(hlok == objs, "every spatial entry's hit-side links are consistent");
+
+                    // The far end: each entry's hit_head addresses an
+                    // LTVisSector's entry_list slot, so the sector is validated
+                    // through the object graph with no global pointer. Both counts
+                    // are PER ENTRY, so they compare against `entries`.
+                    int64_t saabb = -1, splanes = -1;
+                    json_int(rb, "entry_sector_aabb_ok", saabb);
+                    json_int(rb, "entry_sector_planes_ok", splanes);
+                    check(saabb == ents, "every entry's vis sector has an ordered AABB");
+                    check(splanes == ents,
+                          "every entry's vis sector has unit-length plane normals (or no planes)");
                 }
             }
         }

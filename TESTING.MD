@@ -238,6 +238,34 @@ Generalisation: before asserting any relation between two aggregates, ask what
 population each was computed over. If the answers can differ, the relation is
 conditional and the condition belongs in the test.
 
+**For a cross-linked structure, walk BOTH sides and compare the SETS — not the
+counts.** Count equality is the weak form of this; set equality is the strong one,
+and it is what turns a plausible layout into a proven one.
+
+`LTObject` and `LTVisSector` are cross-linked through `LTSpatialEntry`: each
+entry sits in the object's record list AND in a sector's list. Verifying it meant
+enumerating entries from the object side (3666), then walking each sector's own
+list independently, and checking the two collections were **set-equal per
+sector**: 263/263 sectors matched, neither side holding an entry the other did
+not. That is far stronger than "both sides count 3666", which several wrong
+offsets could also produce.
+
+Why it is worth the effort: a single wrong offset in ANY of the six fields
+involved (`entry_list`, `record_next`, `hit_head`, `hit_prev`, `hit_next`,
+`entry_count`) breaks set equality, and usually breaks it loudly. It is the
+cheapest way to validate a whole subsystem's linkage at once.
+
+**Prefer a GRAPH-REACHABLE anchor over hunting for a global.** The sector array
+has no global pointer we have found — but it did not need one. Each entry's
+`hit_head` addresses a sector's `entry_list` slot, and `entry_list` is the
+sector's first field, so the slot address IS the sector. That made the sectors
+validatable in-process from `g_pClientMgr` alone.
+
+Look for this before spending a pass on symbol hunting: if a structure is
+referenced from something you already reach, you can check it now, and the
+reachability path doubles as evidence for the field you traversed. Reserve the
+global hunt for roots that genuinely nothing points at.
+
 **When you expect a biconditional and the data gives an IMPLICATION, assert the
 implication and report the other side.** Symmetry is an aesthetic preference, not
 evidence, and forcing it is the same error as widening a tolerance: it replaces

@@ -15,6 +15,8 @@
 #include "regenny/regenny/LTSpatialEntry.hpp"
 #include "regenny/regenny/LTSpatialRecord.hpp"
 #include "regenny/regenny/LTSpriteObject.hpp"
+#include "regenny/regenny/LTVisPlane.hpp"
+#include "regenny/regenny/LTVisSector.hpp"
 #include "regenny/regenny/LTWorldTreeNode.hpp"
 
 #include "CClientShell.hpp"
@@ -1134,6 +1136,37 @@ int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, 
                         } else if (e->hit_head == nullptr ||
                                    *e->hit_head != reinterpret_cast<const void*>(e)) {
                             hit_ok = false;
+                        }
+
+                        // The sector this entry associates with. hit_head points
+                        // AT its entry_list slot, and entry_list is the sector's
+                        // FIRST field, so the slot address IS the sector -- which
+                        // is how the sector is reachable with no global pointer.
+                        const auto* sec =
+                            reinterpret_cast<const regenny::LTVisSector*>(e->hit_head);
+                        if (sec != nullptr) {
+                            if (sec->aabb_min.x <= sec->aabb_max.x &&
+                                sec->aabb_min.y <= sec->aabb_max.y &&
+                                sec->aabb_min.z <= sec->aabb_max.z) {
+                                ++out->entry_sector_aabb_ok;
+                            }
+                            // Unit normals are what make the normal/distance
+                            // split real; a wrong offset scatters the lengths.
+                            bool units = true;
+                            if (sec->plane_count != 0 && sec->planes != nullptr) {
+                                for (uint8_t pi = 0; pi < sec->plane_count; ++pi) {
+                                    const float nx = sec->planes[pi].normal.x;
+                                    const float ny = sec->planes[pi].normal.y;
+                                    const float nz = sec->planes[pi].normal.z;
+                                    const float len2 = nx * nx + ny * ny + nz * nz;
+                                    if (len2 < 0.98f || len2 > 1.02f) {
+                                        units = false;
+                                    }
+                                }
+                            }
+                            if (units) {
+                                ++out->entry_sector_planes_ok;
+                            }
                         }
                     }
                     out->entries += walked;

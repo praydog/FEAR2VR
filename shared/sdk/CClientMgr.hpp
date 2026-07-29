@@ -499,6 +499,14 @@ public:
         size_t count_matches_walk;  // records where entry_count == walked length
         size_t entry_record_ok;     // records whose every entry names it
         size_t hit_links_ok;        // records whose entries' hit links all check out
+        // The far end of the association: each entry's hit_head addresses a
+        // LTVisSector's entry_list slot, so the sector is reachable through the
+        // object graph with NO global pointer -- which is why this can be checked
+        // in-process at all. Counted PER ENTRY rather than per sector because a
+        // per-sector tally would need a set, and a POD SEH walk has no room for
+        // one. Every entry pointing at a malformed sector is a hit either way.
+        size_t entry_sector_aabb_ok;   // the sector's AABB is ordered
+        size_t entry_sector_planes_ok; // all its plane normals are unit length (or it has none)
     };
 
     // nullopt on fault or a walk that failed to terminate.
