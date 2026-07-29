@@ -4,17 +4,29 @@ namespace regenny {
 class LTModelAsset {
 public:
     float radius; // 0x0
-    private: char pad_4[0x44]; public:
+    private: char pad_4[0x1c]; public:
+    uint32_t entry_count; // 0x20
+    void* entry_array_a; // 0x24
+    void* entry_array_b; // 0x28
+    private: char pad_2c[0x10]; public:
+    void* container_3C; // 0x3c
+    uint32_t entry_count_dup; // 0x40
+    private: char pad_44[0x4]; public:
     void* self_ref; // 0x48
     private: char pad_4c[0x4]; public:
     uint16_t unk_50; // 0x50
     uint16_t unk_52; // 0x52
-    private: char pad_54[0x28]; public:
+    uint16_t unk_54; // 0x54
+    private: char pad_56[0x6]; public:
+    void* subobject_5C; // 0x5c
+    private: char pad_60[0x1c]; public:
     uint32_t refcount; // 0x7c
-    float radius_dup; // 0x80
-    private: char pad_84[0x14]; public:
-    char* filename; // 0x98
-    char* filename_dup; // 0x9c
+    float radius_from_file; // 0x80
+    private: char pad_84[0xc]; public:
+    uint32_t string_blob_size; // 0x90
+    private: char pad_94[0x4]; public:
+    void* string_blob; // 0x98
+    char* filename; // 0x9c
 }; // Size: 0xa0
 #pragma pack(pop)
 }

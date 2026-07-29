@@ -380,13 +380,21 @@ public:
     // two per model" reading rather than merely complicating it. The tight
     // relation is reported so the shortfall stays visible.
     struct AssetCheck {
-        size_t assets;         // distinct assets reached from live models
-        size_t self_ref_ok;    // self_ref == the asset's own address
-        size_t radius_dup_ok;  // radius_dup == radius, and radius > 0
-        size_t name_dup_ok;    // filename_dup == filename
+        size_t assets;          // distinct assets reached from live models
+        size_t self_ref_ok;     // self_ref == the asset's own address
+        size_t radius_dup_ok;   // radius_from_file == radius, and radius > 0
+        size_t name_at_blob;    // filename == string_blob (the name is copied to its front)
         size_t name_readable;   // filename is printable and NUL-terminated
-        size_t refcount_ge;    // refcount >= models referencing it
-        size_t refcount_exact; // refcount == 2*users + 1 (reported, not asserted)
+        size_t refcount_ge;     // refcount >= models referencing it
+        size_t refcount_exact;  // refcount == 2*users + 1 (reported, not asserted)
+        // The blob is one allocation the loader carves everything out of, so every
+        // pointer it derives has to land inside it. These are containment checks
+        // against the asset's OWN recorded size -- no external reference at all.
+        size_t blob_size_sane;  // string_blob_size is non-zero and plausible
+        size_t arrays_in_blob;  // entry_array_a AND _b lie within the blob
+        size_t write_order_ok;  // filename <= entry_array_a <= entry_array_b
+        size_t count_matches;   // entry_count == (entry_array_b - entry_array_a) / 4
+        size_t count_dup_ok;    // entry_count_dup == entry_count
     };
 
     // Walks up to `max` type-1 objects, collecting distinct assets. nullopt on

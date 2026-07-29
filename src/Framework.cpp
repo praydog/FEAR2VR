@@ -433,12 +433,15 @@ std::string build_objects_json() {
     // filename decode, and the refcount floor against live model users.
     out += ",\"model_assets\":";
     if (const auto ac = mgr->check_model_assets(8192); ac.has_value()) {
-        char ab[320];
+        char ab[512];
         snprintf(ab, sizeof(ab),
-                 "{\"assets\":%zu,\"self_ref_ok\":%zu,\"radius_dup_ok\":%zu,\"name_dup_ok\":%zu,"
-                 "\"name_readable\":%zu,\"refcount_ge\":%zu,\"refcount_exact\":%zu}",
-                 ac->assets, ac->self_ref_ok, ac->radius_dup_ok, ac->name_dup_ok,
-                 ac->name_readable, ac->refcount_ge, ac->refcount_exact);
+                 "{\"assets\":%zu,\"self_ref_ok\":%zu,\"radius_dup_ok\":%zu,\"name_at_blob\":%zu,"
+                 "\"name_readable\":%zu,\"refcount_ge\":%zu,\"refcount_exact\":%zu,"
+                 "\"blob_size_sane\":%zu,\"arrays_in_blob\":%zu,\"write_order_ok\":%zu,"
+                 "\"count_matches\":%zu,\"count_dup_ok\":%zu}",
+                 ac->assets, ac->self_ref_ok, ac->radius_dup_ok, ac->name_at_blob,
+                 ac->name_readable, ac->refcount_ge, ac->refcount_exact, ac->blob_size_sane,
+                 ac->arrays_in_blob, ac->write_order_ok, ac->count_matches, ac->count_dup_ok);
         out += ab;
     } else {
         out += "null";

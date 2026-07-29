@@ -799,19 +799,42 @@ int main(int argc, char** argv) {
                 json_int(ab, "assets", assets);
                 json_int(ab, "self_ref_ok", self);
                 json_int(ab, "radius_dup_ok", rad);
-                json_int(ab, "name_dup_ok", ndup);
+                json_int(ab, "name_at_blob", ndup);
                 json_int(ab, "name_readable", nread);
                 json_int(ab, "refcount_ge", rge);
                 json_int(ab, "refcount_exact", rex);
 
                 check(assets > 0, "shared model assets exist");
                 check(self == assets, "every asset's self_ref holds its own address");
-                check(rad == assets, "every asset's radius_dup equals its radius, and radius > 0");
-                check(ndup == assets, "every asset's filename_dup equals its filename");
+                check(rad == assets, "every asset's radius equals the value read from its file");
+                check(ndup == assets, "every asset's filename points at its string_blob's front");
                 check(nread == assets, "every asset filename decodes as printable NUL-terminated ASCII");
                 check(rge == assets, "every asset's refcount is at least its live model users");
                 check(rex >= 0 && rex <= assets,
                       "refcount == 2*users+1 is a reported fraction, not a rule (6 of 34 fall below)");
+
+                // CONTAINMENT. The loader carves the name, the name table, the
+                // fixed-up pointer array and both entry arrays out of ONE
+                // allocation, so every derived pointer has to land inside it --
+                // checked against the asset's own recorded blob size, with nothing
+                // external involved. A moved offset breaks containment long before
+                // it produces a plausible-looking wrong value.
+                int64_t bsane = -1, inblob = -1, worder = -1, cmatch = -1, cdup = -1;
+                json_int(ab, "blob_size_sane", bsane);
+                json_int(ab, "arrays_in_blob", inblob);
+                json_int(ab, "write_order_ok", worder);
+                json_int(ab, "count_matches", cmatch);
+                json_int(ab, "count_dup_ok", cdup);
+                check(bsane == assets, "every asset's string_blob_size is non-zero and plausible");
+                check(inblob == assets, "both entry arrays lie inside the asset's string_blob");
+                check(worder == assets,
+                      "filename <= entry_array_a <= entry_array_b (the loader's write order)");
+                // entry_count was FOUND by this arithmetic, so this check keeps the
+                // derivation honest rather than merely restating it: if the field
+                // ever stops matching the gap, one of the two has moved.
+                check(cmatch == assets,
+                      "entry_count equals (entry_array_b - entry_array_a) / 4 on every asset");
+                check(cdup == assets, "entry_count_dup agrees with entry_count");
             }
         }
 

@@ -1250,20 +1250,35 @@ class CClientMgr 0x1468 {
 // seemed to support 0xA0-ish too, but that held on the one asset first sampled
 // and on 0 of 34 overall -- those bytes belong to the next allocation.
 //
-// ALSO REJECTED, from an earlier pass and still worth its space: the fields after
-// +0x04 look like (pointer, count) array descriptors at +0x04/+0x0C/+0x14/+0x1C.
-// Across all 34 assets only 69 of 136 had both a heap-shaped pointer and a
-// plausible count, and the dword at +0x08 reads 0 on 14 assets, 1 on 10 and 11 on
-// 10. Not an array header; the shape was a guess and it failed.
+// THE .mdl FILE FORMAT, from LTModelAsset_LoadFromFile's first two reads: a
+// magic dword 0x4C444D4C ("LMDL") followed by a version that must be exactly
+// 42. Both are hard rejects, so any file that loads at all has them.
+//
+// The loader is also what filled this class in. Its writes name most of the
+// fields below, and it supersedes an earlier REJECTED guess worth keeping: the
+// fields after +0x04 looked like (pointer, count) array descriptors at
+// +0x04/+0x0C/+0x14/+0x1C. Across all 34 assets only 69 of 136 had both a
+// heap-shaped pointer and a plausible count, and the dword at +0x08 reads 0 on 14
+// assets, 1 on 10 and 11 on 10. Not an array header. The real array pair sits at
+// +0x24/+0x28 with its count at +0x20 -- close to where the guess was looking,
+// which is exactly why guessing from shape was not good enough.
 class LTModelAsset 0xA0 {
-    float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0, so the real value comes from the load.
-    void* self_ref      @0x48   // CONFIRMED live on 34/34: holds the asset's OWN address. The ctor zeroes it, so the loader writes it. A free integrity check -- see sdk::CClientMgr::check_model_assets.
-    uint16_t unk_50     @0x50   // ctor writes 0
-    uint16_t unk_52     @0x52   // ctor writes 1
-    uint32_t refcount   @0x7C   // CONFIRMED the refcount: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing the asset out, and the ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset, which holds 34/34. A tidier shape suggested itself and does NOT survive counting: refcount == 2*users + 1 (one held by the cache, two per model) fits 27 of 34, but 6 assets have FEWER refs than that and 1 has more -- and "fewer" refutes the story outright, since a per-model floor cannot be undershot. Eyeballing the ten biggest rows made it look exact; counting all 34 did not. Live examples of the fit: 21 users/43 refs, 17/35, 9/19. Of the misses, engine\default.mdl (11 users, 25 refs) is the easy direction to explain -- things other than models hold assets -- while the six low ones mean a model does not always hold two counted references.
-    float radius_dup    @0x80   // CONFIRMED equal to `radius` on 34/34 -- a second copy, and another free cross-route check. The ctor zeroes both.
-    char* filename      @0x98   // CONFIRMED the model's .mdl PATH, as a plain char* (not a std::string): e.g. "char\ai\rep_heavyweapons\rep_heavyweapons.mdl", "weapons\assaultrifle\assaultrifle.mdl", "engine\default.mdl". PROVEN a lookup key, not just a label: LTModelObject_LoadModelAndSkins (0x44E3AC) string-compares a requested filename against `*(asset + 156)` == +0x9C to decide whether the cached asset can be reused. Live all 34 are readable, printable and NUL-terminated.
-    char* filename_dup  @0x9C   // CONFIRMED equal to `filename` on 34/34, and this is the copy the engine's own compare reads. Ends at 0xA0 == the class size.
+    float radius        @0x00   // CONFIRMED: OT_MODEL_GetCullVolume reads it as `**(float**)(obj+0xEC)` for its sphere radius. Live values are round -- 10, 20, 25, 50, 100, 120, 200, 240, 300 -- and equal LTModelObject.vis_radius on 215/215 objects, i.e. that per-object field is a CACHE of this one. The ctor writes 0.0; the real value is read from the file into radius_from_file below.
+    uint32_t entry_count   @0x20   // CONFIRMED by ARITHMETIC, not by finding a writer: the loader lays entry_array_a and entry_array_b end to end, so (b - a) / 4 is the entry count -- and searching every field of all 34 assets for one equal to that value returned exactly two, here and 0x40, each matching 34/34. Live 2..84, scaling with model complexity (2 for a shell casing, 61 and 84 for characters), which is what a per-bone or per-node count would look like -- unproven. What consumes them is a hierarchical reader (0x4261B0) taking both arrays plus a 255 sentinel, and 255-as-"no parent" is the usual shape for a node hierarchy.
+    void* entry_array_a    @0x24   // CONFIRMED an array of `entry_count` dwords INSIDE string_blob: the loader computes it as blob + running_offset and hands it to the hierarchical reader. Live it lies within [string_blob, string_blob + string_blob_size) on 34/34.
+    void* entry_array_b    @0x28   // CONFIRMED the array laid immediately after entry_array_a, which is what makes the count derivable. Also inside the blob on 34/34, and filename <= a <= b on 34/34 -- the loader's write order, still visible in the live pointers.
+    void* container_3C     @0x3C   // the loader uses `this + 0x3C` as a container it pushes an entry into per header item (0x628EA2, twice per iteration). Shape unmapped.
+    uint32_t entry_count_dup @0x40 // CONFIRMED equal to entry_count on 34/34 -- found by the same arithmetic search, which returned both offsets. Which the engine treats as authoritative is unknown; they simply agree.
+    void* self_ref         @0x48   // CONFIRMED live on 34/34: holds the asset's OWN address. The ctor zeroes it, so the loader writes it. A free integrity check -- see sdk::CClientMgr::check_model_assets.
+    uint16_t unk_50        @0x50   // ctor writes 0
+    uint16_t unk_52        @0x52   // ctor writes 1
+    uint16_t unk_54        @0x54   // read as a WORD straight from the file, gated behind a byte flag the loader reads first
+    void* subobject_5C     @0x5C   // the loader finalises `this + 0x5C` through 0x458894 before accepting the model, so a sub-object starts here. Unmapped.
+    uint32_t refcount      @0x7C   // CONFIRMED the refcount, from TWO sites: LTModelAsset_FindOrLoad does `++asset[31]` (0x7C) before handing a fresh asset out, and LTModelAsset_FindCached does `++*(hit + 124)` on a cache hit -- same offset, two independent paths. The ctor zeroes it. The ONLY thing asserted is refcount >= the number of models referencing the asset (34/34). A tidier shape does NOT survive counting: refcount == 2*users + 1 fits 27 of 34, but 6 assets fall BELOW that and 1 above -- and below refutes a per-model floor outright. Eyeballing the ten biggest rows made it look exact; counting all 34 did not.
+    float radius_from_file @0x80   // CONFIRMED read directly out of the .mdl: the loader does `stream->Read(this + 128, 4)`. Equal to `radius` on 34/34, so radius is a working copy of this one -- and that PROVENANCE is what the earlier "radius_dup, a second copy" note was missing.
+    uint32_t string_blob_size @0x90 // CONFIRMED the size passed to LTMem_Alloc for string_blob, computed by LTModelAsset_ComputeBlobSize before the allocation. Live 336..19496, scaling with model complexity.
+    void* string_blob      @0x98   // CONFIRMED an OWNED allocation of string_blob_size bytes holding the model's strings: the loader allocates it, stores it here, and copies the source filename to its FRONT. Everything else it fills -- the name table, the pointer array whose entries are fixed up from file offsets, entry_array_a and entry_array_b -- lives inside this one block, which is what makes the containment checks meaningful.
+    char* filename         @0x9C   // CONFIRMED the model's .mdl PATH and the engine's own cache KEY: LTModelAsset_FindCached and LTModelObject_LoadModelAndSkins both `_stricmp` a requested path against THIS field (`*(asset + 156)`), so lookups are case-insensitive. It points at string_blob + 0 because the loader copies the name to the blob's front, which is why it equals string_blob on 34/34. An earlier note called 0x98/0x9C "filename and a second copy"; they are the blob base and a pointer into it. Live all 34 decode as printable NUL-terminated ASCII. Ends at 0xA0 == the class size.
 }
 
 // The record a model keeps its asset reference in. Constructed by 0x4297CF,

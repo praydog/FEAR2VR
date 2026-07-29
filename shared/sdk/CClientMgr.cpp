@@ -880,8 +880,10 @@ std::optional<CClientMgr::MaterialCheck> CClientMgr::check_model_materials(size_
 // small fixed table -- no allocation inside the guard -- then checks each one.
 // Returns the number of distinct assets, or -1 on fault / non-termination.
 static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t max,
-                               size_t* self_ok, size_t* rad_ok, size_t* name_dup_ok,
-                               size_t* name_ok, size_t* rc_ge, size_t* rc_exact, size_t cap) {
+                               size_t* self_ok, size_t* rad_ok, size_t* name_at_blob,
+                               size_t* name_ok, size_t* rc_ge, size_t* rc_exact,
+                               size_t* blob_sane, size_t* in_blob, size_t* order_ok,
+                               size_t* count_ok, size_t* count_dup_ok, size_t cap) {
     // Distinct assets live in the low tens; the table is a hard ceiling, and
     // overflow simply stops collecting rather than corrupting anything.
     constexpr size_t kMaxAssets = 512;
@@ -927,11 +929,37 @@ static int64_t seh_check_assets(const regenny::CClientMgrListLink* head, size_t 
             if (a->self_ref == a) {
                 ++*self_ok;
             }
-            if (a->radius > 0.0f && a->radius == a->radius_dup) {
+            if (a->radius > 0.0f && a->radius == a->radius_from_file) {
                 ++*rad_ok;
             }
-            if (a->filename == a->filename_dup) {
-                ++*name_dup_ok;
+            if (reinterpret_cast<uintptr_t>(a->filename) ==
+                reinterpret_cast<uintptr_t>(a->string_blob)) {
+                ++*name_at_blob;
+            }
+            // Containment. The blob is one allocation the loader carves the name
+            // table, the fixed-up pointer array and both entry arrays out of, so
+            // every derived pointer must land inside it. Checked against the
+            // asset's OWN size field -- nothing external.
+            const auto blob = reinterpret_cast<uintptr_t>(a->string_blob);
+            const auto ea = reinterpret_cast<uintptr_t>(a->entry_array_a);
+            const auto eb = reinterpret_cast<uintptr_t>(a->entry_array_b);
+            const auto nm = reinterpret_cast<uintptr_t>(a->filename);
+            const uint32_t bsz = a->string_blob_size;
+            const bool sane = blob != 0 && bsz > 0 && bsz < 0x400000;
+            if (sane) {
+                ++*blob_sane;
+                if (ea >= blob && ea < blob + bsz && eb >= blob && eb < blob + bsz) {
+                    ++*in_blob;
+                }
+                if (nm <= ea && ea <= eb) {
+                    ++*order_ok;
+                }
+                if (eb >= ea && a->entry_count == (eb - ea) / 4) {
+                    ++*count_ok;
+                }
+            }
+            if (a->entry_count_dup == a->entry_count) {
+                ++*count_dup_ok;
             }
             const char* p = a->filename;
             if (p != nullptr) {
@@ -973,8 +1001,10 @@ std::optional<CClientMgr::AssetCheck> CClientMgr::check_model_assets(size_t max)
     }
     AssetCheck out{};
     const int64_t n = seh_check_assets(&regenny()->object_lists[kModelType], max, &out.self_ref_ok,
-                                      &out.radius_dup_ok, &out.name_dup_ok, &out.name_readable,
-                                      &out.refcount_ge, &out.refcount_exact, max_object_walk);
+                                      &out.radius_dup_ok, &out.name_at_blob, &out.name_readable,
+                                      &out.refcount_ge, &out.refcount_exact, &out.blob_size_sane,
+                                      &out.arrays_in_blob, &out.write_order_ok, &out.count_matches,
+                                      &out.count_dup_ok, max_object_walk);
     if (n < 0) {
         return std::nullopt;
     }

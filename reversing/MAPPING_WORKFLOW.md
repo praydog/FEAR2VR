@@ -396,6 +396,32 @@ So: exact division is evidence, a recognised shape is a hypothesis. Do the
 division first, and if a gap divides evenly by the count, treat that as the
 stride and make the fields fit it.
 
+**Then run the arithmetic BACKWARDS to find the field that stores the count:
+compute the value, and search every offset of every instance for a field equal to
+it.** The division gives you a number the structure must know somewhere. Turn that
+into a query -- "which dword or word equals 61 on this asset, 2 on that one, 84 on
+the third, across all 34" -- and the struct answers by itself. No writer needs to
+be found and no shape needs to be recognised.
+
+`LTModelAsset` gave up `entry_count` this way. The loader lays two arrays end to
+end inside one blob, so `(array_b - array_a) / 4` is the entry count; scanning all
+40 dword offsets and all 80 word offsets of all 34 assets for a match returned
+exactly two candidates, +0x20 and +0x40, each agreeing 34/34. That is a much
+narrower result than it sounds: with counts spanning 2..84 across 34 assets, a
+coincidental match would have to track the real value on every one of them.
+
+Two things make this worth reaching for:
+- **It is cheap and total.** One pass over the whole struct on every instance,
+  rather than reading a loader hoping to spot the write.
+- **The check writes itself.** Assert `entry_count == (b - a) / 4` and the
+  derivation stays honest: if the field ever stops tracking the gap, one of the
+  two has moved, and the test says so instead of silently reading a stale count.
+
+The same query shape finds duplicated fields for free -- here it turned up a
+second copy at +0x40 that no reader had pointed at. Engines duplicate more than
+you would expect (this asset also stores its radius twice and its own address
+once), and each duplicate is another cross-route check that costs nothing.
+
 **A float blob's GROUPING is a hypothesis too — test it against a field you
 already know, never against how the numbers look.** Reading a span of floats
 and recognising a shape is the single easiest way to invent structure, because
