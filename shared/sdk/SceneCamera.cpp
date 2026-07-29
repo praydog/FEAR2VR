@@ -85,9 +85,24 @@ std::array<float, N> floats_at(const unsigned char* base, size_t offset) {
     return out;
 }
 
+// A tolerance a validator may act on: finite and non-negative.
+//
+// EVERY PUBLIC PREDICATE HERE GUARDS ON THIS, and the reason is that the failure directions differ
+// in ways no reader would spot. A predicate written as `deviation > tolerance` accepts EVERYTHING
+// when the tolerance is NaN, because the comparison is false. One written through near_equal rejects
+// on NaN -- but accepts everything on +inf, since the allowance becomes infinite. Same argument,
+// opposite outcomes, depending only on how the comparison happens to be spelled. So the guard lives
+// in one place and every entry point calls it rather than each relying on its own arithmetic.
+bool usable_tolerance(float tolerance) {
+    return std::isfinite(tolerance) && tolerance >= 0.0f;
+}
+
 // Returns false for a non-finite input: NaN fails every comparison below, which is the answer
 // we want from a validator rather than an accident to rely on.
 bool near_equal(float a, float b, float relative_tolerance) {
+    if (!usable_tolerance(relative_tolerance)) {
+        return false;
+    }
     if (!std::isfinite(a) || !std::isfinite(b)) {
         return false;
     }
@@ -112,6 +127,9 @@ bool SceneCameraSnapshot::viewport_valid() const {
 }
 
 bool SceneCameraSnapshot::view_is_identity(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     // Row-major 3x4: the leading 3x3 is identity and the translation column is zero.
     for (size_t row = 0; row < 3; ++row) {
         for (size_t col = 0; col < 4; ++col) {
@@ -129,6 +147,9 @@ bool SceneCameraSnapshot::view_is_identity(float tolerance) const {
 }
 
 bool SceneCameraSnapshot::view_projection_is_coherent(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     const auto recomposed = SceneCamera::compose_view_projection(projection, view);
     for (size_t i = 0; i < 16; ++i) {
         const float want = view_projection[i];
@@ -145,6 +166,9 @@ bool SceneCameraSnapshot::view_projection_is_coherent(float tolerance) const {
 }
 
 bool SceneCameraSnapshot::view_matches_pose(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     const auto want = SceneCamera::view_matrix_from_pose(pose);
     if (!want.has_value()) {
         return false;
@@ -162,6 +186,9 @@ bool SceneCameraSnapshot::view_matches_pose(float tolerance) const {
 }
 
 bool SceneCameraSnapshot::pose_rotation_is_unit(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     const float x = pose.rotation.x, y = pose.rotation.y, z = pose.rotation.z, w = pose.rotation.w;
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {
         return false;
@@ -176,6 +203,9 @@ bool SceneCameraSnapshot::pose_position_is_finite() const {
 }
 
 bool SceneCameraSnapshot::pose_is_identity(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     if (!pose_position_is_finite() || !pose_rotation_is_unit()) {
         return false;
     }
@@ -229,7 +259,7 @@ bool SceneCameraSnapshot::projection_agrees_with_half_view_plane(float tolerance
     // That is the opposite of affines_are_inverse's earlier hole, where the comparison was written
     // out and NaN accepted everything. Stating the precondition here means the safety is a contract
     // rather than a property of a helper someone may later rewrite.
-    if (!std::isfinite(tolerance) || tolerance < 0.0f) {
+    if (!usable_tolerance(tolerance)) {
         return false;
     }
     if (!std::isfinite(half_view_plane_x) || !std::isfinite(half_view_plane_y) ||
@@ -301,6 +331,9 @@ bool SceneCameraSnapshot::is_normalized_orthographic_projection() const {
 }
 
 bool SceneCameraSnapshot::projection_matches_viewport_ortho(float tolerance) const {
+    if (!usable_tolerance(tolerance)) {
+        return false;
+    }
     if (!viewport_valid() || !is_normalized_orthographic_projection()) {
         return false;
     }
@@ -453,9 +486,8 @@ bool SceneCamera::affines_are_inverse(const regenny::LTMatrix3x4& forward,
     // VALIDATE THE TOLERANCES, because they are public arguments and a NaN one silently accepts
     // everything: every `deviation > allow` comparison is false against NaN, so a matrix that is not
     // an inverse would pass. A negative tolerance rejects everything, which is merely useless.
-    if (!std::isfinite(rotation_tolerance) || rotation_tolerance < 0.0f ||
-        !std::isfinite(translation_base) || translation_base < 0.0f ||
-        !std::isfinite(translation_per_unit) || translation_per_unit < 0.0f) {
+    if (!usable_tolerance(rotation_tolerance) || !usable_tolerance(translation_base) ||
+        !usable_tolerance(translation_per_unit)) {
         return false;
     }
     std::array<float, 12> rhs{};

@@ -3869,6 +3869,18 @@ int main(int argc, char** argv) {
             check(json_bool(body, "rejects_overflow_pose", rop) && rop,
                   "invert_transform rejects a pose whose rotated position overflows");
 
+            // THE WHOLE PREDICATE SURFACE, SWEPT. Every tolerance-taking method on the snapshot must
+            // reject a deliberately inconsistent snapshot at a sane tolerance, AND refuse a NaN,
+            // +inf or negative tolerance rather than acting on it. Both directions are needed
+            // because the failure mode follows how each comparison is spelled: `deviation >
+            // tolerance` accepts everything on NaN, while a near_equal form rejects on NaN but
+            // accepts everything on +inf. The signatures look identical.
+            bool tgh = false, mdet = false;
+            check(json_bool(body, "tolerance_guards_hold", tgh) && tgh,
+                  "every snapshot predicate refuses a NaN, +inf or negative tolerance");
+            check(json_bool(body, "mismatch_detected", mdet) && mdet,
+                  "and every one detects a deliberately inconsistent snapshot at a sane tolerance");
+
             // And the same for the half-plane identity, which fails closed by the shape of its
             // comparison rather than by an explicit guard -- so the refusal is asserted, not argued.
             bool inan = false;

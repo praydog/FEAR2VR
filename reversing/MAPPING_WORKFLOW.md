@@ -969,6 +969,15 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   it. Fixing it without a test would leave the next rewrite free to reintroduce it. The discriminating input
   is a NON-UNIT quaternion: scaling q must not change R(q), which the hardcoded form fails by construction.
   
+- **SWEEP THE WHOLE PREDICATE SURFACE, BECAUSE THE FAILURE DIRECTION FOLLOWS THE SPELLING.** A predicate
+  written `deviation > tolerance` ACCEPTS everything when the tolerance is NaN, since the comparison is
+  false. One written through a relative helper REJECTS on NaN but ACCEPTS everything on +inf, since the
+  allowance becomes infinite. Nothing in the signatures distinguishes them, and this class had both kinds.
+  Fixing them one advisory at a time was the wrong shape: one shared `usable_tolerance` guard, every entry
+  point calling it, and a sweep that proves each predicate both detects a deliberately inconsistent
+  snapshot AND refuses NaN, +inf and negative tolerances. The sweep also asserts a GOOD snapshot passes, so
+  no predicate can satisfy it by being always-false.
+  
 - **"IT FAILS CLOSED" IS A CLAIM ABOUT CODE SHAPE, SO ASSERT IT.** A NaN tolerance passed to the half-plane
   identity rejects rather than accepts, because near_equal's comparisons are both false against NaN -- the
   opposite of affines_are_inverse, where the comparison was written out and NaN accepted everything. Same

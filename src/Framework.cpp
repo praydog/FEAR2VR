@@ -3582,6 +3582,75 @@ std::string build_shader_params_json() {
     const bool rejects_overflow_pose =
         !sdk::SceneCamera::invert_transform(huge_pose).has_value();
 
+    // EVERY TOLERANCE-TAKING PREDICATE, SWEPT AT ONCE. Two things are proven per predicate: that a
+    // deliberately WRONG snapshot is rejected at a sane tolerance, and that a NaN and a +inf
+    // tolerance are both refused rather than used.
+    //
+    // Both directions matter because the failure mode depends on how each comparison happens to be
+    // spelled. `deviation > tolerance` accepts everything on NaN; a relative form built on near_equal
+    // rejects on NaN but accepts everything on +inf. Nothing in the signatures distinguishes them, so
+    // the sweep is the only way to know all eight behave the same.
+    int tolerance_guard_failures = 0;
+    int mismatch_detect_failures = 0;
+    {
+        const float nan_value = std::numeric_limits<float>::quiet_NaN();
+        const float inf_value = std::numeric_limits<float>::infinity();
+
+        // A snapshot whose parts deliberately disagree: a non-identity view, a projection that is not
+        // built from its half-extents, a view-projection that is not their product, and a pose that
+        // does not imply that view.
+        sdk::SceneCameraSnapshot bad{};
+        bad.viewport_left = 0;
+        bad.viewport_top = 0;
+        bad.viewport_right = 1920;
+        bad.viewport_bottom = 1080;
+        bad.half_view_plane_x = 3.0f;
+        bad.half_view_plane_y = 1.0f;
+        bad.view = regenny::LTMatrix3x4{};
+        bad.view.m[0] = 0.5f;   // not identity
+        bad.view.m[5] = 1.0f;
+        bad.view.m[10] = 1.0f;
+        bad.view.m[3] = 25.0f;  // and translated
+        bad.projection = {7.0f, 0, 0, 0, 0, 9.0f, 0, 0, 0, 0, 1.0f, -2.0f, 0, 0, 1.0f, 0};
+        bad.view_projection = {};  // certainly not projection * view
+        bad.pose.rotation.w = 1.0f;
+        bad.pose.position.x = 100.0f;  // a pose that does not imply `view`
+
+        // Each must SEE the mismatch at a sane tolerance.
+        if (bad.view_is_identity(1e-4f)) ++mismatch_detect_failures;
+        if (bad.view_projection_is_coherent(1e-4f)) ++mismatch_detect_failures;
+        if (bad.view_matches_pose(1e-3f)) ++mismatch_detect_failures;
+        if (bad.pose_is_identity(1e-4f)) ++mismatch_detect_failures;
+        if (bad.projection_agrees_with_half_view_plane(0.02f)) ++mismatch_detect_failures;
+        if (bad.projection_matches_viewport_ortho(0.02f)) ++mismatch_detect_failures;
+
+        // And each must REFUSE an unusable tolerance rather than act on it. Checked against the bad
+        // snapshot, so "accepted the tolerance" and "accepted the data" cannot cancel out.
+        for (const float bogus : {nan_value, inf_value, -1.0f}) {
+            if (bad.view_is_identity(bogus)) ++tolerance_guard_failures;
+            if (bad.view_projection_is_coherent(bogus)) ++tolerance_guard_failures;
+            if (bad.view_matches_pose(bogus)) ++tolerance_guard_failures;
+            if (bad.pose_is_identity(bogus)) ++tolerance_guard_failures;
+            if (bad.pose_rotation_is_unit(bogus)) ++tolerance_guard_failures;
+            if (bad.projection_agrees_with_half_view_plane(bogus)) ++tolerance_guard_failures;
+            if (bad.projection_matches_viewport_ortho(bogus)) ++tolerance_guard_failures;
+        }
+        // The same sweep on a GOOD snapshot: a bogus tolerance must still be refused, so the guard is
+        // not being satisfied merely because the data was wrong.
+        const auto good_view = sdk::SceneCamera::view_matrix_from_pose(probe_pose);
+        if (good_view.has_value()) {
+            sdk::SceneCameraSnapshot good{};
+            good.pose = probe_pose;
+            good.view = *good_view;
+            for (const float bogus : {nan_value, inf_value}) {
+                if (good.view_matches_pose(bogus)) ++tolerance_guard_failures;
+                if (good.pose_rotation_is_unit(bogus)) ++tolerance_guard_failures;
+            }
+            // ...and at a sane tolerance it must PASS, so the predicate is not simply always false.
+            if (!good.view_matches_pose(1e-3f)) ++mismatch_detect_failures;
+        }
+    }
+
     // A NaN tolerance must REJECT here too. Asserted rather than argued, since "it fails closed" is a
     // claim about the comparison's shape and a later rewrite could invert it silently.
     const bool identity_rejects_nan_tolerance =
@@ -3627,6 +3696,8 @@ std::string build_shader_params_json() {
     json_append_bool(out, "rotation_rejects_zero", rotation_rejects_zero);
     json_append_bool(out, "rotation_rejects_nonfinite", rotation_rejects_nonfinite);
     json_append_bool(out, "identity_rejects_nan_tolerance", identity_rejects_nan_tolerance);
+    json_append_bool(out, "tolerance_guards_hold", tolerance_guard_failures == 0);
+    json_append_bool(out, "mismatch_detected", mismatch_detect_failures == 0);
 
     // The camera parameters, through the same accessors a stereo path would use. The
     // reciprocal check is the class's own helper, not re-implemented here -- a consumer
