@@ -1232,9 +1232,12 @@ class CClientMgrCounterNode 0x40 {
 // TWO GATES BEFORE ANY NAME WAS APPLIED, because a `{code pointer, constant-string getter}` pair can occur
 // INSIDE a table as well as at its start -- a class implementing several interfaces has one such pair per
 // base:
-//   * START EVIDENCE. Each address had to be installed as a vptr somewhere: a `mov [reg], offset table` in
-//     code, or an aligned .data dword holding it (a statically initialised singleton, which is how most of
-//     these are built). All 30 qualified -- 22 by a .data vptr slot alone, with no code store at all.
+//   * ADDRESS-REFERENCE EVIDENCE. Each address had to be NAMED somewhere -- a `mov [reg], offset table` in
+//     code, or an aligned dword in initialised data holding it. All 30 qualified, 22 by a data dword alone
+//     with no code store. That is enough to reject an interior coincidence, which is what this gate is for,
+//     but on its own it does NOT establish that any dword is an object's vptr: it could be a registry entry
+//     or a plain table pointer. The vptr question is settled separately and only for 27 of them -- see the
+//     registry classification below.
 //   * EXTENT. Reported by reversing/ida_vtable_boundary.py, and recorded only where a defined data item
 //     follows the run AND no interior address looks like a table start. All 30 came out that way.
 //     THESE COUNTS ARE STRONGLY BOUNDED, NOT PROVEN. The trailing string bounds the SCANNED RUN; that the
@@ -1244,9 +1247,10 @@ class CClientMgrCounterNode 0x40 {
 //     than the original run: same 30 numbers under a strictly stronger test.
 //
 // That second gate needed the analyzer fixed first: it detected interior starts only through code vptr
-// stores, so for statically initialised singletons -- most of this list -- an adjacent table's start was
-// invisible and a run could quietly continue into the next class. It now also treats a .data dword pointing
-// at an interior address as a start.
+// stores, so for the statically initialised classes -- most of this list -- an adjacent table's start was
+// invisible and a run could quietly continue into the next class. It now also treats an aligned dword in
+// initialised data that points at an interior address as a start candidate. Note that is a START signal, not
+// a claim about what the dword IS.
 //
 //   CLTClient                 0x0066F258  147     CLTServer                 0x00675670  138
 //   ILTOnlineService          0x00678A60  129     CLTRenderer               0x0068FD20   92

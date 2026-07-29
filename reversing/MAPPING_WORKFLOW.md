@@ -1001,9 +1001,11 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   It needed two gates, because the shape is NOT unique to a table start -- a class implementing several
   interfaces has one `{code ptr, constant-string getter}` pair per base, and an interior coincidence is
   possible too:
-  * START EVIDENCE: the address must be installed as a vptr, by a code store or an aligned .data dword. All
-    30 qualified, and 22 by a .data slot ALONE -- these singletons have their vptr baked in at link time and
-    never store it, so a code-store-only test would have rejected most of the list.
+  * ADDRESS-REFERENCE EVIDENCE: the address must be NAMED somewhere, by a code store or an aligned dword in
+    initialised data. All 30 qualified, 22 by a data dword ALONE -- these classes get their table address
+    baked in at link time and never store it, so a code-store-only test would have rejected most of the list.
+    Enough to reject an interior coincidence, which is the gate's job; NOT enough to call any dword a vptr.
+    That was settled later, and only for 27, against the engine's interface registry.
   * EXTENT: only recorded where a data item follows the run and no interior address looks like a table
     start -- which is STRONGLY BOUNDED, not proven. The string bounds the scanned RUN; "no interior start"
     is absence of a hit from two recognizers, so a start installed some other way would be missed. Worth
