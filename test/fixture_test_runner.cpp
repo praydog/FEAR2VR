@@ -1088,10 +1088,13 @@ int main(int argc, char** argv) {
                 // device present the query must produce a definite answer either way.
                 check(writable == 0 || writable == 1,
                       "with a device present, the protection query answers rather than failing");
-                printf("[fixture] device vtable 0x%08X: %s d3d9.dll, region %s -- a hook %s VirtualProtect\n",
-                       dvt, outside == 1 ? "outside" : "inside",
-                       writable == 1 ? "writable" : "not writable",
-                       writable == 1 ? "needs no" : "NEEDS");
+                // Three states, three messages. Saying "NEEDS VirtualProtect" when the query FAILED would
+                // report a protection we never learned -- the same conflation the optional<bool> removed.
+                const char* prot = writable == 1 ? "region writable -- a hook needs no VirtualProtect"
+                                 : writable == 0 ? "region read-only -- a hook NEEDS VirtualProtect"
+                                                 : "protection query FAILED -- unknown";
+                printf("[fixture] device vtable 0x%08X: %s d3d9.dll, %s\n",
+                       dvt, outside == 1 ? "outside" : "inside", prot);
             } else {
                 printf("[fixture] device vtable NOTE: no device in this state -- UNEXERCISED\n");
             }

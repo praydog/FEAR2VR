@@ -963,6 +963,18 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A DATA SCAN ELIMINATES A HYPOTHESIS; IT DOES NOT ANSWER THE QUESTION.** Looking for where Present gets its
+  device, I scanned FEAR2.exe's writable data for copies of the live device pointer and found exactly one --
+  g_Renderer itself. That is worth having: no second exe-global caches it, which was the tidiest explanation
+  for the calls the static tracker could not find.
+  
+  It settles nothing about Present, though, and the reason generalises: a call path can hold the device in a
+  register, a stack local, a heap object's field, or a parameter, none of which a .data scan can see -- and a
+  matching dword would not prove the copy is the one used for dispatch anyway. The decisive route is a runtime
+  trace on the live Present cell capturing return addresses, which needs the mod's own hooking mechanism
+  aimed at a render-thread entry point. That is a deliberate step, not a recon aside, especially with two
+  crashes already this session; recorded as the next move rather than taken.
+
 - **A BOOL THAT FOLDS "COULD NOT FIND OUT" INTO "NO" -- WRITTEN THIS SESSION, AFTER LOGGING THE SAME LESSON
   TWICE.** device_vtable_writable() returned plain bool, so `false` meant three different things: no device
   yet, VirtualQuery failed, and a valid read-only table. A caller cannot then distinguish "I do not know" from

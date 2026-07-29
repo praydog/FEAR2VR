@@ -1180,6 +1180,22 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE DEVICE VTABLE, READ FROM THE LIVE PROCESS ----
 //
+// WHERE THE DEVICE POINTER IS CACHED: NOWHERE ELSE IN .data. Scanning FEAR2.exe's writable data range
+// (IDB 0x6E3000..0x733000) for copies of the live device value found exactly ONE -- g_Renderer itself. So no
+// second exe-global holds a copy, which eliminates the tidiest explanation for the calls the static tracker
+// could not find.
+//
+// IT DOES NOT SETTLE WHERE Present IS CALLED, and cannot. A call path may keep the device only in registers,
+// in a stack local, in a field of a heap object, or receive it as a parameter -- none of which a data scan
+// sees. Nor does a matching dword in .data prove the copy is used for dispatch. One hit is an elimination,
+// not an answer.
+//
+// THE DECISIVE ROUTE, when it is worth doing: hook the live Present vtable cell temporarily, record return
+// addresses, and map those callers back into the IDB. That needs the mod's own hooking mechanism pointed at a
+// render-thread entry point, so it belongs to a deliberate session rather than a recon pass -- and note the
+// vtable cell address must be re-read after a device reset, per Render.hpp.
+
+//
 // Where the static tracker could not settle things, the running game answers directly. Reading g_Renderer's
 // value and following its vptr:
 //
