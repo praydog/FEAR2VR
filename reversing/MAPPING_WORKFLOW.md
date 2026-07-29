@@ -977,11 +977,20 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   LOSES SetDepthStencilSurface, because that function reloads the global per call -- so "more conservative"
   was measurably worse, and the counts are a floor rather than a census.
   
-- **THE INTERESTING RESULT IS AN ABSENCE.** No Present, BeginScene, EndScene, SetTransform, SetVertexShader or
-  SetVertexShaderConstantF is reached through g_Renderer. The game obviously presents frames, so a device
-  pointer is cached elsewhere -- in a member or local rather than reloaded -- and that cache is what a stereo
-  path has to find. Recorded as the open question instead of concluding the calls do not exist, which is the
-  error the earlier zero-hit scan invited.
+- **I BUILT AN ABSENCE FINDING ON A TOOL WITH MEASURED FALSE NEGATIVES.** The tracker finds no Present,
+  BeginScene, EndScene or shader-constant calls through g_Renderer, and I wrote that up as "the absence is the
+  finding" -- a cached device pointer somewhere else. Then the proper oracle showed the tracker recovers 10 of
+  11 device calls in the one validated function, and its single miss is a CACHED-VTABLE pattern: the vtable
+  stashed in a local, the receiver reloaded separately.
+  
+  That is the same failure shape as the vtable analyzer earlier: the detector's blind spot aligned with the
+  population being measured, so it looked most confident exactly where it was weakest. A tool that misses
+  cached-vtable calls cannot be evidence about methods hypothesised to be called through a cached vtable. The
+  absence is retracted; where Present and the shader constants are called is simply open.
+  
+  Also: my calibration compared DISTINCT OFFSETS (7 of 7) when the function contains 11 call instructions,
+  which hid the miss entirely. For a save/set/restore flow the oracle has to be the full sequence with
+  repeats, not the set.
 
 - **`call dword ptr [reg+OFFSET]` IS NOT A D3D CALL SITE FINDER.** Small displacements are ordinary member
   offsets for any object, so scanning for them produced pure noise -- the first run had Present "called from"

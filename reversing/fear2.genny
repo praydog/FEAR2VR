@@ -1180,7 +1180,7 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE D3D9 DEVICE AND ITS CALL SITES ----
 //
-// WHICH DEVICE METHODS THE ENGINE ACTUALLY CALLS, typed rather than pattern-matched. Extracted by tracking
+// WHICH DEVICE METHODS THE ENGINE IS SEEN TO CALL -- CANDIDATES, NOT A CENSUS. Extracted by tracking
 // the two-hop the engine emits -- `mov R, g_Renderer` (device), `mov R2, [R]` (its vtable),
 // `call [R2+off]` -- across all 90 functions that read the global. Because the receiver is pinned to
 // g_Renderer, an unrelated object's member offset cannot masquerade as a D3D method, which is what ruined two
@@ -1198,18 +1198,24 @@ class CClientMgrCounterNode 0x40 {
 //   CreateDepthStencilSurface, GetFrontBufferData, ColorFill, GetViewport, GetClipPlane,
 //   GetSamplerState, SetScissorRect, CreateVertexDeclaration 1 each
 //
-// THE ABSENCES MATTER MORE THAN THE COUNTS. Through this pattern the engine never calls Present,
-// BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF. Those exist in a D3D9
-// device and this game plainly presents frames, so they are reached from a device pointer held SOMEWHERE
-// ELSE -- cached in a member or a local rather than reloaded from the global. Finding that cache is what a
-// stereo path needs, and it is the open question this pass leaves.
+// NO ABSENCE MAY BE CONCLUDED FROM THIS, and an earlier draft of this note did exactly that. The tracker
+// finds no Present, BeginScene, EndScene, SetTransform, SetVertexShader or SetVertexShaderConstantF -- but it
+// has a MEASURED false-negative rate, and its one known miss is a CACHED-VTABLE pattern
+// (`v22 = *g_Renderer` ... `call [eax+9Ch]`), which is precisely the shape a cached device pointer would take.
+// The tool's blind spot is aligned with the very thing the absence was about, so "not found" here carries no
+// information about those methods. Where Present and the shader constants are called remains OPEN and
+// untouched by this pass.
 //
-// TOOL CALIBRATION, because the tracker is candidate generation and not proof: run against sub_615CC1, whose
-// seven device methods were read by hand from its decompilation first, the linear tracker recovers all seven
-// with NO false positives. A stricter variant that clears tracked registers at calls and branches LOSES one
-// true positive (SetDepthStencilSurface), since this function reloads g_Renderer per call -- so the
-// conservative form under-reports and was not adopted. Register aliases, spills and clobbers can still
-// produce misses elsewhere, which makes these counts a floor rather than a census.
+// TOOL CALIBRATION, and it is weaker than a first look suggested. Against sub_615CC1 the tracker recovers 10
+// of the 11 device calls actually present -- a 7-of-7 figure quoted earlier compared DISTINCT OFFSETS and hid
+// the repeats that a save/set/restore flow produces. The single miss is at 0x615DDC, where the vtable had been
+// cached in a local and the receiver reloaded separately.
+//
+// So: one function validated, one false negative measured, no bound on false positives anywhere else, and the
+// tracker carries register state across calls and branches, which is unsound in principle -- a call clobbers
+// eax/ecx/edx. A stricter variant that clears state at those boundaries loses a DIFFERENT true positive, which
+// says its transfer rules are also wrong, not that linear tracking is right. Treat every count below as a
+// candidate needing per-function reading, and do not lean on "66 SetRenderState calls" as a measurement.
 
 //
 // g_Renderer (exe+0x32E118, absolute 0x0072E118) holds the IDirect3DDevice9 POINTER. shared/sdk/Render.cpp
