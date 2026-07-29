@@ -1180,10 +1180,42 @@ class CClientMgrCounterNode 0x40 {
 
 // ---- THE ENGINE'S POLYMORPHIC CLASSES, FROM THEIR OWN SLOT 1 ----
 //
-// VERIFIED LIVE (2026-07), ALL 30 OF 30: every table in this index was read in the running process and each
-// one's slot 1 returned exactly the class name recorded here. So these are the tables the engine actually
-// uses, not merely pointer runs that look like vtables. (A first pass sampled 15; the remaining 15 were
-// checked rather than left implied, since "15/15" of a 30-entry index invites reading as full coverage.)
+// VERIFIED LIVE (2026-07) IN TWO SEPARATE SENSES, because the weaker one is easy to mistake for the stronger.
+//
+//   IDENTITY, 30 of 30: every table in this index was read in the running process and each one's slot 1
+//   returned exactly the class name recorded here. That confirms content and relocation -- nothing more. A
+//   first pass sampled 15 and was written up as "15/15", which reads as full coverage of a 30-entry index;
+//   the other 15 were then checked rather than the sentence reworded.
+//
+//   USE, 27 of 29: reading a table's bytes says nothing about anything USING it. Each table also has an
+//   aligned data slot holding its address, but such a slot could be a registry entry or a plain table
+//   pointer rather than an object's vptr -- so the slots were CLASSIFIED against the engine's own interface
+//   registry, which publishes the object pointer for each interface name. 27 slots are exactly a registry
+//   object's address, which makes them objects whose vptr sits at +0x00, and in every case the registry's
+//   INTERFACE name pairs with the class name the vtable reports for ITSELF:
+//
+//     ILTClient.Default -> CLTClient            ILTServer.Default -> CLTServer
+//     ILTModel.Client -> CLTModelClient         ILTModel.Server -> CLTModelServer
+//     ILTCommon.Client -> CLTCommonClient       ILTCommon.Server -> CLTCommonServer
+//     ILTPhysics.Client -> CLTPhysicsClient     ILTPhysics.Server -> CLTPhysicsServer
+//     ILTTimer.Client -> CLTTimerClient         ILTTimer.Server -> CLTTimerServer
+//     ILTSoundMgr.Client -> CSoundMgr           ILTSoundMgr.Server -> CLTSoundMgrServer
+//     ILTInput.Default -> CLTInput              ILTCursor.Default -> CLTCursor
+//     ILTUI.Default -> CLTUI                    ILTRenderer.Default -> CLTRenderer
+//     ILTCustomRender.Default -> CWin32CustomRender
+//     ILTTextureMgr.Default -> CLTTextureMgr    ILTTextureString.Default -> CLTTextureString
+//     ILTVideoTexture.Default -> CLTVideoTexture
+//     ILTFileMgr.Default -> CLTFileMgr          ILTResourceMgr.Default -> CLTResourceMgr
+//     ILTLoadingProgress.Default -> CLTLoadingProgress
+//     ILTClientContentTransfer.Default -> ILTClientContentTransfer
+//     ILTServerContentTransfer.Default -> ILTServerContentTransfer
+//     ICompress.Default -> CCompress
+//     IWorldParticleBlockerData.Default -> CWorldParticleBlockerData
+//
+//   THE TWO LEFT UNCLASSIFIED are CLTGameUtil (slot 0x6EBCE8) and ILTOnlineService (0x6E5704): their
+//   registry entries exist but no registry object sits at those addresses in this state, so the slots stay
+//   unexplained rather than assumed to be vptrs. CLTTimer has no data slot at all, consistent with a base
+//   whose vptr is only installed by code -- CLTTimerClient and CLTTimerServer are its 22-entry siblings.
 //
 // NO RTTI ON ANY OF THEM, and that is now measured rather than inferred from one sample: the image holds 206
 // type descriptors, of which 5 are std::/CRT and the other 201 are ALL Havok (hk*, hkp*). So FEAR 2 ships

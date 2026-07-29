@@ -972,6 +972,15 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   fix was to check the other 15 rather than to reword the claim -- the denominator was a sentence away from
   being real, which is the cheapest kind of gap to close.
   
+  Then the claim itself needed splitting, because "the engine uses these tables" is not what reading a table
+  shows. Reading slot 1 in the live process proves CONTENT AND RELOCATION. Use needs an object, so each
+  table's data slot was CLASSIFIED against the engine's own interface registry, which publishes the object
+  pointer per interface name: 27 of 29 slots are exactly a registry object's address, hence objects with a
+  vptr at +0x00, and every one pairs the registry's INTERFACE name with the class name the vtable gives for
+  ITSELF. An aligned dword holding a table address could equally be a registry entry or a table pointer --
+  reading it back later only proves the pointer is still there, which is why the classification had to come
+  from a different mechanism rather than from a second read.
+  
 - **RTTI IN THIS BINARY IS HAVOK'S, NOT LITHTECH'S.** 206 type descriptors: 5 std::/CRT, 201 all hk*/hkp*.
   Earlier I concluded "this class has no RTTI" from one [vt-4] sample and noted the image did carry
   descriptors, which left the door open to per-class variation. Counting closes it: no engine class has RTTI,
