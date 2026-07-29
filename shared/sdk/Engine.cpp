@@ -6,6 +6,8 @@
 
 #include "Log.hpp"
 #include "Modules.hpp"
+#include "CClientMgr.hpp"
+#include "regenny/regenny/LTConVar.hpp"
 
 namespace sdk {
 
@@ -173,3 +175,136 @@ std::optional<Engine::ForceVector> Engine::global_force() {
 }
 
 } // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD copy of one record, taken under the guard; the two strings are copied by the
+// caller so the guard never holds a type with a destructor.
+struct ConVarRaw {
+    float value;
+    uint32_t hash;
+    const char* name_ptr;
+    const char* text_ptr;
+    const void* next;
+    bool ok;
+};
+
+// `link` points at a record's +0x04, so the record base is link - 4. That offset is the
+// engine's own: ConVarTable_FindInBucket ends with `return link - 4`.
+ConVarRaw seh_convar(const void* link) {
+    ConVarRaw r{};
+    KANANLIB_SEH_TRY {
+        const auto* rec = reinterpret_cast<const regenny::LTConVar*>(
+            reinterpret_cast<uintptr_t>(link) - 4);
+        r.value = rec->value;
+        r.hash = rec->name_hash;
+        r.name_ptr = rec->name;
+        r.text_ptr = rec->string_value;
+        r.next = rec->link.next;
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+// Copy a NUL-terminated engine string into a caller buffer. POD only, no unwinding
+// objects in scope: MSVC refuses __try in a function that must unwind one (C2712), so
+// the std::string is built by the caller.
+bool seh_copy_str(const char* src, char* dst, size_t cap) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        if (src != nullptr && cap > 0) {
+            size_t i = 0;
+            for (; i + 1 < cap; ++i) {
+                const char c = src[i];
+                if (c == '\0') {
+                    break;
+                }
+                dst[i] = c;
+            }
+            dst[i] = '\0';
+            ok = true;
+        }
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
+}
+
+// The bucket head's next pointer, read under its own guard for the same reason.
+bool seh_bucket_next(const void* head, const void** out) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        *out = static_cast<const regenny::CClientMgrListLink*>(head)->next;
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
+}
+
+constexpr size_t kConVarBuckets = 128;
+// A bucket of 5 is the longest seen live; this cap is for a torn chain, not a long one.
+constexpr size_t kMaxChain = 256;
+
+}  // namespace
+
+std::vector<Engine::ConVar> Engine::console_vars() {
+    std::vector<ConVar> out;
+    CClientMgr* mgr = CClientMgr::get();
+    if (mgr == nullptr) {
+        return out;
+    }
+    auto* table = &mgr->regenny()->console_vars;
+    for (size_t b = 0; b < kConVarBuckets; ++b) {
+        const void* headp = &table->buckets[b];
+        const void* cur = nullptr;
+        if (!seh_bucket_next(headp, &cur)) {
+            continue;
+        }
+        size_t n = 0;
+        while (cur != nullptr && cur != headp && n < kMaxChain) {
+            const ConVarRaw r = seh_convar(cur);
+            if (!r.ok) {
+                break;
+            }
+            char nbuf[128]{};
+            char tbuf[128]{};
+            const bool have_name = seh_copy_str(r.name_ptr, nbuf, sizeof(nbuf));
+            seh_copy_str(r.text_ptr, tbuf, sizeof(tbuf));
+            ConVar v{};
+            v.name = have_name ? nbuf : "";
+            v.value = r.value;
+            v.text = tbuf;
+            if (!v.name.empty()) {
+                out.push_back(std::move(v));
+            }
+            cur = r.next;
+            ++n;
+        }
+    }
+    return out;
+}
+
+std::optional<Engine::ConVar> Engine::console_var(const char* name) {
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    // A linear scan of the enumeration rather than a hash probe: reproducing the
+    // engine's hash here would add a second implementation of String_HashI for no gain,
+    // and the table is 192 entries.
+    for (auto& v : console_vars()) {
+        if (_stricmp(v.name.c_str(), name) == 0) {
+            return v;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace sdk

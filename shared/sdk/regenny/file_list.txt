@@ -12,6 +12,8 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTWorldTreeLink.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTWorldTreeNode.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrPtrVector.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTConVar.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTConVarTable.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTVector.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTRotation.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTSpatialEntry.hpp" \

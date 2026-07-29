@@ -2,12 +2,13 @@
 #include "CClientMgrListLink.hpp"
 #include "CClientMgrObjectBank.hpp"
 #include "CClientMgrPtrVector.hpp"
+#include "LTConVarTable.hpp"
 #include "LTObjectHandleTable.hpp"
 namespace regenny {
-class CClientShell;
+class CClientMgrCounterNode;
 }
 namespace regenny {
-class CClientMgrCounterNode;
+class CClientShell;
 }
 namespace regenny {
 #pragma pack(push, 1)
@@ -16,7 +17,8 @@ public:
     regenny::CClientMgrListLink object_lists[7]; // 0x0
     regenny::CClientMgrObjectBank object_banks[6]; // 0x38
     regenny::CClientMgrPtrVector unk_68; // 0x68
-    private: char pad_74[0x470]; public:
+    private: char pad_74[0x4c]; public:
+    regenny::LTConVarTable console_vars; // 0xc0
     void* unk_4E4; // 0x4e4
     private: char pad_4e8[0xf04]; public:
     regenny::CClientMgrListLink counter_list_head; // 0x13ec

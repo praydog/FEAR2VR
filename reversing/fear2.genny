@@ -340,6 +340,39 @@ class CClientMgrPtrVector 0xC {
     void** end      @0x08   // CONFIRMED via size() (dump 0x61C92C)
 }
 
+// One CONSOLE VARIABLE. Mapped entirely from the engine's own accessors, and the
+// record base is offset from the link -- which is the only fiddly part.
+//
+// CLTClient_GetSConValueFloat reads `*(float*)rec` and GetSConValueString reads
+// `*(char**)(rec + 20)`, where rec comes from ConVarTable_FindInBucket, whose last act
+// is `return link - 4`. So the intrusive link sits at record+0x04 and everything else
+// is placed around it.
+//
+// Live: 192 entries across the table, 191 with a non-empty name -- Spawn_Debug,
+// PhysicsExplosionForce, PhysicsBulletForce, MotionBlur_PassCount, HDR_ToneMapExponent,
+// HDR_Blur, BodyCapRadius, AddAmbientLightHigh, DetailWMMaxRadialCheckPerFrame. These
+// are the engine's and game's tunables.
+class LTConVar 0x18 {
+    float value              @0x00   // CONFIRMED: GetSConValueFloat returns exactly this. Live it agrees with the string form on every entry that has one.
+    CClientMgrListLink link  @0x04   // CONFIRMED the bucket's intrusive link, and the reason record != link: the finder walks `link = link->next` and hands back `link - 4`.
+    uint32_t name_hash       @0x0C   // CONFIRMED the CASE-INSENSITIVE name hash the finder compares before the string compare, and it is the SAME String_HashI already mapped for skeleton node names -- reimplemented against this table it reproduces all 191 stored values exactly. It also selects the bucket: `hash & 0x7F` equalled the containing bucket index on 191/191, no exceptions.
+    char* name               @0x10   // CONFIRMED the variable's name, from the finder's own String_EqualsI argument
+    char* string_value       @0x14   // CONFIRMED: GetSConValueString copies the string at this offset. Live most entries hold a formatted copy of `value`; some hold nothing while `value` is meaningful, so prefer the float unless the text is wanted.
+}
+
+// The console-variable HASH TABLE: 128 buckets of one link pair each.
+//
+// The bucket count is the engine's, straight out of `link = base + 8 * (hash & 0x7F)`.
+// The BASE is two hops: callers pass `g_pClientMgr + 0xC0` to ConVarTable_Find, which
+// adds 0x24 before walking -- so the buckets live at CClientMgr+0xE4 and the array ends
+// at 0xC0 + 0x24 + 0x400 == 0x4E4, exactly where the next mapped CClientMgr field
+// starts. That adjacency is what pins the size.
+//
+// Live 28 of the 128 buckets are empty and the longest chain is 5.
+class LTConVarTable 0x424 {
+    CClientMgrListLink buckets[128] @0x24   // CONFIRMED: 128 link pairs, self-pointing when empty. Everything below +0x24 is unmapped -- no accessor read so far touches it.
+}
+
 // Object type. The VALUE SPACE is confirmed: CClientMgr.object_lists has
 // exactly 7 buckets (0..6), every object's .type equals its bucket index
 // (0 mismatches / 3490 live objects, single traversal), and each bucket
@@ -1302,6 +1335,7 @@ class CClientMgr 0x1468 {
     uint32_t last_sample_time_ms             @0x1400   // CONFIRMED milliseconds. CClientMgr::Update computes `sub_409FD0(now - this->last_sample_time_ms)` with now = dump 0x60AAF2 (dump 0x40B6AD/0x40B6C6), and sub_409FD0 divides that delta by exactly 1000.0 (dbl_66E738) to get seconds -- so this field's unit is ms. Live: advanced 1672342 -> 1673346 (delta 1004) across ~1.00s of wall clock, i.e. tracks real time 1:1 and is re-sampled continuously. The instruction that writes it was NOT located in the functions read so far.
     LTObjectHandleTable handle_table         @0x1414   // CONFIRMED the engine's HOBJECT -> object map, indexed directly by LTObject.handle. CClientMgr_RegisterObjectHandle (0x40BEC2) writes {1, obj} at index `handle` during CClientMgr_CreateObject, growing the vector when the handle exceeds its size. Live: 7719 slots of which 3248 are tagged live, and for EVERY object carrying a handle, table[handle].object is that object -- 3248/3248, zero mismatches, all seven buckets. The other 335 objects hold handle 0xFFFF, exactly the same 335 that hold slot_index 0xFFFFFFFF. This is how a mod turns an HOBJECT from any ILT* call back into an object, and why no module global holds an object pointer: the engine passes indices, not addresses.
     float unk_1424                           @0x1424   // unverified float. Live: advances while the engine runs, but NOT by whole numbers and NOT at a fixed rate -- observed +168.000 over ~1.0s in one sample and +21.987 over ~2.0s in another. RETRACTED HYPOTHESIS: dump 0x409FD0 does `*(float*)(<ecx>+0x1424) += 1.0` (dbl_66EDF0 == 1.0), and this field was briefly named frame_counter on that basis. That was WRONG: the decompiler never established that 0x409FD0's ecx is CClientMgr, and the non-integral live deltas here disprove it -- either that function operates on a different object, or something else writes this field. Offset/type are sound (read as a float that changes); the meaning is not.
+    LTConVarTable console_vars               @0xC0     // CONFIRMED the CONSOLE VARIABLE table (see LTConVarTable): CLTClient_GetSConValueFloat and GetSConValueString both pass `g_pClientMgr + 0xC0` to ConVarTable_Find, which adds 0x24 to reach the 128 buckets. Live 192 entries. The class size ends at 0x4E4, exactly where unk_4E4 begins -- so the span is pinned by adjacency at both ends rather than assumed.
     uint16_t last_sent_bandwidth             @0x1430   // CONFIRMED == clamp(BandwidthTargetClient/8000, 0, 0xFFFF); live 256000/8000 == 32 == field
     CClientShell* client_shell               @0x1434   // CONFIRMED the client shell instance; 25 functions reach it through this displacement and its small accessors are what mapped the class (see CClientShell). Live 0x5F87030 with vtable 0x66F9E8.
     void* pending_shell_release              @0x1438   // CONFIRMED deferred-destruction slot; see the class comment. Set only when `updating`, consumed at the end of CClientMgr::Update.

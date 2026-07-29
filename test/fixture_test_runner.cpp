@@ -644,6 +644,29 @@ int main(int argc, char** argv) {
                   "global_force components are finite and of sane magnitude");
             printf("[fixture] global force (0,-980,0 live): (%.1f, %.1f, %.1f)\n", fx, fy, fz);
         }
+
+        // ---- CONSOLE VARIABLES -----------------------------------------------------
+        //
+        // The table walk and the by-name lookup are separate claims, so both are
+        // checked. The lookup test uses names the TABLE reported, upper-cased -- not a
+        // hardcoded variable -- so it holds whatever a given build registers.
+        int64_t cvc = -1, cvn = -1, cvp = -1, cvr = -1;
+        json_int(body, "convar_count", cvc);
+        json_int(body, "convar_named", cvn);
+        json_int(body, "convar_probed", cvp);
+        json_int(body, "convar_roundtrip", cvr);
+        check(cvc > 0, "the console-variable table walks and yields entries");
+        // Every entry the API returns carries a name -- it filters nameless records,
+        // and this guards that filter rather than restating it.
+        check(cvn == cvc, "every returned console variable has a name");
+        check(cvp > 0, "console variables were probed by name");
+        // The load-bearing one: name AND value must both come back, case-insensitively.
+        check(cvr == cvp,
+              "EVERY probed console variable is found again by its UPPER-CASED name "
+              "with the same value");
+        printf("[fixture] console variables: %lld entries, %lld/%lld name round-trips\n",
+               static_cast<long long>(cvc), static_cast<long long>(cvr),
+               static_cast<long long>(cvp));
     }
 
     // 5b1. /sdk/models: the CONSUMER API, tested the way a mod uses it.

@@ -249,6 +249,38 @@ std::string build_targets_json() {
     const auto shell_game = sdk::CClientShell::game_time_seconds();
     const auto shell_real = sdk::CClientShell::real_time_seconds();
     const auto force = sdk::Engine::global_force();
+    // Enumerated ONCE: the walk touches 128 buckets, and a mod asking twice would get
+    // two different instants of a table the engine mutates.
+    const auto convars = sdk::Engine::console_vars();
+    size_t convars_named = 0;
+    for (const auto& cv : convars) {
+        if (!cv.name.empty()) {
+            ++convars_named;
+        }
+    }
+    // ROUND TRIP, and deliberately not against a hardcoded name: take variables the
+    // table itself reported, upper-case them, and require the lookup to find each one
+    // with the same value. That tests the case-insensitive path without assuming which
+    // variables a given build registers. Capped at 8 because each lookup re-walks all
+    // 128 buckets.
+    size_t convar_roundtrip = 0, convar_probed = 0;
+    for (const auto& cv : convars) {
+        if (convar_probed >= 8) {
+            break;
+        }
+        if (cv.name.empty()) {
+            continue;
+        }
+        ++convar_probed;
+        std::string up = cv.name;
+        for (auto& c : up) {
+            c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+        }
+        const auto hit = sdk::Engine::console_var(up.c_str());
+        if (hit.has_value() && hit->name == cv.name && hit->value == cv.value) {
+            ++convar_roundtrip;
+        }
+    }
 
     // start_shell_list_count is std::optional: nullopt means the SDK's own
     // walk did NOT terminate (corrupt list / wrong mapping) or faulted.
@@ -278,7 +310,12 @@ std::string build_targets_json() {
              // KEEPS RUNNING while the game is paused -- the distinction a VR mod
              "\"shell_game_time\":%f,\"shell_real_time\":%f,\"shell_clocks_ok\":%s,"
              "\"local_client_count\":%d,\"local_client_0\":%d,\"frame_interval\":%f,"
-             "\"global_force\":[%f,%f,%f],\"global_force_ok\":%s}",
+             "\"global_force\":[%f,%f,%f],\"global_force_ok\":%s,"
+             // The console-variable table, walked the way a mod would. A NAMED probe is
+             // included because "the table has entries" and "I can find the one I want"
+             // are different claims.
+             "\"convar_count\":%zu,\"convar_named\":%zu,\"convar_probed\":%zu,"
+             "\"convar_roundtrip\":%zu}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -313,7 +350,8 @@ std::string build_targets_json() {
              force.value_or(sdk::Engine::ForceVector{}).x,
              force.value_or(sdk::Engine::ForceVector{}).y,
              force.value_or(sdk::Engine::ForceVector{}).z,
-             force.has_value() ? "true" : "false");
+             force.has_value() ? "true" : "false",
+             convars.size(), convars_named, convar_probed, convar_roundtrip);
     return buf;
 }
 

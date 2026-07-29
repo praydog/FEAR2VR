@@ -963,6 +963,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A reimplemented PRIMITIVE gets re-validated free in every later subsystem, so
+  reimplement rather than call.** `String_HashI` was reversed several passes ago for
+  skeleton node-name hashes -- `h = 0; h = g_HashCharTable[c] + 919*h` over a 256-byte
+  remap table -- and reproducing all 660 stored hashes was the evidence then.
+
+  The console-variable table turned out to key on the SAME function. Reusing the
+  reimplementation reproduced all 191 stored hashes there too, and `hash & 0x7F`
+  landed in the containing bucket on 191/191. Two unrelated subsystems, one function,
+  zero mismatches -- which is far better evidence for the hash than either table alone,
+  and it cost nothing because the code already existed.
+
+  The general point: when a primitive is small enough to transcribe, transcribing it
+  buys a cross-check every time it reappears. Calling into the engine's copy instead
+  proves only that the engine agrees with itself. (The counterweight is real, and the
+  transform math this project transcribes is the example: copy TERM FOR TERM when a
+  convention is involved, because a rederived quaternion product can be self-consistent
+  and still disagree with the engine.)
 - **Two caches of the same shape can hold different SPACES. Check before composing.**
   A model carries two per-node transform arrays behind a mode selector, and an earlier
   pass mapped both as "the per-node transform cache" -- correct about the layout and

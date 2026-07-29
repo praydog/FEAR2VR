@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <vector>
 
 // Engine-level (binary-global) entry points of the FEAR2 client engine,
 // i.e. the things that belong to FEAR2.exe itself rather than to any object.
@@ -71,6 +73,34 @@ public:
 
     // nullopt when the getter could not be located or the call faulted.
     static std::optional<ForceVector> global_force();
+
+    // ---- CONSOLE VARIABLES -------------------------------------------------------
+    //
+    // The engine's tunables, by name. Live there are 192 of them, including
+    // HDR_ToneMapExponent, HDR_Blur, MotionBlur_PassCount, PhysicsBulletForce,
+    // PhysicsExplosionForce, BodyCapRadius and AddAmbientLightHigh -- which makes this
+    // the widest read surface a mod has without hooking anything.
+    //
+    // Reached the way the engine reaches it: a 128-bucket hash table on CClientMgr,
+    // keyed by the SAME case-insensitive hash already mapped for skeleton node names
+    // (reimplementing it reproduced all 191 stored hashes exactly). Lookup is therefore
+    // case-insensitive, as the engine's own is.
+    struct ConVar {
+        std::string name;
+        // The engine's float. GetSConValueFloat returns exactly this.
+        float value;
+        // The text form. Usually a formatted copy of `value`, but some entries carry no
+        // string at all while `value` is meaningful -- so prefer `value` unless the text
+        // is specifically wanted. Empty when the entry has none.
+        std::string text;
+    };
+
+    // Case-insensitive, matching the engine. nullopt when no such variable exists.
+    static std::optional<ConVar> console_var(const char* name);
+
+    // Every variable in the table, in bucket order. The walk is bounded and
+    // cycle-checked: it reads a live structure the engine mutates.
+    static std::vector<ConVar> console_vars();
 };
 
 } // namespace sdk
