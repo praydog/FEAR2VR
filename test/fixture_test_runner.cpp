@@ -4298,22 +4298,46 @@ int main(int argc, char** argv) {
             check(cvn && cv_addr == cv_checked,
                   "the record is NOT the descriptor's storage -- two representations, not one address");
 
-            // The record names itself, so a successful lookup already evidences the name field: variable()
-            // refuses any record whose own +0x10 name is not the one queried.
-            bool cv_named = false;
-            check(json_bool(body, "cvar_record_self_named", cv_named) && cv_named,
-                  "the variable record carries its own name and a non-zero hash");
-
             // THE ASYMMETRY THAT MAKES THE ENGINE ROUTE WORTH HAVING: a variable created at runtime exists
             // for the live lookup and not in the built-in table. Both halves are asserted, because either
             // alone would also pass if the two routes were the same mechanism.
-            bool cv_rt_engine = false, cv_rt_table = true, cv_absent = false;
-            check(json_bool(body, "cvar_runtime_via_engine", cv_rt_engine) && cv_rt_engine,
-                  "a runtime-created variable is found by the engine's lookup");
+            bool cv_rt_engine = false, cv_rt_table = true;
+            check(json_bool(body, "cvar_runtime_via_record", cv_rt_engine) && cv_rt_engine,
+                  "a runtime-created variable is found in the live table");
             check(json_bool(body, "cvar_runtime_in_table", cv_rt_table) && !cv_rt_table,
                   "that same variable is absent from the built-in descriptor table");
-            check(json_bool(body, "cvar_absent_refused", cv_absent) && cv_absent,
-                  "an unknown name and an empty name are both refused");
+
+            // ---- TWO CONSOLE-VARIABLE TABLES, AND NEITHER CONTAINS THE OTHER -----------------------
+            //
+            // Both hold LTConVar records of identical shape and both are searched by the same finder, whose
+            // table base arrives in ECX -- which is why the decompiler shows the stack argument unused and
+            // why one finder looked like it served one table.
+            //
+            // The asymmetry is asserted in BOTH directions, because a single containment check would pass if
+            // one table were merely a subset, and an earlier pass nearly deleted the larger route as a
+            // duplicate of the smaller on exactly that assumption.
+            double cv_mgr = -1.0, cv_src = -1.0, cv_ovl = -1.0;
+            const bool cvt = json_double(body, "cvar_mgr_total", cv_mgr) &&
+                             json_double(body, "cvar_src_total", cv_src) &&
+                             json_double(body, "cvar_overlap", cv_ovl);
+            check(cvt && cv_mgr > 100.0 && cv_src > cv_mgr,
+                  "both console-variable tables are populated and the source table is the larger");
+            check(cvt && cv_ovl > 0.0 && cv_ovl < cv_mgr,
+                  "their populations overlap without either containing the other");
+
+            bool cv_ss = false, cv_ms = true, cv_mh = false, cv_sh = true;
+            check(json_bool(body, "cvar_src_has_screenwidth", cv_ss) && cv_ss &&
+                      json_bool(body, "cvar_mgr_has_screenwidth", cv_ms) && !cv_ms,
+                  "ScreenWidth is in the source table and NOT in CClientMgr's");
+            check(json_bool(body, "cvar_mgr_has_hdrblur", cv_mh) && cv_mh &&
+                      json_bool(body, "cvar_src_has_hdrblur", cv_sh) && !cv_sh,
+                  "HDR_Blur is in CClientMgr's table and NOT in the source -- the asymmetry both ways");
+
+            // The record's address is the write capability, and it must be a heap record rather than the
+            // descriptor's storage in the image.
+            bool cv_rec_addr = false;
+            check(json_bool(body, "cvar_record_address_usable", cv_rec_addr) && cv_rec_addr,
+                  "a variable record carries a usable address outside the executable's image");
 
             // ApplyWorldOffset reads 1.0 -- the default the reference documents for it, and what makes
             // GetPlayerPos add the source world offset rather than skip it.

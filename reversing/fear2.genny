@@ -4543,3 +4543,44 @@ class LTInputDeviceMouse 0x30 {
 // EXPOSED AS sdk::PlayerMgr: manager, the four slots and first-occupied semantics the game's own commands
 // use, the holder pose (validated by the unit-quaternion test rather than trusted), both engine objects,
 // is_server_backed, eye_offset and anchor_rotation_matches_pose. 977 checks.
+
+// ---- THERE ARE TWO CONSOLE-VARIABLE TABLES, AND I ALMOST DELETED THE BIGGER ONE --------------------
+//
+// LTConVar and LTConVarTable were mapped in an earlier pass off CClientMgr+0xC0, recorded as "live 192
+// entries", and the SDK comment called that "the widest read surface a mod has without hooking anything".
+//
+// A SECOND TABLE OF THE SAME SHAPE HOLDS 535 ENTRIES. Its bucket array is at the console source block +0x24 --
+// the same +0x24 LTConVarTable uses -- and it is what ILTClient's public lookup (slot 69) searches:
+//
+//     console source + 0x24     535   ScreenWidth, ApplyWorldOffset, WeaponLagReversed, ArsenalSelectRelease*
+//     CClientMgr + 0xC0 + 0x24  192   HDR_Blur, Spawn_Debug, HealScale, MotionBlur_PassCount
+//
+// 47 names appear in BOTH and NEITHER CONTAINS THE OTHER -- asserted in both directions, because a single
+// containment check would pass if one were merely a subset. ScreenWidth is absent from CClientMgr's table;
+// HDR_Blur is absent from the source's.
+//
+// ONE FINDER SERVES BOTH, and the reason it looked otherwise is a decompiler artefact worth remembering:
+// ConVarTable_FindInBucket is __thiscall and takes the bucket base in ECX. It is reached through
+// ConVarTable_Find -> ConVarTable_FindHashed, both of which Hex-Rays types as ordinary stack-argument
+// functions, so `ConVarTable_Find(table, name)` decompiles to `return ConVarTable_FindHashed(name)` and the
+// table argument reads as DEAD. It is not: it is in ECX and flows through untouched.
+//
+// > I read that dropped argument as evidence there was one global table, concluded my slot-69 lookup
+// > duplicated the existing walk, and deleted it. The measurement that should have come first -- walk both
+// > bases and count -- took one call and showed 535 against 192.
+//
+// The walk is now shared: one implementation taking a bucket base, exposed as Engine::console_vars (192),
+// Engine::console_source_vars (535) and Engine::all_console_vars. Engine::console_var searches both, which is
+// what restored ScreenWidth lookups -- while the deletion was in place they silently returned nothing, and
+// the suite caught that as 0 of 3 route agreements rather than as an error.
+//
+// ConVar records now carry their ADDRESS, which is the write capability: the first field is the float the
+// engine reads, so changing a tunable is a four-byte store rather than a setter call.
+//
+// AND A SEPARATE SELF-INFLICTED BREAK, recorded because the recovery mattered more than the mistake: rewiring
+// the console block spliced a region by its start and end comments, and the PlayerMgr endpoint block had been
+// inserted BETWEEN them. All eighteen of its keys vanished. The suite reported sixteen failures in one
+// contiguous group, which pointed at the cause immediately -- a wide splice keyed on surrounding text deletes
+// whatever moved in between.
+//
+// 980 checks, 0 failures.

@@ -76,16 +76,32 @@ public:
 
     // ---- CONSOLE VARIABLES -------------------------------------------------------
     //
-    // The engine's tunables, by name. Live there are 192 of them, including
-    // HDR_ToneMapExponent, HDR_Blur, MotionBlur_PassCount, PhysicsBulletForce,
-    // PhysicsExplosionForce, BodyCapRadius and AddAmbientLightHigh -- which makes this
-    // the widest read surface a mod has without hooking anything.
+    // The engine's tunables, by name, out of a 128-bucket hash table keyed by the SAME case-insensitive
+    // hash already mapped for skeleton node names (reimplementing it reproduced all 191 stored hashes
+    // exactly). Lookup is therefore case-insensitive, as the engine's own is.
     //
-    // Reached the way the engine reaches it: a 128-bucket hash table on CClientMgr,
-    // keyed by the SAME case-insensitive hash already mapped for skeleton node names
-    // (reimplementing it reproduced all 191 stored hashes exactly). Lookup is therefore
-    // case-insensitive, as the engine's own is.
+    // THERE ARE TWO OF THESE TABLES, and an earlier version of this comment claimed the CClientMgr one was
+    // "the widest read surface a mod has". It is the smaller of the two:
+    //
+    //     CClientMgr + 0xC0     192 entries   HDR_Blur, Spawn_Debug, HealScale, MotionBlur_PassCount
+    //     console source        535 entries   ScreenWidth, ApplyWorldOffset, WeaponLagReversed
+    //
+    // Both hold LTConVar records of identical shape and both are searched by the same ConVarTable_Find --
+    // the table base arrives in ECX, which is why the decompiler shows the stack argument as unused and why
+    // one finder appears to serve one table. The populations OVERLAP but neither contains the other
+    // (PRBForceCP is in both; ScreenWidth only in the source table; HDR_Blur only in CClientMgr's).
+    //
+    // So a consumer asking "does this build have setting X" must ask BOTH, which is what console_var does.
     struct ConVar {
+        // THE RECORD'S ADDRESS, which is what makes a variable writable: its first field IS the float the
+        // engine reads, so a consumer that wants to change a tunable stores four bytes here rather than
+        // going through a setter. Also the identity a caller should cache -- the records outlive lookups,
+        // while a name search does not.
+        //
+        // This is the same pointer ILTClient's public lookup returns (see sdk::Console for that entry
+        // point): slot 69 hands back an LTConVar* and slot 71 is nothing but `*(float*)record`.
+        uintptr_t address{};
+
         std::string name;
         // The engine's float. GetSConValueFloat returns exactly this.
         float value;
@@ -95,12 +111,21 @@ public:
         std::string text;
     };
 
-    // Case-insensitive, matching the engine. nullopt when no such variable exists.
+    // Case-insensitive, matching the engine. Searches the console source table first and then CClientMgr's,
+    // because a name can be in either and only the pair covers the build. nullopt when it is in neither.
     static std::optional<ConVar> console_var(const char* name);
 
-    // Every variable in the table, in bucket order. The walk is bounded and
-    // cycle-checked: it reads a live structure the engine mutates.
+    // CClientMgr's table (192 live), in bucket order. The walk is bounded and cycle-checked: it reads a
+    // live structure the engine mutates.
     static std::vector<ConVar> console_vars();
+
+    // The console SOURCE table (535 live) -- the larger population, and the one the engine's own public
+    // ILTClient lookup searches. Same record type, same walk, different base.
+    static std::vector<ConVar> console_source_vars();
+
+    // Both tables, source first. What a consumer wanting "every tunable this build has" should call; names
+    // present in both appear twice, deliberately, since the two records are distinct objects.
+    static std::vector<ConVar> all_console_vars();
 };
 
 } // namespace sdk

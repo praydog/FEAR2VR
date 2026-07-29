@@ -158,6 +158,7 @@ namespace {
 // POD copy of one record, taken under the guard; the two strings are copied by the
 // caller so the guard never holds a type with a destructor.
 struct ConVarRaw {
+    uintptr_t address;
     float value;
     uint32_t hash;
     const char* name_ptr;
@@ -174,6 +175,7 @@ ConVarRaw seh_convar(const void* link) {
     if (!rec.has_value()) {
         return r;
     }
+    r.address = reinterpret_cast<uintptr_t>(link) - 4;
     r.value = rec->value;
     r.hash = rec->name_hash;
     r.name_ptr = rec->name;
@@ -222,15 +224,17 @@ constexpr size_t kMaxChain = 256;
 
 }  // namespace
 
-std::vector<Engine::ConVar> Engine::console_vars() {
-    std::vector<ConVar> out;
-    CClientMgr* mgr = CClientMgr::get();
-    if (mgr == nullptr) {
+namespace {
+
+// Walk one 128-bucket LTConVar table from its BUCKET ARRAY base. Both tables have identical shape, so this
+// is shared rather than written twice.
+std::vector<Engine::ConVar> walk_convar_table(uintptr_t buckets) {
+    std::vector<Engine::ConVar> out;
+    if (buckets == 0) {
         return out;
     }
-    auto* table = &mgr->regenny()->console_vars;
     for (size_t b = 0; b < kConVarBuckets; ++b) {
-        const void* headp = &table->buckets[b];
+        const void* headp = reinterpret_cast<const void*>(buckets + b * 8);
         const void* cur = nullptr;
         if (!seh_bucket_next(headp, &cur)) {
             continue;
@@ -245,7 +249,8 @@ std::vector<Engine::ConVar> Engine::console_vars() {
             char tbuf[128]{};
             const bool have_name = seh_copy_str(r.name_ptr, nbuf, sizeof(nbuf));
             seh_copy_str(r.text_ptr, tbuf, sizeof(tbuf));
-            ConVar v{};
+            Engine::ConVar v{};
+            v.address = r.address;
             v.name = have_name ? nbuf : "";
             v.value = r.value;
             v.text = tbuf;
@@ -259,6 +264,38 @@ std::vector<Engine::ConVar> Engine::console_vars() {
     return out;
 }
 
+// The console source descriptor's own table. Its bucket array sits 0x24 into the block, the same offset
+// LTConVarTable uses on CClientMgr.
+constexpr uintptr_t kConsoleSourceOffset = 0x2ED4A0;
+constexpr uintptr_t kBucketsWithinTable = 0x24;
+
+}  // namespace
+
+std::vector<Engine::ConVar> Engine::console_vars() {
+    CClientMgr* mgr = CClientMgr::get();
+    if (mgr == nullptr) {
+        return {};
+    }
+    return walk_convar_table(
+        reinterpret_cast<uintptr_t>(&mgr->regenny()->console_vars.buckets[0]));
+}
+
+std::vector<Engine::ConVar> Engine::console_source_vars() {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return {};
+    }
+    return walk_convar_table(exe->base + kConsoleSourceOffset + kBucketsWithinTable);
+}
+
+std::vector<Engine::ConVar> Engine::all_console_vars() {
+    auto out = console_source_vars();
+    auto mgr_vars = console_vars();
+    out.insert(out.end(), std::make_move_iterator(mgr_vars.begin()),
+               std::make_move_iterator(mgr_vars.end()));
+    return out;
+}
+
 std::optional<Engine::ConVar> Engine::console_var(const char* name) {
     if (name == nullptr) {
         return std::nullopt;
@@ -266,7 +303,7 @@ std::optional<Engine::ConVar> Engine::console_var(const char* name) {
     // A linear scan of the enumeration rather than a hash probe: reproducing the
     // engine's hash here would add a second implementation of String_HashI for no gain,
     // and the table is 192 entries.
-    for (auto& v : console_vars()) {
+    for (auto& v : all_console_vars()) {
         if (_stricmp(v.name.c_str(), name) == 0) {
             return v;
         }
