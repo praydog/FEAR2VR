@@ -1843,69 +1843,12 @@ int64_t seh_check_records(const regenny::CClientMgrListLink* head, size_t type, 
                     if (rec->object == reinterpret_cast<const void*>(o)) {
                         ++out->backpointer_ok;
                     }
-                    const float* v = rec->volume;
-                    const float px = o->position.x, py = o->position.y, pz = o->position.z;
-
-                    bool matched = false;
-                    // OT_NORMAL never stores a volume; flags3 bit 0x80 suppresses it.
-                    const bool gated = (type == 0) || ((o->flags3 & 0x80u) != 0);
-                    if (gated) {
-                        matched = v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f && v[3] == 0.0f;
-                        if (matched) {
-                            ++out->volume_gated;
-                        }
-                    } else if (type == 2 || type == 5) { // AABB from the base fields
-                        matched = approx_eq(v[0], o->aabb_min.x) && approx_eq(v[1], o->aabb_min.y) &&
-                                  approx_eq(v[2], o->aabb_min.z) && approx_eq(v[3], o->aabb_max.x) &&
-                                  approx_eq(v[4], o->aabb_max.y) && approx_eq(v[5], o->aabb_max.z);
-                        if (matched) {
-                            ++out->volume_matched;
-                        }
-                    } else if (type == 1) { // OT_MODEL sphere
-                        const auto* m = reinterpret_cast<const regenny::LTModelObject*>(o);
-                        if (m->sphere_source != 0) {
-                            matched = approx_eq(v[0], m->sphere_center.x) &&
-                                      approx_eq(v[1], m->sphere_center.y) &&
-                                      approx_eq(v[2], m->sphere_center.z);
-                        } else {
-                            matched = approx_eq(v[0], px) && approx_eq(v[1], py) &&
-                                      approx_eq(v[2], pz) &&
-                                      approx_eq(v[3], m->vis_radius * o->scale);
-                        }
-                        if (matched) {
-                            ++out->volume_matched;
-                        }
-                    } else if (type == 3) { // OT_SPRITE: kind selects the shape
-                        const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(o);
-                        const uint8_t k = s->kind;
-                        if (k == 3 || k == 4 || k == 7 || k == 9) {
-                            matched = approx_eq(v[0], s->aabb_min.x) &&
-                                      approx_eq(v[3], s->aabb_max.x);
-                        } else {
-                            matched = approx_eq(v[0], px) && approx_eq(v[1], py) &&
-                                      approx_eq(v[2], pz) && approx_eq(v[3], s->radius);
-                        }
-                        if (matched) {
-                            ++out->volume_matched;
-                        }
-                    } else if (type == 6) { // OT_PARTICLESYSTEM: offsets are object-local
-                        const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(o);
-                        if (p->cull_volume_type == 1) {
-                            matched = approx_eq(v[0], px + p->sphere_offset.x) &&
-                                      approx_eq(v[1], py + p->sphere_offset.y) &&
-                                      approx_eq(v[2], pz + p->sphere_offset.z) &&
-                                      approx_eq(v[3], p->sphere_radius);
-                        } else {
-                            matched = approx_eq(v[0], px + p->aabb_min_offset.x) &&
-                                      approx_eq(v[3], px + p->aabb_max_offset.x);
-                        }
-                        if (matched) {
-                            ++out->volume_matched;
-                        }
-                    }
-                    if (!matched) {
-                        ++out->unexplained;
-                    }
+                    // THE VOLUME COMPARISON USED TO LIVE HERE, as a second copy of the
+                    // per-type cull rule. It is now sdk::cull_volume /
+                    // sdk::computed_cull_volume in Object.hpp, and check_spatial_records
+                    // aggregates those instead -- see the snapshot loop there. Only the
+                    // genuine LINKED-LIST traversal stays inside this guard, because that
+                    // is what actually needs to walk engine memory step by step.
 
                     // Walk the record's entry list. Two independent things are
                     // being checked: that entry_count agrees with the walk (a
@@ -2015,6 +1958,33 @@ std::optional<CClientMgr::SpatialRecordCheck> CClientMgr::check_spatial_records(
             return std::nullopt;
         }
         out.objects += static_cast<size_t>(n);
+    }
+    // THE VOLUME COMPARISON, aggregated over the public primitives rather than recomputed
+    // here. Two producers of one volume: the engine wrote its copy on the spatial record,
+    // and computed_cull_volume derives it from the object's typed fields by the per-type
+    // rule. Where they agree, the rule is right; where they do not, the record is stale.
+    std::vector<ObjectSnapshot> snaps(max_per_type);
+    for (size_t t = 0; t < object_list_count(); ++t) {
+        const auto taken =
+            snapshot_objects(static_cast<ObjectType>(t), snaps.data(), max_per_type);
+        if (!taken.has_value()) {
+            continue;
+        }
+        for (size_t i = 0; i < *taken; ++i) {
+            const auto* obj = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
+            const auto computed = computed_cull_volume(obj);
+            const auto current = cull_volume_is_current(obj);
+            if (!computed.has_value() || !current.has_value()) {
+                continue;  // no spatial record: not a volume claim either way
+            }
+            if (!*current) {
+                ++out.unexplained;
+            } else if (computed->shape == CullShape::None) {
+                ++out.volume_gated;
+            } else {
+                ++out.volume_matched;
+            }
+        }
     }
     return out;
 }

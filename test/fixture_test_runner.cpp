@@ -2052,6 +2052,43 @@ int main(int argc, char** argv) {
                 printf("[fixture] transform primitives: %lld/%lld trustworthy, worst "
                        "rotation error %.4f\n",
                        static_cast<long long>(btr), static_cast<long long>(bq), bwrot);
+
+                // ---- CULL VOLUMES, as a consumer API -------------------------------
+                //
+                // Extracted from check_spatial_records this pass. The interesting claims
+                // are structural, not scene-dependent.
+                int64_t cvok = -1, cvsph = -1, cvbox = -1, cvnone = -1, cvsane = -1;
+                int64_t cvcmp = -1, cvcur = -1;
+                json_int(ab, "cull_ok", cvok);
+                json_int(ab, "cull_sphere", cvsph);
+                json_int(ab, "cull_box", cvbox);
+                json_int(ab, "cull_none", cvnone);
+                json_int(ab, "cull_sane", cvsane);
+                json_int(ab, "cull_compared", cvcmp);
+                json_int(ab, "cull_current", cvcur);
+                check(cvok == aobj, "EVERY object answers computed_cull_volume");
+                // A TOTAL PARTITION: the rule must classify every object as sphere, box or
+                // suppressed. A gap would mean a type the rule does not handle, which is
+                // how a silently-wrong volume would first show up.
+                check(cvsph + cvbox + cvnone == cvok,
+                      "every object's volume is a sphere, a box, or suppressed -- no gap");
+                check(cvsph > 0 && cvbox > 0 && cvnone > 0,
+                      "all three volume classes are populated in this scene");
+                // THE GEOMETRIC INVARIANT, which holds whatever produced the volume: a
+                // box's min never exceeds its max, and a radius is finite and non-negative.
+                // This catches a wrong field far more reliably than a count does -- reading
+                // LTObject's aabb pair instead of LTSpriteObject's own would break it.
+                check(cvsane == cvok,
+                      "EVERY volume is geometrically valid (min <= max, radius >= 0, finite)");
+                // And the same agreement check_spatial_records makes, asked through the
+                // public API instead of the private walk.
+                check(cvcur == cvcmp && cvcmp == cvok,
+                      "EVERY stored volume agrees with the recomputed one");
+                printf("[fixture] cull volumes: %lld spheres, %lld boxes, %lld suppressed, "
+                       "%lld/%lld current\n",
+                       static_cast<long long>(cvsph), static_cast<long long>(cvbox),
+                       static_cast<long long>(cvnone), static_cast<long long>(cvcur),
+                       static_cast<long long>(cvcmp));
                 printf("[fixture] brush space: %lld brushes, %lld/%lld round-trip "
                        "(worst %.3f), %lld origin-aligned\n",
                        static_cast<long long>(bt), static_cast<long long>(bex),

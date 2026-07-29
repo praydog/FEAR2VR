@@ -963,6 +963,28 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A derived class can redeclare a base field's NAME at a different offset -- and lifting
+  logic out is exactly when you switch to the wrong one.** Extracting the cull-volume rule
+  out of `check_spatial_records` broke 9 objects. The old code read `s->aabb_min` on an
+  `LTSpriteObject*`; my extraction read `obj->aabb_min` on the `LTObject*`. Same field name,
+  and both compile:
+
+      LTObject::aabb_min        @0x48
+      LTSpriteObject::aabb_min  @0x120   <- a DIFFERENT pair, same name
+
+  Nothing in the type system objects, because the derived class genuinely has both. The old
+  code was right and I silently changed which one it meant while "just moving" it.
+
+  Two things caught it, in this order: `unexplained` went 0 -> 9, and then reading the ORIGINAL
+  expression character by character rather than reasoning about what it should have been.
+  The first guess -- that my tolerance was too tight -- was WRONG, and chasing it cost a
+  build; the existing `approx_eq` did carry a relative tolerance worth copying, but that was
+  not the bug. Diff the expressions, not your model of them.
+
+  Corollaries now in force: a refactor of measurement code must reproduce the measurement
+  EXACTLY before it is believed (0 -> 9 is a failed refactor, not a discovery), and the
+  geometric invariant that caught this -- `min <= max` on every box -- is now asserted,
+  because it fails on a wrong field where a count can still look plausible.
 - **A `check_*` function must AGGREGATE a consumer primitive, never contain one.** The rule
   this project now follows: if logic lives inside a check, a mod cannot use it, and the
   check is the only thing that ever benefits from the reversing that produced it.

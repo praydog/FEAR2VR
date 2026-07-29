@@ -1232,7 +1232,9 @@ std::string build_objects_json() {
                api_color_ok = 0, api_color_packed_ok = 0, api_color_default = 0,
                api_color_translucent = 0, api_brush = 0, api_brush_roundtrip = 0,
                api_brush_rt_exact = 0, api_brush_origin_ok = 0, api_brush_quality = 0,
-               api_brush_trusted = 0, api_brush_matrix = 0, api_brush_origin_agrees = 0;
+               api_brush_trusted = 0, api_brush_matrix = 0, api_brush_origin_agrees = 0,
+               api_cull_ok = 0, api_cull_sphere = 0, api_cull_box = 0, api_cull_none = 0,
+               api_cull_sane = 0, api_cull_compared = 0, api_cull_current = 0;
         // The worst disagreement between the engine's placement of an attached child and
         // our own composition for its socket handle. A float, not a count: the interesting
         // result is the magnitude.
@@ -1388,6 +1390,42 @@ std::string build_objects_json() {
                                     ++api_brush_origin_agrees;
                                 }
                             }
+                        }
+                    }
+                    // CULL VOLUMES, the way a mod asks for bounds. Extracted from
+                    // check_spatial_records this pass -- previously a mod could learn the
+                    // population-wide match count and nothing about the object it holds.
+                    if (const auto cv = sdk::computed_cull_volume(obj); cv.has_value()) {
+                        ++api_cull_ok;
+                        switch (cv->shape) {
+                            case sdk::CullShape::Sphere:
+                                ++api_cull_sphere;
+                                // A radius is a size: it cannot be negative, and a
+                                // non-finite one would poison any range test built on it.
+                                if (cv->radius >= 0.0f && std::isfinite(cv->radius)) {
+                                    ++api_cull_sane;
+                                }
+                                break;
+                            case sdk::CullShape::Box:
+                                ++api_cull_box;
+                                // A box's min must not exceed its max on any axis -- the
+                                // one invariant every box satisfies regardless of which
+                                // type produced it.
+                                if (cv->min.x <= cv->max.x && cv->min.y <= cv->max.y &&
+                                    cv->min.z <= cv->max.z) {
+                                    ++api_cull_sane;
+                                }
+                                break;
+                            case sdk::CullShape::None:
+                                ++api_cull_none;
+                                ++api_cull_sane;
+                                break;
+                        }
+                    }
+                    if (const auto cur = sdk::cull_volume_is_current(obj); cur.has_value()) {
+                        ++api_cull_compared;
+                        if (*cur) {
+                            ++api_cull_current;
                         }
                     }
                     // COLOUR AND ALPHA. The assertable part is the PACKING: alpha must
@@ -1557,7 +1595,9 @@ std::string build_objects_json() {
                  "\"brush_rt_exact\":%zu,\"brush_origin_ok\":%zu,"
                  "\"brush_worst_rt\":%.5f,\"brush_worst_origin\":%.5f,"
                  "\"brush_quality\":%zu,\"brush_trusted\":%zu,\"brush_matrix\":%zu,"
-                 "\"brush_origin_agrees\":%zu,\"brush_worst_rot\":%.5f}",
+                 "\"brush_origin_agrees\":%zu,\"brush_worst_rot\":%.5f,"
+                 "\"cull_ok\":%zu,\"cull_sphere\":%zu,\"cull_box\":%zu,\"cull_none\":%zu,"
+                 "\"cull_sane\":%zu,\"cull_compared\":%zu,\"cull_current\":%zu}",
                  api_objects, api_info_ok, api_renderable, api_cameras, api_camera_bit,
                  api_with_handle, api_with_slot, api_identities_agree, api_addressable,
                  api_with_attachments, api_attachments, api_att_child_ok,
@@ -1572,7 +1612,9 @@ std::string build_objects_json() {
                  api_color_default, api_color_translucent, api_brush, api_brush_roundtrip,
                  api_brush_rt_exact, api_brush_origin_ok, api_brush_worst_rt,
                  api_brush_worst_origin, api_brush_quality, api_brush_trusted,
-                 api_brush_matrix, api_brush_origin_agrees, api_brush_worst_rot);
+                 api_brush_matrix, api_brush_origin_agrees, api_brush_worst_rot,
+                 api_cull_ok, api_cull_sphere, api_cull_box, api_cull_none,
+                 api_cull_sane, api_cull_compared, api_cull_current);
         if (abw < 0 || static_cast<size_t>(abw) >= sizeof(ab)) {
             out += ",\"object_api\":{\"error\":\"truncated\"}";
         } else {

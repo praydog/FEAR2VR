@@ -6,6 +6,11 @@
 
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTAttachment.hpp"
+// The cull rule reads per-type fields, so it needs the concrete object classes.
+#include "regenny/regenny/LTModelObject.hpp"
+#include "regenny/regenny/LTSpriteObject.hpp"
+#include "regenny/regenny/LTParticleSystemObject.hpp"
+#include "regenny/regenny/LTSpatialRecord.hpp"
 
 namespace sdk {
 
@@ -555,6 +560,270 @@ std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject*
     q.inverse_exact = q.inverse_error < 0.002f && q.translation_error < 0.05f;
     q.determinant_unit = abs_f(q.determinant - 1.0f) < 0.01f;
     return q;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// POD mirror of everything the cull rule needs, copied out under one guard. Which of
+// these fields is meaningful depends on `kind`, exactly as the rule does.
+struct CullRaw {
+    uint8_t kind;
+    uint16_t flags3;
+    float pos[3];
+    float scale;
+    float aabb_min[3];
+    float aabb_max[3];
+    // OT_MODEL
+    uint16_t sphere_source;
+    float sphere_center[3];
+    float vis_radius;
+    // OT_SPRITE
+    uint8_t sprite_kind;
+    float sprite_aabb_min[3];
+    float sprite_aabb_max[3];
+    float sprite_radius;
+    // OT_PARTICLESYSTEM
+    uint32_t ps_volume_type;
+    float ps_sphere_offset[3];
+    float ps_sphere_radius;
+    float ps_min_offset[3];
+    float ps_max_offset[3];
+    // the engine's stored copy
+    bool has_record;
+    float stored[6];
+    bool ok;
+};
+
+CullRaw seh_read_cull(const regenny::LTObject* obj) {
+    CullRaw r{};
+    KANANLIB_SEH_TRY {
+        r.kind = static_cast<uint8_t>(obj->type);
+        r.flags3 = obj->flags3;
+        r.pos[0] = obj->position.x;
+        r.pos[1] = obj->position.y;
+        r.pos[2] = obj->position.z;
+        r.scale = obj->scale;
+        r.aabb_min[0] = obj->aabb_min.x;
+        r.aabb_min[1] = obj->aabb_min.y;
+        r.aabb_min[2] = obj->aabb_min.z;
+        r.aabb_max[0] = obj->aabb_max.x;
+        r.aabb_max[1] = obj->aabb_max.y;
+        r.aabb_max[2] = obj->aabb_max.z;
+        if (r.kind == 1) {
+            const auto* m = reinterpret_cast<const regenny::LTModelObject*>(obj);
+            r.sphere_source = m->sphere_source;
+            r.sphere_center[0] = m->sphere_center.x;
+            r.sphere_center[1] = m->sphere_center.y;
+            r.sphere_center[2] = m->sphere_center.z;
+            r.vis_radius = m->vis_radius;
+        } else if (r.kind == 3) {
+            const auto* s = reinterpret_cast<const regenny::LTSpriteObject*>(obj);
+            r.sprite_kind = s->kind;
+            r.sprite_radius = s->radius;
+            // THE SPRITE'S OWN AABB (+0x120/+0x12C), which is NOT LTObject's at
+            // +0x48/+0x54. Using the base pair here reported 9 boxed sprites as stale
+            // volumes -- the two fields have the same name and different meanings.
+            r.sprite_aabb_min[0] = s->aabb_min.x;
+            r.sprite_aabb_min[1] = s->aabb_min.y;
+            r.sprite_aabb_min[2] = s->aabb_min.z;
+            r.sprite_aabb_max[0] = s->aabb_max.x;
+            r.sprite_aabb_max[1] = s->aabb_max.y;
+            r.sprite_aabb_max[2] = s->aabb_max.z;
+        } else if (r.kind == 6) {
+            const auto* p = reinterpret_cast<const regenny::LTParticleSystemObject*>(obj);
+            r.ps_volume_type = p->cull_volume_type;
+            r.ps_sphere_offset[0] = p->sphere_offset.x;
+            r.ps_sphere_offset[1] = p->sphere_offset.y;
+            r.ps_sphere_offset[2] = p->sphere_offset.z;
+            r.ps_sphere_radius = p->sphere_radius;
+            r.ps_min_offset[0] = p->aabb_min_offset.x;
+            r.ps_min_offset[1] = p->aabb_min_offset.y;
+            r.ps_min_offset[2] = p->aabb_min_offset.z;
+            r.ps_max_offset[0] = p->aabb_max_offset.x;
+            r.ps_max_offset[1] = p->aabb_max_offset.y;
+            r.ps_max_offset[2] = p->aabb_max_offset.z;
+        }
+        if (const auto* rec = obj->spatial_record; rec != nullptr) {
+            r.has_record = true;
+            for (size_t i = 0; i < 6; ++i) {
+                r.stored[i] = rec->volume[i];
+            }
+        }
+        r.ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    return r;
+}
+
+void set_vec(regenny::LTVector* v, const float (&src)[3], const float* add) {
+    v->x = src[0] + (add != nullptr ? add[0] : 0.0f);
+    v->y = src[1] + (add != nullptr ? add[1] : 0.0f);
+    v->z = src[2] + (add != nullptr ? add[2] : 0.0f);
+}
+
+}  // namespace
+
+std::optional<CullVolume> computed_cull_volume(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_cull(obj);
+    if (!r.ok) {
+        return std::nullopt;
+    }
+    CullVolume out{};
+    out.shape = CullShape::None;
+    // The two suppression cases first: OT_NORMAL never carries one, and flags3 bit 0x80
+    // turns it off for any type. Both are the engine's own gate, not a value test.
+    if (r.kind == 0 || (r.flags3 & 0x80u) != 0) {
+        return out;
+    }
+    switch (r.kind) {
+        case 2:   // OT_WORLDMODEL
+        case 5: { // OT_CAMERA derives from it
+            out.shape = CullShape::Box;
+            set_vec(&out.min, r.aabb_min, nullptr);
+            set_vec(&out.max, r.aabb_max, nullptr);
+            return out;
+        }
+        case 1: { // OT_MODEL -- always a sphere, but from one of two sources
+            out.shape = CullShape::Sphere;
+            if (r.sphere_source != 0) {
+                set_vec(&out.center, r.sphere_center, nullptr);
+                // The radius is not part of the sphere_source path in the engine's own
+                // comparison, which only checks the centre -- so it is left as the
+                // scaled visibility radius rather than invented.
+                out.radius = r.vis_radius * r.scale;
+            } else {
+                set_vec(&out.center, r.pos, nullptr);
+                out.radius = r.vis_radius * r.scale;
+            }
+            return out;
+        }
+        case 3: { // OT_SPRITE -- kind selects the shape
+            const bool boxed = r.sprite_kind == 3 || r.sprite_kind == 4 ||
+                               r.sprite_kind == 7 || r.sprite_kind == 9;
+            if (boxed) {
+                out.shape = CullShape::Box;
+                set_vec(&out.min, r.sprite_aabb_min, nullptr);
+                set_vec(&out.max, r.sprite_aabb_max, nullptr);
+            } else {
+                out.shape = CullShape::Sphere;
+                set_vec(&out.center, r.pos, nullptr);
+                out.radius = r.sprite_radius;
+            }
+            return out;
+        }
+        case 6: { // OT_PARTICLESYSTEM -- offsets are OBJECT-LOCAL, so add the position
+            if (r.ps_volume_type == 1) {
+                out.shape = CullShape::Sphere;
+                set_vec(&out.center, r.ps_sphere_offset, r.pos);
+                out.radius = r.ps_sphere_radius;
+            } else {
+                out.shape = CullShape::Box;
+                set_vec(&out.min, r.ps_min_offset, r.pos);
+                set_vec(&out.max, r.ps_max_offset, r.pos);
+            }
+            return out;
+        }
+        default:
+            return out;  // shape stays None
+    }
+}
+
+std::optional<CullVolume> cull_volume(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return std::nullopt;
+    }
+    const auto r = seh_read_cull(obj);
+    if (!r.ok || !r.has_record) {
+        return std::nullopt;
+    }
+    // The stored volume carries no shape tag -- the engine knows it from the type, so the
+    // shape comes from the same rule and only the NUMBERS come from the record.
+    const auto computed = computed_cull_volume(obj);
+    if (!computed.has_value()) {
+        return std::nullopt;
+    }
+    CullVolume out{};
+    out.shape = computed->shape;
+    switch (out.shape) {
+        case CullShape::Sphere:
+            out.center.x = r.stored[0];
+            out.center.y = r.stored[1];
+            out.center.z = r.stored[2];
+            out.radius = r.stored[3];
+            break;
+        case CullShape::Box:
+            out.min.x = r.stored[0];
+            out.min.y = r.stored[1];
+            out.min.z = r.stored[2];
+            out.max.x = r.stored[3];
+            out.max.y = r.stored[4];
+            out.max.z = r.stored[5];
+            break;
+        case CullShape::None:
+            // Still hand back what the engine actually left there. The engine zeroes a
+            // suppressed volume, so a caller CAN verify that rather than taking our word
+            // -- and a non-zero here would be a real finding.
+            out.min.x = r.stored[0];
+            out.min.y = r.stored[1];
+            out.min.z = r.stored[2];
+            out.max.x = r.stored[3];
+            out.max.y = r.stored[4];
+            out.max.z = r.stored[5];
+            break;
+    }
+    return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// The engine's own coordinates reach five figures, so the tolerance must SCALE. A fixed
+// 0.01 sits below float32 spacing up there and reports correct data as wrong -- which is
+// precisely the bug introduced the first time this comparison was lifted out of
+// check_spatial_records, where the original helper had carried a comment warning about it.
+bool volume_approx_eq(float a, float b) {
+    const float d = a > b ? a - b : b - a;
+    const float m = b < 0.0f ? -b : b;
+    return d <= 0.01f + 0.0001f * m;
+}
+
+}  // namespace
+
+std::optional<bool> cull_volume_is_current(const regenny::LTObject* obj) {
+    const auto stored = cull_volume(obj);
+    const auto computed = computed_cull_volume(obj);
+    if (!stored.has_value() || !computed.has_value()) {
+        return std::nullopt;
+    }
+    switch (computed->shape) {
+        case CullShape::None:
+            // Suppressed: the engine leaves zeros, and the primitive hands those back even
+            // for None so this stays a real comparison rather than an assumption.
+            return stored->min.x == 0.0f && stored->min.y == 0.0f &&
+                   stored->min.z == 0.0f && stored->max.x == 0.0f;
+        case CullShape::Sphere:
+            // Centre only. The engine's own comparison does not pin the radius on the
+            // sphere_source path, so requiring it would assert more than is established.
+            return volume_approx_eq(stored->center.x, computed->center.x) &&
+                   volume_approx_eq(stored->center.y, computed->center.y) &&
+                   volume_approx_eq(stored->center.z, computed->center.z);
+        case CullShape::Box:
+            return volume_approx_eq(stored->min.x, computed->min.x) &&
+                   volume_approx_eq(stored->max.x, computed->max.x);
+    }
+    return std::nullopt;
 }
 
 }  // namespace sdk

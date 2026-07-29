@@ -362,4 +362,75 @@ struct TransformQuality {
 // nullopt on the same conditions as brush_transform.
 std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject* obj);
 
+
+// ---- CULL VOLUMES: what shape the engine thinks this object occupies ------------
+//
+// THE BOUNDS QUESTION, and the one a VR mod asks constantly: how big is this thing, and
+// where does it end? Needed for interaction ranges, grab detection, teleport targeting and
+// any culling a mod does itself.
+//
+// THIS WAS TRAPPED INSIDE A TEST TOO. CClientMgr::check_spatial_records knew the whole
+// per-type rule -- it recomputed every object's volume from typed fields to compare against
+// the engine's stored copy -- and returned only "volume_matched" counters. The rule is the
+// valuable part, so it lives here now and the check compares the two functions below.
+//
+// THE SHAPE FOLLOWS FROM THE TYPE, and for two types from a per-object field:
+//
+//   OT_NORMAL              never has one
+//   any type, flags3 0x80  suppressed -- the engine stores zeros
+//   OT_WORLDMODEL/CAMERA   BOX, from the object's own aabb_min/aabb_max
+//   OT_MODEL               SPHERE; centre is sphere_center when sphere_source is set,
+//                          otherwise the object's position with radius vis_radius * scale
+//   OT_SPRITE              kind 3/4/7/9 -> BOX, otherwise SPHERE at position
+//   OT_PARTICLESYSTEM      cull_volume_type 1 -> SPHERE, else BOX; both stored as
+//                          OBJECT-LOCAL offsets, so position is added in
+enum class CullShape {
+    None,    // no volume: OT_NORMAL, or suppressed by flags3 bit 0x80
+    Sphere,
+    Box,
+};
+
+struct CullVolume {
+    CullShape shape;
+    // Sphere only. Meaningless when shape is Box or None.
+    regenny::LTVector center;
+    float radius;
+    // Box only, in WORLD space -- the particle-system offsets are resolved against the
+    // object's position before you see them, so every shape here is comparable directly.
+    regenny::LTVector min;
+    regenny::LTVector max;
+};
+
+// WHAT THE ENGINE ACTUALLY CULLS AGAINST: the copy it wrote on the object's spatial
+// record. This is the authoritative one -- if a mod wants to agree with the engine's own
+// visibility decisions, it reads this.
+//
+// nullopt when `obj` is null, has no spatial record, or the read faulted. A CullShape of
+// None is a normal ANSWER, not a failure -- and in that case `min`/`max` still carry the
+// six floats the engine left on the record, so a caller can confirm they are zeroed
+// instead of trusting this function's classification.
+std::optional<CullVolume> cull_volume(const regenny::LTObject* obj);
+
+// THE SAME VOLUME RECOMPUTED from the object's own typed fields, by the rule above.
+//
+// Two reasons a caller wants this rather than the stored copy: it is correct for an object
+// whose record has not been refreshed this frame, and comparing the two is how you tell
+// that has happened. The engine's copy and this agree on the overwhelming majority live --
+// the exact fraction is what check_spatial_records reports.
+std::optional<CullVolume> computed_cull_volume(const regenny::LTObject* obj);
+
+// IS THE ENGINE'S STORED VOLUME STILL CURRENT? Compares the two above and reports whether
+// they agree, which is how a caller detects a spatial record the engine has not refreshed.
+// Live 3574 of 3583 objects agree (2654 by volume, 920 suppressed-and-zeroed).
+//
+// THE TOLERANCE IS RELATIVE, and that is not a detail: `|d| <= 0.01 + 0.0001*|b|`. Level
+// coordinates reach five figures, where float32 spacing alone exceeds a fixed 0.01 -- a
+// naive absolute epsilon reports correct data as mismatched. This function exists partly so
+// that tolerance lives in ONE place instead of being re-derived (wrongly) at each call
+// site, which is exactly what happened when this comparison was first lifted out of
+// check_spatial_records.
+//
+// nullopt when `obj` is null, has no spatial record, or a read faulted.
+std::optional<bool> cull_volume_is_current(const regenny::LTObject* obj);
+
 }  // namespace sdk
