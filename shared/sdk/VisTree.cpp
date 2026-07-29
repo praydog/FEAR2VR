@@ -283,6 +283,13 @@ const regenny::LTWorldTreeNode* seh_climb_to_root(const regenny::LTWorldTreeNode
     return result;
 }
 
+// The world-bounds GLOBALS (min then max, contiguous: 0x6F6E04 and 0x6F6E10 are 12 bytes apart,
+// so one float[6] covers both). Resolved off the module base like every other anchor here.
+uintptr_t global_bounds_addr() {
+    const auto* exe = Modules::get().exe();
+    return exe == nullptr ? 0 : exe->base + (0x6F6E04 - 0x400000);
+}
+
 // Bounds + sector containment, guarded together.
 bool seh_bounds(const regenny::LTWorldClientBSP* bsp, WorldBSP::WorldTreeCheck* out) {
     bool ok = false;
@@ -290,10 +297,14 @@ bool seh_bounds(const regenny::LTWorldClientBSP* bsp, WorldBSP::WorldTreeCheck* 
         const auto& a = bsp->bounds_min;
         const auto& b = bsp->bounds_max;
         out->bounds_ordered = a.x <= b.x && a.y <= b.y && a.z <= b.z;
-        const auto& a2 = bsp->bounds_min_2;
-        const auto& b2 = bsp->bounds_max_2;
-        out->bounds_copies_agree = a.x == a2.x && a.y == a2.y && a.z == a2.z && b.x == b2.x &&
-                                   b.y == b2.y && b.z == b2.z;
+        // The second copy is a pair of file-scope GLOBALS, not fields of this object -- an
+        // earlier pass mapped them at +0x22C because the arithmetic from the singleton's address
+        // lands there exactly, and the server singleton only 0x170 away proves it cannot.
+        // Same comparison, correct provenance.
+        const auto* g = reinterpret_cast<const float*>(global_bounds_addr());
+        out->bounds_copies_agree =
+            g != nullptr && a.x == g[0] && a.y == g[1] && a.z == g[2] && b.x == g[3] &&
+            b.y == g[4] && b.z == g[5];
 
         const auto& tree = bsp->vis_tree;
         out->sector_count = tree.sector_count;
@@ -2075,6 +2086,10 @@ namespace sdk {
 
 namespace {
 
+// The engine's own bounds pair: file-scope globals, NOT instance fields -- see engine_bounds().
+constexpr uintptr_t kBoundsMinRva = 0x6F6E04 - 0x400000;
+constexpr uintptr_t kBoundsMaxRva = 0x6F6E10 - 0x400000;
+
 // IWorldClientBSP vtable slot 16, confirmed from the constructor's own `mov [esi], offset
 // vtbl_IWorldClientBSP` rather than by scanning backwards for function-shaped dwords -- that
 // scan is off by one for every unrecognised slot it stops at, and it was, here.
@@ -2142,17 +2157,23 @@ std::optional<WorldBSP::Bounds> WorldBSP::bounds() {
 }
 
 std::optional<WorldBSP::Bounds> WorldBSP::engine_bounds() {
-    const auto* bsp = get();
-    if (bsp == nullptr) {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr) {
         return std::nullopt;
     }
-    // THE SECOND PAIR IS AN INSTANCE FIELD, not a global. The engine's test references it by
-    // absolute address only because this object is a static singleton, so the compiler folded
-    // `this->bounds_min_2` into a constant -- and 0x6F6BD8 + 0x22C is exactly the 0x6F6E04 the
-    // decompiler shows. Reading it as a module-relative global happens to work and says the
-    // wrong thing about the layout, so it is read as what it is.
-    return bounds_from(reinterpret_cast<uintptr_t>(&bsp->bounds_min_2),
-                       reinterpret_cast<uintptr_t>(&bsp->bounds_max_2));
+    // THESE REALLY ARE FILE-SCOPE GLOBALS, and establishing that took two attempts. The
+    // arithmetic tempts you: the client BSP singleton sits at 0x6F6BD8 and 0x6F6BD8 + 0x22C is
+    // exactly 0x6F6E04, so they look like instance fields, and a previous pass "corrected" this
+    // function to read them that way. But the SERVER BSP singleton sits at 0x6F6D48 -- only
+    // 0x170 past the client, with its own distinct vtable -- so the client object cannot reach
+    // +0x22C at all, and the server's own methods reference these same addresses absolutely.
+    // Two classes cannot share one instance field.
+    //
+    // The writer settles it: the server's world load reads THESE and stores `global -/+ 100.0`
+    // into its own +0x04/+0x10, which is exactly the offset measured live between the two
+    // objects' bounds. So the globals are the authority and both objects derive from them.
+    const auto base = exe->base;
+    return bounds_from(base + kBoundsMinRva, base + kBoundsMaxRva);
 }
 
 std::optional<bool> WorldBSP::bounds_agree() {
@@ -2253,6 +2274,85 @@ std::optional<std::string> WorldBSP::world_name() {
         out.erase(dot);
     }
     return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+// g_pIWorldServerBSP -- the server-side world singleton, resolved module-relative like the
+// bounds globals. It is a DIFFERENT class from the client's (own vtable, thirteen slots), and it
+// is what bounds LTWorldClientBSP's size: it sits only 0x170 past the client object.
+constexpr uintptr_t kServerBspPtrRva = 0x6F6BBC - 0x400000;
+
+int64_t seh_read_flags(const regenny::LTWorldClientBSP* bsp, uint8_t* a, uint8_t* b) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        *a = bsp->world_attached;
+        *b = bsp->world_attached_2;
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+int64_t seh_read_server_bounds(uintptr_t ptr_slot, float* out) {
+    int64_t ok = -1;
+    KANANLIB_SEH_TRY {
+        const auto obj = *reinterpret_cast<const uintptr_t*>(ptr_slot);
+        if (obj == 0) {
+            return -1;
+        }
+        // Same layout position as the client's: bounds at +0x04 and +0x10.
+        const auto* mn = reinterpret_cast<const float*>(obj + 0x04);
+        const auto* mx = reinterpret_cast<const float*>(obj + 0x10);
+        for (size_t i = 0; i < 3; ++i) {
+            out[i] = mn[i];
+            out[3 + i] = mx[i];
+        }
+        ok = 1;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = -1;
+    }
+    return ok;
+}
+
+}  // namespace
+
+std::optional<bool> WorldBSP::is_world_loaded() {
+    const auto* bsp = get();
+    if (bsp == nullptr) {
+        return std::nullopt;
+    }
+    uint8_t a = 0, b = 0;
+    if (seh_read_flags(bsp, &a, &b) < 0) {
+        return std::nullopt;
+    }
+    return a != 0 && b != 0;
+}
+
+std::optional<WorldBSP::Bounds> WorldBSP::server_bounds() {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr) {
+        return std::nullopt;
+    }
+    float v[6]{};
+    if (seh_read_server_bounds(exe->base + kServerBspPtrRva, v) < 0) {
+        return std::nullopt;
+    }
+    Bounds b{};
+    b.min.x = v[0];
+    b.min.y = v[1];
+    b.min.z = v[2];
+    b.max.x = v[3];
+    b.max.y = v[4];
+    b.max.z = v[5];
+    return b;
 }
 
 }  // namespace sdk

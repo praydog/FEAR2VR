@@ -875,6 +875,8 @@ std::string build_targets_json() {
     int wb_probed = 0, wb_agree = 0, wb_outside = 0, wb_inside = 0;
     int wb_bounds_ok = 0, wb_bounds_probed = 0;
     float wb_inst[6]{}, wb_glob[6]{};
+    int wb_loaded = -1, wb_srv_probed = 0, wb_srv_expanded = -1;
+    int wb_obj_gap = -1, wb_class_size = -1;
     {
         // DIAGNOSTIC: the actual numbers each path sees, because "they disagree" is not
         // actionable without them.
@@ -885,6 +887,42 @@ std::string build_targets_json() {
         if (const auto gb = sdk::WorldBSP::engine_bounds(); gb.has_value()) {
             wb_glob[0] = gb->min.x; wb_glob[1] = gb->min.y; wb_glob[2] = gb->min.z;
             wb_glob[3] = gb->max.x; wb_glob[4] = gb->max.y; wb_glob[5] = gb->max.z;
+        }
+        // THE SCHEMA'S CLASS SIZE, GUARDED BY THE NEXT SINGLETON. This is the check whose
+        // absence let LTWorldClientBSP be recorded as 0x244 for several passes: the server BSP
+        // object sits a fixed distance after the client one, so that distance is a hard ceiling
+        // on the client class, and a schema that overruns it is provably wrong. Cheap, and it
+        // needs no knowledge of what the fields mean.
+        {
+            const auto cli = reinterpret_cast<uintptr_t>(sdk::WorldBSP::get());
+            if (const auto* exe = sdk::Modules::get().exe(); exe != nullptr && cli != 0) {
+                const auto srv = *reinterpret_cast<const uintptr_t*>(
+                    exe->base + (0x6F6BBC - 0x400000));
+                if (srv > cli) {
+                    wb_obj_gap = static_cast<int>(srv - cli);
+                    wb_class_size = static_cast<int>(sizeof(regenny::LTWorldClientBSP));
+                }
+            }
+        }
+        // THE LOAD GATE, cross-checked against two independent signs of the same state: a
+        // non-empty world path and a non-zero sector count. Three indicators, one fact.
+        if (const auto ld = sdk::WorldBSP::is_world_loaded(); ld.has_value()) {
+            wb_loaded = *ld ? 1 : 0;
+        }
+        // THE SERVER'S DERIVED EXTENT. Its world load writes the globals expanded by 100 units,
+        // so this checks a rule read out of that function against what the server actually holds
+        // -- reading the producer, then verifying it live.
+        if (const auto sb = sdk::WorldBSP::server_bounds(); sb.has_value()) {
+            if (const auto gb = sdk::WorldBSP::engine_bounds(); gb.has_value()) {
+                wb_srv_probed = 1;
+                const float e = 100.0f;
+                wb_srv_expanded =
+                    (sb->min.x == gb->min.x - e && sb->min.y == gb->min.y - e &&
+                     sb->min.z == gb->min.z - e && sb->max.x == gb->max.x + e &&
+                     sb->max.y == gb->max.y + e && sb->max.z == gb->max.z + e)
+                        ? 1
+                        : 0;
+            }
         }
         if (const auto ag = sdk::WorldBSP::bounds_agree(); ag.has_value()) {
             ++wb_bounds_probed;
@@ -1156,6 +1194,8 @@ std::string build_targets_json() {
              "\"wb_probed\":%d,\"wb_agree\":%d,\"wb_outside\":%d,\"wb_inside\":%d,"
              "\"wb_bounds_probed\":%d,\"wb_bounds_ok\":%d,"
              "\"world_printable\":%d,\"world_len\":%d,"
+             "\"wb_loaded\":%d,\"wb_srv_probed\":%d,\"wb_srv_expanded\":%d,"
+             "\"wb_obj_gap\":%d,\"wb_class_size\":%d,"
              "\"wb_inst\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"wb_glob\":[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f],"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
@@ -1243,7 +1283,8 @@ std::string build_targets_json() {
              rch_probed, rch_1hop_ok, rch_mono_ok, rch_sym_probed, rch_sym_ok,
              rch_comp_ok, rch_comp_size, rch_hops_ok,
              wb_probed, wb_agree, wb_outside, wb_inside, wb_bounds_probed, wb_bounds_ok,
-             wp_printable, wp_len,
+             wp_printable, wp_len, wb_loaded, wb_srv_probed, wb_srv_expanded,
+             wb_obj_gap, wb_class_size,
              wb_inst[0], wb_inst[1], wb_inst[2], wb_inst[3], wb_inst[4], wb_inst[5],
              wb_glob[0], wb_glob[1], wb_glob[2], wb_glob[3], wb_glob[4], wb_glob[5],
              player_sector,

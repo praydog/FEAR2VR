@@ -481,11 +481,16 @@ public:
 
     // ---- THE WORLD'S EXTENT, WHICH THE ENGINE KEEPS TWICE -------------------
     //
-    // LTWorldClientBSP holds the world extent TWICE: bounds_min/max at +0x04 and a second pair
-    // at +0x22C. Its own out-of-bounds test -- IWorldClientBSP vtable slot 16 -- reads THE SECOND
-    // PAIR and ignores `this` entirely, referencing it by absolute address because the object is
-    // a static singleton. A decompile of that function shows bare addresses that look like
-    // globals; they are this instance's own fields (0x6F6BD8 + 0x22C is the 0x6F6E04 it cites).
+    // The world extent exists TWICE: in the LTWorldClientBSP instance at +0x04, and in a pair of
+    // file-scope GLOBALS. The engine's own out-of-bounds test -- IWorldClientBSP vtable slot 16 --
+    // reads the globals and ignores `this` entirely.
+    //
+    // The globals sit 0x22C past the client singleton, which makes them look like instance
+    // fields and briefly convinced this project they were. They are not: the server BSP
+    // singleton is only 0x170 past the client with its own vtable, so the client object does not
+    // reach that far, and the server's methods reference the same addresses. The server's world
+    // load reads the globals and stores them expanded by 100 units into its OWN +0x04/+0x10 --
+    // which is precisely the difference measured between the two objects live.
     //
     // That matters to a mod rather than being trivia. A teleport, a play-space bound, or a
     // spawn check written against the instance fields can disagree with the test the engine
@@ -497,6 +502,26 @@ public:
         regenny::LTVector min;
         regenny::LTVector max;
     };
+
+    // ---- IS THERE A WORLD AT ALL ---------------------------------------------
+    //
+    // THE GATE EVERY OTHER ACCESSOR HERE ASSUMES. Between levels the interface still resolves and
+    // the vis tree is still an embedded sub-object, so sector_count() returns 0 and
+    // sectors_at() returns empty -- indistinguishable from a legitimate "nothing here". This
+    // says which it is.
+    //
+    // Reads the two flags IWorldClientBSP_AttachToServerWorld sets on success (+0x48 and +0x49,
+    // vtable slots 7 and 8), both zeroed by the constructor. They are written together and no
+    // code has yet been found that distinguishes them, so both are required rather than picking
+    // one and hoping.
+    static std::optional<bool> is_world_loaded();
+
+    // THE SERVER'S copy of the extent, which is DERIVED rather than duplicated: its world load
+    // writes the global bounds expanded by 100 units on every axis. Exposed because a mod doing
+    // anything server-side needs the box the server actually uses, and it is not the client's.
+    //
+    // nullopt when the server interface is unresolved -- which is a normal state, not a fault.
+    static std::optional<Bounds> server_bounds();
 
     // ---- WHICH WORLD IS LOADED -----------------------------------------------
     //
@@ -525,7 +550,7 @@ public:
     // The bounds stored IN THE INSTANCE, at +0x04 and +0x10.
     static std::optional<Bounds> bounds();
 
-    // The SECOND pair, at +0x22C -- the one the engine's own test consults.
+    // The GLOBAL pair -- the one the engine's own test consults.
     static std::optional<Bounds> engine_bounds();
 
     // Do the two copies match? false means a mod's own containment test and the engine's will

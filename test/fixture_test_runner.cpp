@@ -1100,6 +1100,41 @@ int main(int argc, char** argv) {
               "the world name is exactly the path's final component before .wld");
         printf("[fixture] world loaded: %s (name %s)\n", wpath.c_str(), wname.c_str());
 
+        // ---- IS A WORLD LOADED, and does the schema's class even fit -------------------
+        //
+        // is_world_loaded() reads the two flags the attach path sets. Cross-checked against two
+        // signs of the same state that share none of its code: a non-empty world path (a
+        // different field, written by the same function) and a non-zero sector count (a different
+        // object entirely). Three indicators of one fact.
+        int64_t wbl = -1, wbgap = -1, wbsz = -1, wbsp = -1, wbse = -1;
+        json_int(body, "wb_loaded", wbl);
+        json_int(body, "wb_obj_gap", wbgap);
+        json_int(body, "wb_class_size", wbsz);
+        json_int(body, "wb_srv_probed", wbsp);
+        json_int(body, "wb_srv_expanded", wbse);
+        check(wbl == 1, "the engine reports a world loaded");
+        check(wbl == 1 && wln > 0 && stot > 0,
+              "loaded flags, a non-empty world path and a non-zero sector count all agree");
+
+        // THE CLASS SIZE IS BOUNDED BY THE NEXT SINGLETON, and this is the check whose absence
+        // let LTWorldClientBSP stand at 0x244 for several passes -- with a bounds pair mapped at
+        // +0x22C that actually lay past the server BSP object. The server singleton sits a fixed
+        // distance after the client one, so that distance is a hard ceiling. It needs no knowledge
+        // of what any field means, and 0x244 (580) against a 368-byte gap fails it outright.
+        check(wbgap > 0, "both world singletons were located");
+        check(wbsz <= wbgap,
+              "the mapped LTWorldClientBSP fits before the next singleton -- the size is possible");
+
+        // The server's extent is DERIVED, not copied: its world load writes the global bounds
+        // expanded by 100 units. Read out of IWorldServerBSP_LoadWorld, then checked live -- and
+        // exact equality is right because it is one arithmetic step, not a measurement.
+        check(wbsp == 1, "the server world singleton was readable");
+        check(wbse == 1,
+              "the server's bounds are EXACTLY the global bounds expanded by 100 on every axis");
+        printf("[fixture] world state: loaded, class 0x%llX fits the 0x%llX singleton gap, "
+               "server bounds = globals +/-100\n",
+               static_cast<unsigned long long>(wbsz), static_cast<unsigned long long>(wbgap));
+
         // counter_node_registered: sdk::CClientMgr::counter_node_registered()
         // checks the CClientMgr_Init wiring invariant IN-PROCESS, entirely
         // through the generated schema (&own_counter_node->self_link ==

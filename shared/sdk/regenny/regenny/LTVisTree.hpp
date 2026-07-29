@@ -15,7 +15,7 @@ public:
     regenny::LTVisPortal** portals; // 0x0
     regenny::LTVisSector* sectors; // 0x4
     uint32_t sector_count; // 0x8
-    void* unk_0C; // 0xc
+    void** portal_table; // 0xc
     uint32_t portal_count; // 0x10
     regenny::LTVisTreeNode* root; // 0x14
     uint32_t node_count; // 0x18

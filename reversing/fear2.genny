@@ -732,21 +732,44 @@ class LTVisTree 0x24 {
 // "main menu" actually is -- a real level is loaded, which is why 3583 objects
 // and 263 vis sectors exist there at all.
 //
-// Size is the MAPPED EXTENT and the true class is certainly larger; the
-// world_path array length is the observed string plus its terminator, NOT a
-// proven buffer capacity.
-class LTWorldClientBSP 0x244 {
+// SIZE IS BOUNDED BY THE NEXT SINGLETON, not by anything mapped: g_pIWorldServerBSP's object
+// sits at 0x6F6D48, exactly 0x170 past this one at 0x6F6BD8, and carries its OWN distinct vtable
+// (0x677680, thirteen slots). So this class ends at or before +0x170.
+//
+// THAT BOUND MATTERS BECAUSE AN EARLIER PASS BROKE IT. This class was recorded as 0x244 with a
+// second bounds pair at +0x22C, on the strength of IWorldClientBSP_IsPointOutsideWorld reading
+// 0x6F6E04 and the arithmetic 0x6F6BD8 + 0x22C landing on it exactly. The coincidence is real and
+// the conclusion was wrong: +0x22C is past the server object entirely. Those addresses are
+// FILE-SCOPE GLOBALS (see the block below), which is why the server BSP's own methods -- slots 2,
+// 3 and 6 of a different vtable -- reference the very same addresses. Two classes cannot share one
+// instance field.
+//
+// The lesson is cheap to apply: before believing an absolute address is `singleton + offset`,
+// check what the NEXT global object's address is. It bounds the class for free.
+//
+// The world_path array length is the observed string plus its terminator, NOT a proven buffer
+// capacity.
+//
+// ---- THE WORLD BOUNDS GLOBALS (not members of any class) ----
+//   g_WorldClientBSP_BoundsMin  0x6F6E04  float[3]
+//   g_WorldClientBSP_BoundsMax  0x6F6E10  float[3]
+// The authoritative world extent. IWorldClientBSP_IsPointOutsideWorld reads these and ignores
+// `this`, which is why it is __stdcall despite being vtable slot 16. LTWorldClientBSP.bounds_min/
+// max hold an identical copy live. The SERVER BSP derives from them instead of copying: its world
+// load (0x46300B, its vtable slot 6) writes `global_min - 100.0` and `global_max + 100.0` into its
+// own +0x04/+0x10, and the 100.0 is dbl_66E370 -- measured live as exactly the offset between the
+// two objects' bounds pairs.
+class LTWorldClientBSP 0x170 {
     void* vftable              @0x00 [[code]]   // CONFIRMED: live 0x6775F0, and slots 7/13/14/16 are mapped
     LTVector bounds_min        @0x04   // CONFIRMED: equals the +0x22C copy live
     LTVector bounds_max        @0x10   // CONFIRMED
     uint32_t world_tree_node_count @0x1C   // CONFIRMED == 649 live, exactly the nodes reached by walking world_tree_root
     LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED three ways: climbing LTObject.world_tree_link's parent chain reaches it, WorldBSP/VisTree descend from it live, and it is THE ENGINE'S OWN STARTING NODE for insertion. That last one took two indirections to establish and is worth the trail: LTWorldTree_AddObject is `(world, object)` and starts at `world + 0x1C`; `world` comes from the object's owner (LTObject +0x34, the singleton g_LTObjectOwner) through owner vtable slot 3, which forwards to IWorldClientBSP vtable slot 13 -- and that slot is literally `lea eax, [ecx+4]; retn`. So `world` is `bsp + 4` and `world + 0x1C` is `bsp + 0x20`, i.e. this field. An earlier draft nearly recorded `world + 0x1C` as a field of some other class, because +0x1C OF THIS CLASS is the node count (649) and the arithmetic only closes once the +4 is followed. // AND IT IS GROWN, NOT LOADED: LTWorldClientBSP_Construct calls LTWorldTree_InitFields, which zeroes the bounds, sets world_tree_node_count to 1 and leaves this null -- there is no world-tree stream loader at all, unlike the vis tree beside it (IWorldClientBSP_LoadVisTree, vtable slot 18). Nodes appear as objects are inserted through LTWorldTree_AddObject. THAT IS THE STRUCTURAL REASON FOR THE STALENESS ASYMMETRY recorded in reversing/MAPPING_WORKFLOW.md: the vis tree is immutable level data loaded once, so nothing in it can go stale, while this tree indexes moving objects and is mutated at runtime -- so a stale entry here is native to the design rather than a fault.
     LTVisTree vis_tree         @0x24   // CONFIRMED embedded sub-object: IWorldClientBSP vtable slot 14 is `return this + 36`
-    uint8_t unk_48             @0x48   // vtable slot 7 returns this byte (IWorldClientBSP_GetFlag48); live 1
-    uint8_t unk_49             @0x49   // live 1
+    void* attach_resource      @0x44   // Created during world attach and returned by vtable slot 15 (`mov eax, [ecx+44h]`). IWorldClientBSP_AttachToServerWorld releases the previous value then reassigns from 0x4633DC; live it is a heap pointer (0x290298A8). What it owns is unmapped.
+    uint8_t world_attached     @0x48   // CONFIRMED A LOADED-WORLD FLAG: LTWorldClientBSP_Construct zeroes it and IWorldClientBSP_AttachToServerWorld sets it to 1 on success only, in the same breath as world_attached_2 and the world_path copy. Vtable slot 7 is its getter. Live 1.
+    uint8_t world_attached_2   @0x49   // CONFIRMED set to 1 beside world_attached, by the same store pair, and zeroed by the same constructor. Vtable slot 8 is its getter. NO CODE FOUND SO FAR DISTINGUISHES THE TWO -- they are written together and read separately, so they are named as a pair rather than guessed apart. Live 1.
     char world_path[44]        @0x4A   // CONFIRMED: the loaded .wld path, and IWorldClientBSP vtable slot 9 is its getter (`lea eax, [ecx+4Ah]`) -- see sdk::WorldBSP::world_path()/world_name(). Corroborated three ways: the getter's offset, this field, and LTWorldClientBSP_Construct zeroing exactly this byte, which is what an unloaded world looks like. The 44 is 43 observed characters plus a terminator, measured again live. Length is the observed string + NUL; the real buffer is probably larger and its capacity is unverified.
-    LTVector bounds_min_2      @0x22C  // CONFIRMED: the pair IWorldClientBSP_IsPointOutsideWorld actually reads. IT LOOKS LIKE A GLOBAL IN A DECOMPILE and is not: the singleton sits at a fixed 0x6F6BD8, so the compiler folded `this->bounds_min_2` into the absolute 0x6F6E04 (== 0x6F6BD8 + 0x22C), which is also why that function is __stdcall and ignores `this` despite being vtable slot 16. A later pass re-found those addresses, took them for file-scope globals, and read them off the module base -- which works only because the object is static and says the wrong thing about the layout. THE COMPARISON IS STRICT (`min > p`, `max < p`), so a point exactly ON a bound is INSIDE: confirmed by calling the engine's own function through the vtable and comparing against sdk::WorldBSP::is_point_outside_world over the centre, the six face points, six points one unit beyond each face and both extreme corners -- 15/15, 9 inside and 6 outside.
-    LTVector bounds_max_2      @0x238  // CONFIRMED
 }
 
 // NOT an invariant: object positions lying inside the world bounds. Live it is

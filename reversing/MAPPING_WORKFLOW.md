@@ -963,6 +963,48 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE NEXT GLOBAL OBJECT'S ADDRESS BOUNDS THE CLASS. Check it before mapping a far field.**
+  `LTWorldClientBSP` stood at `0x244` with a bounds pair at `+0x22C`, mapped because
+  `IsPointOutsideWorld` reads `0x6F6E04` and `0x6F6BD8 + 0x22C` lands on it exactly. The
+  coincidence is real. The conclusion was wrong: `g_pIWorldServerBSP`'s object sits at
+  `0x6F6D48`, only `0x170` past the client's, with its OWN distinct vtable -- so the client class
+  cannot reach `+0x22C`, and those addresses are file-scope globals shared by both classes.
+
+  Two confirmations beyond the address arithmetic. The SERVER's methods reference the same
+  addresses absolutely, and two classes cannot share one instance field. And the writer settles
+  it outright: the server's world load READS those globals and stores `global -/+ 100.0` into its
+  own `+0x04`/`+0x10` -- which is exactly the difference measured live between the two objects'
+  bounds. Reading the producer decided in one function what address arithmetic could not.
+
+  I have now been wrong in BOTH directions on this one pair: first reading them as globals
+  (right, for weak reasons), then "correcting" that to instance fields on the strength of the
+  schema note (wrong, and I recorded a self-criticism for the correct version). The fix is not
+  more care, it is a cheap mechanical bound: the distance to the next singleton is a hard ceiling
+  on a class, it needs no understanding of any field, and it is now asserted --
+  `sizeof(LTWorldClientBSP) <= server_addr - client_addr`. Under the old claim, 580 against a
+  368-byte gap fails outright, so several passes of this error would have been caught on the
+  first run.
+
+- **CODE CAN BE WRONG IN MEANING WHILE RIGHT IN VALUE, and no test notices.** While the schema
+  said `+0x22C`, `engine_bounds()` read `bsp->bounds_min_2` -- past the end of the object -- and
+  returned perfectly correct numbers, because that address IS the global's address. Every check
+  passed: the copies agreed, and 15/15 points matched the engine's own function.
+
+  Values agreeing is not provenance agreeing. When a field's ADDRESS can be reached two ways,
+  a value check cannot tell you which one you are using -- only a structural fact (here the
+  object's extent) can. Prefer the check that constrains the LAYOUT over the one that compares
+  the contents.
+
+- **A flag pair written together should be named as a pair, not guessed apart.**
+  `IWorldClientBSP_AttachToServerWorld` sets `+0x48` and `+0x49` to 1 in consecutive stores on
+  its success path, and the constructor zeroes both. They have separate getters (slots 7 and 8)
+  but nothing found so far distinguishes them, so `is_world_loaded()` requires BOTH rather than
+  picking one -- and the schema says outright that they are indistinguishable so far instead of
+  inventing a difference.
+
+  That attach function was worth reading for more than the flags: it is where the world path is
+  written (`+0x4A`), which corroborates the getter at slot 9, and where `+0x44`'s resource is
+  created, which explains slot 15. One function closed out four fields.
 - **A MAGIC AND VERSION CHECK IDENTIFIES A LOADER INSTANTLY, and names its neighbours.**
   `IWorldClientBSP` slot 12 reads two dwords and compares them against `1128549463` and `126`.
   That constant is `"WLDC"` little-endian, so the function is the world-file entry point --
@@ -998,21 +1040,23 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   The reading side needs the inverse: the fixture gained `json_str`, which UNESCAPES. Comparing
   the raw JSON text would have compared `\\\\` against `\\` and silently tested the escaping
   instead of the path.
-- **A BARE ADDRESS IN A DECOMPILE MAY BE A STATIC OBJECT'S FIELD.** `IsPointOutsideWorld` reads
-  six floats at `0x6F6E04..0x6F6E18` and Hex-Rays renders them as `flt_...` globals. They are
-  `g_pIWorldClientBSP`'s own fields: the singleton is at a fixed `0x6F6BD8`, and
-  `0x6F6BD8 + 0x22C` is exactly `0x6F6E04`, so the compiler folded `this->bounds_min_2` into a
-  constant. That is also why the function is `__stdcall` and ignores `this` while being a vtable
-  slot.
+- **A BARE ADDRESS IN A DECOMPILE MAY BE A STATIC OBJECT'S FIELD -- BUT PROVE THE OBJECT REACHES
+  IT. [SUPERSEDED, and left standing as the mistake it was.]** `IsPointOutsideWorld` reads six
+  floats at `0x6F6E04..0x6F6E18`, and I reasoned that since the singleton sits at `0x6F6BD8` and
+  `0x6F6BD8 + 0x22C` lands there exactly, they must be its fields rather than globals -- and
+  "corrected" a working implementation to match, recording a self-criticism for the version that
+  was right.
 
-  I read them off the module base as globals. It WORKS -- the object is static -- and it says
-  something false about the layout. Whenever an absolute address turns up inside a method,
-  subtract the singleton's address before believing it is a global; if the difference is a small
-  sane offset, it is a field.
+  THE REASONING WAS BACKWARDS. The next pass found `g_pIWorldServerBSP`'s object at `0x6F6D48`,
+  only `0x170` past the client's and carrying its own vtable, so the client class cannot reach
+  `+0x22C` at all. They are genuine file-scope globals, which is why both classes reference them
+  absolutely. See the class-extent entry above for the bound that settles this kind of question
+  mechanically.
 
-  This was the SECOND near-duplicate of an existing correct note in one session (the vtable slot
-  numbering was the first). Both times the schema already had it, recorded more precisely than my
-  rediscovery. GREP THE SCHEMA FOR THE OFFSET BEFORE WRITING IT UP.
+  What survives of the original point: an absolute address inside a method CAN be a static
+  object's field, and it is worth testing. What does not survive: treating the arithmetic as
+  proof. Subtracting the singleton's address always yields *some* offset; that it looks sane means
+  nothing until the class is known to extend that far.
 
 - **Never derive a probe's INPUTS from the code the probe is testing.** My first run built fifteen
   probe points from `engine_bounds()` and compared my predicate against the engine's. Every point
