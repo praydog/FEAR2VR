@@ -28,6 +28,7 @@
 #include "sdk/Engine.hpp"
 #include "sdk/EngineVars.hpp"
 #include "sdk/Input.hpp"
+#include "sdk/Physics.hpp"
 #include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
@@ -4100,6 +4101,43 @@ std::string build_shader_params_json() {
     json_append_bool(out, "input_window_readable", sdk::Input::main_window() != 0);
     json_append_bool(out, "input_window_iconic_readable", iconic.has_value());
     json_append_bool(out, "input_window_iconic", iconic.value_or(false));
+
+    // ---- ILTPhysics: THE SLOT MAP, EXERCISED --------------------------------------------------
+    //
+    // The two queries that need no object handle are real calls through real vtable slots, which is the
+    // only way to test a slot map: a wrong index either faults or returns nonsense, whereas reading the
+    // table's addresses only proves they are addresses.
+    const uintptr_t phys = sdk::Physics::instance();
+    json_append_bool(out, "physics_instance", phys != 0);
+    const auto phys_class = sdk::Physics::class_name();
+    json_append_bool(out, "physics_class_is_cltphysicsclient",
+                     phys_class.has_value() && *phys_class == "CLTPhysicsClient");
+    size_t phys_slots_ok = 0;
+    for (size_t i = 0; i < sdk::Physics::kSlotCount; ++i) {
+        if (sdk::Physics::slot_address(static_cast<sdk::Physics::Slot>(i)).has_value()) {
+            ++phys_slots_ok;
+        }
+    }
+    json_append_double(out, "physics_slots_resolved", static_cast<double>(phys_slots_ok), 0);
+    json_append_bool(out, "physics_slot_past_end_refused",
+                     !sdk::Physics::slot_address(
+                          static_cast<sdk::Physics::Slot>(sdk::Physics::kSlotCount)).has_value());
+
+    const auto stair = sdk::Physics::stair_height();
+    json_append_bool(out, "physics_stair_height_readable", stair.has_value());
+    json_append_double(out, "physics_stair_height", stair.value_or(-1.0f), 3);
+
+    const auto gforce = sdk::Physics::global_force();
+    json_append_bool(out, "physics_global_force_readable", gforce.has_value());
+    if (gforce.has_value()) {
+        json_append_double(out, "physics_global_force_x", (*gforce)[0], 3);
+        json_append_double(out, "physics_global_force_y", (*gforce)[1], 3);
+        json_append_double(out, "physics_global_force_z", (*gforce)[2], 3);
+    }
+    // A null handle must be refused rather than dereferenced by the engine on our behalf.
+    json_append_bool(out, "physics_null_object_refused",
+                     !sdk::Physics::velocity(0).has_value() &&
+                         !sdk::Physics::is_world_object(0).has_value());
 
     // ---- THE REGISTRY MET THE CATALOGUE ---------------------------------------------------------
     //

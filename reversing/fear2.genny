@@ -3885,3 +3885,55 @@ class LTInputDeviceMouse 0x30 {
 // pointer the live object actually holds, and the two agree.
 //
 // 876 checks, 0 failures.
+
+// ==================================================================================================
+// ILTPhysics (CLTPhysicsClient) -- ALL 18 SLOTS ACCOUNTED FOR
+// ==================================================================================================
+//
+//      0  abstract_base_dtor                     9  SetVelocity          (ref 11)
+//      1  InterfaceImplementation -> name       10  GetAcceleration      (ref 14)
+//      2  IsWorldObject           (ref 1)       11  SetAcceleration      (ref 15)
+//      3  GetStairHeight          (ref 2)       12  MoveObject           (ref 16)
+//      4  SetStairHeight          (ref 3)       13  GetStandingOn        (ref 17)
+//      5  GetObjectDims           (ref 8)       14  GetGlobalForce       (ref 18)
+//      6  SetObjectDims           (ref 9)       15  UpdateMovement       (ref 20)
+//      7  SetObjectDimsEx -- NOT IN THE REF     16  MovePushObjects      (ref 21)
+//      8  GetVelocity             (ref 10)      17  RotatePushObjects    (ref 22)
+//
+// TEN SLOTS CAME FROM STRINGS the functions reference themselves -- "CLTPhysicsClient::SetVelocity",
+// "ILTPhysics::GetObjectDims", "CommonLT::GetVelocity". Ground truth from the binary.
+//
+// THE REFERENCE ORDER IS PRESERVED WITH DELETIONS, which is what made the remaining seven solvable. Across
+// the string-anchored slots the offset between reference index and slot drifts monotonically -- -3, -2, -2,
+// -4, -4, -4, -4, -5, -5, -5 -- so nothing is reordered, only removed. FOUR reference methods are absent:
+// GetMass/SetMass and GetFrictionCoefficient/SetFrictionCoefficient (ref 4-7, collapsing into one gap),
+// GetForceIgnoreLimit/SetForceIgnoreLimit (ref 12-13), and SetGlobalForce (ref 19).
+//
+// BUT ORDERING ALONE COULD NOT NAME THE GAPS, and this is the part worth remembering: four slots stood
+// against seven candidate methods before GetObjectDims, so the alignment narrowed the candidates without
+// choosing among them. Each gap slot was pinned by WHAT IT DOES:
+//     slot 2  tests object type 2 (worldmodel) plus a flag bit and returns the LT_YES/LT_NO pair 0x56/0x57
+//     slot 3  reads one float from this+4 into an out-parameter; slot 4 writes it
+//     slot 6  forwards (obj, LTVector*, flag) to the same impl slot 7 uses with an extra out-vector
+//     slot 14 copies three floats out of g_pClientMgr+0x1440
+//
+// AND THEN THE ENGINE CONFIRMED SLOT 14 SEMANTICALLY. Calling it returns (0, -980, 0). Nothing but gravity
+// looks like that, and a misidentified slot would have to produce a downward-only vector of plausible
+// magnitude by coincidence. The suite asserts the SHAPE -- x and z zero, y negative -- rather than the
+// value, which is engine tuning. Stair height reads 40.0 and is likewise asserted only as positive and sane.
+//
+// SLOT 7 IS A FEAR 2 ADDITION with no counterpart in the reference: a SetObjectDims variant taking an extra
+// out-vector, forwarding to the same implementation as slot 6. Named SetObjectDimsEx rather than guessed at.
+//
+// EXPOSED AS sdk::Physics, which is genuinely load-bearing for a VR mod: velocity and acceleration are what
+// locomotion has to reconcile against, and reading what the engine already believes about the player is far
+// cheaper than hooking the movement code. The read-only queries needing no object handle -- stair_height()
+// and global_force() -- are CALLED by the suite, because calling is the only way to test a slot map: a wrong
+// index resolves exactly as well as a right one. The mutators (MoveObject, UpdateMovement) are deliberately
+// not driven; their slot indices are handed over instead, since running engine physics from an arbitrary
+// thread is the consumer's decision.
+//
+// A CONSUMER PORTING CODE written against the reference headers will find those four methods MISSING rather
+// than misplaced, which is why this map is recorded slot by slot instead of "it matches ILTPhysics".
+//
+// 895 checks, 0 failures.

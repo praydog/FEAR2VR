@@ -4052,6 +4052,52 @@ int main(int argc, char** argv) {
             check(json_bool(body, "input_enabled_readable", ie_ok) && ie_ok,
                   "the input-enabled gate is readable, separately from the simulation gate");
 
+            // ---- ILTPhysics: THE SLOT MAP, EXERCISED -------------------------------------------
+            //
+            // Ten of the 18 slots were named from strings the functions reference themselves; the other
+            // seven from behaviour, each landing where the reference tree's ILTPhysics declares it. That
+            // second half needs testing by CALLING, not by reading addresses -- a wrong index resolves
+            // just as well as a right one.
+            bool ph_inst = false, ph_cls = false;
+            check(json_bool(body, "physics_instance", ph_inst) && ph_inst,
+                  "ILTPhysics.Client resolves through the registry");
+            check(json_bool(body, "physics_class_is_cltphysicsclient", ph_cls) && ph_cls,
+                  "and the instance names itself CLTPhysicsClient through its own getter");
+            double ph_slots = -1.0;
+            check(json_double(body, "physics_slots_resolved", ph_slots) && ph_slots == 18.0,
+                  "all 18 slots resolve to engine code");
+            bool ph_past = false;
+            check(json_bool(body, "physics_slot_past_end_refused", ph_past) && ph_past,
+                  "and slot 18 is refused rather than read past the table");
+
+            // THE SEMANTIC CONFIRMATION, and it is worth more than the address checks above. Slot 14 was
+            // identified as GetGlobalForce by behaviour -- it copies three floats out of
+            // g_pClientMgr+0x1440 -- and calling it returns (0, -980, 0). Nothing but gravity looks like
+            // that. A wrong slot would have to return a downward-only vector of plausible magnitude by
+            // coincidence.
+            bool gf_ok = false;
+            double gfx = 1.0, gfy = 0.0, gfz = 1.0;
+            check(json_bool(body, "physics_global_force_readable", gf_ok) && gf_ok,
+                  "the global force vector reads through slot 14");
+            check(json_double(body, "physics_global_force_x", gfx) &&
+                      json_double(body, "physics_global_force_y", gfy) &&
+                      json_double(body, "physics_global_force_z", gfz) &&
+                      gfx == 0.0 && gfz == 0.0 && gfy < 0.0,
+                  "and it is a purely downward vector, i.e. gravity");
+
+            // Stair height reads a single float from the interface's own field. Not pinned to 40: it is
+            // engine configuration, and asserting the value would encode this build's tuning.
+            bool sh_ok = false;
+            double sh = -1.0;
+            check(json_bool(body, "physics_stair_height_readable", sh_ok) && sh_ok &&
+                      json_double(body, "physics_stair_height", sh) && sh > 0.0 && sh < 10000.0,
+                  "the stair height reads as a positive, sane float");
+
+            // A null handle must be refused by this SDK rather than handed to the engine to dereference.
+            bool ph_null = false;
+            check(json_bool(body, "physics_null_object_refused", ph_null) && ph_null,
+                  "object queries refuse a null handle instead of calling through it");
+
             // ---- THE REGISTRY MET THE CATALOGUE ------------------------------------------------
             //
             // Two independently built subsystems: the registry finds interface holders by scanning for
