@@ -963,6 +963,34 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A weak check HIDES the error that would justify strengthening it.** The cull-volume rule
+  was validated by comparing against the volume the engine had stored, and it matched
+  3583/3583. But the sphere comparison deliberately omitted the RADIUS, because the radius
+  rule on OT_MODEL's `sphere_source` path was not established -- so the check could not have
+  detected a wrong radius, and therefore never did.
+
+  Reading the engine's own virtual closed both halves at once. Object vtable SLOT 2 is the
+  cull-volume producer and its RETURN CODE is the shape tag (0 none / 1 sphere / 2 box):
+
+    OT_NORMAL          returns 0 outright
+    OT_MODEL           returns 1 on both paths
+    OT_WORLDMODEL      LTObject_GetCullVolume_AABB, shared with OT_CAMERA -> 2
+    OT_SPRITE          tests its kind, returns 2 or 1
+    OT_PARTICLESYSTEM  returns cull_volume_type ITSELF -- the field IS the tag
+
+  `OT_MODEL_GetCullVolume` takes the radius from the shared asset (`**(float**)(obj+0xEC)`,
+  LTModelAsset.radius) with NO scale on that path, while the other path does scale. My
+  reimplementation applied `* scale` to both -- invisible live because scale is 1.0 on every
+  object, and unreachable by the check because the check skipped the radius.
+
+  Fixed, and then the check was STRENGTHENED to compare the radius too: still 3583/3583, so
+  four floats are pinned where three were. The order matters -- understanding the mechanism is
+  what made the stronger assertion legitimate, and the stronger assertion is what will catch
+  the next error in it.
+
+  Also worth noting what the virtuals CONFIRMED: `OT_SPRITE_GetCullVolume` reads the sprite's
+  own aabb pair at +0x120/+0x12C, which is exactly the field a previous pass got wrong by
+  reading LTObject's pair instead. The engine's code independently validated that fix.
 - **A near-miss recorded honestly is worth chasing one more indirection.** Last pass ended by
   noting that `LTWorldTree_AddObject` starts its descent at `world + 0x1C` and that this could
   NOT be `LTWorldClientBSP + 0x1C`, since that offset is the confirmed node count (649) while

@@ -395,6 +395,22 @@ std::optional<TransformQuality> brush_transform_quality(const regenny::LTObject*
 // the engine's stored copy -- and returned only "volume_matched" counters. The rule is the
 // valuable part, so it lives here now and the check compares the two functions below.
 //
+// THE RULE IS THE ENGINE'S OWN VIRTUAL, not an inference from stored values. Object vtable
+// SLOT 2 is the cull-volume producer, and its RETURN CODE is the shape tag:
+//
+//   0 -> no volume     1 -> sphere     2 -> box
+//
+//   OT_NORMAL          returns 0 outright
+//   OT_MODEL           returns 1 on both its paths
+//   OT_WORLDMODEL      LTObject_GetCullVolume_AABB, shared with OT_CAMERA -> 2
+//   OT_SPRITE          tests its kind, returns 2 or 1
+//   OT_PARTICLESYSTEM  returns cull_volume_type ITSELF, so the field IS the tag
+//
+// Reading those five virtuals is what promoted this from "matches what the engine stored" to
+// "is what the engine computes" -- and it immediately found a discrepancy that comparing
+// against stored values could not: see the OT_MODEL sphere note in the .cpp, where an extra
+// `* scale` was invisible because scale is 1.0 on every live object.
+//
 // THE SHAPE FOLLOWS FROM THE TYPE, and for two types from a per-object field:
 //
 //   OT_NORMAL              never has one

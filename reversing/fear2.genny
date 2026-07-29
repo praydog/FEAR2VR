@@ -299,6 +299,19 @@ class LTWorldTreeLink 0x8 {
 //
 // It splits on X and Z only -- Y is never divided -- so this is a QUADTREE over
 // the ground plane, not an octree.
+//
+// THE CULL-VOLUME VIRTUAL, since it decides what every spatial structure below indexes:
+// object vtable SLOT 2 produces the volume and RETURNS THE SHAPE TAG -- 0 none, 1 sphere,
+// 2 box. Per type: OT_NORMAL returns 0 outright; OT_MODEL returns 1 on both its paths (asset
+// radius unscaled when sphere_source is set, vis_radius * scale otherwise); OT_WORLDMODEL and
+// OT_CAMERA share LTObject_GetCullVolume_AABB and return 2; OT_SPRITE tests its own kind
+// (3/4/7/9 -> its OWN aabb pair at +0x120/+0x12C -> 2, else position + radius -> 1); and
+// OT_PARTICLESYSTEM returns cull_volume_type itself, so that byte at +0xDD IS the tag.
+//
+// LTObjectOwner_UpdateSpatialRecord calls it and dispatches on the return to
+// LTSpatialRecord_CollectSphere or _CollectAABB, which is what links the volume to the
+// visibility structures.
+
 class LTWorldTreeNode 0x18 {
     LTWorldTreeLink objects   @0x00   // CONFIRMED: head of this node's object list; objects link in at LTObject.world_tree_link (+0xC4)
     float split_x             @0x08   // CONFIRMED as a descent comparand: compared against the object's aabb_min.x / aabb_max.x

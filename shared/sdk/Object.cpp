@@ -693,15 +693,23 @@ std::optional<CullVolume> computed_cull_volume(const regenny::LTObject* obj) {
             set_vec(&out.max, r.aabb_max, nullptr);
             return out;
         }
-        case 1: { // OT_MODEL -- always a sphere, but from one of two sources
+        case 1: { // OT_MODEL -- always a sphere (the virtual returns 1 on both paths), but
+                  // the radius comes from a different place on each, and the engine does NOT
+                  // treat them the same way.
             out.shape = CullShape::Sphere;
             if (r.sphere_source != 0) {
                 set_vec(&out.center, r.sphere_center, nullptr);
-                // The radius is not part of the sphere_source path in the engine's own
-                // comparison, which only checks the centre -- so it is left as the
-                // scaled visibility radius rather than invented.
-                out.radius = r.vis_radius * r.scale;
+                // NO SCALE HERE. OT_MODEL_GetCullVolume reads the radius straight out of the
+                // shared asset -- `**(float**)(obj + 0xEC)`, i.e. LTModelAsset.radius -- and
+                // multiplies by nothing. An earlier version of this branch applied
+                // `* scale`, which was invisible live because scale is 1.0 on every object,
+                // and was only caught by reading the virtual rather than comparing stored
+                // values. vis_radius is a per-object CACHE of that same asset field (equal on
+                // 215/215), so reading it here is the same number without a second
+                // dereference.
+                out.radius = r.vis_radius;
             } else {
+                // This path DOES scale: the virtual computes `vis_radius * scale`.
                 set_vec(&out.center, r.pos, nullptr);
                 out.radius = r.vis_radius * r.scale;
             }
@@ -815,11 +823,14 @@ std::optional<bool> cull_volume_is_current(const regenny::LTObject* obj) {
             return stored->min.x == 0.0f && stored->min.y == 0.0f &&
                    stored->min.z == 0.0f && stored->max.x == 0.0f;
         case CullShape::Sphere:
-            // Centre only. The engine's own comparison does not pin the radius on the
-            // sphere_source path, so requiring it would assert more than is established.
+            // CENTRE AND RADIUS. An earlier version compared the centre only, because the
+            // radius rule on the sphere_source path was not established -- reading
+            // OT_MODEL_GetCullVolume settled it (asset radius, unscaled), so the stronger
+            // comparison is now warranted and this pins four floats instead of three.
             return volume_approx_eq(stored->center.x, computed->center.x) &&
                    volume_approx_eq(stored->center.y, computed->center.y) &&
-                   volume_approx_eq(stored->center.z, computed->center.z);
+                   volume_approx_eq(stored->center.z, computed->center.z) &&
+                   volume_approx_eq(stored->radius, computed->radius);
         case CullShape::Box:
             return volume_approx_eq(stored->min.x, computed->min.x) &&
                    volume_approx_eq(stored->max.x, computed->max.x);
