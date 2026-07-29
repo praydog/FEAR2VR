@@ -1481,7 +1481,38 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- THE READINGS WERE STALE, AND THAT CORRECTS SEVERAL CLAIMS ABOVE ----
+// // ---- FOUR CLOCKS, AND WHICH ONE ANSWERS "IS THE ENGINE RUNNING" ----
+//
+// Measured across two requests two seconds apart, with a level loaded:
+//
+//     shell_real_time    7273.451 -> 7275.466   ADVANCES  -- a WALL clock, +2.015 s in ~2 s
+//     shell_game_time    1181.754 -> 1181.754   frozen
+//     engine_time_ms        18782 ->    18782   frozen
+//     k_fTime              18.782 ->    18.782  frozen
+//
+// SO THE WHOLE ENGINE IS STOPPED, not merely its render path. Only the wall clock moves. That matters
+// because "the shell's real clock advanced" is exactly the kind of check that looks like a liveness
+// proof and is not one -- it would advance with the process completely frozen. sdk::Engine::client_time
+// already documented that ITS clock stops when paused; the addition here is that k_fTime stops with it,
+// and that nothing in the camera or shader-parameter material is current while it does.
+//
+// AND THE TWO FROZEN CLOCKS AGREE, which is a mapping check worth having: k_fTime is
+// fmod(engine seconds, g_LTShaderTimeModulus) and that modulus is exactly 1000.0 s. Measured
+// fmod(18.78200, 1000) = 18.78200 against a published k_fTime of 18.78200.
+//
+// The two sides are reached in completely different ways -- the engine clock by CALLING an accessor
+// located by byte pattern, k_fTime by WALKING the shader parameter list to its record and reading the
+// inline value. Nothing couples them, so agreement means both mappings are correct.
+//
+// IT IS NOT A LIVENESS CHECK, and conflating the two would be the same mistake as before: when the
+// engine stops, both sides freeze TOGETHER and a frozen pair still agrees. Liveness needs the same clock
+// sampled twice over real time; correctness needs the two clocks compared once.
+//
+// EXPOSED AS sdk::ShaderParams::kShaderTimeModulus and frame_time_matches_engine_clock(), the latter
+// comparing across the wrap so a value just under the modulus and one just over are not read as far
+// apart. A false answer means one of the two mappings is wrong -- never that the game is paused.
+//
+// ---- THE READINGS WERE STALE, AND THAT CORRECTS SEVERAL CLAIMS ABOVE ----
 //
 // MEASURED: k_fTime is published once per frame by SceneRenderer_BeginFrame, and it sat frozen at
 // 18.78200 across separate requests seconds apart, while g_SceneRenderer's state read 0 for 6000

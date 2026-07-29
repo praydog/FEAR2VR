@@ -229,6 +229,21 @@ public:
     // A single read cannot detect it either. Sample this twice with real time in between: unchanged means
     // the render path has not run and every other reading is a snapshot of the past.
     static std::optional<float> frame_time();
+
+    // The modulus BeginFrame wraps the clock with: g_LTShaderTimeModulus, exactly 1000.0 seconds. So
+    //
+    //     frame_time() == fmod(Engine::client_time().seconds, kShaderTimeModulus)
+    //
+    // which is an invariant across two ENTIRELY separate mappings: the engine clock is reached by
+    // calling an accessor located by byte pattern, this value by walking a linked list of parameter
+    // records. Nothing forces them to agree, so agreement means both mappings are right -- and a
+    // consumer can use it to check its own reading of either.
+    static constexpr float kShaderTimeModulus = 1000.0f;
+
+    // Does frame_time() agree with the engine's own clock, modulo the wrap? nullopt when either side is
+    // unavailable. False is meaningful: it means one of the two mappings is wrong, not that the game is
+    // paused -- both freeze together when the engine stops, and a frozen pair still AGREES.
+    static std::optional<bool> frame_time_matches_engine_clock(float tolerance = 0.05f);
 };
 
 }  // namespace sdk

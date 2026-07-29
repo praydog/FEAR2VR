@@ -1,10 +1,12 @@
 #include "ShaderParams.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <unordered_set>
 
 #include <utility/Seh.hpp>
 
+#include "Engine.hpp"
 #include "Modules.hpp"
 
 namespace sdk {
@@ -360,6 +362,32 @@ std::optional<std::array<float, 3>> ShaderParams::world_space_camera_dir() {
 
 std::optional<float> ShaderParams::frame_time() {
     return scalar("k_fTime");
+}
+
+std::optional<bool> ShaderParams::frame_time_matches_engine_clock(float tolerance) {
+    if (!std::isfinite(tolerance) || tolerance < 0.0f) {
+        return std::nullopt;
+    }
+    const auto published = frame_time();
+    const auto engine = Engine::client_time();
+    if (!published.has_value() || !engine.has_value()) {
+        return std::nullopt;
+    }
+    const float seconds = static_cast<float>(engine->seconds);
+    if (!std::isfinite(seconds) || !std::isfinite(*published)) {
+        return std::nullopt;
+    }
+    const float wrapped = std::fmod(seconds, kShaderTimeModulus);
+    if (!std::isfinite(wrapped)) {
+        return std::nullopt;
+    }
+    // Compare across the wrap: a value just under the modulus and one just over it are close in the
+    // engine's terms but far apart numerically.
+    float diff = std::fabs(wrapped - *published);
+    if (diff > kShaderTimeModulus * 0.5f) {
+        diff = kShaderTimeModulus - diff;
+    }
+    return diff <= tolerance;
 }
 
 }  // namespace sdk

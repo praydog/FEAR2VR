@@ -963,6 +963,17 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A WALL CLOCK ADVANCING IS NOT EVIDENCE THE ENGINE RUNS.** Four clocks are reachable here and only one
+  moved: shell_real_time gained 2.015 s over two seconds while game time, the engine clock and k_fTime all
+  sat frozen. A check phrased "the clock advanced" would pass with the process suspended. Pick the clock the
+  SUBSYSTEM you care about publishes -- k_fTime for the render path, the engine clock for engine ticks -- and
+  say which one a check is about.
+  
+- **DISTINGUISH A MAPPING CHECK FROM A LIVENESS CHECK EVEN WHEN THEY USE THE SAME FIELD.** k_fTime versus the
+  engine clock is a MAPPING check: two unrelated routes (a byte-pattern accessor call, a linked-list walk)
+  must agree, and they agree just as well when both are frozen. Sampling k_fTime twice is a LIVENESS check.
+  Same value, two different questions, and only the second one cares about time passing.
+
 - **A FROZEN SNAPSHOT PASSES EVERY COHERENCE CHECK, SO CHECK THAT THE ENGINE IS RUNNING.** For several passes I
   read the camera record and shader registry as live state, explained a constant mode 2 as "the engine parks
   there", and explained 4000 failed perspective samples as "passes are transient". k_fTime -- published once

@@ -3897,6 +3897,23 @@ int main(int argc, char** argv) {
             check(json_double(body, "renderer_state", rst) && rst >= 0.0,
                   "the scene renderer's state reads");
 
+            // TWO MAPPINGS, ONE CLOCK. k_fTime is fmod(engine seconds, 1000), and the two sides are
+            // reached completely differently -- the engine clock by calling an accessor located by byte
+            // pattern, k_fTime by walking a linked list of shader parameter records. Nothing forces them
+            // to agree, so agreement means both mappings are right.
+            //
+            // Note this holds whether or not the engine is ticking: when it stops, BOTH freeze, and a
+            // frozen pair still agrees. So this is a mapping check, not a liveness check -- the liveness
+            // question is separate and immediately below.
+            bool cross_avail = false, cross_ok = false;
+            check(json_bool(body, "clock_cross_check_available", cross_avail) && cross_avail,
+                  "both clocks are readable, so the cross-check can run");
+            if (cross_avail) {
+                check(json_bool(body, "clock_cross_check", cross_ok) && cross_ok,
+                      "k_fTime == fmod(engine seconds, 1000) -- a byte-pattern accessor and a "
+                      "linked-list walk agree");
+            }
+
             // IS THE RENDER PATH ACTUALLY RUNNING? k_fTime is published once per frame by BeginFrame, so
             // comparing it across two requests answers that -- and the answer changes how every other
             // reading in this block should be read. When it is NOT advancing, the camera record and the
