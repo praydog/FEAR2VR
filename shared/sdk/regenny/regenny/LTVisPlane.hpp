@@ -6,7 +6,7 @@ class LTVisPlane {
 public:
     regenny::LTVector normal; // 0x0
     float distance; // 0xc
-    uint32_t unk_10; // 0x10
+    uint32_t corner_code; // 0x10
 }; // Size: 0x14
 #pragma pack(pop)
 }

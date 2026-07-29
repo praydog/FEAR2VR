@@ -680,6 +680,54 @@ int main(int argc, char** argv) {
                static_cast<long long>(ragree), static_cast<long long>(rprobes),
                static_cast<long long>(rhits));
 
+        // ---- THE BOX VARIANT, and the cache it depends on -----------------------------
+        int64_t bprobes = -1, bagree = -1, bhits = -1;
+        json_int(body, "box_probes", bprobes);
+        json_int(body, "box_agree", bagree);
+        json_int(body, "box_hits", bhits);
+        check(bprobes == 3, "all three box extents were probed");
+        check(bhits > 0, "the scan found sectors, so the box agreement is not vacuous");
+        check(bagree == bprobes,
+              "the box descent finds EXACTLY what a full scan finds, at every extent");
+
+        // corner_code is DERIVED from the normal, and the engine's box test reads the stored
+        // copy. A stale one mis-answers box queries while leaving sphere queries correct, so
+        // this asserts the live world has no such plane. It is also the check that would catch
+        // the rule itself being wrong: the codes were reverse-engineered from a table, and if
+        // corner_code_for() disagreed with the engine's own encoding this would be 0/125, not
+        // 124/125 -- a wrong rule fails everywhere at once, which is the easy kind of failure.
+        int64_t cprobed = -1, ccur = -1;
+        json_int(body, "code_probed", cprobed);
+        json_int(body, "code_current", ccur);
+        check(cprobed > 0, "planes with a cached corner code exist");
+        check(ccur == cprobed, "EVERY cached corner code matches what its own normal implies");
+        printf("[fixture] box queries: %lld/%lld extents agree (%lld hits); corner codes "
+               "%lld/%lld current\n",
+               static_cast<long long>(bagree), static_cast<long long>(bprobes),
+               static_cast<long long>(bhits), static_cast<long long>(ccur),
+               static_cast<long long>(cprobed));
+
+        // ---- SPHERE INSIDE BOX: two INDEPENDENT implementations, cross-checked ---------
+        //
+        // This is the oracle the earlier ones could not be. The sphere and box paths share no
+        // code -- separate engine functions, separate traversal arithmetic, and separate plane
+        // rejects (a slack term versus a selected corner) -- so an error in one is not
+        // automatically an error in the other. Geometry ties them together: a sphere of radius
+        // e sits inside the box of half-extent e, therefore every sector the sphere finds must
+        // also be found by the box.
+        int64_t cnp = -1, cnok = -1, cnsph = -1;
+        json_int(body, "contain_probes", cnp);
+        json_int(body, "contain_ok", cnok);
+        json_int(body, "contain_sphere", cnsph);
+        check(cnp == 3, "all three containment extents were probed");
+        check(cnsph > 0, "the sphere query found sectors, so containment is not vacuous");
+        check(cnok == cnp,
+              "every sector the sphere touches is also touched by the box that contains it");
+        printf("[fixture] sphere inside box: %lld/%lld extents (%lld sphere hits), independent "
+               "paths agree\n",
+               static_cast<long long>(cnok), static_cast<long long>(cnp),
+               static_cast<long long>(cnsph));
+
         // ---- PORTALS AND CONNECTIVITY ------------------------------------------------
         //
         // The load-bearing property is SYMMETRY. Both directions of an edge come from ONE

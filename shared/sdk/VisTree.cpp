@@ -446,6 +446,7 @@ namespace {
 struct PlaneRaw {
     float n[3];
     float d;
+    uint32_t code;
 };
 
 int64_t seh_copy_planes(const void* src, size_t count, PlaneRaw* out) {
@@ -457,6 +458,7 @@ int64_t seh_copy_planes(const void* src, size_t count, PlaneRaw* out) {
             out[i].n[1] = p[i].normal.y;
             out[i].n[2] = p[i].normal.z;
             out[i].d = p[i].distance;
+            out[i].code = p[i].corner_code;
         }
         n = static_cast<int64_t>(count);
     }
@@ -491,6 +493,7 @@ std::vector<VisTree::SectorPlane> VisTree::sector_planes(size_t index) {
         out[i].normal.y = raw[i].n[1];
         out[i].normal.z = raw[i].n[2];
         out[i].distance = raw[i].d;
+        out[i].corner_code = raw[i].code;
     }
     return out;
 }
@@ -1317,6 +1320,209 @@ std::vector<VisTree::Sector> VisTree::sectors_in_sphere(const regenny::LTVector&
         const size_t si = idx[static_cast<size_t>(i)];
         // The descent narrows; the per-sector test decides. Both are the engine's.
         if (!sector_overlaps_sphere(si, center, radius).value_or(false)) {
+            continue;
+        }
+        if (const auto s = sector(si); s.has_value()) {
+            out.push_back(*s);
+        }
+    }
+    return out;
+}
+
+}  // namespace sdk
+
+namespace sdk {
+
+namespace {
+
+struct Box {
+    float mn[3];
+    float mx[3];
+};
+
+// A mod computing a play space from two tracked points has no reason to have sorted them.
+Box normalised_box(const regenny::LTVector& a, const regenny::LTVector& b) {
+    const float av[3] = {a.x, a.y, a.z};
+    const float bv[3] = {b.x, b.y, b.z};
+    Box out{};
+    for (size_t i = 0; i < 3; ++i) {
+        out.mn[i] = av[i] < bv[i] ? av[i] : bv[i];
+        out.mx[i] = av[i] < bv[i] ? bv[i] : av[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+uint32_t VisTree::corner_code_for(const regenny::LTVector& normal) {
+    // g_LTVisAABBCornerTable's encoding: bit0 -> x=max, bit1 -> y=MIN, bit2 -> z=max. The
+    // engine wants the corner MAXIMISING dot(normal, corner), so each axis takes max where
+    // the component is >= 0 and min where it is < 0 -- note y's bit is therefore inverted
+    // relative to x and z. Reproduces all 125 live codes.
+    uint32_t code = 0;
+    if (normal.x >= 0.0f) {
+        code |= 1u;
+    }
+    if (normal.y < 0.0f) {
+        code |= 2u;
+    }
+    if (normal.z >= 0.0f) {
+        code |= 4u;
+    }
+    return code;
+}
+
+std::optional<bool> VisTree::plane_corner_code_is_current(size_t sector_index,
+                                                          size_t plane_index) {
+    const auto planes = sector_planes(sector_index);
+    if (plane_index >= planes.size()) {
+        return std::nullopt;
+    }
+    const auto& pl = planes[plane_index];
+    return pl.corner_code == corner_code_for(pl.normal);
+}
+
+std::optional<bool> VisTree::sector_overlaps_box(size_t index, const regenny::LTVector& min,
+                                                 const regenny::LTVector& max) {
+    const auto s = sector(index);
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    const Box q = normalised_box(min, max);
+    // LTVisSector_AABBOverlapsAABB: separated on any axis means no overlap.
+    const float smn[3] = {s->min.x, s->min.y, s->min.z};
+    const float smx[3] = {s->max.x, s->max.y, s->max.z};
+    for (size_t i = 0; i < 3; ++i) {
+        if (q.mn[i] > smx[i] || q.mx[i] < smn[i]) {
+            return false;
+        }
+    }
+    // LTVisPlane_RejectsAABB: the corner reaching FURTHEST TOWARD the positive side, tested
+    // against zero. No epsilon and no radius term -- the corner choice is the slack.
+    //
+    // The code is recomputed from the normal rather than read, on purpose: it is a cache, and
+    // this way a stale one cannot make the SDK disagree with its own arithmetic. Ask
+    // plane_corner_code_is_current() when the cache itself is the question.
+    for (const auto& pl : sector_planes(index)) {
+        const uint32_t code = corner_code_for(pl.normal);
+        const float cx = (code & 1u) != 0 ? q.mx[0] : q.mn[0];
+        const float cy = (code & 2u) != 0 ? q.mn[1] : q.mx[1];
+        const float cz = (code & 4u) != 0 ? q.mx[2] : q.mn[2];
+        if (pl.normal.x * cx + pl.normal.y * cy + pl.normal.z * cz - pl.distance < 0.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+namespace {
+
+// LTVisTree_QueryAABB's descent, POD in and POD out.
+int64_t seh_box_sectors(const regenny::LTVisTree* tree, const Box& q, size_t* out,
+                        size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* root = tree->root;
+        const auto* sectors = tree->sectors;
+        const uint32_t sector_count = tree->sector_count;
+        if (root == nullptr || sectors == nullptr || sector_count == 0) {
+            return -1;
+        }
+        const regenny::LTVisTreeNode* stack[128];
+        size_t sp = 0;
+        stack[sp++] = root;
+        size_t n = 0;
+        size_t guard = 0;
+        while (sp != 0 && guard < 4096) {
+            ++guard;
+            const auto* node = stack[--sp];
+            if (node == nullptr) {
+                continue;
+            }
+            const uint32_t count = node->element_count;
+            if (node->elements != nullptr && count != 0 && count < 100000u) {
+                for (uint32_t i = 0; i < count && n < max_out; ++i) {
+                    const auto* s = node->elements[i];
+                    if (s == nullptr) {
+                        continue;
+                    }
+                    const auto sa = reinterpret_cast<uintptr_t>(s);
+                    const auto ba = reinterpret_cast<uintptr_t>(sectors);
+                    if (sa < ba) {
+                        continue;
+                    }
+                    const uintptr_t off = sa - ba;
+                    if (off % sizeof(regenny::LTVisSector) != 0) {
+                        continue;
+                    }
+                    const uintptr_t idx = off / sizeof(regenny::LTVisSector);
+                    if (idx >= sector_count) {
+                        continue;
+                    }
+                    bool dup = false;
+                    for (size_t k = 0; k < n; ++k) {
+                        if (out[k] == static_cast<size_t>(idx)) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        out[n++] = static_cast<size_t>(idx);
+                    }
+                }
+            }
+            const uint32_t axis = node->split_axis;
+            if (axis > 2u) {
+                continue;  // leaf
+            }
+            if (sp + 2 > 128) {
+                continue;
+            }
+            const float sv = node->split_value;
+            // The box's OWN extents decide, which is the only difference from the sphere
+            // walk: `split <= max` reaches the high side, `split >= min` also reaches the low.
+            const bool high = sv <= q.mx[axis];
+            const bool low = sv >= q.mn[axis];
+            if (high && low) {
+                stack[sp++] = node->child_b;
+                stack[sp++] = node->child_a;
+            } else if (high) {
+                stack[sp++] = node->child_b;
+            } else {
+                stack[sp++] = node->child_a;
+            }
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<VisTree::Sector> VisTree::sectors_in_box(const regenny::LTVector& min,
+                                                     const regenny::LTVector& max,
+                                                     size_t max_results) {
+    std::vector<Sector> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    if (max_results == 0 || max_results > 4096) {
+        max_results = 256;
+    }
+    const Box q = normalised_box(min, max);
+    std::vector<size_t> idx(max_results);
+    const int64_t n = seh_box_sectors(tree, q, idx.data(), max_results);
+    if (n <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        const size_t si = idx[static_cast<size_t>(i)];
+        if (!sector_overlaps_box(si, min, max).value_or(false)) {
             continue;
         }
         if (const auto s = sector(si); s.has_value()) {

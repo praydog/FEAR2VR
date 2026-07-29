@@ -2,10 +2,10 @@
 #include "LTAnimNameTable.hpp"
 #include "LTAnimRecordTable.hpp"
 namespace regenny {
-class LTModelNode;
+class LTModelSocket;
 }
 namespace regenny {
-class LTModelSocket;
+class LTModelNode;
 }
 namespace regenny {
 #pragma pack(push, 1)

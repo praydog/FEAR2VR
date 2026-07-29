@@ -520,6 +520,98 @@ std::string build_targets_json() {
             }
         }
     }
+    // THE BOX VARIANT, same oracle shape as the sphere: descent versus a full scan, at three
+    // extents. And the corner_code CURRENCY check -- every plane's cached selector against
+    // what its own normal implies. A stale one breaks the engine's box queries while leaving
+    // the sphere path working, so it is worth knowing whether the live world has any.
+    int box_probes = 0, box_agree = 0, box_hits = 0;
+    int code_probed = 0, code_current = 0;
+    {
+        const int nsec = static_cast<int>(sdk::VisTree::sector_count().value_or(0));
+        for (int i = 0; i < nsec; ++i) {
+            const auto planes = sdk::VisTree::sector_planes(static_cast<size_t>(i));
+            for (size_t k = 0; k < planes.size(); ++k) {
+                ++code_probed;
+                if (sdk::VisTree::plane_corner_code_is_current(static_cast<size_t>(i), k)
+                        .value_or(false)) {
+                    ++code_current;
+                }
+            }
+        }
+        if (player.has_value()) {
+            if (const auto info = sdk::object_info(player->object); info.has_value()) {
+                for (const float e : {0.0f, 250.0f, 4000.0f}) {
+                    ++box_probes;
+                    const regenny::LTVector lo{info->position.x - e, info->position.y - e,
+                                               info->position.z - e};
+                    const regenny::LTVector hi{info->position.x + e, info->position.y + e,
+                                               info->position.z + e};
+                    const auto found = sdk::VisTree::sectors_in_box(lo, hi, 512);
+                    int brute = 0;
+                    bool all_found = true;
+                    for (int i = 0; i < nsec; ++i) {
+                        if (!sdk::VisTree::sector_overlaps_box(static_cast<size_t>(i), lo, hi)
+                                 .value_or(false)) {
+                            continue;
+                        }
+                        ++brute;
+                        bool seen = false;
+                        for (const auto& f : found) {
+                            if (f.index == static_cast<size_t>(i)) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (!seen) {
+                            all_found = false;
+                        }
+                    }
+                    box_hits += brute;
+                    if (all_found && static_cast<int>(found.size()) == brute) {
+                        ++box_agree;
+                    }
+                }
+            }
+        }
+    }
+    // SPHERE INSIDE BOX: a real cross-check between two INDEPENDENT implementations. The
+    // sphere of radius e is contained in the box of half-extent e, so every sector the sphere
+    // touches must also be touched by the box. The two share nothing -- different engine
+    // functions, different traversal arithmetic (`split > c+r` versus `split <= max`), and
+    // different plane rejects (a `-radius` slack term versus a selected corner against zero).
+    // That independence is the whole point: unlike a scan built on the code under test, this
+    // one cannot be fooled by an error the two happen to share, because they share no code.
+    int contain_probes = 0, contain_ok = 0, contain_sphere = 0;
+    if (player.has_value()) {
+        if (const auto info = sdk::object_info(player->object); info.has_value()) {
+            for (const float e : {1.0f, 250.0f, 4000.0f}) {
+                ++contain_probes;
+                const regenny::LTVector lo{info->position.x - e, info->position.y - e,
+                                           info->position.z - e};
+                const regenny::LTVector hi{info->position.x + e, info->position.y + e,
+                                           info->position.z + e};
+                const auto sph = sdk::VisTree::sectors_in_sphere(info->position, e, 512);
+                const auto box = sdk::VisTree::sectors_in_box(lo, hi, 512);
+                contain_sphere += static_cast<int>(sph.size());
+                bool subset = true;
+                for (const auto& a : sph) {
+                    bool seen = false;
+                    for (const auto& b : box) {
+                        if (a.index == b.index) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) {
+                        subset = false;
+                    }
+                }
+                if (subset) {
+                    ++contain_ok;
+                }
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -694,6 +786,9 @@ std::string build_targets_json() {
              "\"sec_planed\":%d,\"sec_centre_in\":%d,"
              "\"sec_plane_probed\":%d,\"sec_plane_pos\":%d,\"sec_plane_neg\":%d,"
              "\"region_probes\":%d,\"region_agree\":%d,\"region_hits\":%d,"
+             "\"box_probes\":%d,\"box_agree\":%d,\"box_hits\":%d,"
+             "\"code_probed\":%d,\"code_current\":%d,"
+             "\"contain_probes\":%d,\"contain_ok\":%d,\"contain_sphere\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -767,6 +862,8 @@ std::string build_targets_json() {
              sec_read_ok, sec_with_planes, sec_plane_total, sec_planed, sec_centre_in,
              sec_plane_probed, sec_plane_pos, sec_plane_neg,
              region_probes, region_agree, region_hits,
+             box_probes, box_agree, box_hits, code_probed, code_current,
+             contain_probes, contain_ok, contain_sphere,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

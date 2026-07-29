@@ -103,6 +103,9 @@ public:
     struct SectorPlane {
         regenny::LTVector normal;
         float distance;
+        // The engine's cached corner selector. Exposed because it is a CACHE of `normal` and
+        // can therefore be stale -- see plane_corner_code_is_current.
+        uint32_t corner_code;
     };
 
     // The engine's own sector total, straight from the tree header.
@@ -169,6 +172,59 @@ public:
     // perfectly for several passes.
     static std::vector<Sector> sectors_in_sphere(const regenny::LTVector& center, float radius,
                                                  size_t max_results = 256);
+
+    // ---- THE BOX VARIANT ----------------------------------------------------
+    //
+    // A room-scale play space IS a box, not a sphere, and so is a trigger volume or a
+    // level-streaming region. The engine carries a parallel pair for it:
+    //
+    //   per-sector  LTVisSector_TestAABB -- box-vs-box, then the planes
+    //   traversal   LTVisTree_QueryAABB -- the same descent, using the query box's own
+    //               extents: `split <= max[axis]` reaches the high side, `split >= min[axis]`
+    //               also reaches the low, and a box spanning the split visits BOTH
+    //
+    // The plane reject is where the two paths differ, and it is worth understanding because
+    // it explains what corner_code is for. A sphere has one slack value in every direction,
+    // so the engine writes `dot(n, centre) - d < -radius`. A box does not, so instead of a
+    // slack term the engine picks the box CORNER reaching furthest toward the plane's
+    // positive side and tests that one against zero. Same rule -- reject only when the whole
+    // volume is on the negative side -- expressed without a radius.
+
+    // Does this sector overlap the box? nullopt when the tree is unresolved, `index` is out
+    // of range, or a read faulted. `min`/`max` are not required to be ordered; they are
+    // normalised, because a mod computing a play space from two tracked points has no reason
+    // to have sorted them.
+    static std::optional<bool> sector_overlaps_box(size_t index, const regenny::LTVector& min,
+                                                   const regenny::LTVector& max);
+
+    // Every sector the box touches, by the engine's own descent. Same guarantees, and the
+    // same note about what the fixture proves, as sectors_in_sphere.
+    static std::vector<Sector> sectors_in_box(const regenny::LTVector& min,
+                                              const regenny::LTVector& max,
+                                              size_t max_results = 256);
+
+    // ---- corner_code, AND WHY A CONSUMER SHOULD CARE ------------------------
+    //
+    // LTVisPlane.corner_code is a 3-bit selector CACHING a fact about the normal: which
+    // corner of a query box reaches furthest toward the positive side. Per axis, take the
+    // box's max where the normal's component is >= 0 and its min where it is < 0.
+    //
+    // Being a cache, it can be WRONG -- and if it is, the engine's box test reads the wrong
+    // corner and silently mis-answers, while the sphere test (which never consults it) keeps
+    // working. That is the shape of bug this project has already been bitten by twice: a
+    // derived value that disagrees with what it was derived from. So anything writing a
+    // plane normal must rewrite the code, and these two exist to make that checkable rather
+    // than assumed.
+
+    // The code a given normal implies. Pure arithmetic -- no process read, safe to call on a
+    // normal you are about to write.
+    static uint32_t corner_code_for(const regenny::LTVector& normal);
+
+    // Does the stored code still match the stored normal? nullopt when out of range or the
+    // read faulted; false means the cache is stale and the engine's BOX queries against that
+    // sector are unreliable.
+    static std::optional<bool> plane_corner_code_is_current(size_t sector_index,
+                                                            size_t plane_index);
 
     // THE WHOLE QUERY IN ONE CALL: the first sector whose planes contain the point.
     // nullopt means the point is in no sector, which for a world position means outside

@@ -963,6 +963,42 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **An unmapped field is often a CACHE, and finding its source proves both at once.**
+  `LTVisPlane+0x10` sat as `unk_10` for several passes because the sphere path never touches
+  it. It turned up as the first argument to the BOX path's plane reject, indexing an
+  eight-entry table of AABB-corner selectors. Predicting it from the normal's signs failed
+  0/125 on the first guess (I assumed the corner furthest along `-n`; it is the one furthest
+  along `+n`), then matched 125/125 once corrected.
+
+  A derived field is the cheapest thing in a binary to verify, because the source is right
+  there: recompute and compare across the whole population. 0/125 versus 125/125 is also the
+  most informative failure shape there is -- a wrong rule fails everywhere at once, so there
+  is no ambiguity about whether you have it right.
+
+  Then EXPOSE the currency check, not just the value. A cache can disagree with its source,
+  and this one disagreeing would break the engine's box queries while leaving sphere queries
+  correct -- a mod-visible asymmetry no consumer would guess at. Live: 125/125 current.
+
+- **Two implementations of one geometric idea are the oracle you actually want.** Every
+  earlier spatial check compared a query against a full scan built on the *same* per-sector
+  test, which validates the traversal and nothing else -- and once shared an inverted
+  predicate with the code under test, agreeing perfectly while both were wrong.
+
+  The sphere and box queries share NO code: different engine functions, different descent
+  arithmetic (`split > c+r` versus `split <= max`), different plane rejects (a `-radius` slack
+  term versus a precomputed corner against zero). Geometry still binds them -- a sphere of
+  radius `e` sits inside the box of half-extent `e` -- so `sectors_in_sphere` must return a
+  subset of `sectors_in_box`. That check cannot be fooled by a shared mistake, because there
+  is nothing shared to be mistaken in.
+
+  Look for these pairs deliberately. An engine that implements the same idea twice for
+  different argument types has handed you a free independent oracle, and the relation between
+  them (subset, equality, bound) is usually simple enough to assert in one line.
+
+- **Regenerating the SDK headers churns forward-declaration ORDER.** `sdk:generate()` emits
+  them from an unordered container, so a one-field change shows up as ~60 changed lines across
+  unrelated headers. `file_list.txt` also records the path style you passed in. Both are noise;
+  confirm the diff touches no field offsets or names and move on.
 - **Probe a spatial query at SEVERAL SCALES, and require the oracle to find something first.**
   `sectors_in_sphere` is checked against a full scan at radius 0, 250 and 4000 -- point,
   play-space, and most of the level. One radius is not enough: a descent bug can be invisible
