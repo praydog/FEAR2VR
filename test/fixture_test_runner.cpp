@@ -3896,6 +3896,30 @@ int main(int argc, char** argv) {
             double rst = -1.0;
             check(json_double(body, "renderer_state", rst) && rst >= 0.0,
                   "the scene renderer's state reads");
+
+            // IS THE RENDER PATH ACTUALLY RUNNING? k_fTime is published once per frame by BeginFrame, so
+            // comparing it across two requests answers that -- and the answer changes how every other
+            // reading in this block should be read. When it is NOT advancing, the camera record and the
+            // shader registry are frozen at the last executed pass: genuine engine-produced values that
+            // still satisfy every coherence check here, but a snapshot of the past rather than the
+            // present. Nothing else exposed can distinguish the two.
+            //
+            // REPORTED, NOT ASSERTED, because whether a game renders while unfocused is not this suite's
+            // business -- and an assertion either way would fail on a perfectly healthy machine.
+            double clock_a = -1.0;
+            check(json_double(body, "frame_time", clock_a),
+                  "the engine's per-frame clock (k_fTime) reads");
+            {
+                std::string resp2;
+                double clock_b = -1.0;
+                if (http::get(port, "/sdk/shader-params", resp2)) {
+                    (void)json_double(http::body_of(resp2), "frame_time", clock_b);
+                }
+                const bool advancing = clock_a >= 0.0 && clock_b >= 0.0 && clock_a != clock_b;
+                printf("[fixture] render path: %s (k_fTime %.5f -> %.5f)%s\n",
+                       advancing ? "RUNNING" : "IDLE", clock_a, clock_b,
+                       advancing ? "" : " -- camera/shader readings are a frozen snapshot");
+            }
             printf("[fixture] scene renderer state: %.0f (1 idle, 2 frame, 3 target, 4 pass; "
                    "0 observed but unexplained)\n", rst);
 

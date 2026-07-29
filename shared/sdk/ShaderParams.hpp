@@ -213,6 +213,22 @@ public:
 
     // k_vWorldSpaceCameraDir, the camera's forward vector in world space.
     static std::optional<std::array<float, 3>> world_space_camera_dir();
+
+    // ---- IS ANY OF THIS CURRENT? -----------------------------------------------------
+    //
+    // k_fTime, which SceneRenderer_BeginFrame publishes ONCE PER FRAME as fmod(frameTime, K). That makes
+    // it the engine's own liveness signal, and reading it is the only way to know whether anything else
+    // here is current.
+    //
+    // WHY THIS MATTERS MORE THAN IT LOOKS. When the render path is not running -- the window unfocused, a
+    // pause, a level transition -- every value in this registry and in sdk::SceneCamera FREEZES at
+    // whatever the last executed pass left. Those values stay entirely plausible: a real viewport, a real
+    // projection, matrices that satisfy every coherence check in this SDK, because they were produced by
+    // real passes. They are simply no longer current. Nothing else exposed here can tell the difference.
+    //
+    // A single read cannot detect it either. Sample this twice with real time in between: unchanged means
+    // the render path has not run and every other reading is a snapshot of the past.
+    static std::optional<float> frame_time();
 };
 
 }  // namespace sdk

@@ -3367,6 +3367,7 @@ std::string build_shader_params_json() {
     const auto begin_target_fn = sdk::SceneCamera::renderer_fn(Slot::BeginRenderTarget);
     const auto end_target_fn = sdk::SceneCamera::renderer_fn(Slot::EndRenderTarget);
     const auto renderer_state = sdk::SceneCamera::state();
+    const auto frame_clock = sdk::ShaderParams::frame_time();
     const auto end_fn = sdk::SceneCamera::renderer_fn(Slot::EndPass);
     const auto draw_fn = sdk::SceneCamera::renderer_fn(Slot::DrawScene);
     const auto draw_list_fn = sdk::SceneCamera::renderer_fn(Slot::DrawObjectList);
@@ -3938,6 +3939,7 @@ std::string build_shader_params_json() {
     json_append_double(out, "pass_beginframe_off", static_cast<double>(anchor_offset(begin_frame_fn)), 0);
     json_append_double(out, "pass_begintarget_off", static_cast<double>(anchor_offset(begin_target_fn)), 0);
     json_append_double(out, "pass_endtarget_off", static_cast<double>(anchor_offset(end_target_fn)), 0);
+    json_append_double(out, "frame_time", frame_clock.value_or(-1.0f), 5);
     json_append_double(out, "renderer_state",
                        static_cast<double>(renderer_state.has_value()
                                                ? static_cast<long long>(*renderer_state) : -1),

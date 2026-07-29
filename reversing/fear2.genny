@@ -1481,7 +1481,37 @@ class CClientMgrCounterNode 0x40 {
 // (0,0,0) with rotation (0,0,0,1) there, an identity that only parses as identity with w last.
 // That agrees with regenny::LTRotation's x,y,z,w.
 //
-// // ---- THE COMPLETE PUBLIC RENDER SEQUENCE ----
+// // ---- THE READINGS WERE STALE, AND THAT CORRECTS SEVERAL CLAIMS ABOVE ----
+//
+// MEASURED: k_fTime is published once per frame by SceneRenderer_BeginFrame, and it sat frozen at
+// 18.78200 across separate requests seconds apart, while g_SceneRenderer's state read 0 for 6000
+// consecutive samples and the camera record's mode read 2 for 2000. The world is loaded
+// (m05_outershell, 3490 objects), so the game has a level -- its RENDER path simply is not running,
+// which is consistent with an unfocused window.
+//
+// SO EVERY SCENE-CAMERA AND SHADER-REGISTRY VALUE READ IN THIS FILE IS A SNAPSHOT OF THE LAST EXECUTED
+// PASS, not live per-frame data. That does NOT make the layout findings wrong -- the values were
+// produced by real passes, which is why the viewport read exactly 5120x1440, the projection matched
+// 2/width to eight decimals, and the half view-plane's reciprocals were exact. Those are genuine engine
+// output. What changes is the tense: they were current when written, and the code paths that write them
+// were not running while I sampled.
+//
+// TWO EXPLANATIONS I GAVE ARE WITHDRAWN:
+//   - "the engine parks in mode 2 between frames" -- it does not park there; the value is simply the
+//     last one written, and nothing has overwritten it since.
+//   - "4000 samples never caught a perspective pass because passes are transient" -- they never caught
+//     one because no pass ran during the sampling at all. The transience may well be true too, but it
+//     was not what I measured.
+//
+// AND ONE CLAIM IS DOWNGRADED, not withdrawn: I called the half-plane identity "the one matrix identity
+// verified against the running game". It is verified against values the ENGINE ITSELF PRODUCED, which is
+// still meaningfully stronger than a synthetic matrix -- but not against a running frame.
+//
+// EXPOSED AS sdk::ShaderParams::frame_time(), because nothing else in the SDK can tell a consumer
+// whether its readings are current: a frozen snapshot satisfies every coherence check here. Sample it
+// twice with real time in between; unchanged means everything else is a picture of the past.
+//
+// ---- THE COMPLETE PUBLIC RENDER SEQUENCE ----
 //
 // NINE VTABLE SLOTS, and the `cmp [reg], N` comparisons scattered through the render code turn out to be
 // one nested state machine:
@@ -1505,13 +1535,13 @@ class CClientMgrCounterNode 0x40 {
 // registry to this lifecycle: it sets g_ShaderVal_k_fTime = fmod(time, K) and flushes k_fTime once per
 // frame from the caller's own time value.
 //
-// STATE 0 IS OBSERVED AND UNEXPLAINED. Those six functions write only 1..4, and sub_6106E0 closes the
-// loop at 2 -> 1, so the parked value between frames should be 1. A running game with a loaded level
-// reads 0, while the camera record those same functions maintain is correct and current -- so the state
-// MUST have passed through 3 and 4. Something outside the lifecycle writes 0 and it has not been
-// located: a scan for immediate stores of 0..4 through a register across the renderer's whole range
-// found nothing targeting this field. Recorded as a gap; a consumer should treat 0 as "outside the
-// documented cycle" rather than as a synonym for idle.
+// STATE 0 CORRELATES WITH AN IDLE RENDER PATH, which is as far as the evidence goes. Those six
+// functions write only 1..4 and sub_6106E0 closes the loop at 2 -> 1, so a game between frames should
+// read 1. It reads 0, constantly -- 6000 consecutive samples, never anything else -- and k_fTime is
+// frozen at the same time, so the render path is not running at all. Whether 0 is written by a teardown
+// or is simply the pre-init value the cycle never returns to is NOT established; a scan for immediate
+// stores of 0..4 through a register across the renderer's range found nothing targeting this field.
+// A consumer should treat 0 as "outside the documented cycle", not as a synonym for idle.
 //
 // The suite asserts the state READS and prints it, and deliberately does not assert its value -- the
 // first version required 1..4 and failed against the running game, which would have meant asserting the
@@ -1644,10 +1674,13 @@ class CClientMgrCounterNode 0x40 {
 // 3 = ready for a pass, 4 = a pass is configured. SetupCameraShaderParams does 3 -> 4,
 // SceneRenderer_EndPass does 4 -> 3, and SceneRenderer_DrawScene refuses to run outside state 4.
 //
-// AND DrawScene ALSO REFUSES MODE 2, which answers a question this project kept circling: the screen
-// pass cannot draw the 3D scene at all. That is why the camera record sits in mode 2 between frames
-// and why 4000 consecutive samples never caught a perspective pass -- mode 2 is the state the engine
-// PARKS in, and every 3D pass exists only between a setup and an end.
+// AND DrawScene ALSO REFUSES MODE 2: the screen pass cannot draw the 3D scene at all. That gate is read
+// straight from the code and stands.
+//
+// WHAT I WRONGLY EXPLAINED WITH IT: I said the record "sits in mode 2 between frames" and that 4000
+// samples missed every perspective pass because passes are transient. Both were wrong, and measuring
+// k_fTime settled it -- see THE READINGS WERE STALE below. The samples missed perspective passes because
+// NO PASSES WERE RUNNING.
 //
 // A WORKED EXAMPLE ALREADY EXISTS IN THE BINARY. Renderer_MakeCubicEnvMap (0x6128C3, self-named in six
 // of its own error strings) renders the same scene SIX times from six transforms:

@@ -963,6 +963,19 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **A FROZEN SNAPSHOT PASSES EVERY COHERENCE CHECK, SO CHECK THAT THE ENGINE IS RUNNING.** For several passes I
+  read the camera record and shader registry as live state, explained a constant mode 2 as "the engine parks
+  there", and explained 4000 failed perspective samples as "passes are transient". k_fTime -- published once
+  per frame -- had been frozen at 18.782 the whole time. The render path was not running; every reading was
+  the last executed pass, indefinitely. The values were genuine engine output and the layout work stands, but
+  two of my EXPLANATIONS were inventions fitted to a static picture. Find the engine's own per-frame signal
+  early and sample it twice before interpreting anything as "current" or "between frames".
+  
+- **THE FIX BELONGS IN THE API, NOT JUST THE NOTES.** A consumer of this SDK had no way to tell live values
+  from frozen ones -- every invariant still held. That is an API gap, not a documentation gap, so
+  ShaderParams::frame_time() now exposes the engine's per-frame clock with the two-sample technique documented
+  on it, and the fixture reports RUNNING or IDLE on every run instead of quietly assuming.
+
 - **WHEN A NEW ASSERTION FAILS, SUSPECT THE MODEL BEFORE THE GAME.** I derived the renderer's states from six
   functions that write only 1..4, documented that as the range, and asserted it. It failed immediately: a
   running game reads 0. The six functions are right and the cycle is right -- something outside them writes 0

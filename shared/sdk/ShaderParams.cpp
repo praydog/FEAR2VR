@@ -358,4 +358,8 @@ std::optional<std::array<float, 3>> ShaderParams::world_space_camera_dir() {
     return float3("k_vWorldSpaceCameraDir");
 }
 
+std::optional<float> ShaderParams::frame_time() {
+    return scalar("k_fTime");
+}
+
 }  // namespace sdk
