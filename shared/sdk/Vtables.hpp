@@ -47,13 +47,15 @@ public:
         uint16_t slot_count;  // exact; see name_follows for which terminator bounds it
         uint16_t name_slot;   // which slot references the name; meaningless when !name_follows
 
-        // TWO KINDS OF TERMINATOR, both exact and both verifiable:
-        //   true  -- the class-name string sits immediately after the table, which is the boundary AND
-        //            the identification. Found by sweep.
-        //   false -- the class does NOT publish its name there. CLTPhysicsClient is the case that forced
-        //            this: 18 slots followed by g_LTOrthoXBias, a float constant. Its bound is that the
-        //            dword after the table is not an exe-range address, so the extent cannot be extended.
-        //            Such an entry is added deliberately, not swept, and its NAME comes from elsewhere.
+        // WHERE THE NAME LITERAL SITS, which is NOT the same as whether the class publishes a name:
+        //   true  -- the string is immediately after the table, so it doubles as the extent's terminator.
+        //   false -- something else sits between. CLTPhysicsClient is the case that forced this: 18 slots,
+        //            then g_LTOrthoXBias (a float), then the string. Its extent is bounded instead by the
+        //            dword after the table not being an exe-range address.
+        //
+        // AN EARLIER VERSION OF THIS COMMENT SAID CLTPhysicsClient "does not publish its name". It does --
+        // from slot 1, exactly like the others. Only the literal's PLACEMENT differs, and all 57 entries
+        // have their name returned by a slot in their own table, independent of adjacency.
         bool name_follows;
 
         // Whether the name comes from slot 0, 1 or 2 -- the engine's InterfaceImplementation convention.
@@ -110,6 +112,31 @@ public:
 
     // Verify one entry against live memory. nullopt when the exe is not mapped or a read faulted.
     static std::optional<Verification> verify(const Entry& entry);
+
+    // ---- THE NAME, CHECKED WITHOUT TRUSTING ADJACENCY ----------------------------------
+    //
+    // Every catalogued class returns its own name from a slot in its own table -- the engine's
+    // InterfaceImplementation. For 36 of the 57 that getter is literally `mov eax, <string>; ret`, six
+    // bytes, which means the name/table pairing can be re-derived from the CODE at runtime instead of
+    // trusted from the string that happened to sit after the table. Adjacency and the getter are two
+    // independent routes to the same fact, and this checks them against each other.
+    //
+    // The remaining 21 are the physics families (Tt*, St*, LtGsk*, Agent) whose name appears inside a
+    // larger method, presumably an assert or log line. They report NotAGetter -- not an error, just a
+    // pairing that rests on the string reference alone.
+    enum class NameCheck {
+        Confirmed,   // the getter is a constant return and its string is the catalogued name
+        NotAGetter,  // the slot is not a `mov eax, imm32; ret` stub, so nothing was checked
+        Mismatch,    // it IS such a stub and returns a DIFFERENT string -- the pairing is wrong
+        Unreadable,
+    };
+
+    static NameCheck check_name_getter(const Entry& entry);
+
+    // The class name a vtable claims for itself, read out of its getter's immediate rather than from this
+    // catalogue. Works for ANY vtable whose slot holds a constant-return stub, catalogued or not, which is
+    // what makes it useful on an object this catalogue has never seen.
+    static std::optional<std::string> name_from_getter(uintptr_t vtable, size_t slot);
 };
 
 }  // namespace sdk

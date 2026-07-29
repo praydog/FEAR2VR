@@ -3821,11 +3821,49 @@ class LTInputDeviceMouse 0x30 {
 // now asserted as a COMPLETENESS CLAIM: an unidentified interface must be foreign, because an in-exe
 // vtable the catalogue cannot name means an extent is wrong.
 //
-// ONE CLASS DOES NOT PUBLISH ITS NAME AT ALL, and the completeness check is what surfaced it:
-// CLTPhysicsClient's 18-slot vtable is followed by g_LTOrthoXBias, a float constant. Its sibling
-// CLTPhysicsServer does publish, so this is per-class and not a rule. It is in the catalogue as a
-// deliberate hand-added entry with name_follows = false, verified by the other terminator this binary
-// offers: the dword after the table is not an exe-range address, so the extent cannot be extended.
+// ONE CLASS'S NAME LITERAL IS NOT ADJACENT, and the completeness check is what surfaced it:
+// CLTPhysicsClient's 18-slot vtable is followed by g_LTOrthoXBias, a float constant, and the string sits
+// four bytes further on. Its extent is bounded instead by the dword after the table not being an exe-range
+// address, so it cannot be extended. Added deliberately with name_follows = false.
+//
+// I FIRST RECORDED THAT AS "DOES NOT PUBLISH ITS NAME", WHICH WAS WRONG. It publishes from slot 1 exactly
+// like the others; only the literal's PLACEMENT differs. Checking properly showed the stronger fact:
+//
+//     ALL 57 CATALOGUE ENTRIES RETURN THEIR OWN NAME FROM A SLOT IN THEIR OWN TABLE.
+//
+// So adjacency was never the mechanism -- it is one PLACE the literal can sit. The class publishes its name
+// through InterfaceImplementation regardless, which gives a second and independent route to every pairing.
+//
+// ---- THE NAMES, RE-DERIVED FROM CODE -----------------------------------------------------------
+//
+// For 36 of the 57 that getter is literally `mov eax, <string>; ret` -- six bytes -- so the name/table
+// pairing can be read out of the CODE at runtime rather than trusted from the string that happened to
+// follow the table. Measured: 36 confirmed, 0 CONTRADICTED, 21 not a constant-return stub.
+//
+// A MISMATCH IS THE ONE ERROR NEITHER OTHER CHECK CAN SEE. A name attached to the wrong table verifies
+// perfectly against both its extent and its adjacency; only asking the code disagrees. That is why the
+// suite asserts zero mismatches rather than merely counting confirmations.
+//
+// The 21 exceptions are a coherent family, not a scatter: Tt*, St*, LtGsk*, Agent and GameSpyPatch, whose
+// name appears inside a larger method -- an assert or log line -- rather than in a getter. Reported, not
+// treated as a defect.
+//
+// EXPOSED AS sdk::Vtables::name_from_getter(vtable, slot), which works on ANY vtable, catalogued or not:
+// it reads the stub's immediate and returns the string. The suite exercises it on the live CLTInput
+// object's own table, reached through the interface rather than through this catalogue, and it answers
+// "CLTInput".
+//
+// ---- AND THE XREF-START RULE WAS VALIDATED INDEPENDENTLY ---------------------------------------
+//
+// A second sweep built purely on the corrected rule -- start = an xref'd .rdata address, end = where the
+// pointer run stops or the next xref'd start begins, with NO reliance on a trailing string -- found 144
+// named tables. Where it overlaps this catalogue: 36 entries agree and ZERO disagree. The rule that fixed
+// 11 extents reproduces the corrected numbers from different premises.
+//
+// That sweep also shows why the string is still the better primary key: its naming half recovers Scaleform
+// classes (Array, Boolean, Date, Color) and Havok internals, and produces DUPLICATE names -- BvTreeAgt
+// appears at four different addresses -- so a slot-returned string cannot be a unique key even though it is
+// an excellent corroborator.
 //
 // EXPOSED AS sdk::Vtables, whose resolve(name, slot) BOUNDS-CHECKS against the recorded extent -- asking
 // for slot 92 of CLTRenderer returns nothing instead of the first four bytes of the string "CLTRenderer"

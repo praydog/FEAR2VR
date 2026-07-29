@@ -4120,6 +4120,31 @@ int main(int argc, char** argv) {
                       vt_conv <= vt_total,
                   "the convention-following subset is a proper subset of the catalogue");
 
+            // THE NAME PAIRING, RE-DERIVED FROM CODE RATHER THAN ADJACENCY.
+            //
+            // Adjacency is what put each name next to its table; the InterfaceImplementation getter is an
+            // independent route to the same fact, readable as a six-byte `mov eax, <string>; ret` stub.
+            // A MISMATCH is the one error neither the extent check nor adjacency can detect: a name
+            // attached to the wrong table would verify perfectly against both.
+            double nmc = -1.0, nmg = -1.0, nmm = -1.0, nmu = -1.0;
+            const bool nmk = json_double(body, "vtable_name_confirmed", nmc) &&
+                             json_double(body, "vtable_name_not_getter", nmg) &&
+                             json_double(body, "vtable_name_mismatch", nmm) &&
+                             json_double(body, "vtable_name_unreadable", nmu);
+            check(nmk && nmm == 0.0, "no catalogued name is contradicted by its own getter");
+            check(nmk && nmu == 0.0, "every entry's name slot was readable");
+            check(nmk && (nmc + nmg + nmm + nmu) == vt_total,
+                  "the name check accounts for every entry");
+            // 36 of 57 are constant-return stubs. The other 21 are the physics families, whose name
+            // appears inside a larger method instead -- reported, not treated as a defect.
+            check(nmk && nmc == 36.0, "36 entries confirm their name from a constant-return getter");
+
+            // The accessor works on a vtable reached WITHOUT this catalogue, which is the case that
+            // matters for an object the catalogue has never seen.
+            bool live_nm = false;
+            check(json_bool(body, "vtable_live_getter_names_cltinput", live_nm) && live_nm,
+                  "the live CLTInput vtable names itself through its getter");
+
             // THE BOUNDS CHECK A CONSUMER RELIES ON, exercised at the boundary itself.
             bool res_last = false, res_past = false, res_unknown = false, res_agree = false;
             check(json_bool(body, "vtable_resolve_last_slot", res_last) && res_last,

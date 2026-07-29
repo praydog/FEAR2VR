@@ -27,7 +27,7 @@ constexpr Vtables::Entry kCatalogue[] = {
     {"CLTLoadingProgress", 0x272184, 4, 1, true},
     {"CLTModelClient", 0x26E7E8, 83, 1, true},
     {"CLTModelServer", 0x274CD8, 81, 1, true},
-    {"CLTPhysicsClient", 0x26EA70, 18, 0, false},
+    {"CLTPhysicsClient", 0x26EA70, 18, 1, false},
     {"CLTPhysicsServer", 0x274E90, 17, 1, true},
     {"CLTPhysicsSimClient", 0x2723B0, 98, 1, true},
     {"CLTPhysicsSimServer", 0x272550, 98, 1, true},
@@ -175,6 +175,50 @@ std::optional<std::string> Vtables::class_name_of(uintptr_t object) {
         return std::nullopt;
     }
     return std::string{e->name};
+}
+
+std::optional<std::string> Vtables::name_from_getter(uintptr_t vtable, size_t slot) {
+    if (vtable == 0) {
+        return std::nullopt;
+    }
+    uint32_t fn = 0;
+    if (!seh_copy(&fn, vtable + slot * sizeof(uint32_t), sizeof(fn)) || fn == 0) {
+        return std::nullopt;
+    }
+    // `mov eax, imm32` (B8) then `ret` (C3) -- the whole body of an InterfaceImplementation stub.
+    uint8_t code[6]{};
+    if (!seh_copy(code, fn, sizeof(code))) {
+        return std::nullopt;
+    }
+    if (code[0] != 0xB8 || code[5] != 0xC3) {
+        return std::nullopt;
+    }
+    uint32_t str_at = 0;
+    std::memcpy(&str_at, &code[1], sizeof(str_at));
+    if (str_at == 0) {
+        return std::nullopt;
+    }
+    char text[64]{};
+    if (!seh_copy(text, str_at, sizeof(text) - 1)) {
+        return std::nullopt;
+    }
+    text[sizeof(text) - 1] = '\0';
+    if (text[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string{text};
+}
+
+Vtables::NameCheck Vtables::check_name_getter(const Entry& entry) {
+    const uintptr_t at = address(entry.name);
+    if (at == 0) {
+        return NameCheck::Unreadable;
+    }
+    const auto got = name_from_getter(at, entry.name_slot);
+    if (!got.has_value()) {
+        return NameCheck::NotAGetter;
+    }
+    return *got == entry.name ? NameCheck::Confirmed : NameCheck::Mismatch;
 }
 
 std::optional<Vtables::Verification> Vtables::verify(const Entry& entry) {

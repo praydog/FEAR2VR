@@ -4199,6 +4199,29 @@ std::string build_shader_params_json() {
     json_append_double(out, "vtable_catalogue_slots_sum", static_cast<double>(vt_slots_sum), 0);
     json_append_double(out, "vtable_catalogue_convention", static_cast<double>(vt_convention), 0);
 
+    // THE NAME PAIRING, RE-DERIVED FROM CODE. Adjacency put the string after the table; the getter is a
+    // separate route to the same fact, read out of a six-byte stub. A Mismatch would mean a name attached
+    // to the wrong table -- the one error neither the extent check nor adjacency can see.
+    size_t nm_confirmed = 0, nm_not_getter = 0, nm_mismatch = 0, nm_unreadable = 0;
+    for (size_t i = 0; i < vt_total; ++i) {
+        switch (sdk::Vtables::check_name_getter(vt_entries[i])) {
+        case sdk::Vtables::NameCheck::Confirmed: ++nm_confirmed; break;
+        case sdk::Vtables::NameCheck::NotAGetter: ++nm_not_getter; break;
+        case sdk::Vtables::NameCheck::Mismatch: ++nm_mismatch; break;
+        default: ++nm_unreadable; break;
+        }
+    }
+    json_append_double(out, "vtable_name_confirmed", static_cast<double>(nm_confirmed), 0);
+    json_append_double(out, "vtable_name_not_getter", static_cast<double>(nm_not_getter), 0);
+    json_append_double(out, "vtable_name_mismatch", static_cast<double>(nm_mismatch), 0);
+    json_append_double(out, "vtable_name_unreadable", static_cast<double>(nm_unreadable), 0);
+
+    // And the accessor works on a vtable reached WITHOUT the catalogue: the live CLTInput object's own
+    // table, asked what class it is.
+    const auto live_name = sdk::Vtables::name_from_getter(sdk::Input::interface_vtable(), 1);
+    json_append_bool(out, "vtable_live_getter_names_cltinput",
+                     live_name.has_value() && *live_name == "CLTInput");
+
     // The bounds check a consumer actually relies on: the last valid slot resolves, one past it does not.
     const auto* renderer_entry = sdk::Vtables::find("CLTRenderer");
     json_append_bool(out, "vtable_resolve_last_slot",
