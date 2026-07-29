@@ -899,6 +899,43 @@ int main(int argc, char** argv) {
                static_cast<long long>(plisted), static_cast<long long>(slp),
                static_cast<long long>(slok), static_cast<long long>(slp),
                static_cast<long long>(siok), static_cast<long long>(sip));
+
+        // ---- THE VARIABLE-LENGTH PORTAL RECORD ----------------------------------------
+        //
+        // LTVisPortal_LoadFromStream sizes each portal `12*(vertex_count-1) + 56`, so the
+        // polygon is not a fixed quad and 0x5C is merely the size of a four-vertex one.
+        // LTVisTree_ComputeLoadSize corroborates it from the other end, budgeting
+        // `56*portals + 12*(total_vertices - portals)` -- arithmetic that only makes sense if
+        // the head already contains one vertex and the rest are per-portal extras.
+        int64_t plp = -1, plok = -1, plplane = -1, pltr = -1, plverts = -1;
+        json_int(body, "poly_probed", plp);
+        json_int(body, "poly_len_ok", plok);
+        json_int(body, "poly_on_plane", plplane);
+        json_int(body, "poly_trunc", pltr);
+        json_int(body, "poly_verts", plverts);
+        check(plp == ptot, "every portal yielded a polygon");
+        check(plok == plp,
+              "portal_polygon() returns EXACTLY vertex_count vertices for every portal");
+
+        // The geometric check applied to the FULL polygon rather than the first four. Reading
+        // further into a variable-length record and still landing on the portal's own plane is
+        // what shows the later vertices are really vertices, and not whatever follows.
+        check(plplane == plp, "EVERY vertex of EVERY portal lies on that portal's plane");
+
+        // A polygon needs three corners. This is a floor on the whole population rather than a
+        // per-portal minimum, which is all the aggregate supports.
+        check(plverts >= 3 * plp, "the portals carry at least three vertices each on average");
+
+        // TRUTHFUL ABOUT THE ART: nothing in this level exceeds the four the fixed array holds,
+        // so Portal.vertices is complete for every portal here. Asserted so that a level which
+        // DOES exceed it fails loudly, rather than silently handing consumers a clipped polygon
+        // -- the flag exists precisely because the record permits more.
+        check(pltr == 0,
+              "no portal in this level exceeds the inline vertex array (none is truncated)");
+        printf("[fixture] portal polygons: %lld vertices over %lld portals, all on-plane, "
+               "%lld truncated\n",
+               static_cast<long long>(plverts), static_cast<long long>(plp),
+               static_cast<long long>(pltr));
         if (psec >= 0 && pnb >= 0) {
             printf("[fixture] the player's sector has %lld neighbour(s)\n",
                    static_cast<long long>(pnb));

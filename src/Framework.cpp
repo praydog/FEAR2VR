@@ -757,6 +757,41 @@ std::string build_targets_json() {
             }
         }
     }
+    // THE VARIABLE-LENGTH RECORD, read at its own declared length. portal_polygon() reads
+    // vertex_count vertices; Portal.vertices holds at most four and flags the shortfall. Both
+    // must agree with the stored count, and every vertex must still satisfy the plane equation
+    // the struct-based path already asserts -- reading further into the record and STILL landing
+    // on the plane is what shows the extra vertices are really there.
+    int poly_probed = 0, poly_len_ok = 0, poly_on_plane = 0, poly_trunc = 0, poly_verts = 0;
+    {
+        const int npor = static_cast<int>(sdk::VisTree::portal_count().value_or(0));
+        for (int i = 0; i < npor; ++i) {
+            const auto pp = sdk::VisTree::portal(static_cast<size_t>(i));
+            if (!pp.has_value()) {
+                continue;
+            }
+            ++poly_probed;
+            if (pp->vertices_truncated) {
+                ++poly_trunc;
+            }
+            const auto poly = sdk::VisTree::portal_polygon(static_cast<size_t>(i));
+            if (poly.size() == pp->vertex_count) {
+                ++poly_len_ok;
+            }
+            poly_verts += static_cast<int>(poly.size());
+            bool on = !poly.empty();
+            for (const auto& v : poly) {
+                const float d = pp->plane.normal.x * v.x + pp->plane.normal.y * v.y +
+                                pp->plane.normal.z * v.z - pp->plane.distance;
+                if (d > 0.5f || d < -0.5f) {
+                    on = false;
+                }
+            }
+            if (on) {
+                ++poly_on_plane;
+            }
+        }
+    }
     // PORTALS AND CONNECTIVITY. The load-bearing property is SYMMETRY: if B is reachable
     // from A then A must be reachable from B, because both come from the same portal read
     // from opposite ends. A wrong sector_a/sector_b offset, or a broken pointer-to-index
@@ -944,6 +979,8 @@ std::string build_targets_json() {
              "\"rec_only_extra\":%d,\"rec_both\":%d,\"rec_consistent\":%d,"
              "\"sec_idx_probed\":%d,\"sec_idx_ok\":%d,\"sec_links_probed\":%d,"
              "\"sec_links_ok\":%d,\"sec_portal_sum\":%d,\"sec_portal_listed\":%d,"
+             "\"poly_probed\":%d,\"poly_len_ok\":%d,\"poly_on_plane\":%d,"
+             "\"poly_trunc\":%d,\"poly_verts\":%d,"
              "\"player_sector\":%d,\"brute_sector\":%d,\"portal_total\":%d,\"portal_both_sectors\":%d,"
              "\"portal_on_plane\":%d,\"sectors_with_neighbours\":%d,"
              "\"neighbour_edges\":%d,\"symmetric_edges\":%d,\"player_neighbours\":%d,"
@@ -1025,6 +1062,7 @@ std::string build_targets_json() {
              rec_missing, rec_extra, rec_only_missing, rec_only_extra, rec_both,
              rec_consistent, sec_idx_probed, sec_idx_ok, sec_links_probed,
              sec_links_ok, sec_portal_sum, sec_portal_listed,
+             poly_probed, poly_len_ok, poly_on_plane, poly_trunc, poly_verts,
              player_sector,
              brute_sector, portal_total, portal_both_sectors, portal_on_plane,
              sectors_with_neighbours, neighbour_edges, symmetric_edges,

@@ -671,6 +671,7 @@ struct PortalRaw {
     uintptr_t sector_base;
     uint32_t sector_count;
     bool ok;
+    uint32_t copied = 0;  // how many fitted into verts[]; vertex_count may exceed it
 };
 
 PortalRaw seh_read_portal(const regenny::LTVisTree* tree, size_t index) {
@@ -696,10 +697,13 @@ PortalRaw seh_read_portal(const regenny::LTVisTree* tree, size_t index) {
         r.radius = p->radius;
         r.sector_a = reinterpret_cast<uintptr_t>(p->sector_a);
         r.sector_b = reinterpret_cast<uintptr_t>(p->sector_b);
-        // CLAMP, do not trust: the array holds exactly 4, so a larger count would read
-        // past the record.
-        r.vertex_count = p->vertex_count > 4u ? 4u : p->vertex_count;
-        for (uint32_t v = 0; v < r.vertex_count; ++v) {
+        // The stored count is AUTHORITATIVE -- the record is variable-length -- so keep it and
+        // report the shortfall separately instead of quietly lowering it. Clamping the count
+        // itself would tell the caller a six-vertex portal has four, which is a wrong answer
+        // rather than a cautious one.
+        r.vertex_count = p->vertex_count;
+        r.copied = p->vertex_count > 4u ? 4u : p->vertex_count;
+        for (uint32_t v = 0; v < r.copied; ++v) {
             r.verts[v][0] = p->vertices[v].x;
             r.verts[v][1] = p->vertices[v].y;
             r.verts[v][2] = p->vertices[v].z;
@@ -731,6 +735,67 @@ std::optional<size_t> sector_index_of(uintptr_t ptr, uintptr_t base, uint32_t co
 }
 
 }  // namespace
+
+namespace {
+
+// Reads exactly `vertex_count` vertices out of the variable-length record. The cap is a read
+// bound, not a claim about the format: 64 is far past anything a portal polygon plausibly has,
+// so a count beyond it means a torn record and the read is refused instead of walking the arena.
+constexpr size_t kMaxPortalVertices = 64;
+
+int64_t seh_portal_polygon(const regenny::LTVisTree* tree, size_t index, float (*out)[3],
+                           size_t max_out) {
+    int64_t found = -1;
+    KANANLIB_SEH_TRY {
+        const auto* table = tree->portals;
+        if (table == nullptr || index >= tree->portal_count) {
+            return -1;
+        }
+        const auto* p = table[index];
+        if (p == nullptr) {
+            return -1;
+        }
+        const uint32_t n = p->vertex_count;
+        if (n == 0 || n > max_out) {
+            return n == 0 ? 0 : -1;
+        }
+        // The declared array is four long; past that the vertices simply continue in the
+        // record, which is what "variable-length" means here.
+        const auto* v = &p->vertices[0];
+        for (uint32_t i = 0; i < n; ++i) {
+            out[i][0] = v[i].x;
+            out[i][1] = v[i].y;
+            out[i][2] = v[i].z;
+        }
+        found = static_cast<int64_t>(n);
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        found = -1;
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<regenny::LTVector> VisTree::portal_polygon(size_t index) {
+    std::vector<regenny::LTVector> out;
+    const auto* tree = get();
+    if (tree == nullptr) {
+        return out;
+    }
+    float verts[kMaxPortalVertices][3]{};
+    const int64_t n = seh_portal_polygon(tree, index, verts, kMaxPortalVertices);
+    if (n <= 0) {
+        return out;
+    }
+    out.resize(static_cast<size_t>(n));
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i].x = verts[i][0];
+        out[i].y = verts[i][1];
+        out[i].z = verts[i][2];
+    }
+    return out;
+}
 
 std::optional<size_t> VisTree::portal_count() {
     const auto* tree = get();
@@ -771,7 +836,10 @@ std::optional<VisTree::Portal> VisTree::portal(size_t index) {
     out.sector_a = sector_index_of(r.sector_a, r.sector_base, r.sector_count);
     out.sector_b = sector_index_of(r.sector_b, r.sector_base, r.sector_count);
     out.vertex_count = r.vertex_count;
-    for (size_t v = 0; v < r.vertex_count; ++v) {
+    out.vertices_truncated = r.vertex_count > r.copied;
+    // BOUNDED BY WHAT WAS COPIED, not by the stored count -- the two differ exactly when the
+    // polygon does not fit, and using the stored count here would overrun out.vertices[4].
+    for (size_t v = 0; v < r.copied; ++v) {
         out.vertices[v].x = r.verts[v][0];
         out.vertices[v].y = r.verts[v][1];
         out.vertices[v].z = r.verts[v][2];

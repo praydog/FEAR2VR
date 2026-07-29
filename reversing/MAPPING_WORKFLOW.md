@@ -963,6 +963,48 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE ALLOCATION SIZE IS THE STRUCT DEFINITION. Read it before believing a stride.**
+  `LTVisPortal` was recorded as `0x5C` with `vertices[4]` and a note that 4 "may be a hard
+  maximum rather than a coincidence". `LTVisPortal_LoadFromStream` allocates
+  `12*(vertex_count-1) + 56` -- a 44-byte head plus 12 per vertex -- so the record is
+  VARIABLE-LENGTH and 0x5C is just the four-vertex case.
+
+  `LTVisTree_ComputeLoadSize` says the same thing from the opposite end, budgeting
+  `56*portal_count + 12*(total_vertices - portal_count)`: arithmetic that only makes sense if
+  the head already contains one vertex and the remainder are per-portal extras. Two independent
+  functions, one conclusion.
+
+  The measured uniformity is real but explains nothing structural: 344/344 portals have 4
+  vertices and all 343 consecutive pointer gaps are exactly 92 bytes, which is precisely what
+  the formula predicts for n=4. A stride that matches on every live record is still a property
+  of the ART when the allocator is size-dependent. Index through the engine's pointer table.
+
+- **A bump allocator explains "contiguous" without promising it.** One `LTMem_Alloc` sized by
+  `LTVisTree_ComputeLoadSize`, then `LTLinearAlloc_Alloc` carves the pointer table, portal
+  bodies, sectors, planes and nodes out of it in order. That is why the first portal body starts
+  exactly at `table_base + 4*portal_count`, and why every "immediately followed in memory by"
+  observation in this schema holds. It is also why none of them are guarantees: change one count
+  and every later base moves.
+
+- **Clamping a COUNT is a wrong answer, not a safe one.** The portal reader clamped
+  `vertex_count` to 4 "so a larger count would not read past the record". But the record is
+  variable-length, so a larger count is legal and clamping tells the caller a six-vertex portal
+  has four -- silently losing geometry, in a struct a consumer would use for clipping.
+
+  Split the two facts: keep the stored count as the stored count, report separately how many
+  fitted (`vertices_truncated`), and offer `portal_polygon()` that reads the real length. Bound
+  the READ, never the reported count. And the bound should be justified as a bound -- 64 here,
+  far past any plausible polygon -- rather than dressed up as knowledge of the format.
+
+- **I swapped two function names last pass, and the callee bodies had the answer.** I named
+  0x446000 the node loader and 0x4462E6 the portal loader, from the loop bounds at the CALL
+  SITES. Both were backwards. The bodies settle it instantly: 0x446000 writes 8 floats, zeroes a
+  pointer pair for `AttachSector` to fill later, and allocates 92 bytes for 4 vertices; 0x4462E6
+  fills two child pointers at stride 24 and an element array at stride 48.
+
+  A loop bound tells you HOW MANY, not WHAT. When two loaders sit side by side, read both
+  bodies before naming either -- and my own note that "a wrong name outlives the pass that
+  guessed it" is exactly what happened, one pass later, to me.
 - **THE LOADER NAMES EVERYTHING. Read it before probing fields one at a time.** Three of
   `LTVisSector`'s unmapped fields fell to a single decompile of `LTVisSector_LoadFromStream`,
   because a loader has to touch every field in order and its allocation sizes give away what

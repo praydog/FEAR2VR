@@ -336,11 +336,17 @@ public:
         // plausible index.
         std::optional<size_t> sector_a;
         std::optional<size_t> sector_b;
-        // The quad. vertex_count is 4 on every live portal and the array holds exactly 4,
-        // so a larger value is CLAMPED rather than trusted -- reading past the record is
-        // the failure that prevents.
+        // THE POLYGON. `vertex_count` is the engine's own stored count and is AUTHORITATIVE:
+        // LTVisPortal is a VARIABLE-LENGTH record, sized `12*(vertex_count-1) + 56`, so a
+        // portal with more than four vertices is a legal 116-byte record and not corruption.
+        //
+        // This fixed array therefore cannot always hold the whole polygon. It holds the first
+        // min(vertex_count, 4) and sets `vertices_truncated` when there were more. Every portal
+        // in the shipped level has exactly 4 -- which is why the 0x5C stride appears uniform --
+        // but that is the art's business, so use portal_polygon() when you need all of them.
         size_t vertex_count;
         regenny::LTVector vertices[4];
+        bool vertices_truncated;
     };
 
     // The engine's own portal total.
@@ -348,7 +354,21 @@ public:
 
     // Portal by index. nullopt when the tree is unresolved, `index` is out of range, or the
     // read faulted.
+    //
+    // INDEXING GOES THROUGH LTVisTree.portals, the engine's pointer table -- never by striding
+    // from the first body. The bodies happen to be contiguous because one arena allocation is
+    // carved up in order by LTLinearAlloc_Alloc, but with variable-length records that is a
+    // consequence of uniform art rather than a guarantee.
     static std::optional<Portal> portal(size_t index);
+
+    // THE WHOLE POLYGON, however many vertices it has -- what a caller clipping a play space
+    // against a doorway, or drawing the portal, actually needs. Reads exactly `vertex_count`
+    // entries from the variable-length record.
+    //
+    // Empty when the tree is unresolved, `index` is out of range, or the read faulted. The
+    // count is sanity-bounded, because it sizes a read: a wildly large one means a torn record
+    // and yields empty rather than walking off the arena.
+    static std::vector<regenny::LTVector> portal_polygon(size_t index);
 
     // Every portal touching `sector_index`, from THE SECTOR'S OWN ARRAY. Empty for the one
     // sector that has none, and for an out-of-range index.

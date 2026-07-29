@@ -650,6 +650,14 @@ class LTVisTreeNode 0x18 {
 // An earlier guess that this region held bare 4-vertex quads was WRONG and was
 // tested: read as 12 floats only 45 of 344 were coplanar. The quads are real but
 // they start at +0x2C, behind the plane and the sector pair.
+// VARIABLE-LENGTH RECORD: LTVisPortal_LoadFromStream sizes each one `12*(vertex_count-1) + 56`,
+// so 0x5C is the size of a FOUR-vertex portal and nothing more. It holds for every portal in
+// this level (344/344 have vertex_count 4, and all 343 consecutive pointer gaps are exactly 92
+// bytes, which the formula predicts exactly), but it is a property of the art.
+//
+// SO INDEX PORTALS THROUGH LTVisTree.portals, NEVER by striding 0x5C from the first body. The
+// pointer table is the authority; the contiguity is a consequence of one allocation being
+// carved up in order, not a guarantee.
 class LTVisPortal 0x5C {
     LTVector plane_normal  @0x00   // CONFIRMED unit length 344/344
     float plane_distance   @0x0C   // CONFIRMED: center and all four vertices satisfy dot(n,p) == this
@@ -657,8 +665,8 @@ class LTVisPortal 0x5C {
     float radius           @0x1C   // bounding radius about center; magnitude is plausible (1030..2154 live) but no reader has been traced
     LTVisSector* sector_a  @0x20   // CONFIRMED aligned sector pointer
     LTVisSector* sector_b  @0x24   // CONFIRMED aligned sector pointer, never equal to sector_a
-    uint32_t vertex_count  @0x28   // CONFIRMED == 4 on 344/344. The array below holds exactly 4, so 4 may be a hard maximum rather than a coincidence.
-    LTVector vertices[4]   @0x2C   // CONFIRMED: all vertices lie on the plane. Ends at 0x5C == the stride.
+    uint32_t vertex_count  @0x28   // CONFIRMED == 4 on 344/344 -- BUT 4 IS THIS LEVEL'S ART, NOT A LIMIT. An earlier pass guessed "4 may be a hard maximum"; the allocator refutes it. LTVisPortal_LoadFromStream reads this count first and then allocates `12*(count-1) + 56` bytes, i.e. a 44-byte head plus 12 per vertex, so a 6-vertex portal is simply a 116-byte record. Read this field; never assume the array's declared length.
+    LTVector vertices[4]   @0x2C   // CONFIRMED: all vertices lie on the plane. THE RECORD IS VARIABLE-LENGTH and this array really has `vertex_count` elements -- 4 is declared because that is what every portal in this level has and what the schema language can express. A consumer reading more than vertex_count entries reads whatever follows the record.
 }
 
 // The visibility tree manager -- the root of the whole vis subsystem, and the
@@ -688,7 +696,7 @@ class LTVisTree 0x24 {
     LTVisPortal** portals   @0x00   // CONFIRMED: a table of portal_count pointers, immediately followed in memory by the portals themselves and then by `sectors` -- one contiguous allocation. Every pointer equals `table_end + i*0x5C` in order, 344/344.
     LTVisSector* sectors    @0x04   // CONFIRMED: base of the sector array (stride 0x30)
     uint32_t sector_count   @0x08   // CONFIRMED == 263 live, matching the array's extent
-    void* unk_0C            @0x0C   // unmapped; live equals unk_00
+    void** portal_table     @0x0C   // CONFIRMED the base of the portal POINTER TABLE, which is why it equals `portals` above: the table sits at the very start of the one allocation (measured -- the first portal body begins exactly at table_base + 4*portal_count). LTVisTree_LoadFromStream keeps this handle to fill the table (`table[i] = LTVisPortal_LoadFromStream(stream)`, portal_count times) and then passes it to LTVisSector_LoadFromStream as the base each sector resolves its portal indices against.
     uint32_t portal_count   @0x10   // CONFIRMED == 344 live. The arithmetic is exact: 344 pointers (0x560 bytes) + 344 portals (0x5C each) lands precisely on `sectors`.
     LTVisTreeNode* root     @0x14   // CONFIRMED: LTVisTree_Root returns this when node_count is non-zero
     uint32_t node_count     @0x18   // CONFIRMED == 111 live, exactly the nodes reached by walking root
