@@ -748,8 +748,8 @@ class LTObject 0xCC {
     uint32_t unk_04       @0x04   // ctor writes all four bytes as 0xFF. Live 0xFFFFFFFF on 3265/3583, with 119 distinct other values on the remaining 318 -- so it is a real field with a -1 "none" default, not padding. Meaning unmapped.
     LTObjectRef* shared_ref @0x08   // CONFIRMED a pointer to a REFCOUNTED record: the base dtor (LTObject_dtor_body) branches on it and calls 0x415B43, which is `if (--pointee[9] == 0) release(pointee)` -- a decrement-and-release on the pointee's +0x24. Live it is non-null on exactly 36 objects, ALL of them OT_MODEL (36 of 215), and the records are threaded among themselves through their own +0x00/+0x04. Refcounts read 1 (x21), 3 (x11) and 35 (x4). WHAT the resource is remains unmapped -- only that it is shared, counted, and released with the object.
     LTObjectType type     @0x10   // CONFIRMED == the index of the object_lists[] bucket holding this object (0 mismatches / 3490 live objects, single traversal). The ctor writes it as a BYTE from its argument.
-    uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287, and the ctor initialises it to 0xFFFF)
-    LTVector position     @0x14   // CONFIRMED: written component-wise by SetPos (0x4201B8) and SetPosRot (0x4202B6)
+    uint16_t handle       @0x12   // CONFIRMED: 0xFFFF means "none" (dump 0x40B287, and the ctor initialises it to 0xFFFF). // AND CONFIRMED TO MEAN "SERVER OBJECT" BY THE ENGINE'S OWN PREDICATE: CLTClient_IsServerObject (0x40991C) is, in its entirety, `*out = *(uint16_t*)(obj + 18) != 0xFFFF`. So this field IS the engine's server/client discriminator, and the 335 handle-less objects (all 278 particle systems plus a few models and sprites) are client-created. An earlier pass could only infer that from the population shape and the reference SDK; the engine settles it. Found by the error-string technique -- the function logs its own name on the failure path.
+    LTVector position     @0x14   // CONFIRMED: written component-wise by SetPos (0x4201B8) and SetPosRot (0x4202B6), and independently confirmed by the engine's public READER: CLTClient_GetObjectPos (0x4067E9) copies out `obj[5], obj[6], obj[7]` as floats -- i.e. exactly +0x14/+0x18/+0x1C.
     LTRotation rotation   @0x20   // CONFIRMED unit-length in 3506/3506 live samples; the ctor writes (0,0,0,1), pinning w at +0x2C
     float scale           @0x30   // CONFIRMED as a uniform scale, by its READER: OT_MODEL's cull-volume provider (OT_MODEL_GetCullVolume, 0x428FB6) computes its sphere radius as `vis_radius(+0x16C) * this(+0x30)`. That matches the reference SDK's GetRadius() == m_VisRadius * MAX(m_Scale...), except FEAR2 keeps ONE float here rather than the reference's LTVector m_Scale. ctor sets 1.0; virtual slot 6 (LTObject_SetScale, 0x4200BF) is the setter and notifies with change code 0x10. Live it is exactly 1.0 on 3578/3583; the models that differ (1.658/2.493/2.656/3.0/3.19/3.2) multiply a vis_radius of 100.0 into radii of 165.76..320.0, all finite and positive on 193/193 sphere-culled models. An earlier pass called this MEANING UNKNOWN because the models whose value differs all had dims == 0 -- that turned out to be the explanation, not a counter-argument: they are SPHERE-culled, so LTObject_SetDims never runs on them and radius/dims stay at their constructor zeroes.
     void* owner           @0x34   // CONFIRMED: the SAME global for all 3583 live objects -- 0x6ECD2C, a static instance in FEAR2.exe's data (vtable 0x66F86C, constructed by 0x40C4E3). Every base setter reports changes through its vtable; slots 1/2/3/4/6/11/12 are used.
@@ -1017,6 +1017,37 @@ class CClientMgrCounterNode 0x40 {
     double elapsed_time @0x38   // CONFIRMED the SAME instant in SECONDS, with its own exported accessor: ClientTime_GetSeconds (0x406DED) is the identical leaf ending in `fld qword ptr [eax+38h]`. Two accessors, two units, one instant -- and the pair is 1000x on every sample. // IT IS GAME TIME, NOT WALL TIME, which is the fact a consumer needs most: sampled twice across a full second of real time with the game at a menu, both this and elapsed_ms were byte-identical. Anything that must keep running while the game is paused cannot be driven from this clock.
 }
 
+// The CLIENT SHELL, reached from CClientMgr.client_shell (+0x1434). Mapped from the
+// ENGINE'S OWN ACCESSORS rather than by staring at bytes: 25 functions reach the shell
+// through that displacement, and the small ones are each a getter for one field, which
+// makes the field's type and its bounds self-evident.
+//
+// PARTIAL BY CONSTRUCTION. The size below covers only the region those accessors and
+// CClientShell::Update touch; the class certainly continues past it. There is exactly
+// ONE live instance, so nothing here has a population behind it -- every value is a
+// single sample from one paused main-menu state, which is much weaker evidence than
+// this file's object-level claims. The CODE that reads each field is the real
+// evidence; the values are illustration.
+class CClientShell 0x70 {
+    void* vtable            @0x00   // live 0x66F9E8
+    uint32_t unk_04         @0x04   // live 1440
+    double game_time        @0x08   // CONFIRMED a clock that STOPS with the game: read by ClientShell_GetGameTime (0x407490), and across 1.5s of measured wall time at a paused menu it did not move at all (1186.6610 three times). Its origin differs from the counter node's clock (1186 vs 127), so the two are different quantities, not the same clock scaled.
+    double real_time        @0x10   // CONFIRMED a clock that KEEPS RUNNING while the game is paused: read by ClientShell_GetRealTime (0x406BDC), and over the same paused window it advanced 1.5070 against 1.5000 of wall time (ratio 1.005). QUANTISED, which matters more than it sounds: polled 58 times over 2.97s it took only 6 distinct values, stepping 0.5010..0.5060 -- a ~2 Hz clock. Accurate in aggregate, useless per-frame. CClientMgr.last_sample_time_ms is the fine-grained wall clock (57 steps of 46..54ms over the same window).
+    float frame_interval    @0x18   // CONFIGURED, not measured: bit-identical 0x3C888889 across 8 samples, which is exactly 1/60 as a float. A measured frame delta would jitter in the low bits; this does not move at all. WHICH subsystem consumes it is unmapped -- the nearby FPS-limiter block in CClientMgr::Update is the obvious candidate and was not traced.
+    void* unk_1C            @0x1C   // heap pointer, live 0x05F8CB90 (near the shell itself)
+    void* subobject_20      @0x20   // CONFIRMED a vtable-bearing sub-object, not a flag, even though one getter treats it as a boolean: sub_40713C returns `shell && *(shell+0x20)` (i.e. mere presence), while sub_406BF4 calls its vtable SLOT 12 with two arguments and maps the result to 0/63. Live the pointee's vtable is 0x674228, inside FEAR2.exe.
+    uint8_t local_client_ids[4] @0x24 // CONFIRMED a 4-entry table of LOCAL CLIENT IDs with 0xFF meaning "none", named by the engine itself: CLTClient_GetLocalClientID (0x408D59) is `if (index < 4) { v = *(uint8_t*)(shell + 0x24 + index); if (v != 0xFF) { *out = v; return 0; } } return 63;` and logs the string "CLTClient::GetLocalClientID" when index >= 4. The bound 4 is the engine's, not a guess. Live 0x00,0xFF,0xFF,0xFF -- one local client, id 0, which is what single-player should look like.
+    uint8_t unk_28          @0x28   // a GATE byte: sub_40C8C2 proceeds only when this is non-zero (alongside two unrelated globals), and sub_406F6F copies it out through an out-parameter with LTRESULT-style 0/1. Live 1.
+    uint32_t unk_2C         @0x2C   // live 0x0066EAE4 -- an address inside FEAR2.exe's data, so a pointer to static data rather than a number
+    uint32_t unk_30         @0x30   // live 1792 (0x700)
+    uint32_t unk_34         @0x34   // read out by sub_406F18 through an out-parameter with 0/1 return. Live 1200.
+    uint32_t unk_38         @0x38   // live 32
+    CClientMgrListLink list_50 @0x50 // CONFIRMED an intrusive list head, currently EMPTY: both words equal the field's own address (0x5F87080). Reusing CClientMgrListLink for field order (prev@0x00/next@0x04) as elsewhere.
+    CClientMgrListLink list_58 @0x58 // CONFIRMED a second empty list head, self-pointing at 0x5F87088
+    uint16_t handles_60[4]  @0x60   // the 0xFFFF-sentineled uint16 table CClientShell::Update walks (recorded in sdk/CClientShell.hpp before this class existed). Live the first two words are 0x1CE2 and 0xFFFF, so one slot is occupied. What they index is unmapped.
+    uint8_t unk_69          @0x69   // copied out by sub_408D2F, which substitutes 5 when no shell exists -- so 5 is a meaningful default for whatever this selects. Live 1 (from the 0x401 dword at +0x68).
+}
+
 // One slot of CClientMgr's object handle table. This is the mapping every ILT*
 // call goes through: the engine's HOBJECT is an INDEX into this vector, not a
 // pointer, which is why no global in the module holds an object pointer.
@@ -1248,7 +1279,7 @@ class CClientMgr 0x1468 {
     LTObjectHandleTable handle_table         @0x1414   // CONFIRMED the engine's HOBJECT -> object map, indexed directly by LTObject.handle. CClientMgr_RegisterObjectHandle (0x40BEC2) writes {1, obj} at index `handle` during CClientMgr_CreateObject, growing the vector when the handle exceeds its size. Live: 7719 slots of which 3248 are tagged live, and for EVERY object carrying a handle, table[handle].object is that object -- 3248/3248, zero mismatches, all seven buckets. The other 335 objects hold handle 0xFFFF, exactly the same 335 that hold slot_index 0xFFFFFFFF. This is how a mod turns an HOBJECT from any ILT* call back into an object, and why no module global holds an object pointer: the engine passes indices, not addresses.
     float unk_1424                           @0x1424   // unverified float. Live: advances while the engine runs, but NOT by whole numbers and NOT at a fixed rate -- observed +168.000 over ~1.0s in one sample and +21.987 over ~2.0s in another. RETRACTED HYPOTHESIS: dump 0x409FD0 does `*(float*)(<ecx>+0x1424) += 1.0` (dbl_66EDF0 == 1.0), and this field was briefly named frame_counter on that basis. That was WRONG: the decompiler never established that 0x409FD0's ecx is CClientMgr, and the non-integral live deltas here disprove it -- either that function operates on a different object, or something else writes this field. Offset/type are sound (read as a float that changes); the meaning is not.
     uint16_t last_sent_bandwidth             @0x1430   // CONFIRMED == clamp(BandwidthTargetClient/8000, 0, 0xFFFF); live 256000/8000 == 32 == field
-    void* client_shell                       @0x1434
+    CClientShell* client_shell               @0x1434   // CONFIRMED the client shell instance; 25 functions reach it through this displacement and its small accessors are what mapped the class (see CClientShell). Live 0x5F87030 with vtable 0x66F9E8.
     void* pending_shell_release              @0x1438   // CONFIRMED deferred-destruction slot; see the class comment. Set only when `updating`, consumed at the end of CClientMgr::Update.
     bool updating                            @0x143C
     CClientMgrListLink start_shell_list      @0x1460

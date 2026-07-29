@@ -963,6 +963,42 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
 
 ## Gotchas log (append here as new ones are found)
 
+- **THE ENGINE NAMES ITS OWN FUNCTIONS. Read the error strings first.** This is the
+  highest-yield technique in this file and it should be tried before any behavioural
+  classification, because when it applies it gives an EXACT name, not a guess.
+
+  FEAR 2's engine logs the qualified name of the failing function on its argument-
+  validation path:
+
+  ```
+  if ( a1 && a2 ) { *a2 = *(_WORD *)(a1 + 18) != 0xFFFF; return 0; }
+  sub_4687B8(60);
+  if ( dword_6ECAA4 >= 2 ) sub_468BD1(off_6E307C, aCltclientIsser);  // "CLTClient::IsServerObject"
+  ```
+
+  Harvesting every string that looks like a qualified C++ name (`::`, no spaces,
+  initial capital, under 60 chars) found **258**, of which **222 are referenced by
+  exactly one function** — a 1:1 name-to-function mapping, applied in one pass:
+  `CLTClient::GetObjectPos`, `SetObjectRotation`, `IsServerObject`,
+  `ProcessAttachments`, `CLTCommonClient::GetAttachmentObjects`, the whole light API,
+  and so on. 213 renames, 9 already named.
+
+  **Validate before bulk-applying, and this dataset validated itself twice over.**
+  Four of the pairings landed on functions already named from independent evidence
+  (`CClientMgr::Init`, `CClientShell::Update`, `CClientMgr::StartShell`) and MATCHED.
+  Then two were checked by decompiling: `IsServerObject` is `handle != 0xFFFF` and
+  `GetObjectPos` copies `obj[5..7]`, both exactly what the schema already said at
+  +0x12 and +0x14. A mapping that reproduces facts you established another way is
+  safe to trust across the rest of its range.
+
+  The failure mode to guard against is a function logging SOMEONE ELSE'S name --
+  a forwarder, or a shared validator. Requiring the string to have exactly one
+  referencing function removes most of that risk; the rest is why you spot-check.
+
+  Corollary worth internalising: an engine that validates arguments and logs is
+  documenting itself. Look for the logger, then read its callers' string arguments --
+  it inverts the whole problem from "what does this code do" to "what did the authors
+  call it".
 - **Searching for another INSTANCE of a known class: match an invariant, never a
   shape.** Looking for a second object manager, the obvious filter was structural --
   seven consecutive 8-byte pairs that each either self-point or hold two heap

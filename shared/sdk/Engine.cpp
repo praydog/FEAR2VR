@@ -32,6 +32,18 @@ static constexpr const char* kClientTimeMillis =
 using GetTimeSecondsFn = double(*)();
 using GetTimeMillisFn = uint32_t(*)();
 
+// CClientMgr_GetGlobalForce -- FEAR2_dump.exe 0x405C39, __stdcall(float* out),
+// `retn 4`:
+//   A1 [g_pClientMgr] | 8B 4C 24 04 | 05 40 14 00 00 |
+//   D9 00 D9 19 | D9 40 04 D9 59 04 | D9 40 08 33 C0 D9 59 08 | C2 04 00
+// Three fld/fstp pairs copying mgr+0x1440..+0x1448 into the caller's buffer, with
+// `xor eax, eax` for the LT_OK return wedged between the last load and store.
+static constexpr const char* kGetGlobalForce =
+    "A1 ? ? ? ? 8B 4C 24 04 05 40 14 00 00 D9 00 D9 19 D9 40 04 D9 59 04 D9 40 08 33 C0 "
+    "D9 59 08 C2 04 00";
+
+using GetGlobalForceFn = int(__stdcall*)(float* out);
+
 using GetEngineHookFn = int(__stdcall*)(const char* name, void** out_data);
 
 namespace {
@@ -74,6 +86,21 @@ bool call_client_time(uintptr_t fn_s, uintptr_t fn_ms, double* out_s, uint32_t* 
     KANANLIB_SEH_TRY {
         *out_s = reinterpret_cast<GetTimeSecondsFn>(fn_s)();
         *out_ms = reinterpret_cast<GetTimeMillisFn>(fn_ms)();
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return ok;
+}
+
+// The engine writes THREE floats through the pointer we hand it, so the buffer is
+// sized here and not by the callee's word. A short buffer would be a stack overwrite
+// the guard could not catch, because the write would be perfectly legal.
+bool call_global_force(uintptr_t fn, float out[3]) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        reinterpret_cast<GetGlobalForceFn>(fn)(out);
         ok = true;
     }
     KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
@@ -130,6 +157,19 @@ std::optional<Engine::ClientTime> Engine::client_time() {
         return std::nullopt;
     }
     return out;
+}
+
+std::optional<Engine::ForceVector> Engine::global_force() {
+    static const uintptr_t s_fn =
+        Modules::get().scan_exe(kGetGlobalForce, "CClientMgr_GetGlobalForce");
+    if (s_fn == 0) {
+        return std::nullopt;
+    }
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    if (!call_global_force(s_fn, v)) {
+        return std::nullopt;
+    }
+    return ForceVector{v[0], v[1], v[2]};
 }
 
 } // namespace sdk

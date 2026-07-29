@@ -49,6 +49,28 @@ public:
 
     // nullopt when either accessor could not be located or the call faulted.
     static std::optional<ClientTime> client_time();
+
+    // The engine's GLOBAL FORCE vector, copied out by the engine's own getter (dump
+    // 0x405C39, __stdcall(float* out), reading CClientMgr+0x1440).
+    //
+    // Live it reads (0, -980, 0) and its three neighbouring floats are zero, so this
+    // is gravity in the engine's units -- 980 of them per second squared, downward on
+    // -Y. Named for the concept rather than for gravity because the getter copies a
+    // free vector out of a mutable field: the engine can point it anywhere, and the
+    // reference SDK carries a matching per-object m_GlobalForceOverride, which only
+    // makes sense against a global that is not definitionally gravity.
+    //
+    // Useful to a mod that has to agree with the engine about "down" -- a VR comfort
+    // horizon, a thrown object's arc, or anything deciding which way up the player is.
+    // Reading it beats hardcoding -980 because a level or a script may change it.
+    struct ForceVector {
+        float x;
+        float y;
+        float z;
+    };
+
+    // nullopt when the getter could not be located or the call faulted.
+    static std::optional<ForceVector> global_force();
 };
 
 } // namespace sdk

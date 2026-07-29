@@ -246,6 +246,9 @@ std::string build_targets_json() {
     const auto* exe = sdk::Modules::get().exe();
     auto* client_mgr = sdk::CClientMgr::get();
     const auto engine_time = sdk::Engine::client_time();
+    const auto shell_game = sdk::CClientShell::game_time_seconds();
+    const auto shell_real = sdk::CClientShell::real_time_seconds();
+    const auto force = sdk::Engine::global_force();
 
     // start_shell_list_count is std::optional: nullopt means the SDK's own
     // walk did NOT terminate (corrupt list / wrong mapping) or faulted.
@@ -270,7 +273,12 @@ std::string build_targets_json() {
              // engine's own accessors, while counter_elapsed_* above are field reads
              // through CClientMgr. Two independent paths to one value, so a
              // disagreement means one of them is wrong.
-             "\"engine_time_seconds\":%f,\"engine_time_ms\":%u,\"engine_time_ok\":%s}",
+             "\"engine_time_seconds\":%f,\"engine_time_ms\":%u,\"engine_time_ok\":%s,"
+             // The shell's two clocks and the global force. shell_real is the one that
+             // KEEPS RUNNING while the game is paused -- the distinction a VR mod
+             "\"shell_game_time\":%f,\"shell_real_time\":%f,\"shell_clocks_ok\":%s,"
+             "\"local_client_count\":%d,\"local_client_0\":%d,\"frame_interval\":%f,"
+             "\"global_force\":[%f,%f,%f],\"global_force_ok\":%s}",
              static_cast<uintptr_t>(exe->base), static_cast<uintptr_t>(exe->size),
              sdk::CClientMgr::update_fn(),
              sdk::CClientShell::update_fn(),
@@ -292,7 +300,20 @@ std::string build_targets_json() {
              // it advance mid-line and print a seconds/ms pair that never coexisted.
              engine_time.value_or(sdk::Engine::ClientTime{}).seconds,
              engine_time.value_or(sdk::Engine::ClientTime{}).milliseconds,
-             engine_time.has_value() ? "true" : "false");
+             engine_time.has_value() ? "true" : "false",
+             shell_game.value_or(0.0), shell_real.value_or(0.0),
+             (shell_game.has_value() && shell_real.has_value()) ? "true" : "false",
+             static_cast<int>(sdk::CClientShell::local_client_count().value_or(0)),
+             // -1 for "no local client in slot 0", which is a real state (no shell,
+             // or an empty slot) and must not read as id 0.
+             sdk::CClientShell::local_client_id(0).has_value()
+                 ? static_cast<int>(*sdk::CClientShell::local_client_id(0))
+                 : -1,
+             static_cast<double>(sdk::CClientShell::frame_interval_seconds().value_or(0.0f)),
+             force.value_or(sdk::Engine::ForceVector{}).x,
+             force.value_or(sdk::Engine::ForceVector{}).y,
+             force.value_or(sdk::Engine::ForceVector{}).z,
+             force.has_value() ? "true" : "false");
     return buf;
 }
 
@@ -899,9 +920,9 @@ std::string build_objects_json() {
                     if (has_handle == has_slot) {
                         ++api_identities_agree;
                     }
-                    // And the predicate a mod actually calls, which must match the
-                    // handle it is really about.
-                    if (const auto a = sdk::is_engine_addressable(obj); a.value_or(false)) {
+                    // And the predicate a mod actually calls -- which is the engine's
+                    // own IsServerObject test, so it must match handle presence.
+                    if (const auto a = sdk::is_server_object(obj); a.value_or(false)) {
                         ++api_addressable;
                     }
                 }

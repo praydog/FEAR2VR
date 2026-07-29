@@ -90,16 +90,30 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj);
 // live, 40 objects pass the gate and hold no spatial entries).
 std::optional<bool> is_renderable(const regenny::LTObject* obj);
 
-// Whether the engine can be ASKED about this object at all.
+// Whether this is a SERVER object -- the engine's own concept, and its own test.
 //
-// The 335 objects that carry no handle cannot be passed to any ILT* entry point --
-// those take an HOBJECT, and the handle table has no slot for them. A mod iterating
-// the object lists will meet them (every particle system is one) and must skip them
-// rather than discover it one failed call at a time.
+// This is not a name I chose. CLTClient::IsServerObject (dump 0x40991C) is, in its
+// entirety, `*out = obj->handle != 0xFFFF`. So "has an engine handle" and "came from
+// the server" are the SAME predicate as far as the engine is concerned, and the 335
+// handle-less objects are exactly the client-created ones.
 //
-// The two identities agree completely on this: handle present and slot_index present
-// are the SAME 3248 objects, with zero objects holding one and not the other. So this
-// is one question with one answer, and a caller need not check both.
-std::optional<bool> is_engine_addressable(const regenny::LTObject* obj);
+// That settles by engine code what an earlier pass could only infer from a
+// population: the objects without a handle are all 278 particle systems plus a
+// scattering of models and sprites, which LOOKED like client-side effects. The
+// engine agrees.
+//
+// TWO CONSEQUENCES, both worth knowing:
+//
+//   * A false answer means the object cannot be passed to ANY ILT* entry point --
+//     those take an HOBJECT and the handle table has no slot for it. A mod walking
+//     the object lists meets these constantly and should skip them rather than
+//     discover it one failed call at a time.
+//   * A false answer also means the object is client-side: a local effect, not a
+//     replicated entity. Anything that should act on "real" game entities wants this
+//     filter regardless of the API question.
+//
+// slot_index agrees completely (present on exactly the same 3248 objects), so a
+// caller need not check both.
+std::optional<bool> is_server_object(const regenny::LTObject* obj);
 
 }  // namespace sdk

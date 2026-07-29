@@ -7,6 +7,9 @@ namespace regenny {
 class CClientMgrCounterNode;
 }
 namespace regenny {
+class CClientShell;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class CClientMgr {
 public:
@@ -26,7 +29,7 @@ public:
     private: char pad_1428[0x8]; public:
     uint16_t last_sent_bandwidth; // 0x1430
     private: char pad_1432[0x2]; public:
-    void* client_shell; // 0x1434
+    regenny::CClientShell* client_shell; // 0x1434
     void* pending_shell_release; // 0x1438
     bool updating; // 0x143c
     private: char pad_143d[0x23]; public:

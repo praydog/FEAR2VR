@@ -548,6 +548,102 @@ int main(int argc, char** argv) {
         const double unit_gap = static_cast<double>(eng_ms) - eng_s * 1000.0;
         check(unit_gap > -2.0 && unit_gap < 2.0,
               "the engine's ms and seconds accessors are the same instant in two units");
+
+        // ---- THE SHELL'S TWO CLOCKS ------------------------------------------------
+        //
+        // Only ONE of these can be asserted, and knowing which is the whole point.
+        //
+        // The real clock ADVANCES ALWAYS -- that is its defining property and the
+        // reason a VR mod must use it, so it is assertable in any game state: paused,
+        // playing, or sitting in a menu.
+        //
+        // The game clock cannot be asserted in either direction. Frozen is correct
+        // while paused and wrong while playing, and the fixture does not control which
+        // is true. Requiring it to advance would fail at a menu; requiring it to freeze
+        // would fail during play. So its value is REPORTED and its readability checked,
+        // which is exactly TESTING.MD's rule about state the test does not own.
+        check(json_has(body, "\"shell_clocks_ok\":true"),
+              "both shell clock accessors were located and a shell exists");
+        double real1 = -1.0, game1 = -1.0;
+        check(json_double(body, "shell_real_time", real1) && real1 > 0.0,
+              "the shell's real clock reads a positive time");
+        check(json_double(body, "shell_game_time", game1) && game1 >= 0.0,
+              "the shell's game clock is readable and non-negative");
+
+        // THE LOCAL CLIENT TABLE. What is assertable is the engine's own BOUND: the
+        // table has 4 slots and GetLocalClientID rejects any index at or above that,
+        // so a count outside [0,4] means the field moved or the sentinel is wrong. The
+        // count itself is reported: a shell can exist before any client is connected,
+        // and split-screen would legitimately report more than one.
+        int64_t lcc = -1, lc0 = -99;
+        check(json_int(body, "local_client_count", lcc) && lcc >= 0 && lcc <= 4,
+              "the local client count is inside the engine's own 4-slot bound");
+        check(json_int(body, "local_client_0", lc0), "local_client_0 is reported");
+        // Internal consistency rather than a fixed value: if any slot is filled, slot
+        // zero must hold a real id (-1 is this endpoint's "empty" marker), because the
+        // engine fills from the front.
+        if (lcc > 0) {
+            check(lc0 >= 0, "a filled client table yields a real id in slot 0");
+        }
+        printf("[fixture] local clients: %lld (slot 0 id %lld)\n",
+               static_cast<long long>(lcc), static_cast<long long>(lc0));
+
+        // The frame interval is CONFIGURED (bit-identical 1/60 across samples), so a
+        // sane positive duration is assertable while the exact value is not -- a
+        // different cap is a setting, not a fault.
+        double fi = -1.0;
+        check(json_double(body, "frame_interval", fi) && fi > 0.0 && fi <= 1.0,
+              "the shell's frame interval is a sane positive duration");
+
+        // The gap must CLEAR THE CLOCK'S GRANULARITY, which was measured rather than
+        // assumed: this clock steps by ~0.503 s (58 polls over 2.97 s produced 6
+        // distinct values). A 300 ms gap failed here intermittently -- correctly, since
+        // two samples inside one step legitimately read the same value. 1.5 s is three
+        // steps, so an advance is guaranteed for a clock that runs at all.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        std::string resp2;
+        double real2 = -1.0;
+        const bool got2 = http::get(port, "/sdk/targets", resp2);
+        check(got2, "/sdk/targets second sample");
+        if (got2) {
+            const std::string body2 = http::body_of(resp2);
+            check(json_double(body2, "shell_real_time", real2) && real2 > 0.0,
+                  "the shell's real clock reads on the second sample");
+            const double advanced = real2 - real1;
+            check(advanced > 0.0 && advanced < 30.0,
+                  "the shell's real clock advanced across a 1.5s wall-time gap");
+            // The fine-grained clock must advance over the same window, and by an
+            // amount consistent with it. Both being real time, they should agree on
+            // how much time passed -- generous slack, since they are sampled from two
+            // requests and quantised differently.
+            int64_t ms1 = -1, ms2 = -1;
+            json_int(body, "last_sample_time_ms", ms1);
+            json_int(body2, "last_sample_time_ms", ms2);
+            check(ms2 > ms1, "the per-frame millisecond clock advanced too");
+            const double ms_advanced = static_cast<double>(ms2 - ms1) / 1000.0;
+            check(ms_advanced - advanced > -1.5 && ms_advanced - advanced < 1.5,
+                  "the coarse and fine wall clocks agree on how much time passed");
+        }
+
+        // ---- THE GLOBAL FORCE ------------------------------------------------------
+        //
+        // The MECHANISM is asserted (the engine's getter answers, and what it copies
+        // out is finite); the VALUE is reported. Live it is (0, -980, 0), but a level
+        // or script is free to change gravity, and pinning -980 here would turn a
+        // legitimate design choice into a test failure.
+        check(json_has(body, "\"global_force_ok\":true"),
+              "the engine's global-force getter was located and answered");
+        const size_t fp = body.find("\"global_force\":[");
+        check(fp != std::string::npos, "global_force present in the payload");
+        if (fp != std::string::npos) {
+            double fx = 0.0, fy = 0.0, fz = 0.0;
+            const int got = sscanf(body.c_str() + fp + 16, "%lf,%lf,%lf", &fx, &fy, &fz);
+            check(got == 3, "global_force is a three-component vector");
+            const double mag2 = fx * fx + fy * fy + fz * fz;
+            check(mag2 >= 0.0 && mag2 < 1.0e12,
+                  "global_force components are finite and of sane magnitude");
+            printf("[fixture] global force (0,-980,0 live): (%.1f, %.1f, %.1f)\n", fx, fy, fz);
+        }
     }
 
     // 5b1. /sdk/models: the CONSUMER API, tested the way a mod uses it.
@@ -1576,7 +1672,8 @@ int main(int argc, char** argv) {
                 // The predicate a mod calls must answer about the handle it concerns,
                 // so this is an identity check on the public function, not a rate.
                 check(aaddr == ahnd,
-                      "sdk::is_engine_addressable matches handle presence exactly");
+                      "sdk::is_server_object matches handle presence exactly (the "
+                      "engine's CLTClient::IsServerObject is that same comparison)");
             }
         }
 

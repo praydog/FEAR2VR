@@ -106,7 +106,7 @@ std::optional<bool> is_renderable(const regenny::LTObject* obj) {
     return r != 0;
 }
 
-std::optional<bool> is_engine_addressable(const regenny::LTObject* obj) {
+std::optional<bool> is_server_object(const regenny::LTObject* obj) {
     if (obj == nullptr) {
         return std::nullopt;
     }
@@ -114,9 +114,9 @@ std::optional<bool> is_engine_addressable(const regenny::LTObject* obj) {
     if (!r.ok) {
         return std::nullopt;
     }
-    // The handle is the one the ILT* entry points take, so it decides. slot_index is
-    // read too and must agree -- see the header -- but a caller asking this question
-    // wants the answer about the API it is going to call.
+    // The engine's own test, verbatim: CLTClient::IsServerObject (0x40991C) performs
+    // exactly this comparison and nothing else, so this is not an approximation of
+    // the engine's notion of a server object -- it IS it.
     return r.handle != 0xFFFF;
 }
 

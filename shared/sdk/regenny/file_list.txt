@@ -30,6 +30,7 @@
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTWorldModelObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTCameraObject.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgrCounterNode.hpp" \
+"I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientShell.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTObjectHandleEntry.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\LTObjectHandleTable.hpp" \
 "I:\Programming\projects\fear2\shared\sdk\regenny\regenny\CClientMgr.hpp" \
