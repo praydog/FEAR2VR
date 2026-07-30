@@ -4610,6 +4610,42 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // WHERE THE CAMERA POSE COMES FROM: a model socket named in gameclient's code, plus three tunable floats.
+    // The socket name is the cross-check -- a string literal in the DLL against the model ASSET's own socket table,
+    // two independent artefacts that must agree.
+    const auto cs = sdk::PlayerMgr::camera_socket_index(0);
+    const auto cs_dead = sdk::PlayerMgr::camera_socket_index(0, sdk::PlayerMgr::kCameraDeadSocketName);
+    json_append_bool(out, "cs_camera_socket_found", cs.has_value());
+    json_append_double(out, "cs_camera_socket_index", static_cast<double>(cs.value_or(9999)), 0);
+    json_append_bool(out, "cs_dead_socket_found", cs_dead.has_value());
+    json_append_double(out, "cs_dead_socket_index", static_cast<double>(cs_dead.value_or(9999)), 0);
+    // The two names must resolve to DIFFERENT sockets; if they collided, the death-state branch would be a no-op.
+    json_append_bool(out, "cs_sockets_distinct",
+                     cs.has_value() && cs_dead.has_value() && *cs != *cs_dead);
+    // A name the asset does not carry must be refused rather than resolving to something.
+    json_append_bool(out, "cs_absent_socket_refused",
+                     !sdk::PlayerMgr::camera_socket_index(0, "NoSuchSocketAtAll").has_value() &&
+                         !sdk::PlayerMgr::camera_socket_index(0, nullptr).has_value() &&
+                         !sdk::PlayerMgr::camera_socket_index(9).has_value());
+
+    const auto cofs = sdk::PlayerMgr::camera_attached_offset();
+    json_append_bool(out, "cs_offset_readable", cofs.has_value());
+    if (cofs.has_value()) {
+        json_append_double(out, "cs_offset_x", static_cast<double>((*cofs)[0]), 4);
+        json_append_double(out, "cs_offset_y", static_cast<double>((*cofs)[1]), 4);
+        json_append_double(out, "cs_offset_z", static_cast<double>((*cofs)[2]), 4);
+        json_append_bool(out, "cs_offset_finite",
+                         std::isfinite((*cofs)[0]) && std::isfinite((*cofs)[1]) && std::isfinite((*cofs)[2]));
+        // Each component must resolve to a DISTINCT cache record -- one shared record would mean the three axes
+        // are the same variable and a consumer could not offset independently.
+        const auto vx = sdk::Engine::find_cached_var("CameraAttachedOffsetX");
+        const auto vy = sdk::Engine::find_cached_var("CameraAttachedOffsetY");
+        const auto vz = sdk::Engine::find_cached_var("CameraAttachedOffsetZ");
+        json_append_bool(out, "cs_offset_records_distinct",
+                         vx.has_value() && vy.has_value() && vz.has_value() && vx->record != vy->record &&
+                             vy->record != vz->record && vx->record != vz->record);
+    }
+
     // THE CAMERA'S COMPOSED ROTATION. The write path multiplies two stored quaternions and pushes the product to
     // the camera object, so recomputing the product here and comparing against what the object carries
     // establishes BOTH operands AND the multiplication order in one measurement.

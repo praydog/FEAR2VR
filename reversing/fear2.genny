@@ -5777,3 +5777,38 @@ class LTInputDeviceMouse 0x30 {
 // watches it is meaningless without it.
 //
 // 1180 checks, 0 failures.
+
+// ---- THE CAMERA POSE IS A MODEL SOCKET, AND ITS OFFSET IS THREE FLOATS --------------------------
+//
+// The render path has been frozen for three passes, so dynamic probes cannot discriminate. Static reading can, and
+// it answered the question the probes could not: WHERE DOES THE CAMERA POSE COME FROM.
+//
+// PlayerCamera_ComputeBasePoseFromSocket does not compute it from player state at all. It READS IT OFF THE MODEL:
+//
+//     source = this[+600] (the model object) when player[+364]==1 && player[+352], or when this[+688]==5;
+//              this[+616] when sub_100592E0() and player[+364] in {2,3,4}; else sub_100BCE30(player)
+//     name   = "CameraDEAD" when player[+364] in {2,3,4} -- the DEATH states -- else "Camera"
+//     pose   = ILTModel slot 2 (resolve name -> handle), then slot 3 (handle -> transform)
+//     pose.position += rotate(CameraAttachedOffsetX, Y, Z)
+//
+// this[+688] is the state field the nine-state machine at 0x100E1BE0 writes -- a loose end from two passes ago,
+// now connected: state 5 forces the camera onto the model object.
+//
+// THE SOCKET NAME IS A CROSS-CHECK ACROSS TWO ARTEFACTS. "Camera" and "CameraDEAD" are string literals compiled
+// into gameclient.dll; the socket table belongs to the model ASSET. Both resolve -- indices 12 and 2 -- and they
+// are DISTINCT, which matters because a collision would make the death-state branch a silent no-op. Nothing forces
+// a DLL literal and an asset's table to agree, so agreement means the pose path was read correctly.
+//
+// AND THE CHEAPEST CAMERA CONTROL THIS PROJECT HAS FOUND. The offset is three CACHED CONSOLE VARIABLES, so the eye
+// point moves with THREE FLOAT STORES -- no hook, no engine call, no thread concerns -- through the cache pointers
+// the 474-pair discovery already named. The suite asserts the three axes are three DISTINCT records, because one
+// shared record would mean they cannot be set independently and the whole idea fails quietly.
+//
+// > Three passes of mutation probes could not tell which field the engine reads. One decompile of the producer
+// > said the engine reads neither: it reads a socket off the model. The frozen render path cost nothing here,
+// > because asset tables and code literals do not need frames to be true.
+//
+// Exposed as sdk::PlayerMgr::camera_attached_offset / set_camera_attached_offset / camera_socket_index, with
+// kCameraSocketName and kCameraDeadSocketName as the names to look up.
+//
+// 1189 checks, 0 failures.

@@ -11,6 +11,8 @@
 #include "Memory.hpp"
 #include "Modules.hpp"
 #include "CClientShell.hpp"
+#include "Engine.hpp"
+#include "Model.hpp"
 #include "Object.hpp"
 #include "ShaderParams.hpp"
 
@@ -705,6 +707,56 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_camera_object_rotat
                   : out.survived == samples ? ProbeVerdict::Held
                                             : ProbeVerdict::Reclaimed;
     return out;
+}
+
+
+namespace {
+
+constexpr const char* kCameraOffsetVars[] = {"CameraAttachedOffsetX", "CameraAttachedOffsetY",
+                                             "CameraAttachedOffsetZ"};
+
+}  // namespace
+
+std::optional<std::array<float, 3>> PlayerMgr::camera_attached_offset() {
+    std::array<float, 3> out{};
+    for (size_t i = 0; i < out.size(); ++i) {
+        const auto var = Engine::find_cached_var(kCameraOffsetVars[i]);
+        if (!var.has_value()) {
+            return std::nullopt;
+        }
+        const auto v = Engine::read_cached(*var);
+        if (!v.has_value()) {
+            return std::nullopt;
+        }
+        out[i] = *v;
+    }
+    return out;
+}
+
+bool PlayerMgr::set_camera_attached_offset(const std::array<float, 3>& offset) {
+    bool ok = true;
+    for (size_t i = 0; i < offset.size(); ++i) {
+        const auto var = Engine::find_cached_var(kCameraOffsetVars[i]);
+        if (!var.has_value() || !Engine::write_cached(*var, offset[i])) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+std::optional<size_t> PlayerMgr::camera_socket_index(unsigned index, const char* name) {
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    const auto p = player(index);
+    if (!p.has_value() || p->model_object == 0) {
+        return std::nullopt;
+    }
+    const auto skel = ModelSkeleton::from_object(reinterpret_cast<const regenny::LTObject*>(p->model_object));
+    if (!skel.has_value()) {
+        return std::nullopt;
+    }
+    return skel->find_socket(name);
 }
 
 }  // namespace sdk

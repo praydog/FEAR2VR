@@ -281,6 +281,40 @@ public:
         std::array<float, 3> external_delta{};
     };
 
+    // ---- WHERE THE CAMERA POSE COMES FROM: A MODEL SOCKET, PLUS THREE TUNABLE FLOATS -------
+    //
+    // The base pose is not computed from player state at all -- it is READ OFF THE MODEL. Per frame,
+    // PlayerCamera_ComputeBasePoseFromSocket picks a source object, asks ILTModel for a socket BY NAME, takes that
+    // socket's transform, and adds a console-configurable offset:
+    //
+    //     name   = "Camera", or "CameraDEAD" when player[+364] is 2, 3 or 4 (the death states)
+    //     source = the model object, or an alternate depending on player[+364] and holder[+688]
+    //     pose   = ILTModel socket transform of that name
+    //     pose.position += rotate(CameraAttachedOffsetX, ...OffsetY, ...OffsetZ)
+    //
+    // THE OFFSET IS THREE CACHED CONSOLE VARIABLES, which makes it the cheapest useful camera control this project
+    // has found: a VR consumer can move the eye point with three float stores, no hook and no engine call, through
+    // the cache pointers sdk::Engine already discovers. That is what camera_attached_offset() exposes.
+    //
+    // AND THE SOCKET NAME IS CHECKABLE. "Camera" is a string in gameclient's code; the socket table belongs to the
+    // model ASSET. camera_socket_index() looks it up through sdk::ModelSkeleton, so agreement is two independent
+    // artefacts -- a code literal and an asset's own table -- naming the same thing.
+    static constexpr const char* kCameraSocketName = "Camera";
+    static constexpr const char* kCameraDeadSocketName = "CameraDEAD";
+
+    // The three CameraAttachedOffset floats, in X, Y, Z order. nullopt when any of them is not in the cached set,
+    // which is a real state before the camera has initialised.
+    static std::optional<std::array<float, 3>> camera_attached_offset();
+
+    // Store all three. False when any is missing or a write faulted; a partial write is still possible, so a
+    // caller that cares should read back.
+    static bool set_camera_attached_offset(const std::array<float, 3>& offset);
+
+    // The index of the socket the camera pose is read from, on this player's model. nullopt when the model or the
+    // socket cannot be resolved -- and a missing "Camera" socket would mean the name in the code and the asset
+    // have diverged, which is worth knowing before trusting the pose path.
+    static std::optional<size_t> camera_socket_index(unsigned index, const char* name = kCameraSocketName);
+
     // ---- HOW THE CAMERA'S ROTATION IS COMPOSED, AND WHERE A VR MOD WOULD CUT IN -------------
     //
     // The camera pose write path is now read. Per frame, on the POSE HOLDER:

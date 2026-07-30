@@ -4509,6 +4509,41 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE CAMERA POSE'S ORIGIN: A NAMED MODEL SOCKET -------------------------------------
+            //
+            // The base pose is not computed from player state -- it is read off the model. gameclient asks ILTModel
+            // for a socket BY NAME ("Camera", or "CameraDEAD" in the death states) and takes its transform, then
+            // adds three console-configurable floats.
+            //
+            // THE NAME IS THE CROSS-CHECK, and it spans two independent artefacts: a string literal compiled into
+            // the DLL, and the socket table belonging to the model ASSET on disk. Nothing forces them to agree, so
+            // agreement means the pose path was read correctly.
+            bool csk_f = false, csk_df = false, csk_sd = false, csk_ar = false;
+            double csk_i = -1.0, csk_di = -1.0;
+            check(json_bool(body, "cs_camera_socket_found", csk_f) && csk_f,
+                  "the model carries the socket gameclient names for the camera");
+            check(json_bool(body, "cs_dead_socket_found", csk_df) && csk_df,
+                  "and the one it names for the death states");
+            check(json_double(body, "cs_camera_socket_index", csk_i) && csk_i >= 0.0 && csk_i < 1000.0,
+                  "the camera socket resolves to a plausible index");
+            check(json_double(body, "cs_dead_socket_index", csk_di) && csk_di >= 0.0 && csk_di < 1000.0,
+                  "so does the death-state socket");
+            // IF THEY COLLIDED the death-state branch would be a no-op, so distinctness is load-bearing.
+            check(json_bool(body, "cs_sockets_distinct", csk_sd) && csk_sd,
+                  "the two socket names resolve to different sockets");
+            check(json_bool(body, "cs_absent_socket_refused", csk_ar) && csk_ar,
+                  "an unknown name, a null name and an out-of-range player are all refused");
+
+            // THE OFFSET: three cached console floats added to the socket position. This is the cheapest camera
+            // control found so far -- three stores, no hook, no engine call -- so it is worth checking that the
+            // three axes are genuinely independent records rather than one variable read three times.
+            bool csk_or = false, csk_of = false, csk_rd = false;
+            check(json_bool(body, "cs_offset_readable", csk_or) && csk_or,
+                  "the camera's attached offset reads through the console-variable cache");
+            check(json_bool(body, "cs_offset_finite", csk_of) && csk_of, "all three components are finite");
+            check(json_bool(body, "cs_offset_records_distinct", csk_rd) && csk_rd,
+                  "the three axes are three distinct records, so they can be set independently");
+
             // ---- THE CAMERA'S COMPOSED ROTATION, AND A CHECK THAT REFUSES TO OVERCLAIM --------------
             //
             // The camera pose write path composes the final orientation as a product of two quaternions stored on
