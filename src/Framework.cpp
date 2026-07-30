@@ -4593,6 +4593,59 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE GAME-SIDE MOVEMENT STATE -- the velocity the engine's is not. The invariant that establishes these
+    // offsets is that the controller's cached position is a VERBATIM COPY of the engine object's, refreshed every
+    // frame, so it must compare bit-equal. A wrong offset lands on another triple and fails.
+    const auto ms = sdk::PlayerMgr::movement_state(0);
+    const auto ms_match = sdk::PlayerMgr::cached_position_matches_engine(0);
+    const auto ms_speed = sdk::PlayerMgr::speed(0);
+    json_append_bool(out, "ms_resolved", ms.has_value());
+    json_append_bool(out, "ms_position_determinable", ms_match.has_value());
+    json_append_bool(out, "ms_position_matches_engine", ms_match.has_value() && *ms_match);
+    if (ms.has_value()) {
+        const auto finite3 = [](const std::array<float, 3>& v) {
+            return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+        };
+        json_append_bool(out, "ms_velocity_finite", finite3(ms->velocity));
+        json_append_bool(out, "ms_position_finite", finite3(ms->cached_position));
+        // The commit clears the accumulator unconditionally at the end, so after any completed frame it reads
+        // zero. Non-zero here would mean the field is not what this claims, or the frame was caught mid-commit.
+        json_append_bool(out, "ms_external_delta_zero",
+                         ms->external_delta[0] == 0.0f && ms->external_delta[1] == 0.0f &&
+                             ms->external_delta[2] == 0.0f);
+        // speed() must be the magnitude of the very vector movement_state() reports -- one derived from the
+        // other, so a mismatch means they read different memory.
+        const auto mag = std::sqrt(ms->velocity[0] * ms->velocity[0] + ms->velocity[1] * ms->velocity[1] +
+                                   ms->velocity[2] * ms->velocity[2]);
+        json_append_bool(out, "ms_speed_is_magnitude",
+                         ms_speed.has_value() && std::fabs(*ms_speed - mag) <= 1e-6f);
+        json_append_double(out, "ms_speed", static_cast<double>(ms_speed.value_or(-1.0f)), 4);
+        // The cached position must also be a plausible world coordinate rather than a denormal or a huge value,
+        // which is what a wrong offset landing on packed data tends to look like.
+        const auto plausible = [](float v) { return std::fabs(v) < 1.0e6f; };
+        json_append_bool(out, "ms_position_plausible",
+                         plausible(ms->cached_position[0]) && plausible(ms->cached_position[1]) &&
+                             plausible(ms->cached_position[2]));
+    }
+    // THE INVARIANT HELD CONTINUOUSLY, not just at one instant. The commit refreshes the cached position every
+    // frame, so sampling the predicate repeatedly across frames is a much stronger statement than one read: a
+    // coincidentally-equal triple would drift apart, and a stale controller would stop tracking.
+    size_t ms_track_ok = 0, ms_track_total = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        if (const auto m = sdk::PlayerMgr::cached_position_matches_engine(0); m.has_value()) {
+            ++ms_track_total;
+            if (*m) { ++ms_track_ok; }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    json_append_double(out, "ms_track_ok", static_cast<double>(ms_track_ok), 0);
+    json_append_double(out, "ms_track_total", static_cast<double>(ms_track_total), 0);
+
+    json_append_bool(out, "ms_range_refused",
+                     !sdk::PlayerMgr::movement_state(9).has_value() &&
+                         !sdk::PlayerMgr::speed(9).has_value() &&
+                         !sdk::PlayerMgr::cached_position_matches_engine(9).has_value());
+
     // THE TWO ROUTES DISAGREE, so characterise both rather than picking one. Each object's kind, handle and
     // dims say what it is; a consumer needs to know WHICH player object it is holding.
     if (const auto shell_lp = sdk::CClientShell::local_player(0); shell_lp.has_value()) {

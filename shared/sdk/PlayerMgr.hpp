@@ -239,6 +239,53 @@ public:
     // shell's -- and see engine_object_is_registered() before assuming either.
     static std::optional<uintptr_t> engine_object(unsigned index);
 
+    // ---- THE GAME-SIDE MOVEMENT STATE, which is the velocity that is actually real ---------
+    //
+    // sdk::Physics documents that the engine's velocity for a player is forced to zero every frame and tells a
+    // consumer to read the game-side state instead. THIS IS THAT STATE. It lives on the movement controller and
+    // the game recomputes it every frame in PlayerMovement_CommitPositionAndVelocity:
+    //
+    //     pos      = ILTClient::GetObjectPos(engine_object)      -- the engine's authority on where it is
+    //     delta    = pos - controller[+1400]                     -- movement since the last commit
+    //     velocity = delta / dt                                  -- LTVector_DivideByScalar, literally * (1/dt)
+    //     controller[+1412] = velocity
+    //     controller[+1400] = pos                                -- cache for next frame
+    //     controller[+352]  = 0                                  -- accumulator, consumed and cleared
+    //
+    // SO THE VELOCITY IS DERIVED FROM POSITION, not integrated into it. That is worth knowing before trusting
+    // it: it is exact for what the player DID last frame and carries one frame of lag, and when dt is zero the
+    // game writes a zero vector rather than dividing.
+    //
+    // THE CACHED POSITION IS THE CHECK. It is written from the engine object's position every frame, so it must
+    // equal LTObject.position BIT-FOR-BIT -- and live it does, to 0.000000. That is what establishes these
+    // offsets: a wrong +1400 would land on some other triple, and the controller carries exactly ONE triple
+    // within 1.0 of the player's position. See cached_position_matches_engine().
+    //
+    // FOR VR: speed() is the number a comfort vignette or locomotion blend wants, and it is in world units per
+    // second because dt is seconds.
+    static constexpr uintptr_t kCachedPositionField = 1400;
+    static constexpr uintptr_t kVelocityField = 1412;
+    static constexpr uintptr_t kExternalDeltaField = 352;
+
+    struct MovementState {
+        std::array<float, 3> cached_position{};  // +1400, last frame's engine position
+        std::array<float, 3> velocity{};         // +1412, world units per second
+        // +352. Subtracted from the frame's delta before the divide and then cleared, so displacement that is
+        // not the player moving under its own power does not show up as velocity. Reads zero after a commit.
+        std::array<float, 3> external_delta{};
+    };
+
+    // The controller's movement state. nullopt for an empty slot or a faulted read.
+    static std::optional<MovementState> movement_state(unsigned index);
+
+    // Magnitude of the velocity above, in world units per second -- what a locomotion or comfort layer wants.
+    static std::optional<float> speed(unsigned index);
+
+    // Does the cached position still equal the engine object's position, bit for bit? The invariant that
+    // establishes these offsets, and a liveness check: it is refreshed every frame, so a stale or wrong
+    // controller fails it. nullopt when either side cannot be read.
+    static std::optional<bool> cached_position_matches_engine(unsigned index);
+
     // Does the physics target carry an engine handle and slot index? Live this is FALSE, which is the point: a
     // consumer that assumed otherwise would pass 0xFFFF to a handle-taking API.
     static std::optional<bool> engine_object_is_registered(unsigned index);

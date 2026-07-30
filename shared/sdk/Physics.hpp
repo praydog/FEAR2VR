@@ -19,7 +19,8 @@
 // kPlayerUpdateDispatcher for the call site.
 //
 // The game owns the player's motion and drives the object directly; the engine's integrator is deliberately
-// starved for it. A consumer wanting player motion reads the game-side movement state, not this.
+// starved for it. A consumer wanting player motion reads sdk::PlayerMgr::movement_state() or ::speed(), which
+// is the controller-side velocity the game recomputes each frame as (position - last_position) / dt.
 //
 // HOW THE SLOT MAP WAS ESTABLISHED, because half of it is worth more than the other half:
 //

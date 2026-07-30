@@ -4509,6 +4509,53 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE GAME-SIDE MOVEMENT STATE, THE VELOCITY THE ENGINE'S IS NOT --------------------
+            //
+            // Physics.hpp says the engine's player velocity is forced to zero and to read the game side instead.
+            // This is that state: the controller caches the engine position at +1400 and writes
+            // (position - cached) / dt to +1412 every frame.
+            //
+            // WHAT IS ESTABLISHED HOW, because the two halves differ in strength:
+            //
+            //   THE OFFSETS are established live. The cached position is a verbatim copy of the engine object's,
+            //   so it must compare BIT-EQUAL -- and the controller carries exactly one triple within 1.0 of the
+            //   player's position, so a wrong offset has nowhere plausible to land.
+            //
+            //   THE DERIVATION is established from the CODE: a literal store of a divide-by-dt into +1412. It is
+            //   NOT demonstrated by a live non-zero reading, because the player does not move in this fixture.
+            //   The suite therefore asserts the offsets and the shape, and does NOT pretend a zero velocity
+            //   confirms a velocity.
+            bool ms_res = false, ms_pd = false, ms_pm = false, ms_vf = false, ms_pf = false;
+            check(json_bool(body, "ms_resolved", ms_res) && ms_res,
+                  "the movement state reads off the player's controller");
+            check(json_bool(body, "ms_position_determinable", ms_pd) && ms_pd,
+                  "the cached position can be compared against the engine object");
+            check(json_bool(body, "ms_position_matches_engine", ms_pm) && ms_pm,
+                  "the cached position equals the engine object's, bit for bit");
+            check(json_bool(body, "ms_velocity_finite", ms_vf) && ms_vf,
+                  "the velocity triple is finite");
+            check(json_bool(body, "ms_position_finite", ms_pf) && ms_pf,
+                  "the cached position is finite");
+
+            // TRACKING ACROSS FRAMES is the strong form: the commit refreshes the cache every frame, so a
+            // coincidentally-equal triple would drift and a stale controller would stop matching.
+            double ms_to = -1.0, ms_tt = -1.0;
+            const bool mstn = json_double(body, "ms_track_ok", ms_to) &&
+                              json_double(body, "ms_track_total", ms_tt);
+            check(mstn && ms_tt > 1.0 && ms_to == ms_tt,
+                  "the cached position keeps tracking the engine position across repeated samples");
+
+            bool ms_ed = false, ms_sm = false, ms_pp = false, ms_rr = false;
+            // The commit clears the accumulator unconditionally, so a completed frame leaves it zero.
+            check(json_bool(body, "ms_external_delta_zero", ms_ed) && ms_ed,
+                  "the external-delta accumulator reads zero, as its unconditional clear requires");
+            check(json_bool(body, "ms_speed_is_magnitude", ms_sm) && ms_sm,
+                  "speed() is the magnitude of the velocity movement_state() reports");
+            check(json_bool(body, "ms_position_plausible", ms_pp) && ms_pp,
+                  "the cached position is a world coordinate, not packed data read at a wrong offset");
+            check(json_bool(body, "ms_range_refused", ms_rr) && ms_rr,
+                  "an out-of-range slot yields no movement state, speed or comparison");
+
             // ---- THE PLAYER'S PHYSICS TARGET, AND WHY IT IS NOT THE SHELL'S OBJECT -----------------
             //
             // gameclient's per-frame player update reaches an LTObject as *(*(player + 260) + 320) and hands it

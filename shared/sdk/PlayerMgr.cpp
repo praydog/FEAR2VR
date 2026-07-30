@@ -390,4 +390,58 @@ std::optional<bool> PlayerMgr::engine_object_is_registered(unsigned index) {
     return info->handle != 0xFFFF && info->slot_index != 0xFFFFFFFFu;
 }
 
+
+std::optional<PlayerMgr::MovementState> PlayerMgr::movement_state(unsigned index) {
+    const auto ctrl = movement_controller(index);
+    if (!ctrl.has_value()) {
+        return std::nullopt;
+    }
+    const auto read_vec = [](uintptr_t at) -> std::optional<std::array<float, 3>> {
+        const auto x = mem::read<float>(at);
+        const auto y = mem::read<float>(at + 4);
+        const auto z = mem::read<float>(at + 8);
+        if (!x.has_value() || !y.has_value() || !z.has_value()) {
+            return std::nullopt;
+        }
+        return std::array<float, 3>{*x, *y, *z};
+    };
+    const auto pos = read_vec(*ctrl + kCachedPositionField);
+    const auto vel = read_vec(*ctrl + kVelocityField);
+    const auto ext = read_vec(*ctrl + kExternalDeltaField);
+    if (!pos.has_value() || !vel.has_value() || !ext.has_value()) {
+        return std::nullopt;
+    }
+    MovementState s;
+    s.cached_position = *pos;
+    s.velocity = *vel;
+    s.external_delta = *ext;
+    return s;
+}
+
+std::optional<float> PlayerMgr::speed(unsigned index) {
+    const auto s = movement_state(index);
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    const auto& v = s->velocity;
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+std::optional<bool> PlayerMgr::cached_position_matches_engine(unsigned index) {
+    const auto s = movement_state(index);
+    const auto obj = engine_object(index);
+    if (!s.has_value() || !obj.has_value()) {
+        return std::nullopt;
+    }
+    const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(*obj));
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    // Compared as BITS: the controller copies the engine's floats verbatim, so equality is the claim. An
+    // epsilon here would accept a recomputed position and hide a wrong offset.
+    const auto& a = s->cached_position;
+    const std::array<float, 3> b{info->position.x, info->position.y, info->position.z};
+    return std::memcmp(a.data(), b.data(), sizeof(b)) == 0;
+}
+
 }  // namespace sdk

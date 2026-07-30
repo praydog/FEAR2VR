@@ -5419,3 +5419,51 @@ class LTInputDeviceMouse 0x30 {
 // kPlayerUpdateDispatcher for the call site.
 //
 // 1113 checks, 0 failures.
+
+// ---- THE PLAYER VELOCITY THAT IS REAL, AND HOW ITS OFFSETS WERE EARNED --------------------------
+//
+// Last pass ended by correcting Physics.hpp: the engine's velocity for a player is forced to zero every frame,
+// so "read the game-side movement state instead". That sentence pointed at nothing. It now points here.
+//
+// THE COMMIT, in PlayerMovement_CommitPositionAndVelocity -- the only writer of the cached position:
+//
+//     pos      = ILTClient::GetObjectPos(engine_object)     ; vtbl +72 = slot 18, CLTClient_GetObjectPos
+//     dt       = Timer_GetDeltaSeconds()
+//     delta    = pos - controller[+1400]
+//     velocity = LTVector_DivideByScalar(delta, dt)         ; delta * (1/dt), read from the callee
+//     controller[+1412] = velocity                          ; WORLD UNITS PER SECOND
+//     controller[+1400] = pos                               ; cache for next frame
+//     controller[+352]  = 0                                 ; accumulator, consumed then cleared
+//
+// dt <= 0 writes a ZERO vector rather than dividing. So PLAYER VELOCITY IS DERIVED FROM POSITION, not integrated
+// into it: exact for the previous frame, one frame behind, and free of the engine integrator the same function
+// starves two calls earlier.
+//
+// HOW THE OFFSETS WERE EARNED, since this is the part worth copying:
+//
+//   THE FIELD WAS FOUND BY ITS WRITER, not by scanning. sub_10102B30 compared GetObjectPos results against a
+//   triple at controller+1400, and a scan for functions writing +1400 across the movement module returned
+//   EXACTLY ONE -- the commit. Velocity was three fields along in the same store block.
+//
+//   THE ANCHOR IS AN EQUALITY THE CODE GUARANTEES. The cached position is a verbatim copy of LTObject.position
+//   (+0x14), so it must compare BIT-EQUAL, and the controller's first 4 KB holds exactly ONE triple within 1.0
+//   of the player's position. A wrong offset has nowhere plausible to land.
+//
+//   IT HOLDS CONTINUOUSLY, not at one instant: 40 consecutive live samples, and 8 more through the SDK across
+//   frames, all bit-equal. A coincidentally equal triple would drift; a stale controller would stop tracking.
+//
+// WHAT IS NOT SHOWN, stated rather than glossed: the DERIVATION rests on the code alone. The fixture's player
+// never moves, so velocity reads 0.0 throughout, and a zero velocity confirms nothing about a velocity. The
+// suite asserts the offsets, the tracking and the shape -- and deliberately does not dress the zero up as
+// evidence.
+//
+// > A mutation test would have settled it: perturb +1400 and the next frame's velocity must jump, with the
+// > commit repairing the cache by itself. It was NOT run. A one-frame lie about the player's speed feeds
+// > whatever consumes velocity -- sounds, camera, footing -- and that is not a side effect worth a green tick
+// > while nobody is at the machine.
+//
+// NAMED IN IDA: PlayerMovement_CommitPositionAndVelocity, LTVector_DivideByScalar, Timer_GetDeltaSeconds.
+// Exposed as sdk::PlayerMgr::movement_state / speed / cached_position_matches_engine, with speed() in world
+// units per second because dt is seconds -- the number a comfort vignette or locomotion blend actually wants.
+//
+// 1123 checks, 0 failures.
