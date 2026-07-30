@@ -7175,6 +7175,91 @@ std::string build_database_json() {
                                                                                                       : "false");
                 entry0_json += ",\"hash_empty_is_zero\":" +
                                std::string((sdk::DatabaseMgr::hash_name("") == 0u) ? "true" : "false");
+
+                // ---- LOOKUP BY NAME, MIRRORING THE ENGINE'S BINARY SEARCH ----
+                //
+                // The engine hashes and binary-searches with NO string compare, so the arrays must be sorted by
+                // name_hash. That is an invariant of the data; if it fails, the game's own by-name lookup is
+                // broken for the entries out of order.
+                const bool cats_sorted = sdk::DatabaseMgr::categories_sorted_by_hash(e->record_a);
+                entry0_json += ",\"cats_sorted_by_hash\":" + std::string(cats_sorted ? "true" : "false");
+                // EVERY CATEGORY MUST BE FINDABLE BY ITS OWN NAME, and must come back as the same pointer the
+                // index walk gives -- two routes to one entry.
+                size_t findable = 0, walked = 0, recs_sorted = 0, cats_with_recs = 0;
+                const auto ncat = sdk::DatabaseMgr::category_count(e->record_a);
+                for (size_t i = 0; i < ncat; ++i) {
+                    auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                    if (cat == nullptr) {
+                        continue;
+                    }
+                    ++walked;
+                    const auto nm = sdk::DatabaseMgr::category_name(cat);
+                    if (!nm.empty() && sdk::DatabaseMgr::find_category(e->record_a, nm) == cat) {
+                        ++findable;
+                    }
+                    if (sdk::DatabaseMgr::record_count(cat) > 0) {
+                        ++cats_with_recs;
+                        if (sdk::DatabaseMgr::records_sorted_by_hash(cat)) {
+                            ++recs_sorted;
+                        }
+                    }
+                }
+                entry0_json += ",\"cats_walked\":" + std::to_string(walked);
+                entry0_json += ",\"cats_findable\":" + std::to_string(findable);
+                entry0_json += ",\"cats_with_records\":" + std::to_string(cats_with_recs);
+                entry0_json += ",\"cats_records_sorted\":" + std::to_string(recs_sorted);
+                // A NAME THAT DOES NOT EXIST MUST YIELD NOTHING, or "findable" proves nothing.
+                entry0_json += ",\"absent_category_refused\":" +
+                               std::string((sdk::DatabaseMgr::find_category(e->record_a, "NoSuchCategory/AtAll") ==
+                                            nullptr) ? "true" : "false");
+                // AND A KNOWN TWO-LEVEL LOOKUP through the convenience overload.
+                {
+                    auto* known = sdk::DatabaseMgr::find_category(e->record_a, "AI/WeaponContext");
+                    entry0_json += ",\"known_category_found\":" +
+                                   std::string(known != nullptr ? "true" : "false");
+                    std::string first_rec;
+                    if (known != nullptr && sdk::DatabaseMgr::record_count(known) > 0) {
+                        first_rec = sdk::DatabaseMgr::record_name(sdk::DatabaseMgr::record(known, 0));
+                        auto* via_name = sdk::DatabaseMgr::find_record(e->record_a, "AI/WeaponContext", first_rec);
+                        entry0_json += ",\"two_level_lookup\":" +
+                                       std::string((via_name != nullptr &&
+                                                    via_name == sdk::DatabaseMgr::record(known, 0))
+                                                       ? "true" : "false");
+                    } else {
+                        entry0_json += ",\"two_level_lookup\":false";
+                    }
+                }
+                // COLLISIONS: with tens of thousands of names and a 32-bit hash, worth measuring.
+                const auto coll = sdk::DatabaseMgr::hash_collisions(e->record_a);
+                entry0_json += ",\"hash_names_examined\":" + std::to_string(coll.names);
+                entry0_json += ",\"hash_collisions\":" + std::to_string(coll.collisions);
+                entry0_json += ",\"hash_duplicate_names\":" + std::to_string(coll.duplicates);
+                // WHERE ARE THE DUPLICATES? Localising them is what turns an alarming number into a fact.
+                size_t keyed_cats = 0, pool_cats = 0, pool_records = 0, pool_distinct = 0;
+                for (size_t i = 0; i < ncat; ++i) {
+                    auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                    if (cat == nullptr || sdk::DatabaseMgr::record_count(cat) == 0) {
+                        continue;
+                    }
+                    if (sdk::DatabaseMgr::name_is_unique_key(cat)) {
+                        ++keyed_cats;
+                    } else {
+                        ++pool_cats;
+                        pool_records += sdk::DatabaseMgr::record_count(cat);
+                        pool_distinct += sdk::DatabaseMgr::distinct_name_count(cat);
+                    }
+                }
+                entry0_json += ",\"keyed_categories\":" + std::to_string(keyed_cats);
+                entry0_json += ",\"pool_categories\":" + std::to_string(pool_cats);
+                entry0_json += ",\"pool_records\":" + std::to_string(pool_records);
+                entry0_json += ",\"pool_distinct_names\":" + std::to_string(pool_distinct);
+                {
+                    auto* pool = sdk::DatabaseMgr::find_category(e->record_a,
+                                                                sdk::DatabaseMgr::kStructurePoolCategory);
+                    entry0_json += ",\"pool_is_structures\":" +
+                                   std::string((pool != nullptr && !sdk::DatabaseMgr::name_is_unique_key(pool))
+                                                   ? "true" : "false");
+                }
             }
 
             // First category with any records at all, walked linearly (no

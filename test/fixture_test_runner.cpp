@@ -6889,6 +6889,54 @@ int main(int argc, char** argv) {
                   "yet different names hash differently, so it is not collapsing everything");
             check(json_has(body, "\"hash_empty_is_zero\":true"),
                   "the empty name hashes to zero, matching the loop's initial accumulator");
+
+            // ---- LOOKUP BY NAME, MIRRORING THE ENGINE'S OWN BINARY SEARCH ----------------------
+            //
+            // gamedatabase.dll's by-name entry points hash the name and binary-search on name_hash, with NO
+            // string compare. Reading those searches confirmed fear2.genny's layout from a second direction:
+            // they use the same base, count, stride and key as the index-based accessors it was mapped from.
+            //
+            // Because there is no string compare, the arrays MUST be sorted by name_hash or the game's own
+            // lookup silently fails for out-of-order entries. That is an invariant of the DATA, so it is checked
+            // rather than assumed.
+            int64_t walked = -1, findable = -1, with_recs = -1, recs_sorted = -1;
+            check(json_has(body, "\"cats_sorted_by_hash\":true"),
+                  "the category array is sorted ascending by name_hash, as the binary search requires");
+            check(json_int(body, "cats_walked", walked) && walked > 300,
+                  "every category was visited by the index walk");
+            check(json_int(body, "cats_findable", findable) && findable == walked,
+                  "and every one is findable by its own name, returning the same pointer -- two routes, one entry");
+            check(json_int(body, "cats_with_records", with_recs) && with_recs > 200,
+                  "most categories carry records");
+            check(json_int(body, "cats_records_sorted", recs_sorted) && recs_sorted == with_recs,
+                  "and every one of those record arrays is sorted by name_hash too");
+            // WITHOUT THIS, "findable" would be satisfied by a function that returns something for anything.
+            check(json_has(body, "\"absent_category_refused\":true"),
+                  "a name that does not exist yields nullptr, so the lookup discriminates");
+            check(json_has(body, "\"known_category_found\":true"), "a known category resolves by name");
+            check(json_has(body, "\"two_level_lookup\":true"),
+                  "and the category+record overload reaches the same record the index walk gives");
+
+            // ---- ZERO COLLISIONS, AND ONE CATEGORY WHERE NAMES ARE NOT KEYS ----
+            //
+            // The engine trusts a 32-bit hash with no string compare, so a collision would silently return the
+            // wrong record. Measured across every record name: none. But the same scan found 18374 adjacent
+            // pairs sharing a hash AND a name, which localised to exactly one category.
+            int64_t names = -1, colls = -1, keyed = -1, pools = -1, prec = -1, pdist = -1;
+            check(json_int(body, "hash_names_examined", names) && names > 20000,
+                  "the collision scan covered every record name");
+            check(json_int(body, "hash_collisions", colls) && colls == 0,
+                  "and found no two different names sharing a hash, so hash-only lookup is safe on this data");
+            check(json_int(body, "keyed_categories", keyed) && keyed > 200,
+                  "most categories use names as unique keys");
+            check(json_int(body, "pool_categories", pools) && pools == 1,
+                  "exactly ONE does not -- the duplicates are localised, not spread");
+            check(json_int(body, "pool_records", prec) && prec > 18000,
+                  "and it holds the majority of the database's records");
+            check(json_int(body, "pool_distinct_names", pdist) && pdist > 0 && pdist < prec / 50,
+                  "across far fewer distinct names -- a pool keyed by TYPE, not by name");
+            check(json_has(body, "\"pool_is_structures\":true"),
+                  "and that category is _Structures, so find_record there returns an arbitrary instance");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

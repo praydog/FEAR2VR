@@ -6447,3 +6447,50 @@ class CPlayerCamera 0x18C6 {
 // category_hash_agreement / record_hash_agreement.
 //
 // 1336 checks, 0 failures.
+
+// ---- HOW THE ENGINE LOOKS UP BY NAME, AND THE ONE CATEGORY WHERE NAMES ARE NOT KEYS -------------
+//
+// The name_hash confirmation left an obvious use: look a category or record up by NAME. Rather than invent a
+// scan, gamedatabase.dll's own by-name entry points were read, and they are thin wrappers that hash the name and
+// BINARY SEARCH on name_hash -- IDatabaseMgr_GetCategoryByName -> DatabaseMgr_FindCategoryByHash, and the record
+// pair likewise. Both searches were named in that IDB.
+//
+// AND THEY CONFIRM THIS FILE'S LAYOUT FROM A SECOND DIRECTION. The DatabaseMgrSubRecord/Category/Record fields
+// were mapped from the INDEX-based accessors; the hash searches independently use the same four facts each:
+//
+//     categories   base hDatabase+0x14   count +0x0C   stride 0x14   key +0x10
+//     records      base category+0x0C    count +0x08   stride 0x18   key +0x14
+//
+// THERE IS NO STRING COMPARISON in either. The engine trusts the 32-bit hash, which forces an invariant on the
+// DATA rather than the code: both arrays must be sorted ascending by name_hash, or the game's own lookup fails
+// to find entries that are present. Checked live:
+//
+//     359/359 categories sorted by name_hash        359/359 findable by their own name
+//     261/261 record arrays sorted by name_hash     0 collisions across 28652 record names
+//
+// > sdk::DatabaseMgr::find_category / find_record mirror the algorithm but ADD the string compare the engine
+// > omits, so a collision returns nullptr instead of the wrong entry. Mirroring rather than linear-scanning
+// > matters beyond speed: on unsorted data a linear scan would quietly succeed where the GAME fails, and a mod
+// > built on it would disagree with the game for the same name.
+//
+// AND THE SCAN FOUND SOMETHING THAT DOES LIMIT NAME LOOKUP. It reported 18374 adjacent pairs sharing a hash AND
+// a name, which looked alarming until localised: every one is in a SINGLE category.
+//
+//     _Structures        18653 records -- 65% of the database -- across only 279 DISTINCT names
+//     all 260 others      9999 records, 0 duplicate names, 0 collisions
+//
+// So `_Structures` is not keyed by name at all: it is a pool of anonymous nested-structure instances whose
+// "name" is the structure's TYPE, repeated ~67 times on average. find_record there returns whichever instance
+// the binary search lands on. Everywhere else a name identifies exactly one record.
+//
+// That distinction is exposed as name_is_unique_key() and distinct_name_count() rather than left in a comment,
+// because a consumer cannot tell the two cases apart from the API and the failure is SILENT -- a plausible
+// record comes back either way.
+//
+// Named in gamedatabase.dll: String_HashI and g_HashCharTable (its own byte-identical copy -- THREE modules each
+// carry one), DatabaseMgr_FindCategoryByHash, DatabaseMgr_FindRecordByHash, IDatabaseMgr_GetCategoryByHash,
+// IDatabaseMgr_GetRecordByHash, IDatabaseMgr_GetCategoryByName, IDatabaseMgr_GetRecordByName.
+// Exposed as sdk::DatabaseMgr::find_category / find_record / categories_sorted_by_hash /
+// records_sorted_by_hash / hash_collisions / name_is_unique_key / distinct_name_count.
+//
+// 1351 checks, 0 failures.

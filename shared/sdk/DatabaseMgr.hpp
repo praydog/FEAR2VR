@@ -156,6 +156,89 @@ public:
     // The same over every record of every category.
     static HashAgreement record_hash_agreement(const regenny::DatabaseMgrSubRecord* database);
 
+    // ---- LOOKUP BY NAME, THE WAY THE ENGINE DOES IT ---------------------------------------------
+    //
+    // gamedatabase.dll's own by-name entry points hash the name and then BINARY SEARCH on name_hash:
+    // IDatabaseMgr_GetCategoryByName -> DatabaseMgr_FindCategoryByHash, and the record pair likewise. Reading
+    // those two searches confirmed fear2.genny's layout from a second direction -- they were mapped from the
+    // INDEX-based accessors, and the hash searches independently use the same base, count, stride and key:
+    //
+    //     categories   base hDatabase+0x14   count +0x0C   stride 0x14   key +0x10
+    //     records      base category+0x0C    count +0x08   stride 0x18   key +0x14
+    //
+    // THE ENGINE DOES NOT STRING-COMPARE. It trusts the 32-bit hash, which forces two things a consumer needs:
+    //
+    //   * BOTH ARRAYS MUST BE SORTED ascending by name_hash, or the search silently fails to find entries that
+    //     are present. That is an invariant of the data, not of the code, so it is checkable -- see
+    //     categories_sorted_by_hash / records_sorted_by_hash.
+    //   * A HASH COLLISION RETURNS THE WRONG ENTRY, with no error. The functions below therefore VERIFY the
+    //     name after finding a candidate, which the engine does not. That makes them strictly safer than the
+    //     engine's own lookup at the cost of one string compare, and it means a mismatch is reportable rather
+    //     than silent.
+    //
+    // Mirroring the algorithm rather than doing a linear name scan matters for more than speed: if the data is
+    // ever NOT sorted, a linear scan would quietly succeed where the game itself fails, and a mod built on that
+    // would behave differently from the game for the same name.
+
+    // The category with this name, or nullptr. Binary search on the hash exactly as the engine does, then a
+    // string compare to reject a collision -- so nullptr means "not present or a collision", never "wrong one".
+    static regenny::DatabaseMgrCategory* find_category(const regenny::DatabaseMgrSubRecord* database,
+                                                       std::string_view name);
+
+    // The record with this name inside a category, or nullptr. Same guarantees.
+    static regenny::DatabaseMgrRecord* find_record(const regenny::DatabaseMgrCategory* category,
+                                                   std::string_view name);
+
+    // Convenience for the usual two-level lookup, e.g. ("AI/WeaponContext", "Default").
+    static regenny::DatabaseMgrRecord* find_record(const regenny::DatabaseMgrSubRecord* database,
+                                                   std::string_view category_name,
+                                                   std::string_view record_name);
+
+    // Is the category array sorted ascending by name_hash, as the binary search requires? False means the
+    // engine's own by-name lookup cannot be trusted on this data.
+    static bool categories_sorted_by_hash(const regenny::DatabaseMgrSubRecord* database);
+
+    // The same for one category's records.
+    static bool records_sorted_by_hash(const regenny::DatabaseMgrCategory* category);
+
+    struct CollisionReport {
+        size_t names{};        // how many names were examined
+        size_t collisions{};   // distinct pairs sharing a hash with a DIFFERENT name
+        size_t duplicates{};   // pairs sharing a hash AND the same name -- not a collision
+    };
+
+    // Do any two differently-named entries share a hash? With a 32-bit hash and tens of thousands of names this
+    // is worth measuring rather than assuming: the engine would return the wrong entry for one of them.
+    //
+    // MEASURED, whole database: 28652 record names, ZERO collisions. So hash-only lookup is safe on this data --
+    // but see below, because the same measurement turned up something that DOES limit name lookup.
+    static CollisionReport hash_collisions(const regenny::DatabaseMgrSubRecord* database);
+
+    // ---- WHERE NAME LOOKUP IS MEANINGFUL, AND WHERE IT IS NOT -----------------------------------
+    //
+    // The collision scan reported 18374 adjacent same-hash-SAME-NAME pairs, which looked alarming until it was
+    // localised: EVERY ONE OF THEM IS IN A SINGLE CATEGORY, `_Structures`.
+    //
+    //     _Structures        18653 records, 65% of the whole database, only 279 DISTINCT names
+    //     everything else     9999 records, 0 duplicate names, 0 collisions
+    //
+    // So `_Structures` is not a keyed category at all -- it is a pool of anonymous nested-structure instances
+    // whose "name" is the structure's TYPE, repeated on average 67 times. find_record there returns whichever
+    // instance the binary search lands on, which is arbitrary and almost certainly not what a caller wants.
+    // Everywhere else a name identifies exactly one record.
+    //
+    // This is exposed rather than buried because a consumer cannot tell from the API which case it is in, and
+    // the failure is silent: a plausible record comes back either way.
+    static constexpr const char* kStructurePoolCategory = "_Structures";
+
+    // Do names uniquely identify records in this category -- i.e. is find_record meaningful here? Walks the
+    // category once. False for `_Structures` on the shipped data, true for every other category measured.
+    static bool name_is_unique_key(const regenny::DatabaseMgrCategory* category);
+
+    // How many DISTINCT names a category holds, which is what makes the pool obvious: 279 names across 18653
+    // records. Equal to record_count for a properly keyed category.
+    static size_t distinct_name_count(const regenny::DatabaseMgrCategory* category);
+
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
 };

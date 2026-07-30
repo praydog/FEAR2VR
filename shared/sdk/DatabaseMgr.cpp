@@ -276,4 +276,206 @@ DatabaseMgr::HashAgreement DatabaseMgr::record_hash_agreement(
     return out;
 }
 
+
+namespace {
+
+// The engine's search, generalised: binary search an array of `count` entries of `stride` bytes whose key is a
+// uint32 at `key_offset`, all read through the guard.
+std::optional<uintptr_t> binary_search_by_hash(uintptr_t base, size_t count, size_t stride,
+                                               size_t key_offset, uint32_t want) {
+    if (base == 0 || count == 0) {
+        return std::nullopt;
+    }
+    size_t lo = 0;
+    size_t hi = count;
+    while (lo < hi) {
+        const auto mid = lo + (hi - lo) / 2;
+        const auto key = mem::read<uint32_t>(base + stride * mid + key_offset);
+        if (!key.has_value()) {
+            return std::nullopt;
+        }
+        if (*key == want) {
+            return base + stride * mid;
+        }
+        if (*key < want) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+regenny::DatabaseMgrCategory* DatabaseMgr::find_category(const regenny::DatabaseMgrSubRecord* database,
+                                                        std::string_view name) {
+    const auto want = hash_name(name);
+    if (!want.has_value() || database == nullptr) {
+        return nullptr;
+    }
+    const auto count = category_count(database);
+    const auto* first = category(database, 0);
+    if (count == 0 || first == nullptr) {
+        return nullptr;
+    }
+    const auto hit = binary_search_by_hash(reinterpret_cast<uintptr_t>(first), count,
+                                           sizeof(regenny::DatabaseMgrCategory), 0x10, *want);
+    if (!hit.has_value()) {
+        return nullptr;
+    }
+    auto* cat = reinterpret_cast<regenny::DatabaseMgrCategory*>(*hit);
+    // THE ENGINE STOPS HERE. We do not: a 32-bit hash can collide, and returning the wrong category silently is
+    // worse than returning nothing.
+    if (category_name(cat) != name) {
+        return nullptr;
+    }
+    return cat;
+}
+
+regenny::DatabaseMgrRecord* DatabaseMgr::find_record(const regenny::DatabaseMgrCategory* category_ptr,
+                                                    std::string_view name) {
+    const auto want = hash_name(name);
+    if (!want.has_value() || category_ptr == nullptr) {
+        return nullptr;
+    }
+    const auto count = record_count(category_ptr);
+    const auto* first = record(category_ptr, 0);
+    if (count == 0 || first == nullptr) {
+        return nullptr;
+    }
+    const auto hit = binary_search_by_hash(reinterpret_cast<uintptr_t>(first), count,
+                                           sizeof(regenny::DatabaseMgrRecord), 0x14, *want);
+    if (!hit.has_value()) {
+        return nullptr;
+    }
+    auto* rec = reinterpret_cast<regenny::DatabaseMgrRecord*>(*hit);
+    if (record_name(rec) != name) {
+        return nullptr;
+    }
+    return rec;
+}
+
+regenny::DatabaseMgrRecord* DatabaseMgr::find_record(const regenny::DatabaseMgrSubRecord* database,
+                                                    std::string_view category_name_in,
+                                                    std::string_view record_name_in) {
+    auto* cat = find_category(database, category_name_in);
+    if (cat == nullptr) {
+        return nullptr;
+    }
+    return find_record(cat, record_name_in);
+}
+
+bool DatabaseMgr::categories_sorted_by_hash(const regenny::DatabaseMgrSubRecord* database) {
+    const auto n = category_count(database);
+    uint32_t prev = 0;
+    bool first = true;
+    for (size_t i = 0; i < n; ++i) {
+        const auto* cat = category(database, i);
+        if (cat == nullptr) {
+            return false;
+        }
+        const auto h = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(cat) + 0x10);
+        if (!h.has_value()) {
+            return false;
+        }
+        if (!first && *h < prev) {
+            return false;
+        }
+        prev = *h;
+        first = false;
+    }
+    return n > 0;
+}
+
+bool DatabaseMgr::records_sorted_by_hash(const regenny::DatabaseMgrCategory* category_ptr) {
+    const auto n = record_count(category_ptr);
+    uint32_t prev = 0;
+    bool first = true;
+    for (size_t i = 0; i < n; ++i) {
+        const auto* rec = record(category_ptr, i);
+        if (rec == nullptr) {
+            return false;
+        }
+        const auto h = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(rec) + 0x14);
+        if (!h.has_value()) {
+            return false;
+        }
+        if (!first && *h < prev) {
+            return false;
+        }
+        prev = *h;
+        first = false;
+    }
+    return true;  // an empty category is trivially sorted
+}
+
+DatabaseMgr::CollisionReport DatabaseMgr::hash_collisions(const regenny::DatabaseMgrSubRecord* database) {
+    CollisionReport out;
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        // Within a category the array is sorted, so equal hashes are ADJACENT -- no map needed, and the check
+        // costs one pass. Across categories a shared hash is harmless: lookup is scoped to one category.
+        std::string prev_name;
+        uint32_t prev_hash = 0;
+        bool have_prev = false;
+        for (size_t j = 0; j < nrec; ++j) {
+            const auto* rec = record(cat, j);
+            if (rec == nullptr) {
+                continue;
+            }
+            const auto h = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(rec) + 0x14);
+            if (!h.has_value()) {
+                continue;
+            }
+            auto name = record_name(rec);
+            ++out.names;
+            if (have_prev && *h == prev_hash) {
+                if (name == prev_name) {
+                    ++out.duplicates;
+                } else {
+                    ++out.collisions;
+                }
+            }
+            prev_hash = *h;
+            prev_name = std::move(name);
+            have_prev = true;
+        }
+    }
+    return out;
+}
+
+
+size_t DatabaseMgr::distinct_name_count(const regenny::DatabaseMgrCategory* category_ptr) {
+    const auto n = record_count(category_ptr);
+    if (n == 0) {
+        return 0;
+    }
+    // The array is sorted by hash, so equal names are adjacent -- counting transitions is enough and costs one
+    // pass instead of a set. (Two DIFFERENT names sharing a hash would break that, which is exactly why
+    // hash_collisions is measured: it is zero on this data.)
+    size_t distinct = 0;
+    std::string prev;
+    bool have_prev = false;
+    for (size_t i = 0; i < n; ++i) {
+        auto name = record_name(record(category_ptr, i));
+        if (!have_prev || name != prev) {
+            ++distinct;
+        }
+        prev = std::move(name);
+        have_prev = true;
+    }
+    return distinct;
+}
+
+bool DatabaseMgr::name_is_unique_key(const regenny::DatabaseMgrCategory* category_ptr) {
+    const auto n = record_count(category_ptr);
+    if (n == 0) {
+        return true;  // vacuously
+    }
+    return distinct_name_count(category_ptr) == n;
+}
+
 } // namespace sdk
