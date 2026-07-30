@@ -262,23 +262,23 @@ size_t Events::setter_slot_for_variable(std::string_view variable) {
 
 const std::vector<Events::UiPanel>& Events::ui_panels() {
     static const std::vector<UiPanel> s_panels = {
-        {"Multiplayer", 59, 0x13380, 0x1F7558, 0x1F6E98},
-        {"Player", 34, 0x26C40, 0x1F8C24, 0x1F8378},
-        {"Menu", 23, 0xCE60, 0x1F6D6C, 0x1F6AF0},
-        {"Performance", 17, 0x1EC50, 0x1F7EE8, 0x1F7D98},
-        {"SaveGame", 15, 0x29060, 0x1F8D0C, 0x1F8C28},
-        {"OnlineLogin", 14, 0x1AD40, 0x1F7A7C, 0x1F7980},
-        {"Global", 13, 0x5860, 0x1F67CC, 0x1F66B8},
-        {"Options", 13, 0x1D080, 0x1F7CB4, 0x1F7A80},
-        {"MultiplayerHost", 12, 0x18320, 0x1F7734, 0x1F7560},
-        {"MultiplayerJoin", 11, 0x19260, 0x1F7964, 0x1F7838},
-        {"KeyBindings", 9, 0x8790, 0x1F6964, 0x1F68B0},
-        {"WorldInterface", 6, 0x2A9D0, 0x1F8E5C, 0x1F8DF0},
-        {"ControlPanel", 5, 0x4670, 0x1F6520, 0x1F64C0},
-        {"LayoutPanel", 4, 0x8AC0, 0x1F69C8, 0x1F6968},
-        {"SecurityPanel", 3, 0x29310, 0x1F8D78, 0x1F8D18},
-        {"SystemLayer", 2, 0x29480, 0x1F8DBC, 0x1F8D80},
-        {"WeaponDisplay", 2, 0x2A800, 0x1F8DE8, 0x1F8DC4},
+        {"Multiplayer", 59, 0x13380, 0x1F7558, 0x1F6E98, 0x1F6DD8},
+        {"Player", 34, 0x26C40, 0x1F8C24, 0x1F8378, 0x1F7F08},
+        {"Menu", 23, 0xCE60, 0x1F6D6C, 0x1F6AF0, 0x1F6A00},
+        {"Performance", 17, 0x1EC50, 0x1F7EE8, 0x1F7D98, 0x1F33A8},
+        {"SaveGame", 15, 0x29060, 0x1F8D0C, 0x1F8C28, 0x1F3468},
+        {"OnlineLogin", 14, 0x1AD40, 0x1F7A7C, 0x1F7980, 0x1F32F8},
+        {"Global", 13, 0x5860, 0x1F67CC, 0x1F66B8, 0x1F6558},
+        {"Options", 13, 0x1D080, 0x1F7CB4, 0x1F7A80, 0x1F7CC0},
+        {"MultiplayerHost", 12, 0x18320, 0x1F7734, 0x1F7560, 0x1F7740},
+        {"MultiplayerJoin", 11, 0x19260, 0x1F7964, 0x1F7838, 0x1F3220},
+        {"KeyBindings", 9, 0x8790, 0x1F6964, 0x1F68B0, 0x1F67F0},
+        {"WorldInterface", 6, 0x2A9D0, 0x1F8E5C, 0x1F8DF0, 0x1F36E8},
+        {"ControlPanel", 5, 0x4670, 0x1F6520, 0x1F64C0, 0x1F3080},
+        {"LayoutPanel", 4, 0x8AC0, 0x1F69C8, 0x1F6968, 0x1F3130},
+        {"SecurityPanel", 3, 0x29310, 0x1F8D78, 0x1F8D18, 0x1F3508},
+        {"SystemLayer", 2, 0x29480, 0x1F8DBC, 0x1F8D80, 0x1F35A8},
+        {"WeaponDisplay", 2, 0x2A800, 0x1F8DE8, 0x1F8DC4, 0x1F3648},
     };
     return s_panels;
 }
@@ -486,6 +486,72 @@ std::optional<Events::GlobalVariable> Events::find_global(std::string_view name)
         }
     }
     return std::nullopt;
+}
+
+
+std::vector<Events::PanelObject> Events::panel_objects() {
+    std::vector<PanelObject> out;
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return out;
+    }
+    for (const auto& panel : ui_panels()) {
+        if (panel.object_offset == 0) {
+            continue;
+        }
+        PanelObject o;
+        o.panel = panel.name;
+        o.base = panel.object_offset;
+        const auto addr = gc->base + panel.object_offset;
+
+        // The vtable is reported module-relative so it can be compared against IDA, and only when it actually
+        // lies inside gameclient -- a pointer elsewhere means this is not the object we think it is.
+        const auto in_module = [gc](uintptr_t p) { return p >= gc->base && p < gc->base + gc->size; };
+        const auto vt = mem::read_ptr(addr).value_or(0);
+        o.vtable = in_module(vt) ? vt - gc->base : 0;
+        const auto tbl = mem::read_ptr(addr + kPanelObjectTableField).value_or(0);
+        o.table = in_module(tbl) ? tbl - gc->base : 0;
+        o.flag = mem::read_u32(addr + kPanelObjectFlagField).value_or(0);
+        // An inline buffer, so the path is read in place. A zero first byte is an unset path, not a fault.
+        if (const auto path = mem::read_name(addr + kPanelObjectPathField, 64, 1); path.has_value()) {
+            o.as_path = *path;
+        }
+        out.push_back(std::move(o));
+    }
+    return out;
+}
+
+std::optional<Events::PanelObject> Events::find_panel_object(std::string_view panel) {
+    if (panel.empty()) {
+        return std::nullopt;
+    }
+    for (auto& o : panel_objects()) {
+        if (o.panel == panel) {
+            return o;
+        }
+    }
+    return std::nullopt;
+}
+
+bool Events::panel_object_consistent(const PanelObject& object) {
+    const auto p = find_panel(object.panel);
+    if (!p.has_value()) {
+        return false;
+    }
+    return object.table != 0 && object.table == p->table_offset;
+}
+
+std::optional<std::string> Events::invoke_target(std::string_view panel, std::string_view method) {
+    if (method.empty()) {
+        return std::nullopt;
+    }
+    const auto o = find_panel_object(panel);
+    // An empty path is the engine's own failure condition, so it is refused here rather than producing
+    // ".Method" -- a string that would look like a target and reach nothing.
+    if (!o.has_value() || o->as_path.empty()) {
+        return std::nullopt;
+    }
+    return o->as_path + "." + std::string{method};
 }
 
 }  // namespace sdk

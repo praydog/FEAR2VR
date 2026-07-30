@@ -4548,6 +4548,48 @@ std::string build_shader_params_json() {
     json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
     json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
 
+    // THE PANEL OBJECTS. The structural invariant is that each object's +0x04 still points at the binding table
+    // the panel is recorded with -- and that is a genuine cross-check, because the object addresses came from the
+    // static initialisers while the table addresses came from the accessors. Two routes, one answer.
+    const auto pobjs = sdk::Events::panel_objects();
+    size_t po_consistent = 0, po_vtable = 0, po_path = 0, po_convention = 0, po_distinct_vt = 0;
+    std::vector<uintptr_t> vts;
+    for (const auto& o : pobjs) {
+        if (sdk::Events::panel_object_consistent(o)) { ++po_consistent; }
+        if (o.vtable != 0) { ++po_vtable; vts.push_back(o.vtable); }
+        if (!o.as_path.empty()) {
+            ++po_path;
+            // Does the path follow "loki<Panel>Events"? Counted, NOT required: SystemLayer breaks it, which is
+            // exactly why invoke_target reads the field instead of composing this string.
+            if (o.as_path == std::string("loki") + o.panel + "Events") { ++po_convention; }
+        }
+    }
+    std::sort(vts.begin(), vts.end());
+    po_distinct_vt = static_cast<size_t>(std::unique(vts.begin(), vts.end()) - vts.begin());
+    json_append_double(out, "po_total", static_cast<double>(pobjs.size()), 0);
+    json_append_double(out, "po_consistent", static_cast<double>(po_consistent), 0);
+    json_append_double(out, "po_vtable", static_cast<double>(po_vtable), 0);
+    json_append_double(out, "po_path", static_cast<double>(po_path), 0);
+    json_append_double(out, "po_convention", static_cast<double>(po_convention), 0);
+    json_append_double(out, "po_distinct_vtables", static_cast<double>(po_distinct_vt), 0);
+    // A panel WITH a path yields a dotted target; one WITHOUT is refused rather than yielding ".Method".
+    const auto tgt = sdk::Events::invoke_target("Global", "OnConstruct");
+    json_append_bool(out, "po_target_composed", tgt.has_value() && *tgt == "lokiGlobalEvents.OnConstruct");
+    json_append_bool(out, "po_pathless_refused",
+                     !sdk::Events::invoke_target("ControlPanel", "DoAction").has_value() &&
+                         !sdk::Events::invoke_target("Global", "").has_value() &&
+                         !sdk::Events::invoke_target("NoSuchPanel", "X").has_value());
+    // SystemLayer is the counterexample that decides the API's shape, so it is asserted by name.
+    const auto sysl = sdk::Events::find_panel_object("SystemLayer");
+    json_append_bool(out, "po_systemlayer_breaks_convention",
+                     sysl.has_value() && sysl->as_path == "lokiSystemEvents" &&
+                         sysl->as_path != std::string("loki") + sysl->panel + "Events");
+    // An object whose table field is wrong must be judged inconsistent -- the check has to be able to fail.
+    sdk::Events::PanelObject bogus{};
+    bogus.panel = "Global";
+    bogus.table = 0x1234;
+    json_append_bool(out, "po_inconsistent_detected", !sdk::Events::panel_object_consistent(bogus));
+
     // THE FLASH GLOBALS, resolved to their setters. The rule under test is that the kind byte predicts the
     // variable's C++ argument shape over the WHOLE population: every name's Hungarian prefix must equal the one
     // its kind denotes. A previous claim that the kind also predicts the GFx TYPE is NOT asserted -- it is false,

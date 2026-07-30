@@ -4509,6 +4509,52 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE PANEL OBJECTS, AND WHERE THE INVOKE PATH LIVES --------------------------------
+            //
+            // Each panel is a static C++ object: vtable, binding table at +0x04, a flag at +0x0C, and an inline
+            // ActionScript path at +0x10. The path is what the bridge's own error names -- "Invoke called for
+            // Monolith.I<Category>Events.<Method> without a path to the implementation object" -- so it is the
+            // field that makes an invoke expressible at all.
+            //
+            // The invariant asserted is a CROSS-CHECK, not a re-read: the object addresses were recovered from
+            // the static initialisers and the table addresses from the accessors, two independent routes, and
+            // every object's +0x04 must land on the table its panel is recorded with. A wrong base would read
+            // some other global and fail this.
+            double po_t = -1.0, po_c = -1.0, po_v = -1.0, po_p = -1.0, po_cv = -1.0, po_dv = -1.0;
+            const bool pon = json_double(body, "po_total", po_t) &&
+                             json_double(body, "po_consistent", po_c) &&
+                             json_double(body, "po_vtable", po_v) &&
+                             json_double(body, "po_path", po_p) &&
+                             json_double(body, "po_convention", po_cv) &&
+                             json_double(body, "po_distinct_vtables", po_dv);
+            check(pon && po_t == 17.0, "all seventeen panels have a locatable static object");
+            check(pon && po_c == po_t,
+                  "every object's table field lands on the table its panel was censused with");
+            check(pon && po_v == po_t,
+                  "every object's vtable pointer lies inside gameclient");
+            check(pon && po_dv == po_t,
+                  "the vtables are all distinct -- one class per panel, not a shared base");
+            check(pon && po_p > 0.0 && po_p < po_t,
+                  "some panels carry an ActionScript path and some do not -- the empty ones are a real state");
+
+            // THE CONVENTION IS COUNTED, NOT REQUIRED. Ten of eleven paths are "loki<Panel>Events", which is
+            // precisely why the eleventh decides the API: a helper that composed the path would be right ten
+            // times and silently wrong once.
+            check(pon && po_cv > 0.0 && po_cv < po_p,
+                  "most paths follow loki<Panel>Events and at least one does not");
+            bool po_sys = false;
+            check(json_bool(body, "po_systemlayer_breaks_convention", po_sys) && po_sys,
+                  "SystemLayer's path is lokiSystemEvents -- the counterexample to composing it");
+
+            bool po_tc = false, po_pr = false, po_id = false;
+            check(json_bool(body, "po_target_composed", po_tc) && po_tc,
+                  "a panel with a path yields a dotted invoke target");
+            // A pathless panel is the engine's own failure case; yielding ".DoAction" would look like a target.
+            check(json_bool(body, "po_pathless_refused", po_pr) && po_pr,
+                  "a pathless panel, an empty method and an unknown panel are all refused");
+            check(json_bool(body, "po_inconsistent_detected", po_id) && po_id,
+                  "an object with a wrong table field is reported inconsistent -- the check can fail");
+
             // ---- THE FLASH GLOBALS, RESOLVED TO CALLABLE SETTERS -----------------------------------
             //
             // Each _global.* binding's handler IS the setter, so a consumer never needs the variable's GFx type:

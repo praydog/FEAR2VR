@@ -5213,3 +5213,45 @@ class LTInputDeviceMouse 0x30 {
 // scalar-array partition, and that kinds 13/14 and 18/19 collide on purpose.
 //
 // 1063 checks, 0 failures.
+
+// ---- THE PANEL OBJECTS, AND THE INVOKE PATH THE ENGINE'S OWN ERROR ASKS FOR ---------------------
+//
+// The UI catalogue built over the last several passes was inert: 172 setters, 450 dotted identifiers and an
+// invoke slot, none of it callable without knowing WHERE the game keeps its UI objects. Each panel turns out to
+// be a STATIC C++ OBJECT constructed during DLL init, and it holds the missing field.
+//
+//     +0x00  vtable          17 panels, 17 DISTINCT vtables -- one class each, not a shared base
+//     +0x04  binding table   the same table the accessors return
+//     +0x08  pointer loaded from a module global during construction
+//     +0x0C  flag            constructed 0; live values 0, 1 and 2
+//     +0x10  char as_path[]  inline buffer, e.g. "lokiGlobalEvents"
+//
+// THAT PATH IS EXACTLY WHAT THE BRIDGE'S ERROR STRING NAMES: "Invoke called for Monolith.I%sEvents.%s without a
+// path to the implementation object". Two passes ago I decoded that message and recorded that the path lives in
+// the caller's object at +0x10 without knowing which object. This is it. Named g_UiPanel_<Panel> in IDA, with
+// the 17 constructors as UiPanel_<Panel>_Construct.
+//
+// THE +0x04 FIELD IS A CROSS-CHECK, NOT A RE-READ. The object addresses came from the static initialisers
+// (`mov ecx, offset X` before the ctor, or the global the table pointer is written into for the nine constructed
+// inline); the table addresses came from decompiling the accessors. Different route, and ALL 17 AGREE. A wrong
+// base would have read some other global and disagreed.
+//
+// DO NOT COMPOSE THE PATH FROM THE PANEL NAME.
+//
+//     10 of 11 populated paths ARE "loki<Panel>Events"
+//      1 is not: SystemLayer -> "lokiSystemEvents", NOT "lokiSystemLayerEvents"
+//
+// > A composer would have been right ten times out of eleven. That is the same ratio that made the kind-to-type
+// > rule look solid last pass, and it fails the same way -- silently, on the one caller that matters.
+//
+// SIX PANELS HAVE NO PATH AT ALL -- SaveGame, WorldInterface, ControlPanel, LayoutPanel, SecurityPanel,
+// WeaponDisplay. Their buffers are zero for their whole length, so this is a state and not a failed read, and it
+// is precisely the condition the engine refuses. invoke_target() returns nullopt for them rather than handing
+// back ".Method", a string that would look like a target and reach nothing.
+//
+// Exposed as sdk::Events::panel_objects / find_panel_object / panel_object_consistent / invoke_target, with
+// kPanelObjectTableField / FlagField / PathField for consumers reading the object themselves. The suite asserts
+// 17/17 table agreement, 17 distinct vtables, that the convention holds for MOST paths and NOT all, that
+// SystemLayer breaks it by name, and that a deliberately corrupted object is reported inconsistent.
+//
+// 1073 checks, 0 failures.

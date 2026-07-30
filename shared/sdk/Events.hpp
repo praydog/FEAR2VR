@@ -192,7 +192,62 @@ public:
         uintptr_t dispatch_offset;  // the lazy initialiser, within gameclient.dll
         uintptr_t guard_offset;     // its once-flag; bit 0 set means the table below is filled
         uintptr_t table_offset;     // the binding table it returns
+        uintptr_t object_offset;    // the panel's static C++ object -- see PanelObject below
     };
+
+    //
+    // THE PANEL OBJECT -- where the ActionScript path lives, which is what an invoke actually needs.
+    //
+    // Each panel is a STATIC C++ OBJECT constructed during DLL init, and it is the missing half of the invoke
+    // story. The Scaleform bridge reports "Invoke called for Monolith.I<Category>Events.<Method> without a path
+    // to the implementation object" when a path is absent -- and the path is a field of this object:
+    //
+    //     +0x00  vtable                 (one class per panel, so 17 distinct vtables)
+    //     +0x04  binding table          the same table ui_panels() records
+    //     +0x08  pointer, loaded from a module global during construction
+    //     +0x0C  flag                   constructed as 0; observed 0, 1 and 2 live
+    //     +0x10  char as_path[]         inline buffer, e.g. "lokiGlobalEvents"
+    //
+    // THE +0x04 FIELD IS A SELF-CHECK. The object addresses were recovered from the static initialisers, an
+    // entirely different route from the table addresses (which came from the accessors), and all 17 agree. A
+    // consumer can make the same check before trusting an object: panel_object_consistent().
+    //
+    // DO NOT COMPOSE THE PATH FROM THE PANEL NAME. Ten of the eleven populated paths are "loki<Panel>Events",
+    // which makes the eleventh the whole point: SystemLayer's path is "lokiSystemEvents", NOT
+    // "lokiSystemLayerEvents". Read the field.
+    //
+    // SIX PANELS HAVE AN EMPTY PATH -- SaveGame, WorldInterface, ControlPanel, LayoutPanel, SecurityPanel and
+    // WeaponDisplay. That is a real state, not a read failure: their buffers are zero for their whole length.
+    // Those are exactly the panels an invoke cannot reach, which is the condition the engine's own error string
+    // describes, so invoke_target() returns nullopt for them rather than handing back a path to nowhere.
+    struct PanelObject {
+        std::string panel;      // the panel name, as in ui_panels()
+        uintptr_t base{};       // gameclient-relative address of the object
+        uintptr_t vtable{};     // gameclient-relative, or 0 when it lies outside the module
+        uintptr_t table{};      // its +0x04, which should equal the panel's table_offset
+        std::string as_path;    // its +0x10, empty when unset
+        uint32_t flag{};        // its +0x0C
+    };
+
+    static constexpr uintptr_t kPanelObjectTableField = 0x04;
+    static constexpr uintptr_t kPanelObjectFlagField = 0x0C;
+    static constexpr uintptr_t kPanelObjectPathField = 0x10;
+
+    // Every panel's live object. Empty when gameclient is absent; individual entries may carry an empty
+    // as_path, which is a state rather than an error.
+    static std::vector<PanelObject> panel_objects();
+
+    // One panel's object by name.
+    static std::optional<PanelObject> find_panel_object(std::string_view panel);
+
+    // Does this object's +0x04 still point at the panel's binding table? The one structural invariant tying the
+    // object to the table, and worth checking before hooking anything through it.
+    static bool panel_object_consistent(const PanelObject& object);
+
+    // The full ActionScript target for an invoke: "<as_path>.<method>", which is the string shape the bridge's
+    // own error message names. Returns nullopt when the panel is unknown, gameclient is absent, or the panel has
+    // no path -- the last being the case the engine itself refuses.
+    static std::optional<std::string> invoke_target(std::string_view panel, std::string_view method);
 
     //
     // A PANEL'S BINDING TABLE -- the whole two-directional surface, with handler addresses.
