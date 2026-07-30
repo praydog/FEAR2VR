@@ -281,6 +281,54 @@ public:
         std::array<float, 3> external_delta{};
     };
 
+    // ---- PLATFORM CARRY, WHICH IS WHERE external_delta COMES FROM --------------------------
+    //
+    // The external_delta field above was documented last pass from the CONSUMER side: the velocity commit
+    // subtracts it and clears it, so displacement it accounts for does not read as player velocity. Its PRODUCER
+    // is now known -- PlayerMovement_CarryWithPlatform -- and it is platform carry:
+    //
+    //     if (moved_object == controller[+336]) {          // the object we are riding
+    //         delta = new_position - controller[+340];     // how far it moved since last carry
+    //         SetObjectPos(model,  GetObjectPos(model)  + delta);   // carry the player
+    //         PlayerCamera_TranslateCameraObject(delta);            // AND carry the camera object
+    //         controller[+352] += delta;                            // accumulate, for the velocity subtract
+    //         controller[+340]  = new_position;                     // remember where it is now
+    //     }
+    //
+    // FOR VR THIS IS LOAD-BEARING TWICE OVER. First, a mod reading speed() gets the player's own motion with
+    // platform motion already excluded, which is what a comfort vignette wants. Second, riding a platform
+    // TRANSLATES THE CAMERA OBJECT DIRECTLY, bypassing the normal pose path -- so a mod that overrides the camera
+    // must add platform motion back itself or the view will lag the floor.
+    //
+    // NOT THE SAME AS sdk::standing_on(). That reads the ENGINE's standing-on relationship off an LTObject; this
+    // is the GAME's own carry tracking on its movement controller, and the two are different fields on different
+    // objects with different lifetimes.
+    static constexpr uintptr_t kStandingOnField = 336;
+    static constexpr uintptr_t kStandingOnPositionField = 340;
+
+    // LAST_POSITION IS ONLY POPULATED WHILE CARRYING, and that is enforced rather than documented. Nothing
+    // initialises or clears controller[+340] when carry ends: live, with nothing being ridden, those three dwords
+    // read 0x1C559DD4 / 0x1C559DE8 / 0x1C559DFC -- heap pointers spaced 0x14 apart, i.e. leftover data. As floats
+    // they are denormals around 7e-22, which print as 0.000 at any sane precision and compare unequal to zero.
+    //
+    // So a consumer that read the triple unconditionally would get a "position" that looks like the origin in a
+    // log and is not a position at all. An optional makes that unrepresentable.
+    struct PlatformCarry {
+        uintptr_t object{};                              // the LTObject being ridden; 0 when not carrying
+        std::optional<std::array<float, 3>> last_position;  // its position at the last carry step; nullopt idle
+        bool active{};                                   // object != 0
+    };
+
+    // The controller's carry state. nullopt for an empty slot or a faulted read; an inactive state is a normal
+    // result, not a failure.
+    static std::optional<PlatformCarry> platform_carry(unsigned index);
+
+    // Is the recorded platform position still that object's current position? The carry step writes them equal,
+    // so a difference means the platform has moved and the carry has not run yet this frame.
+    //
+    // nullopt when not carrying -- there is nothing to compare, which is different from "they disagree".
+    static std::optional<bool> platform_carry_position_current(unsigned index);
+
     // The controller's movement state. nullopt for an empty slot or a faulted read.
     static std::optional<MovementState> movement_state(unsigned index);
 

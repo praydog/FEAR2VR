@@ -5601,3 +5601,48 @@ class LTInputDeviceMouse 0x30 {
 // engine_object_is_model_object() as the identity check and all three asserted DISTINCT.
 //
 // 1152 checks, 0 failures.
+
+// ---- WHERE external_delta COMES FROM, AND A FIELD THAT IS ONLY A POSITION SOMETIMES --------------
+//
+// Two passes ago the velocity commit was mapped and one of its fields recorded from the CONSUMER side only:
+// controller+352, "subtracted from the frame's delta before the divide and then cleared, so displacement that is
+// not the player moving under its own power does not show up as velocity". That was inference. The producer is
+// now found and it is PLATFORM CARRY.
+//
+//     PlayerMovement_CarryWithPlatform(controller, moved_object, ..., new_position):
+//       if (moved_object == controller[+336]) {              // the object being ridden
+//           delta = new_position - controller[+340..348]      // its movement since the last carry
+//           SetObjectPos(model, GetObjectPos(model) + delta)  // carry the player
+//           PlayerCamera_TranslateCameraObject(delta)         // AND carry the camera object
+//           controller[+352..360] += delta                    // the accumulator, cleared each frame
+//           controller[+340..348]  = new_position
+//       }
+//
+// FOR VR THIS MATTERS TWICE. speed() already excludes platform motion, which is what a comfort vignette wants.
+// But riding a platform TRANSLATES THE CAMERA OBJECT DIRECTLY, bypassing the pose path -- so a mod that owns the
+// camera must add platform motion back or the view lags the floor.
+//
+// PlayerCamera_TranslateCameraObject is worth its own line: it reads holder+188 (the camera LTObject), offsets it
+// by the delta, and accumulates the vertical component into holder+752 and +1000 -- the only writer of either in
+// the camera range. Its `this` is the POSE HOLDER, proven from the call site (`mov ecx,[esi+4]; mov ecx,[ecx+0FCh]`
+// -- 0xFC = 252), not inferred from the offsets fitting.
+//
+// AND THE FIELD THAT IS ONLY A POSITION SOMETIMES. I asserted "nothing ridden implies the recorded platform
+// position is zero". THE CHECK FAILED while all three components printed as 0.000, which is the tell: the dwords
+// are 0x1C559DD4 / 0x1C559DE8 / 0x1C559DFC -- HEAP POINTERS SPACED 0x14 APART, denormal floats near 7e-22.
+//
+// > Nothing initialises or clears controller+340 when carry ends, so it holds whatever was there. As floats those
+// > bits print as the origin at any sane precision and compare unequal to zero -- a value that looks like data in
+// > a log and is not data at all. The workflow note "a float whose live values are all denormal is not a float"
+// > earned its keep, and the failing assertion was mine, not the game's.
+//
+// The fix is in the TYPE, not the comment: PlatformCarry::last_position is an optional, populated only while
+// carrying, so reading a stale triple is unrepresentable rather than merely discouraged. Asserted both ways --
+// offered exactly when active.
+//
+// ALSO SETTLED WHILE HUNTING THE POSE WRITER (still not found): 0x100E2380 computes a look-at via
+// Client_RotationFromForwardUp and applies pos+rot to the MODEL objects, not the camera. Its `this` is the pose
+// holder (this[150] = +600 = model, this[1] = player). Recorded and deliberately not renamed -- what drives it is
+// unestablished -- so the next pass does not re-examine it as a camera candidate.
+//
+// 1159 checks, 0 failures.

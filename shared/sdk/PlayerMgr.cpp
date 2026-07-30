@@ -468,4 +468,45 @@ std::optional<bool> PlayerMgr::engine_object_is_model_object(unsigned index) {
     return *phys == p->model_object;
 }
 
+
+std::optional<PlayerMgr::PlatformCarry> PlayerMgr::platform_carry(unsigned index) {
+    const auto ctrl = movement_controller(index);
+    if (!ctrl.has_value()) {
+        return std::nullopt;
+    }
+    PlatformCarry out;
+    out.object = mem::read_ptr(*ctrl + kStandingOnField).value_or(0);
+    out.active = out.object != 0;
+    if (!out.active) {
+        return out;  // the triple is stale leftover data while idle; do not offer it
+    }
+    std::array<float, 3> pos{};
+    for (size_t i = 0; i < pos.size(); ++i) {
+        const auto v = mem::read<float>(*ctrl + kStandingOnPositionField + i * sizeof(float));
+        if (!v.has_value()) {
+            return std::nullopt;
+        }
+        pos[i] = *v;
+    }
+    out.last_position = pos;
+    return out;
+}
+
+std::optional<bool> PlayerMgr::platform_carry_position_current(unsigned index) {
+    const auto carry = platform_carry(index);
+    if (!carry.has_value() || !carry->active) {
+        return std::nullopt;  // nothing being ridden, so nothing to compare
+    }
+    const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(carry->object));
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    // Compared as BITS: the carry step assigns the position verbatim, so equality is the claim.
+    if (!carry->last_position.has_value()) {
+        return std::nullopt;
+    }
+    const std::array<float, 3> cur{info->position.x, info->position.y, info->position.z};
+    return std::memcmp(carry->last_position->data(), cur.data(), sizeof(cur)) == 0;
+}
+
 }  // namespace sdk

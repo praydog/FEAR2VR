@@ -4610,6 +4610,43 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // PLATFORM CARRY -- the producer of the external-delta accumulator. Live nothing is being ridden, so the
+    // assertions are about the IDLE state being internally consistent and about the carried case being reported
+    // as unavailable rather than as agreement.
+    const auto pc = sdk::PlayerMgr::platform_carry(0);
+    const auto pc_cur = sdk::PlayerMgr::platform_carry_position_current(0);
+    json_append_bool(out, "pc_resolved", pc.has_value());
+    if (pc.has_value()) {
+        json_append_bool(out, "pc_active", pc->active);
+        // active must agree with the object being non-zero -- the flag is derived, not stored.
+        json_append_bool(out, "pc_active_agrees", pc->active == (pc->object != 0));
+        const auto zero3 = [](const std::array<float, 3>& v) {
+            return v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f;
+        };
+        // WHEN NOT CARRYING, the recorded platform position and the accumulator must both be zero: nothing to
+        // ride means nothing recorded and nothing accumulated. That ties the two fields together.
+        // WHILE IDLE the accumulator must be zero -- the commit clears it every frame -- and the platform
+        // position must NOT be offered at all, because the underlying dwords are stale leftovers.
+        bool idle_consistent = true;
+        if (!pc->active) {
+            const auto ms2 = sdk::PlayerMgr::movement_state(0);
+            idle_consistent = !pc->last_position.has_value() && ms2.has_value() && zero3(ms2->external_delta);
+        }
+        json_append_bool(out, "pc_idle_consistent", idle_consistent);
+        json_append_bool(out, "pc_position_offered_only_when_active",
+                         pc->last_position.has_value() == pc->active);
+        json_append_bool(out, "pc_position_finite",
+                         !pc->last_position.has_value() ||
+                             (std::isfinite((*pc->last_position)[0]) && std::isfinite((*pc->last_position)[1]) &&
+                              std::isfinite((*pc->last_position)[2])));
+    }
+    // The comparison is UNAVAILABLE while idle, which is deliberately distinct from "they disagree".
+    json_append_bool(out, "pc_compare_unavailable_when_idle",
+                     pc.has_value() && (pc->active ? pc_cur.has_value() : !pc_cur.has_value()));
+    json_append_bool(out, "pc_range_refused",
+                     !sdk::PlayerMgr::platform_carry(9).has_value() &&
+                         !sdk::PlayerMgr::platform_carry_position_current(9).has_value());
+
     // THE THREE PLAYER ENGINE OBJECTS. The point is that they are DIFFERENT and each has a role; confusing them
     // yields plausible results rather than errors, which is exactly what happened while mapping this.
     const auto eo = sdk::PlayerMgr::engine_objects(0);

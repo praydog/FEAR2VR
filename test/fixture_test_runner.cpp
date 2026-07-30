@@ -4509,6 +4509,39 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- PLATFORM CARRY, THE PRODUCER OF external_delta -------------------------------------
+            //
+            // The velocity commit subtracts an accumulator at controller+352 and clears it, so displacement it
+            // accounts for is not reported as player velocity. Its producer is PlayerMovement_CarryWithPlatform:
+            // when the object being ridden moves, the player's model AND the camera object are both translated by
+            // the platform's delta and that delta is accumulated. So a mod reading speed() gets the player's own
+            // motion, and a mod overriding the camera must add platform motion back itself.
+            //
+            // NOTHING IS BEING RIDDEN IN THIS FIXTURE, so what is asserted is the idle state's internal
+            // consistency and that the carried case is reported as UNAVAILABLE rather than as agreement.
+            bool pc_r = false, pc_aa = false, pc_ic = false, pc_oo = false, pc_pf = false, pc_cu = false,
+                 pc_rr = false;
+            check(json_bool(body, "pc_resolved", pc_r) && pc_r, "the carry state reads off the controller");
+            // `active` is derived from the object rather than stored, so the two must never disagree.
+            check(json_bool(body, "pc_active_agrees", pc_aa) && pc_aa,
+                  "the active flag agrees with whether an object is being ridden");
+            // THE ACCUMULATOR IS ZERO WHILE IDLE because the commit clears it every frame.
+            check(json_bool(body, "pc_idle_consistent", pc_ic) && pc_ic,
+                  "with nothing ridden the accumulator is zero and no platform position is offered");
+            // THE TRAP THIS API CLOSES: controller+340 is never initialised or cleared, so while idle it holds
+            // leftover heap pointers -- denormal floats around 7e-22 that print as 0.000 and are not zero. A
+            // consumer reading them unconditionally would log an origin that is not a position, so the field is
+            // only populated while carrying and that correspondence is asserted both ways.
+            check(json_bool(body, "pc_position_offered_only_when_active", pc_oo) && pc_oo,
+                  "the platform position is offered exactly when a platform is being ridden");
+            check(json_bool(body, "pc_position_finite", pc_pf) && pc_pf,
+                  "any offered platform position is finite");
+            // Unavailable is deliberately distinct from disagreeing.
+            check(json_bool(body, "pc_compare_unavailable_when_idle", pc_cu) && pc_cu,
+                  "the freshness comparison is unavailable while idle rather than reporting a mismatch");
+            check(json_bool(body, "pc_range_refused", pc_rr) && pc_rr,
+                  "an out-of-range slot yields neither carry state nor comparison");
+
             // ---- THE THREE PLAYER ENGINE OBJECTS, AND THE WRONG-HOLDER TRAP -------------------------
             //
             // Three distinct LTObjects can each be called "the player", all are player-shaped, and choosing the
