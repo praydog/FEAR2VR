@@ -59,12 +59,106 @@ std::atomic<uint32_t> g_ov_target{0};
 // value, or a persisting write feeds its own output back and accumulates.
 std::atomic<uint32_t> g_ov_base[4]{};
 std::atomic<bool> g_ov_have_base{false};
+// The worst drift seen between our corrections, in degrees, and how many corrections found any.
+std::atomic<uint32_t> g_ov_max_drift_bits{0};
+std::atomic<uint64_t> g_ov_drift_frames{0};
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
 std::atomic<uintptr_t> g_pose_last_this{0};
 std::atomic<bool> g_pose_installed{false};
 std::atomic<uintptr_t> g_pose_target{0};
+
+// APPLY THE OVERRIDE, from whichever detour just let a writer run.
+//
+// One correction per frame is NOT a lock, and the live symptom named it exactly: the view rubber-banded back
+// toward the held orientation instead of holding still. ApplyLookDelta fires ~740 times a second against
+// UpdateViewPose's ~300, so the player's look landed two or three times between corrections, moved the view,
+// and got yanked back on the next one.
+//
+// So every writer we own is followed by a re-assert. `decrement` is only true for the per-frame call, or the
+// countdown would burn down at the rate of look input instead of the rate of frames.
+void apply_override(bool decrement) {
+    const uint32_t frames = g_ov_frames.load(std::memory_order_relaxed);
+    if (frames == 0) {
+        return;
+    }
+    if (decrement) {
+        g_ov_frames.store(frames - 1, std::memory_order_relaxed);
+    }
+    const bool write_source = g_ov_target.load(std::memory_order_relaxed) != 0;
+    const auto cur = write_source ? sdk::PlayerMgr::view_rotation(0) : sdk::PlayerMgr::applied_rotation(0);
+    if (!cur.has_value()) {
+        return;
+    }
+    if (!g_ov_have_base.load(std::memory_order_relaxed)) {
+        for (size_t i = 0; i < cur->size(); ++i) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &(*cur)[i], sizeof(bits));
+            g_ov_base[i].store(bits, std::memory_order_relaxed);
+        }
+        g_ov_have_base.store(true, std::memory_order_relaxed);
+    }
+    // HOW FAR DID IT DRIFT BEFORE WE CORRECTED IT? This is the rubber-band amplitude, and it can only be
+    // measured here: the drift happens and is corrected between frames, so HTTP sampling sees a still value
+    // however hard the two writers are fighting. Compared against what we last wrote, as an angle.
+    if (g_ov_pending.load(std::memory_order_relaxed)) {
+        float dot = 0.0f;
+        for (size_t i = 0; i < cur->size(); ++i) {
+            float last = 0.0f;
+            const uint32_t bits = g_ov_last[i].load(std::memory_order_relaxed);
+            std::memcpy(&last, &bits, sizeof(last));
+            dot += last * (*cur)[i];
+        }
+        // Quaternion angular distance; sign-insensitive because q and -q are the same rotation.
+        dot = dot < 0.0f ? -dot : dot;
+        if (dot > 1.0f) {
+            dot = 1.0f;
+        }
+        const float deg = 2.0f * std::acos(dot) * 57.29577951f;
+        uint32_t prev = g_ov_max_drift_bits.load(std::memory_order_relaxed);
+        float prev_f = 0.0f;
+        std::memcpy(&prev_f, &prev, sizeof(prev_f));
+        if (deg > prev_f) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &deg, sizeof(bits));
+            g_ov_max_drift_bits.store(bits, std::memory_order_relaxed);
+        }
+        if (deg > 0.01f) {
+            g_ov_drift_frames.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    float yaw = 0.0f;
+    const uint32_t yb = g_ov_yaw_bits.load(std::memory_order_relaxed);
+    std::memcpy(&yaw, &yb, sizeof(yaw));
+    std::array<float, 4> base{};
+    for (size_t i = 0; i < base.size(); ++i) {
+        const uint32_t bits = g_ov_base[i].load(std::memory_order_relaxed);
+        std::memcpy(&base[i], &bits, sizeof(base[i]));
+    }
+    const float half = yaw * 0.5f * 0.01745329252f;
+    const std::array<float, 4> a{0.0f, std::sin(half), 0.0f, std::cos(half)};
+    const auto& b = base;
+    const std::array<float, 4> out{
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+    const bool wrote = write_source ? sdk::PlayerMgr::write_view_rotation(0, out)
+                                    : sdk::PlayerMgr::write_applied_rotation(0, out);
+    if (wrote) {
+        g_ov_applied.fetch_add(1, std::memory_order_relaxed);
+        for (size_t i = 0; i < out.size(); ++i) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &out[i], sizeof(bits));
+            g_ov_last[i].store(bits, std::memory_order_relaxed);
+        }
+        g_ov_pending.store(true, std::memory_order_relaxed);
+    } else {
+        g_ov_rejected.fetch_add(1, std::memory_order_relaxed);
+    }
+}
 
 // The detour. `edx` is the dummy that makes an x86 __thiscall reachable as __fastcall (AGENT.MD rule 1), and
 // the three stack arguments match `retn 0Ch` at both of the original's exits.
@@ -91,7 +185,12 @@ int __fastcall apply_look_delta_detour(uintptr_t self, uintptr_t /*edx*/, float*
         // value; the engine treats the result as a status it mostly ignores on this path.
         return 0;
     }
-    return hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*, float, float*)>()(self, 0, a2, a3, a4);
+    const int r = hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*, float, float*)>()(
+        self, 0, a2, a3, a4);
+    // RE-ASSERT after the look delta lands. Without this the override corrects only once per frame while this
+    // runs ~2.5x per frame, which is exactly what "it rubber-banded back" describes.
+    apply_override(false);
+    return r;
 }
 
 // The per-frame view writer. NO stack arguments -- the original's single exit is a plain `retn` -- so this is
@@ -152,85 +251,9 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
     const int result = hook->original<int(__fastcall*)(uintptr_t, uintptr_t)>()(self, 0);
 
     // AFTER the original: replace the pose it just computed. Upstream of the camera object, which is the whole
-    // point -- writing the object directly is reclaimed within a frame.
-    const uint32_t frames = g_ov_frames.load(std::memory_order_relaxed);
-    if (frames > 0) {
-        g_ov_frames.store(frames - 1, std::memory_order_relaxed);
-        float yaw = 0.0f;
-        const uint32_t yb = g_ov_yaw_bits.load(std::memory_order_relaxed);
-        std::memcpy(&yaw, &yb, sizeof(yaw));
-        const bool write_source = g_ov_target.load(std::memory_order_relaxed) != 0;
-        const auto cur = write_source ? sdk::PlayerMgr::view_rotation(0) : sdk::PlayerMgr::applied_rotation(0);
-        // Capture the baseline once, on the first frame of this arming.
-        if (!g_ov_have_base.load(std::memory_order_relaxed) && cur.has_value()) {
-            for (size_t i = 0; i < cur->size(); ++i) {
-                uint32_t bits = 0;
-                std::memcpy(&bits, &(*cur)[i], sizeof(bits));
-                g_ov_base[i].store(bits, std::memory_order_relaxed);
-            }
-            g_ov_have_base.store(true, std::memory_order_relaxed);
-        }
-        if (cur.has_value() && g_ov_have_base.load(std::memory_order_relaxed)) {
-            // ABSOLUTE, FROM A BASELINE CAPTURED ONCE.
-            //
-            // The first version composed the offset onto whatever was in the field THAT frame. Because a write
-            // to +324 persists, the next frame read our own output and composed again -- so a 40-degree offset
-            // at ~300 fps accumulated into a spin, which is what a live test looked like: the camera rotating
-            // wildly and dragging the player's movement direction with it.
-            //
-            // That was a bug in the experiment and not in the mapping, and the accumulation is itself the
-            // proof: only a field the engine genuinely derives the view from could do that. So the offset is
-            // now applied to a baseline captured on the first armed frame, which makes the write ABSOLUTE --
-            // yaw=0 holds the view still, and any other value holds it at a fixed rotation. That is the shape a
-            // head pose takes: an absolute orientation per frame, not a delta.
-            const float half = yaw * 0.5f * 0.01745329252f;
-            const float sy = std::sin(half);
-            const float cy = std::cos(half);
-            const std::array<float, 4> q{0.0f, sy, 0.0f, cy};
-            const auto& a = q;
-            // THE BASELINE, not the live value -- that is what makes this absolute instead of cumulative.
-            std::array<float, 4> base{};
-            for (size_t i = 0; i < base.size(); ++i) {
-                const uint32_t bits = g_ov_base[i].load(std::memory_order_relaxed);
-                std::memcpy(&base[i], &bits, sizeof(base[i]));
-            }
-            const auto& b = base;
-            // Hamilton product q * current, x,y,z,w order.
-            std::array<float, 4> out{
-                a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-                a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-                a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-                a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
-            const bool wrote = write_source ? sdk::PlayerMgr::write_view_rotation(0, out)
-                                            : sdk::PlayerMgr::write_applied_rotation(0, out);
-            if (wrote) {
-                g_ov_applied.fetch_add(1, std::memory_order_relaxed);
-                for (size_t i = 0; i < out.size(); ++i) {
-                    uint32_t bits = 0;
-                    std::memcpy(&bits, &out[i], sizeof(bits));
-                    g_ov_last[i].store(bits, std::memory_order_relaxed);
-                }
-                g_ov_pending.store(true, std::memory_order_relaxed);
-            } else {
-                g_ov_rejected.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-    }
+    // point -- writing the object directly is reclaimed within a frame. This call owns the frame countdown.
+    apply_override(true);
 
-    // AFTER the original, so the pose it just wrote and the camera object are in the same phase.
-    if ((g_pose_calls.load(std::memory_order_relaxed) & 63u) == 0u) {
-        switch (sdk::PlayerMgr::applied_pose_agreement(0)) {
-        case sdk::PlayerMgr::PoseAgreement::Equal:
-            g_pose_agree_equal.fetch_add(1, std::memory_order_relaxed);
-            break;
-        case sdk::PlayerMgr::PoseAgreement::Differ:
-            g_pose_agree_differ.fetch_add(1, std::memory_order_relaxed);
-            break;
-        default:
-            g_pose_agree_other.fetch_add(1, std::memory_order_relaxed);
-            break;
-        }
-    }
     return result;
 }
 
@@ -300,6 +323,9 @@ ViewHook::Observed ViewHook::observed() const {
     out.override_carried = g_ov_carried.load(std::memory_order_relaxed);
     out.override_rejected = g_ov_rejected.load(std::memory_order_relaxed);
     out.override_pose_held = g_ov_pose_held.load(std::memory_order_relaxed);
+    const uint32_t db = g_ov_max_drift_bits.load(std::memory_order_relaxed);
+    std::memcpy(&out.override_max_drift_deg, &db, sizeof(out.override_max_drift_deg));
+    out.override_drift_frames = g_ov_drift_frames.load(std::memory_order_relaxed);
     return out;
 }
 
@@ -316,6 +342,8 @@ void ViewHook::arm_override(float yaw_deg, uint32_t frames, bool write_source) {
     g_ov_rejected.store(0, std::memory_order_relaxed);
     g_ov_pose_held.store(0, std::memory_order_relaxed);
     g_ov_have_base.store(false, std::memory_order_relaxed);
+    g_ov_max_drift_bits.store(0, std::memory_order_relaxed);
+    g_ov_drift_frames.store(0, std::memory_order_relaxed);
     g_ov_pending.store(false, std::memory_order_relaxed);
     g_ov_frames.store(bounded, std::memory_order_relaxed);
     LOGX("[viewhook] override armed: %.2f deg yaw for %u frames", yaw_deg, bounded);

@@ -96,6 +96,11 @@ public:
         // Did OUR pose still stand at the next frame? Distinguishes "the engine recomputed the pose" from
         // "the pose stood but nothing propagated it into the object" -- opposite problems with one symptom.
         uint64_t override_pose_held{};
+        // THE RUBBER-BAND AMPLITUDE: how far the field drifted from what we wrote, before we corrected it.
+        // Only measurable inside the hook -- the drift is created and erased between frames, so an out-of-band
+        // sampler reads a still value no matter how hard the two writers fight.
+        float override_max_drift_deg{};
+        uint64_t override_drift_frames{};
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
