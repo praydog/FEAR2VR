@@ -444,4 +444,28 @@ std::optional<bool> PlayerMgr::cached_position_matches_engine(unsigned index) {
     return std::memcmp(a.data(), b.data(), sizeof(b)) == 0;
 }
 
+
+std::optional<PlayerMgr::EngineObjects> PlayerMgr::engine_objects(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value()) {
+        return std::nullopt;
+    }
+    EngineObjects out;
+    out.camera = p->camera_object;
+    out.model = p->model_object;
+    if (const auto lp = CClientShell::local_player(index); lp.has_value()) {
+        out.shell = reinterpret_cast<uintptr_t>(lp->object);
+    }
+    return out;
+}
+
+std::optional<bool> PlayerMgr::engine_object_is_model_object(unsigned index) {
+    const auto phys = engine_object(index);
+    const auto p = player(index);
+    if (!phys.has_value() || !p.has_value() || p->model_object == 0) {
+        return std::nullopt;
+    }
+    return *phys == p->model_object;
+}
+
 }  // namespace sdk

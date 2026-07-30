@@ -5552,3 +5552,52 @@ class LTInputDeviceMouse 0x30 {
 // sdk::interfaces::Registry::gameclient_interface_slots / find_gameclient_slot.
 //
 // 1141 checks, 0 failures.
+
+// ---- THREE PLAYER OBJECTS, AND OFFSETS THAT MEAN NOTHING WITHOUT THEIR OBJECT --------------------
+//
+// This pass went hunting the camera pose WRITE path and did not find it. What it found instead was that I had
+// been confusing player-related objects, twice in one session, in the same way -- and the record is worth more
+// than the miss.
+//
+// THE HUNT. ILTClient slot 19 (+76) is SetObjectPos, so the writer should be a camera-range function calling it.
+// Five candidates. I picked 0x100E1BE0 because it referenced "232" and "244" eight times -- the applied-pose
+// offsets. IT WAS NOT THE WRITER. Those were `*(this+4) + 232` and `+ 244`: offsets on the PLAYER object, where
+// they hold pointers to subsystems, not on the pose HOLDER where they hold a position and a quaternion.
+//
+// > A grep for an offset number matched an offset on the wrong object. Offsets are meaningless without the
+// > object they belong to, and a decompiler's integer literals carry no type to warn you.
+//
+// (0x100E1BE0 is still worth something: a NINE-STATE machine at this+688 which, entering state 4, copies
+// GetObjectPos(this+188) onto two other objects, and on state 2 sets ModelLODDistanceScale to 0. Not renamed --
+// what the states MEAN is unestablished.)
+//
+// THEN THE SAME MISTAKE AGAIN, one level down. Chasing that, I read the pose fields off *(player + 260) and got
+// position (0,0,0) with a quaternion of norm 0, and nearly recorded "PlayerMgr.hpp's +188 camera-object claim is
+// wrong". The header was right and I was reading the WRONG HOLDER:
+//
+//     *(player + 252)  ->  POSE holder      +188 camera object, +232/+244 applied pose, +300/+324, +600 model
+//     *(player + 260)  ->  PHYSICS holder   +320 the object handed to ILTPhysics
+//
+// TWO HOLDER-LIKE OBJECTS ON ADJACENT PLAYER FIELDS. Cross-applying their offsets lands on unused space and
+// returns ZEROS THAT LOOK LIKE DATA. read_pose already refuses it -- it validates the quaternion -- and that
+// guard is now asserted rather than assumed.
+//
+// WHAT THE PASS ACTUALLY SETTLED, from the correct holder:
+//
+//     applied pose +232/+244 = 2183.038, 1572.056, -2233.772 / unit quat
+//     camera object (+188)   = EXACTLY those values in its LTObject +0x14/+0x20
+//     model object (+600)    = 0x1C760D68 == *(physics holder + 320)
+//
+// THE PHYSICS TARGET IS THE MODEL OBJECT. Last pass reached it through player+260 and recorded it as "an
+// unregistered object of unknown role", noting only that it is not CClientShell's. It is the player's MODEL,
+// already mapped here through player+252. Two routes sharing no offsets, and the doc no longer calls it a
+// mystery. It is player-shaped because it IS the player's model; it is unregistered because it is client-only.
+//
+// So THREE distinct engine objects can each be called "the player", and they are not interchangeable:
+//     camera  -- the view is built from it, and it equals the applied pose bit for bit
+//     model   -- the ILTPhysics target; no engine handle, so handle-taking APIs cannot reach it
+//     shell   -- registered, handle 7394, what CClientShell publishes
+// Exposed together as sdk::PlayerMgr::engine_objects() so a caller picks a ROLE instead of an offset, with
+// engine_object_is_model_object() as the identity check and all three asserted DISTINCT.
+//
+// 1152 checks, 0 failures.

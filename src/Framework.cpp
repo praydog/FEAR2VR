@@ -4610,6 +4610,41 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE THREE PLAYER ENGINE OBJECTS. The point is that they are DIFFERENT and each has a role; confusing them
+    // yields plausible results rather than errors, which is exactly what happened while mapping this.
+    const auto eo = sdk::PlayerMgr::engine_objects(0);
+    const auto eo_is_model = sdk::PlayerMgr::engine_object_is_model_object(0);
+    json_append_bool(out, "eo_resolved", eo.has_value());
+    if (eo.has_value()) {
+        json_append_bool(out, "eo_camera_present", eo->camera != 0);
+        json_append_bool(out, "eo_model_present", eo->model != 0);
+        json_append_bool(out, "eo_shell_present", eo->shell != 0);
+        json_append_bool(out, "eo_all_distinct",
+                         eo->camera != 0 && eo->model != 0 && eo->shell != 0 && eo->camera != eo->model &&
+                             eo->model != eo->shell && eo->camera != eo->shell);
+    }
+    // TWO ROUTES SHARING NO OFFSETS: *(*(player+260)+320) versus *(*(player+252)+600).
+    json_append_bool(out, "eo_physics_is_model_determinable", eo_is_model.has_value());
+    json_append_bool(out, "eo_physics_is_model", eo_is_model.has_value() && *eo_is_model);
+    // The applied pose must still be what the camera object carries -- the invariant a VR override depends on.
+    const auto eo_pose_match = sdk::PlayerMgr::applied_pose_matches_camera_object(0);
+    json_append_bool(out, "eo_pose_match_determinable", eo_pose_match.has_value());
+    json_append_bool(out, "eo_pose_matches_camera", eo_pose_match.has_value() && *eo_pose_match);
+    // The wrong-holder trap, reproduced as a check: reading the POSE offsets off the PHYSICS holder must not
+    // yield a usable pose. If it ever did, the two holders would be interchangeable and the warning is wrong.
+    if (const auto p = sdk::PlayerMgr::slot(0); p.has_value()) {
+        bool wrong_holder_refused = true;
+        if (const auto phys_holder = sdk::mem::read_ptr(*p + sdk::PlayerMgr::kEngineHolderField);
+            phys_holder.has_value() && *phys_holder != 0) {
+            // read_pose validates the quaternion, so a mis-offset holder is refused by construction.
+            wrong_holder_refused = !sdk::PlayerMgr::read_pose(*phys_holder).has_value();
+        }
+        json_append_bool(out, "eo_wrong_holder_refused", wrong_holder_refused);
+    }
+    json_append_bool(out, "eo_range_refused",
+                     !sdk::PlayerMgr::engine_objects(9).has_value() &&
+                         !sdk::PlayerMgr::engine_object_is_model_object(9).has_value());
+
     // THE GAME-SIDE MOVEMENT STATE -- the velocity the engine's is not. The invariant that establishes these
     // offsets is that the controller's cached position is a VERBATIM COPY of the engine object's, refreshed every
     // frame, so it must compare bit-equal. A wrong offset lands on another triple and fails.

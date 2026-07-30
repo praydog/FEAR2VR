@@ -4509,6 +4509,50 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE THREE PLAYER ENGINE OBJECTS, AND THE WRONG-HOLDER TRAP -------------------------
+            //
+            // Three distinct LTObjects can each be called "the player", all are player-shaped, and choosing the
+            // wrong one produces plausible results rather than an error:
+            //
+            //     camera  *(player + 252) + 188   carries the applied camera pose; the view is built from it
+            //     model   *(player + 252) + 600   the client-only model -- AND the ILTPhysics target
+            //     shell   CClientShell's array    the registered, handle-bearing local player
+            //
+            // THE PHYSICS TARGET IS THE MODEL OBJECT, and the check is two routes that share no offsets:
+            // *(*(player+260)+320) against *(*(player+252)+600). Last pass reached the first and recorded it as
+            // an unregistered object of unknown role; this ties it to the model object already mapped here.
+            bool eo_r = false, eo_cp = false, eo_mp = false, eo_sp = false, eo_ad = false;
+            check(json_bool(body, "eo_resolved", eo_r) && eo_r, "the player's engine objects resolve");
+            check(json_bool(body, "eo_camera_present", eo_cp) && eo_cp, "the camera object is present");
+            check(json_bool(body, "eo_model_present", eo_mp) && eo_mp, "the model object is present");
+            check(json_bool(body, "eo_shell_present", eo_sp) && eo_sp, "the shell's local player is present");
+            // DISTINCTNESS IS THE LOAD-BEARING CLAIM. If any two coincided, the roles above would collapse and a
+            // consumer could not be told which to use.
+            check(json_bool(body, "eo_all_distinct", eo_ad) && eo_ad,
+                  "all three are different objects -- the roles are not interchangeable");
+
+            bool eo_pd = false, eo_pm = false;
+            check(json_bool(body, "eo_physics_is_model_determinable", eo_pd) && eo_pd,
+                  "the physics target and the model object can be compared");
+            check(json_bool(body, "eo_physics_is_model", eo_pm) && eo_pm,
+                  "the ILTPhysics target IS the model object, via two routes sharing no offsets");
+
+            bool eo_qd = false, eo_qm = false;
+            check(json_bool(body, "eo_pose_match_determinable", eo_qd) && eo_qd,
+                  "the applied pose can be compared against the camera object");
+            check(json_bool(body, "eo_pose_matches_camera", eo_qm) && eo_qm,
+                  "the applied pose is still what the camera object carries -- what a VR override depends on");
+
+            // THE TRAP, AS A CHECK. Applying the POSE offsets to the PHYSICS holder yields position (0,0,0) and a
+            // quaternion of norm 0 -- data-shaped nonsense. read_pose refuses it because it validates the
+            // quaternion, so this asserts the guard works rather than that the mistake is impossible.
+            bool eo_wh = false;
+            check(json_bool(body, "eo_wrong_holder_refused", eo_wh) && eo_wh,
+                  "the pose offsets applied to the physics holder are refused, not returned as zeros");
+            bool eo_rr = false;
+            check(json_bool(body, "eo_range_refused", eo_rr) && eo_rr,
+                  "an out-of-range slot yields neither the triple nor the comparison");
+
             // ---- THE GAME-SIDE MOVEMENT STATE, THE VELOCITY THE ENGINE'S IS NOT --------------------
             //
             // Physics.hpp says the engine's player velocity is forced to zero and to read the game side instead.

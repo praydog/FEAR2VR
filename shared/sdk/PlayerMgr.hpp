@@ -234,9 +234,15 @@ public:
     // with any ILT* entry point that takes an HOBJECT; it can only be used as a raw LTObject*, which is exactly
     // how the update path uses it (ILTPhysics::SetVelocity takes the pointer and writes fields directly).
     //
+    // IT IS THE MODEL OBJECT. An earlier pass left this as "an unregistered object of unknown role"; it is this
+    // class's model_object, reached through the OTHER holder -- *(player + 252) + 600 rather than
+    // *(player + 260) + 320. Two routes sharing no offsets, confirmed live by engine_object_is_model_object().
+    // That also explains the shape: it is player-shaped because it IS the player's model.
+    //
     // WHICH ONE A CONSUMER WANTS depends on the question. To affect what the game's own physics calls affect, or
     // to read the fields the update path writes, use this. To go through a handle-taking engine API, use the
-    // shell's -- and see engine_object_is_registered() before assuming either.
+    // shell's -- and see engine_object_is_registered() before assuming either. engine_objects() returns all
+    // three side by side with their roles, which is the accessor to prefer.
     static std::optional<uintptr_t> engine_object(unsigned index);
 
     // ---- THE GAME-SIDE MOVEMENT STATE, which is the velocity that is actually real ---------
@@ -288,6 +294,38 @@ public:
 
     // Does the physics target carry an engine handle and slot index? Live this is FALSE, which is the point: a
     // consumer that assumed otherwise would pass 0xFFFF to a handle-taking API.
+    // ---- THE THREE PLAYER-RELATED ENGINE OBJECTS, AND WHICH IS WHICH ----------------------
+    //
+    // There are THREE distinct LTObjects a consumer may reasonably call "the player", they are all player-shaped,
+    // and picking the wrong one produces plausible-looking results rather than an error. They are reached through
+    // THREE DIFFERENT ROUTES, two of them through different holders hanging off ADJACENT player fields:
+    //
+    //     camera   *(player + 252) + 188    carries the APPLIED camera pose; what the view is built from
+    //     model    *(player + 252) + 600    the client-only player model -- AND the object handed to ILTPhysics
+    //     shell    CClientShell's array     the handle-bearing registered local player (handle 7394 live)
+    //
+    // THE MODEL OBJECT AND THE PHYSICS TARGET ARE THE SAME OBJECT. Last pass reached the physics target as
+    // *(*(player + 260) + 320) and recorded it as an unregistered object of unknown role; it is this class's
+    // model_object, reached through a different holder and a different offset. engine_object_is_model_object()
+    // is that identity as a runtime check -- two routes sharing no offsets agreeing on one pointer.
+    //
+    // WHY THIS IS SPELLED OUT: player+252 and player+260 both hold holder-like objects, and applying one's
+    // offsets to the other yields ZEROS THAT LOOK LIKE DATA -- reading the pose fields off the +260 holder gives
+    // position (0,0,0) and a quaternion of norm 0, which is exactly what a wrong-offset read looks like when it
+    // lands on unused space. The offsets are meaningless without the object they belong to.
+    struct EngineObjects {
+        uintptr_t camera{};  // transform-only; equals the applied pose bit for bit
+        uintptr_t model{};   // the ILTPhysics target; unregistered, no engine handle
+        uintptr_t shell{};   // registered, handle-bearing; 0 when the shell cannot be read
+    };
+
+    // All three at once, so a caller chooses a role rather than an offset. nullopt when the player is absent;
+    // individual members may be 0.
+    static std::optional<EngineObjects> engine_objects(unsigned index);
+
+    // Is the ILTPhysics target the same object as the player's model? Live: yes. nullopt when either route fails.
+    static std::optional<bool> engine_object_is_model_object(unsigned index);
+
     static std::optional<bool> engine_object_is_registered(unsigned index);
 
     // Is the physics target the same object CClientShell reports as the local player? Live this is FALSE. Kept as
