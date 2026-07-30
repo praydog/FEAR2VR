@@ -345,4 +345,132 @@ std::optional<Engine::ConVar> Engine::console_var(const char* name) {
     return std::nullopt;
 }
 
+
+namespace {
+
+// The seven standalone tunables, in the initialiser's order. Gameclient-relative.
+constexpr struct {
+    const char* name;
+    uintptr_t offset;
+} kStandaloneTunables[] = {
+    {"HeadBobDebugMode", 0x1FFACC},
+    {"HeadBobSpeedScale", 0x1FFAD4},
+    {"HeadBobTransitionTime", 0x1FFADC},
+    {"WeaponLagEnabled", 0x1FFAE4},
+    {"WeaponLagFactor", 0x1FFAEC},
+    {"WeaponLagReversed", 0x1FFAF4},
+    {"NoHeadBobWeaponScale", 0x1FFCE0},
+};
+
+// One block per parameter; twelve {record, owner} pairs each at stride 8.
+constexpr uintptr_t kHeadBobBlocks[] = {0x1FFB00, 0x1FFB60, 0x1FFBC0, 0x1FFC20, 0x1FFC80};
+constexpr const char* kBobChannelNames[] = {"CameraOffset", "CameraRotation", "WeaponOffset",
+                                            "WeaponRotation"};
+constexpr const char* kBobAxisNames[] = {"X", "Y", "Z"};
+constexpr const char* kBobParamNames[] = {"WaveMin", "WaveMax", "Amp", "AmpOffset", "Flags"};
+
+std::optional<Engine::CachedVar> read_cache_slot(std::string name, uintptr_t offset) {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return std::nullopt;
+    }
+    Engine::CachedVar v;
+    v.name = std::move(name);
+    v.cache_offset = offset;
+    v.record = mem::read_ptr(gc->base + offset).value_or(0);
+    v.owner = mem::read_ptr(gc->base + offset + sizeof(uintptr_t)).value_or(0);
+    return v;
+}
+
+}  // namespace
+
+std::string Engine::head_bob_var_name(BobChannel channel, unsigned axis, BobParam param) {
+    const auto ci = static_cast<unsigned>(channel);
+    const auto pi = static_cast<unsigned>(param);
+    if (ci >= kHeadBobChannels || axis >= kHeadBobAxes || pi >= kHeadBobParams) {
+        return {};
+    }
+    return std::string("HeadBob") + kBobChannelNames[ci] + kBobAxisNames[axis] + kBobParamNames[pi];
+}
+
+std::optional<Engine::CachedVar> Engine::head_bob_var(BobChannel channel, unsigned axis, BobParam param) {
+    const auto ci = static_cast<unsigned>(channel);
+    const auto pi = static_cast<unsigned>(param);
+    if (ci >= kHeadBobChannels || axis >= kHeadBobAxes || pi >= kHeadBobParams) {
+        return std::nullopt;
+    }
+    // index within a block is channel * 3 + axis; the block selects the parameter
+    const auto offset = kHeadBobBlocks[pi] + (ci * kHeadBobAxes + axis) * 2 * sizeof(uintptr_t);
+    return read_cache_slot(head_bob_var_name(channel, axis, param), offset);
+}
+
+std::vector<Engine::CachedVar> Engine::camera_tunable_cache() {
+    std::vector<CachedVar> out;
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return out;
+    }
+    out.reserve(kCameraTunableCount);
+    for (const auto& t : kStandaloneTunables) {
+        if (auto v = read_cache_slot(t.name, t.offset); v.has_value()) {
+            out.push_back(std::move(*v));
+        }
+    }
+    for (unsigned p = 0; p < kHeadBobParams; ++p) {
+        for (unsigned ch = 0; ch < kHeadBobChannels; ++ch) {
+            for (unsigned ax = 0; ax < kHeadBobAxes; ++ax) {
+                if (auto v = head_bob_var(static_cast<BobChannel>(ch), ax, static_cast<BobParam>(p));
+                    v.has_value()) {
+                    out.push_back(std::move(*v));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+std::optional<Engine::CachedVar> Engine::camera_tunable(std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    for (auto& v : camera_tunable_cache()) {
+        if (v.name == name) {
+            return v;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<float> Engine::read_cached(const CachedVar& var) {
+    if (var.record == 0) {
+        return std::nullopt;
+    }
+    // The record's FIRST field is the float the engine reads -- the same field write_console_var stores into.
+    return mem::read<float>(var.record);
+}
+
+bool Engine::write_cached(const CachedVar& var, float value) {
+    if (var.record == 0) {
+        return false;
+    }
+    return mem::write<float>(var.record, value);
+}
+
+std::pair<size_t, size_t> Engine::camera_tunable_agreement() {
+    size_t agreeing = 0, populated = 0;
+    for (const auto& v : camera_tunable_cache()) {
+        if (v.record == 0) {
+            continue;
+        }
+        ++populated;
+        // The name the cache table spells must resolve, through the console tables, to the SAME record. A wrong
+        // grid ordering would still produce valid names landing on the wrong records, which this catches.
+        const auto found = console_var(v.name.c_str());
+        if (found.has_value() && found->address == v.record) {
+            ++agreeing;
+        }
+    }
+    return {agreeing, populated};
+}
+
 }  // namespace sdk

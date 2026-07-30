@@ -157,6 +157,89 @@ public:
     // Both tables, source first. What a consumer wanting "every tunable this build has" should call; names
     // present in both appear twice, deliberately, since the two records are distinct objects.
     static std::vector<ConVar> all_console_vars();
+
+    // ---- THE CAMERA'S CACHED TUNABLES, AND THE HEAD-BOB GRID -------------------------
+    //
+    // The camera does not look its tunables up by name each frame. One initialiser in gameclient.dll
+    // (PlayerCamera_CacheTunables) resolves 67 console variables ONCE and caches each as a
+    // {LTConVar* record, ILTClient* owner} PAIR in module data. It reaches them through ILTClient vtable slot 69
+    // to find and slot 73 to create-with-default -- the same two slots sdk::Console documents from the other
+    // side, which is how the idiom was recognised.
+    //
+    // WHY A CONSUMER WANTS THE CACHE RATHER THAN A LOOKUP: the cached pointer IS the record the camera reads, so
+    // writing its float is what the camera sees, with no hash search and no engine call. console_var(name) finds
+    // the same record by searching 535 entries; this finds it with one load.
+    //
+    // THE 60 HEAD-BOB VARIABLES ARE A GRID, not a list, and the cache addresses prove it: five parallel blocks
+    // of twelve pairs, each block one PARAMETER, each of the twelve a (channel, axis):
+    //
+    //             WaveMin    WaveMax    Amp        AmpOffset  Flags
+    //     base    0x1FFB00   0x1FFB60   0x1FFBC0   0x1FFC20   0x1FFC80      stride 8 within a block
+    //     index   channel * 3 + axis, channels CameraOffset, CameraRotation, WeaponOffset, WeaponRotation
+    //
+    // 4 channels x 3 axes x 5 parameters = 60, plus 7 standalone = 67.
+    //
+    // FOR VR THIS IS THE COMFORT SURFACE. Head bob is the canonical VR nausea source, and this is the complete
+    // set of knobs for it -- separately for the CAMERA and the WEAPON, and separately for translation and
+    // rotation, so view bob can be removed while the weapon keeps moving.
+    //
+    // THE NAMES ARE DERIVED, WHICH MAKES THE MAPPING SELF-CHECKING. head_bob_var() composes
+    // "HeadBob<Channel><Axis><Parameter>" and the suite requires the composed name to resolve, through the
+    // console tables, to the SAME record the cache holds at the slot the grid formula computes. A wrong channel
+    // order or axis order would still produce 60 valid names -- and they would land on the wrong records.
+    enum class BobChannel : unsigned {
+        CameraOffset = 0,
+        CameraRotation = 1,
+        WeaponOffset = 2,
+        WeaponRotation = 3,
+    };
+
+    enum class BobParam : unsigned {
+        WaveMin = 0,
+        WaveMax = 1,
+        Amp = 2,
+        AmpOffset = 3,
+        Flags = 4,
+    };
+
+    struct CachedVar {
+        std::string name;
+        uintptr_t cache_offset{};  // gameclient-relative address of the {record, owner} pair
+        uintptr_t record{};        // the live LTConVar*, 0 when the cache slot is unset
+        uintptr_t owner{};         // the ILTClient the camera registered through; shared by all 67
+    };
+
+    // All 67, in the initialiser's order: the seven standalone tunables then the grid. Empty when gameclient is
+    // not mapped. A slot whose record is 0 is still reported -- that is a real state, meaning the initialiser
+    // has not run yet.
+    static std::vector<CachedVar> camera_tunable_cache();
+
+    // One by name, case-sensitive as the cache table spells it.
+    static std::optional<CachedVar> camera_tunable(std::string_view name);
+
+    // One grid cell. axis is 0=X, 1=Y, 2=Z; nullopt for an axis out of range.
+    static std::optional<CachedVar> head_bob_var(BobChannel channel, unsigned axis, BobParam param);
+
+    // The composed console-variable name for a grid cell -- exposed so a consumer can cross-check it against
+    // console_var(), or log what it is about to change.
+    static std::string head_bob_var_name(BobChannel channel, unsigned axis, BobParam param);
+
+    // The float the camera reads, straight from the cached record. nullopt when the slot is unset or the read
+    // faulted.
+    static std::optional<float> read_cached(const CachedVar& var);
+
+    // Store into the cached record's float, which is the field the engine reads. False when the slot is unset or
+    // the write faulted. This changes engine-owned data with no notification, exactly as write_console_var does.
+    static bool write_cached(const CachedVar& var, float value);
+
+    // Do all 67 cache slots agree with what the console tables hold for the same names? The cross-check that
+    // ties the cache to the tables: two independent routes to one record. Returns {agreeing, populated}.
+    static std::pair<size_t, size_t> camera_tunable_agreement();
+
+    static constexpr size_t kCameraTunableCount = 67;
+    static constexpr size_t kHeadBobChannels = 4;
+    static constexpr size_t kHeadBobAxes = 3;
+    static constexpr size_t kHeadBobParams = 5;
 };
 
 } // namespace sdk

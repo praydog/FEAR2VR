@@ -4509,6 +4509,49 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE CAMERA'S CACHED TUNABLES, AND THE HEAD-BOB GRID -------------------------------
+            //
+            // The camera resolves 67 console variables once and caches each as a {record, owner} pair, so it
+            // never searches by name per frame. For VR this is the comfort surface: 60 of the 67 are a grid of
+            // head-bob knobs, separately for camera and weapon and separately for translation and rotation.
+            //
+            // THE GRID ORDERING IS THE CLAIM, and the check is identity of RECORDS rather than validity of names.
+            // head_bob_var_name() composes "HeadBob<Channel><Axis><Parameter>"; a wrong channel or axis order
+            // would still compose 60 real variable names, and they would resolve to the wrong records. So the
+            // suite requires each composed name to reach, through the console tables, the very record cached at
+            // the slot the grid formula computes -- two independent routes to one pointer.
+            double tv_t = -1.0, tv_p = -1.0, tv_d = -1.0, tv_o = -1.0, tv_a = -1.0, tv_af = -1.0;
+            const bool tvn = json_double(body, "tv_total", tv_t) &&
+                             json_double(body, "tv_populated", tv_p) &&
+                             json_double(body, "tv_distinct_records", tv_d) &&
+                             json_double(body, "tv_same_owner", tv_o) &&
+                             json_double(body, "tv_agree", tv_a) &&
+                             json_double(body, "tv_agree_of", tv_af);
+            check(tvn && tv_t == 67.0, "the camera caches sixty-seven tunables -- seven standalone plus a 4x3x5 grid");
+            check(tvn && tv_p == tv_t, "every cache slot holds a live record");
+            check(tvn && tv_d == tv_p,
+                  "the records are all distinct -- no two tunables share one, which a wrong stride would produce");
+            check(tvn && tv_af > 0.0 && tv_a == tv_af,
+                  "every composed grid name resolves to the record cached at its computed slot");
+            check(tvn && tv_o == tv_t,
+                  "all sixty-seven were registered through one ILTClient");
+            bool tv_oe = false;
+            check(json_bool(body, "tv_owner_in_exe", tv_oe) && tv_oe,
+                  "that ILTClient lives in the executable -- the engine's, not the game DLL's");
+
+            bool tv_gm = false, tv_nc = false, tv_rr = false, tv_wr = false;
+            check(json_bool(body, "tv_grid_matches_name", tv_gm) && tv_gm,
+                  "a grid cell and the same variable by name are the same cache slot");
+            check(json_bool(body, "tv_name_composed", tv_nc) && tv_nc,
+                  "composition spells the engine's own name for a cell");
+            // Out-of-range must be refused, not clamped: clamping would silently write a neighbouring axis.
+            check(json_bool(body, "tv_range_refused", tv_rr) && tv_rr,
+                  "an out-of-range axis and an unknown name are refused rather than clamped");
+            // THE WRITE PATH IS EXERCISED, not described -- this is what a comfort layer does, and it is
+            // restored immediately so the fixture is left as found.
+            check(json_bool(body, "tv_write_round_trip", tv_wr) && tv_wr,
+                  "writing a cached record changes what the camera reads, and restores exactly");
+
             // ---- THE LIVE GFx MOVIE, WHICH MAKES THE CATALOGUE CALLABLE ----------------------------
             //
             // 172 setters and 450 invoke targets all take the same first argument, and until now nothing named

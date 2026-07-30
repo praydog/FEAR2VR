@@ -5310,3 +5310,52 @@ class LTInputDeviceMouse 0x30 {
 // Assertions are conditioned on ui_mode so the suite stays honest at a menu instead of passing by luck.
 //
 // 1089 checks, 0 failures.
+
+// ---- THE CAMERA CACHES ITS TUNABLES, AND SIXTY OF THEM ARE A GRID -------------------------------
+//
+// gameclient.dll is 6% named, so the next target was chosen by MEASUREMENT rather than intuition: list the
+// largest unnamed functions with the strings they reference. Two named themselves instantly -- 6676 bytes
+// referencing "HeadBobDebugMode" and 3404 bytes referencing "CameraHeightVelocityDampUp". The first is now
+// PlayerCamera_CacheTunables.
+//
+// IT IS A CACHE, NOT A REGISTRAR. Per tunable it clears a pair of module globals, calls ILTClient vtable +0x114
+// (slot 69, find) with the name, and if that misses calls +0x124 (slot 73, set) with a default to create the
+// variable before looking it up again -- then stores the ILTClient as the pair's second word. THOSE ARE THE SAME
+// TWO SLOTS sdk::Console had already documented from the ILTClient side, which is how the idiom was recognised
+// from a single block of disassembly.
+//
+// Result: 67 x {LTConVar* record, ILTClient* owner}. The camera reads its tunables with one load and no hash
+// search, and because the record's first field IS the float the engine reads, a consumer holding the cached
+// pointer can change camera behaviour with a four-byte store.
+//
+// SIXTY OF THE SIXTY-SEVEN ARE A GRID, and the cache ADDRESSES are what proves it -- five parallel blocks of
+// twelve pairs rather than one flat array of sixty:
+//
+//              WaveMin    WaveMax    Amp        AmpOffset  Flags
+//      base    0x1FFB00   0x1FFB60   0x1FFBC0   0x1FFC20   0x1FFC80     stride 8 inside a block
+//      index   channel * 3 + axis
+//      channels  CameraOffset, CameraRotation, WeaponOffset, WeaponRotation      axes  X, Y, Z
+//
+// 4 x 3 x 5 = 60, plus 7 standalone (HeadBobDebugMode, HeadBobSpeedScale, HeadBobTransitionTime,
+// WeaponLagEnabled, WeaponLagFactor, WeaponLagReversed, NoHeadBobWeaponScale) = 67.
+//
+// THE ORDERING IS PROVEN BY RECORD IDENTITY, NOT BY NAME VALIDITY. head_bob_var_name() composes
+// "HeadBob<Channel><Axis><Parameter>", and a wrong channel or axis order would compose SIXTY PERFECTLY REAL
+// VARIABLE NAMES that resolve to the wrong records. So the suite requires each composed name, looked up through
+// the console tables, to reach the very record cached at the slot the grid formula computes.
+//
+// > 67 of 67 agree, and the two routes share nothing: one walks 535 hash-table entries by name, the other loads
+// > a pointer from a fixed offset. Sixty valid-but-wrong names is exactly the failure this project keeps
+// > catching, so the check was built to fail that way and did not.
+//
+// FOR VR THIS IS THE COMFORT LAYER. Head bob is the canonical nausea source, and this is the complete knob set
+// with camera separated from weapon and translation separated from rotation -- view bob can be removed while the
+// weapon keeps its motion. Live, all 60 records are distinct, all 67 share one owner, and that owner is in
+// FEAR2.exe (the engine's ILTClient, not the DLL's).
+//
+// Named in IDA: PlayerCamera_CacheTunables, PlayerCamera_InitTunables, and all 134 globals as
+// g_cvar_<Name> / g_cvarOwner_<Name>. Exposed as sdk::Engine::camera_tunable_cache / camera_tunable /
+// head_bob_var / head_bob_var_name / read_cached / write_cached / camera_tunable_agreement. The suite exercises
+// the WRITE path and restores it, since that is what a comfort layer actually does.
+//
+// 1099 checks, 0 failures.

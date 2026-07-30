@@ -4548,6 +4548,70 @@ std::string build_shader_params_json() {
     json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
     json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
 
+    // THE CAMERA'S CACHED TUNABLES. The claim under test is the GRID ORDERING, and the check is that a name
+    // COMPOSED from (channel, axis, parameter) resolves through the console tables to the very record cached at
+    // the slot the grid formula computes. A wrong channel or axis order still composes 60 valid names, so name
+    // validity alone proves nothing -- only the record identity does.
+    const auto cam_cache = sdk::Engine::camera_tunable_cache();
+    size_t tv_populated = 0, tv_distinct = 0, tv_same_owner = 0;
+    std::vector<uintptr_t> recs;
+    uintptr_t first_owner = 0;
+    for (const auto& v : cam_cache) {
+        if (v.record != 0) {
+            ++tv_populated;
+            recs.push_back(v.record);
+        }
+        if (first_owner == 0) { first_owner = v.owner; }
+        if (v.owner != 0 && v.owner == first_owner) { ++tv_same_owner; }
+    }
+    std::sort(recs.begin(), recs.end());
+    tv_distinct = static_cast<size_t>(std::unique(recs.begin(), recs.end()) - recs.begin());
+    const auto [tv_agree, tv_pop2] = sdk::Engine::camera_tunable_agreement();
+    json_append_double(out, "tv_total", static_cast<double>(cam_cache.size()), 0);
+    json_append_double(out, "tv_populated", static_cast<double>(tv_populated), 0);
+    json_append_double(out, "tv_distinct_records", static_cast<double>(tv_distinct), 0);
+    json_append_double(out, "tv_same_owner", static_cast<double>(tv_same_owner), 0);
+    json_append_double(out, "tv_agree", static_cast<double>(tv_agree), 0);
+    json_append_double(out, "tv_agree_of", static_cast<double>(tv_pop2), 0);
+    // The owner must be the engine's ILTClient, i.e. inside the executable, not gameclient.
+    const auto* exe_t = sdk::Modules::get().exe();
+    json_append_bool(out, "tv_owner_in_exe",
+                     exe_t != nullptr && exe_t->base != 0 && first_owner >= exe_t->base &&
+                         first_owner < exe_t->base + exe_t->size);
+    // A named grid cell must equal the same cell reached by name lookup.
+    const auto cell = sdk::Engine::head_bob_var(sdk::Engine::BobChannel::CameraRotation, 1,
+                                                sdk::Engine::BobParam::Amp);
+    const auto by_name = sdk::Engine::camera_tunable("HeadBobCameraRotationYAmp");
+    json_append_bool(out, "tv_grid_matches_name",
+                     cell.has_value() && by_name.has_value() && cell->record == by_name->record &&
+                         cell->cache_offset == by_name->cache_offset && cell->record != 0);
+    json_append_bool(out, "tv_name_composed",
+                     sdk::Engine::head_bob_var_name(sdk::Engine::BobChannel::WeaponRotation, 2,
+                                                    sdk::Engine::BobParam::AmpOffset) ==
+                         "HeadBobWeaponRotationZAmpOffset");
+    // Out-of-range coordinates are refused rather than clamped into a neighbouring cell.
+    json_append_bool(out, "tv_range_refused",
+                     !sdk::Engine::head_bob_var(sdk::Engine::BobChannel::CameraOffset, 3,
+                                                sdk::Engine::BobParam::Amp).has_value() &&
+                         sdk::Engine::head_bob_var_name(sdk::Engine::BobChannel::CameraOffset, 9,
+                                                        sdk::Engine::BobParam::Amp).empty() &&
+                         !sdk::Engine::camera_tunable("NoSuchTunableAtAll").has_value());
+    // A round-trip through the cached record, restored afterwards -- this is the write path a VR comfort layer
+    // would use, so it is exercised rather than merely described.
+    bool tv_round = false;
+    if (const auto amp = sdk::Engine::head_bob_var(sdk::Engine::BobChannel::CameraOffset, 2,
+                                                   sdk::Engine::BobParam::Amp);
+        amp.has_value() && amp->record != 0) {
+        const auto before = sdk::Engine::read_cached(*amp);
+        if (before.has_value() && sdk::Engine::write_cached(*amp, 0.25f)) {
+            const auto mid = sdk::Engine::read_cached(*amp);
+            sdk::Engine::write_cached(*amp, *before);
+            const auto after = sdk::Engine::read_cached(*amp);
+            tv_round = mid.has_value() && *mid == 0.25f && after.has_value() && *after == *before;
+        }
+    }
+    json_append_bool(out, "tv_write_round_trip", tv_round);
+
     // THE LIVE GFx MOVIE. This is the object the whole UI catalogue was missing, so the checks are about whether
     // it is REACHABLE and USABLE, not about its contents: a movie whose SetVariable/SetVariableArray/Invoke slots
     // do not resolve into the executable is not something a consumer should call through.
