@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FEAR2 Inspector</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <h1>FEAR2 Inspector <span class="subtitle">read-only</span></h1>
+  <div class="topbar-controls">
+    <label class="base-url-label">Base URL
+      <input id="baseUrl" type="text" spellcheck="false" autocomplete="off" />
+    </label>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden>&#9888; API unreachable &mdash; is the DLL injected?</div>
+
+<nav class="tabs" id="tabs">
+  <button id="tab-live" class="tab-btn" data-tab="live" type="button">Live State</button>
+  <button id="tab-subsystems" class="tab-btn" data-tab="subsystems" type="button">Subsystems</button>
+  <button id="tab-database" class="tab-btn" data-tab="database" type="button">Database</button>
+  <button id="tab-find" class="tab-btn" data-tab="find" type="button">Attribute Search</button>
+  <button id="tab-console" class="tab-btn" data-tab="console" type="button">Console</button>
+  <button id="tab-vars" class="tab-btn" data-tab="vars" type="button">Vars</button>
+  <button id="tab-raw" class="tab-btn" data-tab="raw" type="button">Raw</button>
+</nav>
+
+<main>
+
+  <!-- ============================= LIVE STATE ============================= -->
+  <section id="view-live" class="view">
+    <div class="view-toolbar">
+      <label>Poll interval
+        <select id="live-interval">
+          <option value="0">Off</option>
+          <option value="250">250 ms</option>
+          <option value="1000" selected>1 s</option>
+          <option value="5000">5 s</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="panel-grid">
+      <section class="panel">
+        <h2>Player
+          <span id="live-player-badge" class="badge badge-bad" hidden>UNRESOLVED</span>
+          <span id="live-player-inconsistent" class="badge badge-warn" hidden>INCONSISTENT SNAPSHOT</span>
+        </h2>
+        <div class="stat-rows">
+          <div class="stat-row">
+            <label>Health</label>
+            <div class="bar-track"><div id="live-health-bar" class="bar-fill"></div></div>
+            <span id="live-health-num" class="stat-value">&mdash;</span>
+          </div>
+          <div class="stat-row">
+            <label>Armor</label>
+            <div class="bar-track"><div id="live-armor-bar" class="bar-fill"></div></div>
+            <span id="live-armor-num" class="stat-value">&mdash;</span>
+          </div>
+          <div class="stat-row"><label>Air</label><span id="live-air" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Health Lost</label><span id="live-health-lost" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Alive</label><span id="live-alive" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Consistent</label><span id="live-consistent" class="stat-value">&mdash;</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Movement</h2>
+        <div class="stat-rows">
+          <div class="stat-row"><label>Flags</label><span id="live-move-flags" class="stat-value mono">&mdash;</span></div>
+          <div class="stat-row"><label>Crouching</label><span id="live-crouching" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Moving</label><span id="live-moving" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Speed</label><span id="live-speed" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Velocity</label><span id="live-velocity" class="stat-value mono">&mdash;</span></div>
+          <div class="stat-row"><label>Water Affects Speed</label><span id="live-water" class="stat-value">&mdash;</span></div>
+          <div class="stat-row"><label>Spectator Speed &times;</label><span id="live-spectator" class="stat-value">&mdash;</span></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>Camera</h2>
+      <div class="stat-rows stat-rows-wide">
+        <div class="stat-row"><label>Clamp Record</label><span id="live-cam-clamp-record" class="stat-value mono">&mdash;</span></div>
+        <div class="stat-row"><label>State</label><span id="live-cam-state" class="stat-value mono">&mdash;</span></div>
+        <div class="stat-row"><label>Chase Camera</label><span id="live-cam-chase" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Predicted Clamp</label><span id="live-cam-predicted" class="stat-value mono">&mdash;</span></div>
+        <div class="stat-row"><label>Slide-Kick (unchecked)</label><span id="live-cam-slide-kick" class="stat-value">&mdash;</span></div>
+      </div>
+
+      <h3>Clamps</h3>
+      <table class="data-table">
+        <thead><tr><th>State</th><th>Degrees</th><th>Radians</th></tr></thead>
+        <tbody id="live-clamps-tbody"></tbody>
+      </table>
+
+      <h3>Pitch Clamp <span class="muted-note-inline">(last violation, not current frame)</span></h3>
+      <div id="live-pitch-dormant" class="muted-note" hidden>Clamp has not engaged this session.</div>
+      <div id="live-pitch-values" class="stat-rows stat-rows-wide">
+        <div class="stat-row"><label>Pitch Before</label><span id="live-pitch-before" class="stat-value mono">&mdash;</span></div>
+        <div class="stat-row"><label>Pitch After</label><span id="live-pitch-after" class="stat-value mono">&mdash;</span></div>
+        <div class="stat-row"><label>Corrected</label><span id="live-pitch-corrected" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Recovery Timer Active</label><span id="live-timer-active" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Recovery Duration</label><span id="live-timer-duration" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Timer Source</label><span id="live-timer-source" class="stat-value">&mdash;</span></div>
+      </div>
+
+      <h3>Aim Tracking Limits</h3>
+      <div class="stat-rows stat-rows-wide">
+        <div class="stat-row"><label>Normal</label><span id="live-aim-normal" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Zoomed</label><span id="live-aim-zoomed" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Flag</label><span id="live-aim-flag" class="stat-value">&mdash;</span></div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============================= SUBSYSTEMS ============================= -->
+  <section id="view-subsystems" class="view" hidden>
+    <div class="view-toolbar">
+      <span>Player <span id="subsystems-player" class="mono">&mdash;</span></span>
+      <button id="subsystems-refresh" class="btn" type="button">Refresh</button>
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Offset</th><th>Name</th><th>Object</th><th>Vtable</th><th>Ctor</th>
+          <th>Size &ge;</th><th>Delegate Nodes</th><th>Flags</th>
+        </tr>
+      </thead>
+      <tbody id="subsystems-tbody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================= DATABASE ============================= -->
+  <section id="view-database" class="view" hidden>
+    <div class="db-columns">
+      <section class="db-pane">
+        <h2>Categories</h2>
+        <div class="pane-toolbar">
+          <input id="db-cat-filter" type="text" placeholder="filter&hellip;" />
+          <select id="db-cat-pagesize">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+        </div>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Records</th><th>Keyed</th></tr></thead>
+          <tbody id="db-cat-tbody"></tbody>
+        </table>
+        <div class="pane-pager">
+          <button id="db-cat-prev" class="btn" type="button">&lsaquo; Prev</button>
+          <span id="db-cat-page-label" class="muted">&mdash;</span>
+          <button id="db-cat-next" class="btn" type="button">Next &rsaquo;</button>
+        </div>
+      </section>
+
+      <section class="db-pane">
+        <h2>Records <span id="db-rec-category-label" class="mono">&mdash;</span></h2>
+        <div id="db-rec-keyed-note" class="muted-note" hidden>Names are not unique in this category &mdash; selecting by name may open the first match.</div>
+        <div class="pane-toolbar">
+          <input id="db-rec-filter" type="text" placeholder="filter&hellip;" disabled />
+          <select id="db-rec-pagesize">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+        </div>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Hash</th><th>Attrs</th></tr></thead>
+          <tbody id="db-rec-tbody"></tbody>
+        </table>
+        <div class="pane-pager">
+          <button id="db-rec-prev" class="btn" type="button">&lsaquo; Prev</button>
+          <span id="db-rec-page-label" class="muted">&mdash;</span>
+          <button id="db-rec-next" class="btn" type="button">Next &rsaquo;</button>
+        </div>
+      </section>
+
+      <section class="db-pane db-pane-wide">
+        <h2 id="db-record-title">Record</h2>
+        <div id="db-record-hash" class="mono muted-note">select a record&hellip;</div>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Type</th><th>#</th><th>Value</th></tr></thead>
+          <tbody id="db-attr-tbody"></tbody>
+        </table>
+      </section>
+    </div>
+  </section>
+
+  <!-- ============================= ATTRIBUTE SEARCH ============================= -->
+  <section id="view-find" class="view" hidden>
+    <div class="view-toolbar">
+      <input id="find-attribute-input" type="text" placeholder="attribute name&hellip;" />
+      <input id="find-limit-input" type="number" min="1" max="500" value="50" />
+      <button id="find-button" class="btn" type="button">Search</button>
+      <span id="find-summary" class="muted">&mdash;</span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Category</th><th>Record</th><th>Type</th><th>Value</th></tr></thead>
+      <tbody id="find-tbody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================= CONSOLE ============================= -->
+  <section id="view-console" class="view" hidden>
+    <div class="view-toolbar">
+      <input id="console-filter" type="text" placeholder="filter&hellip;" />
+      <button id="console-refresh" class="btn" type="button">Refresh</button>
+      <span id="console-summary" class="muted">&mdash;</span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Handler</th><th>Module</th><th>From EXE</th><th>Registered</th><th>Registrar</th><th>Status</th></tr></thead>
+      <tbody id="console-tbody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================= VARS ============================= -->
+  <section id="view-vars" class="view" hidden>
+    <div class="view-toolbar">
+      <input id="vars-filter" type="text" placeholder="filter&hellip;" />
+      <input id="vars-limit" type="number" min="1" max="500" value="500" />
+      <button id="vars-refresh" class="btn" type="button">Refresh</button>
+      <span id="vars-summary" class="muted">&mdash;</span>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Record</th><th>Value</th><th>Default</th><th>Status</th></tr></thead>
+      <tbody id="vars-tbody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================= RAW ============================= -->
+  <section id="view-raw" class="view" hidden>
+    <div class="view-toolbar">
+      <select id="raw-endpoint-select"></select>
+      <input id="raw-path-input" type="text" class="raw-path-input" spellcheck="false" autocomplete="off" />
+      <button id="raw-fetch-btn" class="btn" type="button">Fetch</button>
+      <button id="raw-copy-btn" class="btn" type="button">Copy</button>
+    </div>
+    <pre id="raw-output" class="raw-output">&mdash;</pre>
+  </section>
+
+</main>
+
+<script src="app.js" defer></script>
+</body>
+</html>

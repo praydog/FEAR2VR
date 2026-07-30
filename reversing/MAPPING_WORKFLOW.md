@@ -3591,3 +3591,52 @@ This is the third instance of one shape in this project:
 
 **Each time the predicate tested a VALUE's appearance when the question was about its ROLE.** The pattern to watch
 for: a test whose passing condition is "these bytes could be X" rather than "this location is used as X".
+
+## The suite encoded a stationary world, and someone walking broke it
+
+Seven checks failed the moment the player moved -- not one of them a code defect. They had passed for
+many passes because nobody was playing the game while the fixture ran.
+
+| assertion | why it passed | why it broke |
+|---|---|---|
+| cached position == engine position | recomputed from `(position - last_position)`; equal at rest | trails within the frame while moving -- **0 of 8** samples agree |
+| camera object rotation == camera pose | pose is a per-frame snapshot | snapshot lags a moving camera |
+| cached position tracks across samples | refresh is only observable when there is nothing to trail | same cause |
+| clamp has never engaged | it genuinely had not, all session | walking engaged it: before 10.53 deg -> after 5.00 deg |
+| clamp timer inactive | never armed | armed with duration 0.300 |
+| `node_b >= node_a` on every animation record | true of the models loaded at the time | **217 of 218** -- a violating record exists |
+
+The clamp pair is the good news: engaging live corrected pitch to **exactly the `SlideKick` bound of 5 deg**,
+which independently confirms that branch is real and fires -- the one an earlier pass had to leave unverified.
+
+### A correction: "unconditional" was half wrong
+
+An earlier pass read the movement commit as storing a zero vector into **both** velocity and acceleration,
+three times a frame, unconditionally. Measured with the player at 437 units/s:
+
+```
+pe_acceleration_zero  True     <- still zero while moving, so that store IS unconditional
+pe_velocity_zero      False    <- not zero, so that one is NOT
+```
+
+The two fields were read as a pair and are not treated as one. Acceleration stays asserted outright;
+velocity is now conditional on standing still.
+
+### The trap this leaves behind
+
+The fixes are conditionals -- `moving || equality`. Those **pass for free** whenever the player moves, and
+the engine freezes simulation when unfocused, so a player who was moving at that moment reports a constant
+speed forever (437.878 on every sample, for ten minutes). A permissive pass would look exactly like a
+verified one.
+
+So the suite now reports which branch it took:
+
+```
+[fixture] NOTE: STRONG FORM NOT EXERCISED -- the player is in motion, so the cached-position,
+camera-pose and physics-velocity equality checks passed on their permissive branch and verified
+nothing this run. Stand still to exercise them.
+```
+
+Same discipline as the render-path probes: a check that cannot discriminate says so instead of
+returning a comfortable answer.
+

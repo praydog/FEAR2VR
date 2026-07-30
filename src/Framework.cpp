@@ -1,6 +1,8 @@
 #include "Framework.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <unordered_map>
 #include <atomic>
 #include <cmath>
@@ -303,7 +305,22 @@ public:
         m_out += tmp;
         return *this;
     }
-
+    // Explicit absence -- never an invented zero (see AGENT.MD's fail-closed convention and the
+    // /api/* contract's "absent values are null" rule). Used throughout the /api/* builders below.
+    JsonFields& n(const char* k) {
+        key(k);
+        m_out += "null";
+        return *this;
+    }
+    // A value that is ALREADY valid JSON (a nested object or array built into its own std::string
+    // first) -- spliced in verbatim rather than escaped as a string. This is what lets the /api/*
+    // builders below compose nested shapes (camera.clamps, items arrays, ...) out of JsonFields
+    // objects built bottom-up, with no trailing-comma bookkeeping anywhere.
+    JsonFields& raw(const char* k, const std::string& json) {
+        key(k);
+        m_out += json;
+        return *this;
+    }
 private:
     void key(const char* k) {
         if (!m_first) {
@@ -4869,6 +4886,18 @@ std::string build_shader_params_json() {
                                  sdk::PlayerMgr::camera_clamp(0, pick->state).has_value());
                 json_append_bool(out, "mv_slide_kick_unchecked", pick->slide_kick_unchecked);
             }
+            // IS THE STRONG FORM OF THE CACHE-COHERENCE CHECKS EVEN EXERCISABLE RIGHT NOW?
+            //
+            // Several suite checks are conditionals of the form "moving || equality": the cached position, the
+            // camera pose and the physics velocity only agree with their live counterparts while the player is at
+            // rest. If the player never comes to rest, those checks pass on the permissive branch forever and
+            // verify nothing -- the same trap as the frozen-render-path probes, which is why this is reported
+            // rather than left implicit.
+            //
+            // NOTE the game freezes simulation when unfocused, so a player who was moving when the window lost
+            // focus reports a CONSTANT non-zero speed indefinitely. That is exactly the state in which these
+            // checks are least meaningful and most likely to be trusted.
+            json_append_bool(out, "mv_strong_form_exercisable", !moving.value_or(true));
             json_append_bool(out, "mv_range_refused",
                              !sdk::PlayerMgr::move_mgr_flags(9).has_value() &&
                                  !sdk::PlayerMgr::is_moving(9).has_value() &&
@@ -8073,6 +8102,756 @@ std::string build_engine_hook_json(const std::string& name) {
     return buf;
 }
 
+// =====================================================================================
+// /api/* -- read-only endpoints for the browser-based inspector (WebUi). Diagnostics
+// only, per AGENT.MD rule 2: reads go through sdk:: accessors and sdk::mem guarded
+// readers, nothing here calls into the engine, and absence is always JSON `null`,
+// never an invented zero (see PlayerStats/TimerState/etc. below).
+// =====================================================================================
+
+using WebApiQuery = std::unordered_map<std::string, std::string>;
+
+// ---- tiny query-string parser, local to this file -----------------------------------
+//
+// cmdsrv::handle_client hands the raw request target (path + '?' + query, still
+// percent-encoded) straight through via Handlers::api; nothing upstream parses it.
+std::string webapi_percent_decode(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    auto hex_digit = [](char h) -> int {
+        if (h >= '0' && h <= '9') return h - '0';
+        if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+        if (h >= 'A' && h <= 'F') return h - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '+') {
+            out += ' ';
+        } else if (c == '%' && i + 2 < s.size()) {
+            const int hi = hex_digit(s[i + 1]);
+            const int lo = hex_digit(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out += static_cast<char>((hi << 4) | lo);
+                i += 2;
+            } else {
+                out += c;
+            }
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+WebApiQuery webapi_parse_query(const std::string& request_target) {
+    WebApiQuery out;
+    const size_t q = request_target.find('?');
+    if (q == std::string::npos) {
+        return out;
+    }
+    const std::string qs = request_target.substr(q + 1);
+    size_t start = 0;
+    while (start <= qs.size()) {
+        size_t amp = qs.find('&', start);
+        if (amp == std::string::npos) {
+            amp = qs.size();
+        }
+        const std::string pair = qs.substr(start, amp - start);
+        if (!pair.empty()) {
+            const size_t eq = pair.find('=');
+            const std::string key = eq == std::string::npos ? pair : pair.substr(0, eq);
+            const std::string val = eq == std::string::npos ? std::string{} : pair.substr(eq + 1);
+            out[webapi_percent_decode(key)] = webapi_percent_decode(val);
+        }
+        start = amp + 1;
+    }
+    return out;
+}
+
+std::string webapi_query_string(const WebApiQuery& q, const char* key) {
+    const auto it = q.find(key);
+    return it != q.end() ? it->second : std::string{};
+}
+
+long long webapi_query_int(const WebApiQuery& q, const char* key, long long fallback) {
+    const auto it = q.find(key);
+    if (it == q.end() || it->second.empty()) {
+        return fallback;
+    }
+    char* end = nullptr;
+    const long long v = strtoll(it->second.c_str(), &end, 10);
+    return (end != nullptr && end != it->second.c_str()) ? v : fallback;
+}
+
+// Bound every /api/* list the same way: default 100, hard cap 500, never negative.
+size_t webapi_clamp_limit(long long requested) {
+    if (requested <= 0) {
+        return 100;
+    }
+    return static_cast<size_t>(std::min<long long>(requested, 500));
+}
+
+size_t webapi_clamp_offset(long long requested) { return requested > 0 ? static_cast<size_t>(requested) : 0; }
+
+// Case-insensitive substring test -- every filter= param below. An empty needle matches
+// everything, so "no filter" and "empty filter" behave identically.
+bool webapi_contains_ci(const std::string& haystack, const std::string& needle) {
+    if (needle.empty()) {
+        return true;
+    }
+    auto lower = [](std::string s) {
+        for (auto& c : s) {
+            c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+        }
+        return s;
+    };
+    return lower(haystack).find(lower(needle)) != std::string::npos;
+}
+
+// The live database handle, reached exactly the way build_database_json() does: get() ->
+// entry(0) -> record_a. Reused rather than re-derived so there is one path to "the" database.
+const regenny::DatabaseMgrSubRecord* webapi_database_handle() {
+    auto* db = sdk::DatabaseMgr::get();
+    if (db == nullptr || db->entry_count() < 1) {
+        return nullptr;
+    }
+    auto* e = db->entry(0);
+    return e != nullptr ? e->record_a : nullptr;
+}
+
+// The established attribute-type mapping (see DatabaseMgr.hpp's kType* constants and their
+// comments for the evidence behind each). Anything not in the mapping is genuinely unseen in
+// the shipped data, so it renders as "type<N>" rather than a guessed name.
+std::string webapi_db_type_name(uint8_t type) {
+    switch (type) {
+        case sdk::DatabaseMgr::kTypeBool: return "bool";
+        case sdk::DatabaseMgr::kTypeFloat: return "float";
+        case sdk::DatabaseMgr::kTypeDwordA: return "int32";
+        case sdk::DatabaseMgr::kTypeString: return "string";
+        case sdk::DatabaseMgr::kTypeLocalizedKey: return "localized-key";
+        case sdk::DatabaseMgr::kTypeFloatPair: return "float-pair";
+        case sdk::DatabaseMgr::kType12Bytes: return "vector3";
+        case sdk::DatabaseMgr::kType16Bytes: return "vector4";
+        case sdk::DatabaseMgr::kTypeRecordLink:
+        case sdk::DatabaseMgr::kTypeRecordLinkAlt: return "record-link";
+        default: return "type<" + std::to_string(static_cast<int>(type)) + ">";
+    }
+}
+
+// A JSON array literal of floats, for velocity/deg/rad pairs and triples below.
+std::string webapi_float_array(std::initializer_list<float> values, int decimals = 4) {
+    std::string out = "[";
+    bool first = true;
+    for (float v : values) {
+        if (!first) {
+            out += ',';
+        }
+        first = false;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.*f", decimals, v);
+        out += buf;
+    }
+    out += ']';
+    return out;
+}
+
+// A quoted "0x%06X" JSON string literal -- the width the contract specifies for
+// gameclient-relative offsets (subsystem ctors, console registrar offsets), distinct from
+// JsonFields::hex's fixed 8-digit width for absolute addresses.
+std::string webapi_hex6_json(uintptr_t v) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "\"0x%06X\"", static_cast<unsigned int>(v));
+    return buf;
+}
+
+// ---- GET /api/state -------------------------------------------------------------------
+std::string build_api_state_json() {
+    std::string out;
+    JsonFields top(out);
+    top.b("ok", true);
+
+    // Player index 0 -- the slot every other PlayerMgr-based diagnostic in this file uses
+    // (see e.g. build_objects_json's pmgr_*/mm_*/cam_* fields); single-player is slot 0.
+    const auto stats = sdk::PlayerMgr::player_stats(0);
+    {
+        std::string obj;
+        {
+            JsonFields jf(obj);
+            jf.b("resolved", stats.has_value());
+            if (stats.has_value()) {
+                jf.i("health", stats->health);
+                jf.i("armor", stats->armor);
+                jf.i("max_health", stats->max_health);
+                jf.i("max_armor", stats->max_armor);
+                jf.f("air", stats->air, 4);
+                jf.i("health_lost", stats->health_lost);
+                jf.b("alive", stats->alive());
+                jf.b("consistent", stats->consistent());
+            } else {
+                jf.n("health"); jf.n("armor"); jf.n("max_health"); jf.n("max_armor");
+                jf.n("air"); jf.n("health_lost"); jf.n("alive"); jf.n("consistent");
+            }
+        }
+        top.raw("player", obj);
+    }
+
+    {
+        const auto flags = sdk::PlayerMgr::move_mgr_flags(0);
+        const auto crouching = sdk::PlayerMgr::is_crouching(0);
+        const auto moving = sdk::PlayerMgr::is_moving(0);
+        const auto velocity = sdk::PlayerMgr::physics_velocity(0);
+        const auto water = sdk::PlayerMgr::water_affects_speed(0);
+        const auto ssm = sdk::PlayerMgr::spectator_speed_mul(0);
+
+        std::string obj;
+        {
+            JsonFields jf(obj);
+            if (flags.has_value()) { jf.u("flags", *flags); } else { jf.n("flags"); }
+            if (crouching.has_value()) { jf.b("crouching", *crouching); } else { jf.n("crouching"); }
+            if (moving.has_value()) { jf.b("moving", *moving); } else { jf.n("moving"); }
+            if (velocity.has_value()) {
+                const float speed = std::sqrt((*velocity)[0] * (*velocity)[0] + (*velocity)[1] * (*velocity)[1] +
+                                              (*velocity)[2] * (*velocity)[2]);
+                jf.f("speed", speed, 3);
+                jf.raw("velocity", webapi_float_array({(*velocity)[0], (*velocity)[1], (*velocity)[2]}, 3));
+            } else {
+                jf.n("speed");
+                jf.n("velocity");
+            }
+            if (water.has_value()) { jf.b("water_affects_speed", *water); } else { jf.n("water_affects_speed"); }
+            if (ssm.has_value()) { jf.f("spectator_speed_mul", *ssm, 4); } else { jf.n("spectator_speed_mul"); }
+        }
+        top.raw("movement", obj);
+    }
+
+    {
+        std::string obj;
+        {
+        JsonFields jf(obj);
+
+        auto* clamp_record = sdk::PlayerMgr::camera_clamp_record(0);
+        jf.s("clamp_record", sdk::DatabaseMgr::record_name(clamp_record));
+
+        const auto state = sdk::PlayerMgr::camera_clamp_state(0);
+        if (state.has_value()) { jf.u("state", *state); } else { jf.n("state"); }
+
+        const auto is_chase = sdk::PlayerMgr::camera_state_is_chase(0);
+        if (is_chase.has_value()) { jf.b("is_chase", *is_chase); } else { jf.n("is_chase"); }
+
+        const auto predicted = sdk::PlayerMgr::predicted_clamp_state(0);
+        if (predicted.has_value()) {
+            jf.s("predicted_clamp", predicted->state);
+            jf.b("slide_kick_unchecked", predicted->slide_kick_unchecked);
+        } else {
+            jf.n("predicted_clamp");
+            jf.n("slide_kick_unchecked");
+        }
+
+        // The six shipped clamp states (see PlayerMgr::predicted_clamp_state's own dispatcher
+        // logic for where these six names come from). Every key is always present; a state
+        // whose clamp could not be read still gets the key, with null deg/rad.
+        static constexpr const char* kClampStates[] = {"StandIdle",    "StandMoving", "CrouchIdle",
+                                                        "CrouchMoving", "Chase",       "SlideKick"};
+        std::string clamps = "{";
+        bool first_clamp = true;
+        for (const char* name : kClampStates) {
+            const auto deg = sdk::PlayerMgr::camera_clamp(0, name);
+            const auto rad = sdk::PlayerMgr::camera_clamp_radians(0, name);
+            std::string entry;
+            {
+                JsonFields cjf(entry);
+                if (deg.has_value()) { cjf.raw("deg", webapi_float_array({deg->first, deg->second}, 4)); }
+                else { cjf.n("deg"); }
+                if (rad.has_value()) { cjf.raw("rad", webapi_float_array({rad->first, rad->second}, 6)); }
+                else { cjf.n("rad"); }
+            }
+            if (!first_clamp) { clamps += ','; }
+            first_clamp = false;
+            clamps += '"';
+            clamps += name;
+            clamps += "\":";
+            clamps += entry;
+        }
+        clamps += '}';
+        jf.raw("clamps", clamps);
+
+        const auto pitch = sdk::PlayerMgr::camera_pitch_clamp_record(0);
+        if (pitch.has_value()) {
+            jf.f("pitch_before", pitch->before, 4);
+            jf.f("pitch_after", pitch->after, 4);
+        } else {
+            jf.n("pitch_before");
+            jf.n("pitch_after");
+        }
+        const auto pitch_corrected = sdk::PlayerMgr::pitch_clamp_record_within_active(0);
+        if (pitch_corrected.has_value()) { jf.b("pitch_corrected", *pitch_corrected); }
+        else { jf.n("pitch_corrected"); }
+
+        {
+            const auto timer = sdk::PlayerMgr::pitch_recovery_timer(0);
+            std::string tobj;
+            {
+                JsonFields tjf(tobj);
+                if (timer.has_value()) {
+                    tjf.b("active", timer->active);
+                    tjf.f("duration", timer->duration, 4);
+                    tjf.b("use_cached", timer->use_cached);
+                } else {
+                    tjf.n("active"); tjf.n("duration"); tjf.n("use_cached");
+                }
+            }
+            jf.raw("timer", tobj);
+        }
+
+        {
+            const auto aim = sdk::PlayerMgr::aim_tracking_limits();
+            const auto aim_flag = sdk::PlayerMgr::aim_tracking_flag(0);
+            std::string aobj;
+            {
+                JsonFields ajf(aobj);
+                if (aim.normal_degrees.has_value()) { ajf.f("normal_deg", *aim.normal_degrees, 4); }
+                else { ajf.n("normal_deg"); }
+                if (aim.zoomed_degrees.has_value()) { ajf.f("zoomed_deg", *aim.zoomed_degrees, 4); }
+                else { ajf.n("zoomed_deg"); }
+                if (aim_flag.has_value()) { ajf.b("flag", *aim_flag); } else { ajf.n("flag"); }
+            }
+            jf.raw("aim_tracking", aobj);
+        }
+
+        }
+        top.raw("camera", obj);
+    }
+
+    return out;
+}
+
+// ---- GET /api/subsystems ---------------------------------------------------------------
+std::string build_api_subsystems_json() {
+    std::string out;
+    JsonFields top(out);
+    top.b("ok", true);
+    top.hex("player", sdk::PlayerMgr::slot(0).value_or(0));
+
+    std::string items = "[";
+    bool first = true;
+    for (const auto& s : sdk::PlayerMgr::subsystem_slots(0)) {
+        std::string item;
+        {
+            JsonFields jf(item);
+            jf.i("offset", static_cast<long long>(s.offset));
+            jf.hex("object", s.object);
+            jf.hex("vtable", s.vtable);
+            jf.raw("ctor", webapi_hex6_json(s.ctor));
+            jf.u("size_lower_bound", s.size_lower_bound);
+            if (s.name != nullptr) { jf.s("name", s.name); } else { jf.n("name"); }
+            jf.b("is_class_instance", s.is_class_instance);
+            jf.b("owner_is_player", s.owner_is_player);
+            const uint32_t delegate_nodes =
+                s.size_lower_bound > 0
+                    ? static_cast<uint32_t>(sdk::Delegates::owned_nodes(s.object, s.size_lower_bound).size())
+                    : 0;
+            jf.u("delegate_nodes", delegate_nodes);
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    }
+    items += ']';
+    top.raw("items", items);
+    return out;
+}
+
+// ---- GET /api/db/categories -------------------------------------------------------------
+std::string build_api_db_categories_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    const auto* db = webapi_database_handle();
+    if (db == nullptr) {
+        top.b("ok", false);
+        top.s("error", "database not resolved");
+        return out;
+    }
+    top.b("ok", true);
+
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 100));
+    const size_t offset = webapi_clamp_offset(webapi_query_int(q, "offset", 0));
+    const std::string filter = webapi_query_string(q, "filter");
+
+    const size_t total_categories = sdk::DatabaseMgr::category_count(db);
+    std::string items = "[";
+    bool first = true;
+    size_t matched = 0;
+    for (size_t i = 0; i < total_categories; ++i) {
+        auto* cat = sdk::DatabaseMgr::category(db, i);
+        if (cat == nullptr) { continue; }
+        const std::string name = sdk::DatabaseMgr::category_name(cat);
+        if (!webapi_contains_ci(name, filter)) { continue; }
+        const size_t match_index = matched++;
+        if (match_index < offset || match_index >= offset + limit) { continue; }
+
+        std::string item;
+        {
+            JsonFields jf(item);
+            jf.i("index", static_cast<long long>(i));
+            jf.s("name", name);
+            const auto hash = sdk::DatabaseMgr::hash_name(name);
+            if (hash.has_value()) { jf.u("name_hash", *hash); } else { jf.n("name_hash"); }
+            jf.i("record_count", static_cast<long long>(sdk::DatabaseMgr::record_count(cat)));
+            jf.b("keyed", sdk::DatabaseMgr::name_is_unique_key(cat));
+            jf.i("distinct_names", static_cast<long long>(sdk::DatabaseMgr::distinct_name_count(cat)));
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    }
+    items += ']';
+    top.i("total", static_cast<long long>(matched));
+    top.i("offset", static_cast<long long>(offset));
+    top.raw("items", items);
+    return out;
+}
+
+// ---- GET /api/db/records -----------------------------------------------------------------
+//
+// Safe on _Structures (18653 records, 279 distinct names): with no filter the total is the
+// category's own record_count() (O(1)) and only the requested [offset, offset+limit) window
+// is ever read; with a filter every name must be read to know the true match total, but only
+// up to `limit` matching records are ever turned into JSON.
+std::string build_api_db_records_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    const auto* db = webapi_database_handle();
+    if (db == nullptr) {
+        top.b("ok", false);
+        top.s("error", "database not resolved");
+        return out;
+    }
+
+    const std::string category_q = webapi_query_string(q, "category");
+    auto* cat = sdk::DatabaseMgr::find_category(db, category_q);
+    if (cat == nullptr) {
+        top.b("ok", false);
+        top.s("error", "category not found");
+        return out;
+    }
+
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 100));
+    const size_t offset = webapi_clamp_offset(webapi_query_int(q, "offset", 0));
+    const std::string filter = webapi_query_string(q, "filter");
+    const size_t record_total = sdk::DatabaseMgr::record_count(cat);
+
+    top.b("ok", true);
+    top.s("category", category_q);
+
+    std::string items = "[";
+    bool first = true;
+    size_t total = 0;
+
+    auto emit = [&](size_t index, const regenny::DatabaseMgrRecord* rec, const std::string& name) {
+        std::string item;
+        {
+            JsonFields jf(item);
+            jf.i("index", static_cast<long long>(index));
+            jf.s("name", name);
+            const auto hash = sdk::DatabaseMgr::hash_name(name);
+            if (hash.has_value()) { jf.u("name_hash", *hash); } else { jf.n("name_hash"); }
+            jf.i("attribute_count", static_cast<long long>(sdk::DatabaseMgr::attribute_count(rec)));
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    };
+
+    if (filter.empty()) {
+        total = record_total;
+        const size_t end = std::min(record_total, offset + limit);
+        for (size_t i = offset; i < end; ++i) {
+            auto* rec = sdk::DatabaseMgr::record(cat, i);
+            if (rec == nullptr) { continue; }
+            emit(i, rec, sdk::DatabaseMgr::record_name(rec));
+        }
+    } else {
+        size_t matched = 0;
+        for (size_t i = 0; i < record_total; ++i) {
+            auto* rec = sdk::DatabaseMgr::record(cat, i);
+            if (rec == nullptr) { continue; }
+            const std::string name = sdk::DatabaseMgr::record_name(rec);
+            if (!webapi_contains_ci(name, filter)) { continue; }
+            const size_t match_index = matched++;
+            if (match_index >= offset && match_index < offset + limit) {
+                emit(i, rec, name);
+            }
+        }
+        total = matched;
+    }
+    items += ']';
+    top.i("total", static_cast<long long>(total));
+    top.i("offset", static_cast<long long>(offset));
+    top.raw("items", items);
+    return out;
+}
+
+// ---- GET /api/db/record -------------------------------------------------------------------
+//
+// Safe on _Structures: find_record() is a single lookup, never an enumeration, regardless of
+// how many of the category's 18653 records share the queried name.
+std::string build_api_db_record_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    const auto* db = webapi_database_handle();
+    if (db == nullptr) {
+        top.b("ok", false);
+        top.s("error", "database not resolved");
+        return out;
+    }
+
+    const std::string category_q = webapi_query_string(q, "category");
+    const std::string record_q = webapi_query_string(q, "record");
+    auto* cat = sdk::DatabaseMgr::find_category(db, category_q);
+    if (cat == nullptr) {
+        top.b("ok", false);
+        top.s("error", "category not found");
+        return out;
+    }
+    auto* rec = sdk::DatabaseMgr::find_record(cat, record_q);
+    if (rec == nullptr) {
+        top.b("ok", false);
+        top.s("error", "record not found");
+        return out;
+    }
+
+    long long max_elements_req = webapi_query_int(q, "max_elements", 4);
+    max_elements_req = std::max<long long>(1, std::min<long long>(max_elements_req, 64));
+    const size_t max_elements = static_cast<size_t>(max_elements_req);
+
+    top.b("ok", true);
+    top.s("category", category_q);
+    top.s("record", record_q);
+    const auto name_hash = sdk::DatabaseMgr::hash_name(record_q);
+    if (name_hash.has_value()) { top.u("name_hash", *name_hash); } else { top.n("name_hash"); }
+
+    // describe_record() does the type-dispatched rendering (and truncation bookkeeping); this
+    // walks attribute_at() in lockstep with it -- both use the SAME skip predicate
+    // (a.has_value()) in the SAME order, so described[j] is provably the j-th successfully-read
+    // attribute, needed here to also reach attribute_record() for link_target.
+    const auto described = sdk::DatabaseMgr::describe_record(rec, max_elements);
+    const size_t attr_total = sdk::DatabaseMgr::attribute_count(rec);
+
+    std::string items = "[";
+    bool first = true;
+    size_t described_index = 0;
+    for (size_t i = 0; i < attr_total && described_index < described.size(); ++i) {
+        const auto a = sdk::DatabaseMgr::attribute_at(rec, i);
+        if (!a.has_value()) { continue; }
+        const auto& d = described[described_index++];
+
+        std::string item;
+        {
+            JsonFields jf(item);
+            if (d.name.has_value()) { jf.s("name", *d.name); } else { jf.n("name"); }
+            jf.u("name_hash", d.name_hash);
+            jf.u("type", d.type);
+            jf.s("type_name", webapi_db_type_name(d.type));
+            jf.u("num_values", d.num_values);
+            std::string rendered = d.value.text;
+            if (d.value.truncated) { rendered += ", ..."; }
+            jf.s("rendered", rendered);
+            std::string link_name;
+            if (d.type == sdk::DatabaseMgr::kTypeRecordLink || d.type == sdk::DatabaseMgr::kTypeRecordLinkAlt) {
+                auto* linked = sdk::DatabaseMgr::attribute_record(*a, 0);
+                if (linked != nullptr) { link_name = sdk::DatabaseMgr::record_name(linked); }
+            }
+            if (!link_name.empty()) { jf.s("link_target", link_name); } else { jf.n("link_target"); }
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    }
+    items += ']';
+    top.raw("attributes", items);
+    return out;
+}
+
+// ---- GET /api/db/find ---------------------------------------------------------------------
+//
+// Safe on _Structures: has_attribute() is a per-record binary search over that record's OWN
+// (small) attribute list, and the loop stops as soon as `limit` matches are collected --
+// describe_record()/find_attribute() (the more expensive calls) only ever run on a MATCH.
+std::string build_api_db_find_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    const auto* db = webapi_database_handle();
+    if (db == nullptr) {
+        top.b("ok", false);
+        top.s("error", "database not resolved");
+        return out;
+    }
+
+    const std::string attribute_q = webapi_query_string(q, "attribute");
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 50));
+
+    top.b("ok", true);
+    top.s("attribute", attribute_q);
+    const auto hash = sdk::DatabaseMgr::hash_name(attribute_q);
+    if (hash.has_value()) { top.u("hash", *hash); } else { top.n("hash"); }
+
+    std::string items = "[";
+    bool first = true;
+    size_t scanned = 0;
+    size_t collected = 0;
+    if (!attribute_q.empty()) {
+        const size_t ncat = sdk::DatabaseMgr::category_count(db);
+        for (size_t ci = 0; ci < ncat && collected < limit; ++ci) {
+            auto* cat = sdk::DatabaseMgr::category(db, ci);
+            if (cat == nullptr) { continue; }
+            const size_t nrec = sdk::DatabaseMgr::record_count(cat);
+            for (size_t ri = 0; ri < nrec && collected < limit; ++ri) {
+                auto* rec = sdk::DatabaseMgr::record(cat, ri);
+                if (rec == nullptr) { continue; }
+                ++scanned;
+                if (!sdk::DatabaseMgr::has_attribute(rec, attribute_q)) { continue; }
+                const auto attr = sdk::DatabaseMgr::find_attribute(rec, attribute_q);
+                if (!attr.has_value()) { continue; }
+                std::string rendered;
+                for (const auto& d : sdk::DatabaseMgr::describe_record(rec, 4)) {
+                    if (d.name_hash == attr->name_hash) {
+                        rendered = d.value.text;
+                        if (d.value.truncated) { rendered += ", ..."; }
+                        break;
+                    }
+                }
+                std::string item;
+                {
+                    JsonFields jf(item);
+                    jf.s("category", sdk::DatabaseMgr::category_name(cat));
+                    jf.s("record", sdk::DatabaseMgr::record_name(rec));
+                    jf.u("type", attr->type);
+                    jf.s("rendered", rendered);
+                }
+                if (!first) { items += ','; }
+                first = false;
+                items += item;
+                ++collected;
+            }
+        }
+    }
+    items += ']';
+    top.i("total_scanned", static_cast<long long>(scanned));
+    top.raw("items", items);
+    return out;
+}
+
+// ---- GET /api/console ----------------------------------------------------------------------
+std::string build_api_console_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    top.b("ok", true);
+
+    const std::string filter = webapi_query_string(q, "filter");
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 100));
+
+    std::string items = "[";
+    bool first = true;
+    size_t matched = 0;
+    for (const auto& cmd : sdk::Console::all()) {
+        if (!webapi_contains_ci(cmd.name, filter)) { continue; }
+        const size_t idx = matched++;
+        if (idx >= limit) { continue; }
+
+        std::string item;
+        {
+            JsonFields jf(item);
+            jf.s("name", cmd.name);
+            jf.hex("handler", cmd.handler);
+            jf.s("module", cmd.module);
+            jf.b("from_exe", cmd.from_exe);
+            jf.b("runtime_registered", cmd.registered_at_runtime());
+            jf.b("noop", sdk::Console::is_noop(cmd.name).value_or(false));
+            const auto* reg = sdk::Console::registrar_of(cmd.name);
+            if (reg != nullptr && reg->name != nullptr) { jf.s("registrar", reg->name); }
+            else { jf.n("registrar"); }
+            if (reg != nullptr) { jf.raw("registrar_offset", webapi_hex6_json(reg->offset)); }
+            else { jf.n("registrar_offset"); }
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    }
+    items += ']';
+    top.i("total", static_cast<long long>(matched));
+    top.raw("items", items);
+    return out;
+}
+
+// ---- GET /api/vars -------------------------------------------------------------------------
+std::string build_api_vars_json(const WebApiQuery& q) {
+    std::string out;
+    JsonFields top(out);
+    top.b("ok", true);
+
+    const std::string filter = webapi_query_string(q, "filter");
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 100));
+
+    std::string items = "[";
+    bool first = true;
+    size_t matched = 0;
+    for (const auto& v : sdk::Engine::cached_console_vars()) {
+        if (!webapi_contains_ci(v.name, filter)) { continue; }
+        const size_t idx = matched++;
+        if (idx >= limit) { continue; }
+
+        std::string item;
+        {
+            JsonFields jf(item);
+            jf.s("name", v.name);
+            jf.hex("record", v.record);
+            const auto value = sdk::Engine::read_cached(v);
+            if (value.has_value()) { jf.f("value", *value, 4); } else { jf.n("value"); }
+
+            const auto* def = sdk::Engine::registered_default(v.name);
+            const auto at_default = sdk::Engine::is_at_default(v.name);
+            if (at_default.has_value()) { jf.b("at_default", *at_default); } else { jf.n("at_default"); }
+            if (def != nullptr && def->source == sdk::Engine::DefaultSource::CodeLiteral) {
+                jf.f("default", def->value, 4);
+            } else {
+                jf.n("default");
+            }
+            if (def != nullptr) {
+                jf.s("default_source", def->source == sdk::Engine::DefaultSource::CodeLiteral
+                                            ? "code_literal"
+                                            : "database_record");
+            } else {
+                jf.n("default_source");
+            }
+        }
+        if (!first) { items += ','; }
+        first = false;
+        items += item;
+    }
+    items += ']';
+    top.i("total", static_cast<long long>(matched));
+    top.raw("items", items);
+    return out;
+}
+
+// ---- dispatcher: wired into cmdsrv::Handlers::api in Framework::initialize() -------------
+std::string build_api_json(const std::string& request_target) {
+    const size_t q = request_target.find('?');
+    const std::string route = q == std::string::npos ? request_target : request_target.substr(0, q);
+    const WebApiQuery query = webapi_parse_query(request_target);
+
+    if (route == "/api/state") { return build_api_state_json(); }
+    if (route == "/api/subsystems") { return build_api_subsystems_json(); }
+    if (route == "/api/db/categories") { return build_api_db_categories_json(query); }
+    if (route == "/api/db/records") { return build_api_db_records_json(query); }
+    if (route == "/api/db/record") { return build_api_db_record_json(query); }
+    if (route == "/api/db/find") { return build_api_db_find_json(query); }
+    if (route == "/api/console") { return build_api_console_json(query); }
+    if (route == "/api/vars") { return build_api_vars_json(query); }
+    return "{\"ok\":false,\"error\":\"unknown /api endpoint\"}";
+}
+
 } // namespace
 
 Framework::Framework(void* self_module, int32_t ipc_port) : m_self(self_module), m_ipc_port(ipc_port) {}
@@ -8118,6 +8897,7 @@ bool Framework::initialize() {
     handlers.interfaces = build_interfaces_json;
     handlers.shader_params = build_shader_params_json;
     handlers.engine_hook = build_engine_hook_json;
+    handlers.api = build_api_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);
         return false;

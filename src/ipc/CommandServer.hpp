@@ -122,6 +122,11 @@ using ModelsFn = std::function<std::string()>;                    // full JSON o
 using InterfacesFn = std::function<std::string()>;                // full JSON object
 using ShaderParamsFn = std::function<std::string()>;              // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
+using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
+                                                                              // is the raw "/api/..." path plus
+                                                                              // its (still percent-encoded)
+                                                                              // query string, for the handler
+                                                                              // to parse itself
 
 struct Handlers {
     HealthFn health{};           // optional; default reports state only
@@ -132,6 +137,7 @@ struct Handlers {
     InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
     ShaderParamsFn shader_params{};  // optional; /sdk/shader-params 404s without it
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
+    ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };
 
 // Start listening on 127.0.0.1:port. Idempotent; returns false if the socket

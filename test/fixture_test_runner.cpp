@@ -1952,7 +1952,16 @@ int main(int argc, char** argv) {
         json_int(body, "anim_nodes_ordered", ano);
         check(anr == aok, "every animation record's node indices are inside node_count");
         check(ann == aok, "every animation record's node indices resolve to a bone name");
-        check(ano == aok, "node_b >= node_a on every animation record");
+        // ORDERING IS NOT AN INVARIANT, and asserting it as one was wrong. The original claim -- "observed on
+        // every model with no exception" -- was true of the models loaded AT THAT MOMENT. Moving to another area
+        // loads different assets, and one record in the new set has node_b < node_a: 217 of 218. So the pair is
+        // NEAR-universally ordered, which is a statistic, not a structural rule.
+        //
+        // What IS structural is asserted above: every index inside node_count, every index resolving to a bone
+        // name -- both still hold for all 218. Ordering is asserted only loosely enough to catch a collapse.
+        check(ano > 0 && ano <= aok,
+              "node_b >= node_a on nearly every animation record -- near-universal, NOT an invariant (a "
+              "violating record exists in some asset sets)");
     }
 
     // 5b2. /sdk/objects: the CClientMgr object-list mapping, exercised
@@ -4258,8 +4267,19 @@ int main(int argc, char** argv) {
                   "the camera object has zero dimensions");
             check(json_bool(body, "pmgr_camera_client_only", pm_ac) && pm_ac,
                   "the camera object is client-created");
-            check(json_bool(body, "pmgr_camera_rot_matches", pm_ar) && pm_ar,
-                  "the camera object's rotation is bit-identical to the camera pose");
+            // BIT-IDENTITY ONLY HOLDS WHILE THE VIEW IS STATIONARY, and an earlier pass had already established
+            // why: the holder's rotation fields are a LAST-SYNCED SNAPSHOT with no causal direction, agreeing
+            // with the camera object only because nothing was moving. This check asserted the equality anyway,
+            // and it passed for many passes purely because nobody was playing the game.
+            //
+            // The honest form is a CONDITIONAL: while stationary the two must agree bit for bit, and once the
+            // player moves the snapshot is free to lag. Stated this way the check still catches a moved offset
+            // whenever the player stands still, and stops lying when they do not.
+            bool mv_moving_now = false;
+            json_bool(body, "mv_moving", mv_moving_now);
+            check(mv_moving_now || pm_ar,
+                  "while the player is stationary the camera object's rotation is bit-identical to the camera "
+                  "pose -- and once moving the pose is a snapshot that may lag, so equality is not required");
 
             // ---- THE CAMERA'S COMPOSITION, READ FROM LINK STATE ------------------------------------
             //
@@ -4692,7 +4712,8 @@ int main(int argc, char** argv) {
             // CMoveMgr_IsMoving for the rest -- and "moving" is the ENGINE's physics velocity over 0.1, or a
             // force-moving flag, NOT CMoveMgr's cached velocity at +1412.
             bool mv_fr = false, mv_cd = false, mv_vr = false, mv_md = false, mv_pa = false, mv_pe = false,
-                 mv_sk = false, mv_rr = false;
+                 mv_sk = false, mv_rr = false, mv_moving_now2 = false;
+            json_bool(body, "mv_moving", mv_moving_now2);
             check(json_bool(body, "mv_flags_readable", mv_fr) && mv_fr, "CMoveMgr's flags dword reads");
             check(json_bool(body, "mv_crouch_determinable", mv_cd) && mv_cd,
                   "the crouch bit is testable");
@@ -4712,13 +4733,38 @@ int main(int argc, char** argv) {
             check(json_bool(body, "mv_range_refused", mv_rr) && mv_rr,
                   "an out-of-range slot yields no flags, no movement answer and no prediction");
 
+            // ---- WHICH BRANCH THE CACHE-COHERENCE CHECKS TOOK ------------------------------------
+            //
+            // Three checks in this suite are "moving || equality" conditionals -- the cached position, the camera
+            // pose and the physics velocity all diverge from their live counterparts while the player moves. That
+            // makes them PASS FOR FREE whenever the player is in motion, and the game freezes simulation when
+            // unfocused, so a player who was moving at that moment reports a constant non-zero speed forever.
+            //
+            // So the suite reports which branch it took instead of letting a permissive pass look like a verified
+            // one. This is the same discipline the render-path probes use: a check that cannot discriminate says
+            // so rather than returning a comfortable answer.
+            bool mv_strong = false;
+            const bool mv_strong_reported = json_bool(body, "mv_strong_form_exercisable", mv_strong);
+            check(mv_strong_reported,
+                  "the suite reports whether the strong form of the cache-coherence checks is exercisable");
+            check(mv_strong == !mv_moving_now2,
+                  "and that report agrees with the movement state -- the strong form is exercisable exactly when "
+                  "the player is at rest");
+            if (!mv_strong) {
+                printf("[fixture] NOTE: STRONG FORM NOT EXERCISED -- the player is in motion, so the "
+                       "cached-position, camera-pose and physics-velocity equality checks passed on their "
+                       "permissive branch and verified nothing this run. Stand still to exercise them.\n");
+            }
+
             // ---- WHAT THE CLAMP ACTUALLY DID, AND WHY ONE CHECK HERE IS VACUOUS ------------------
             //
             // CPlayerCamera_ClampPitch is the consumer that NAMES the axis: it converts the camera's rotation to
             // Euler, takes component [1], tests it against the signed range, and on violation consults a console
             // variable called SmoothPitchTime. That turns the previous pass's [INFERENCE] into a read. It writes
             // the pitch before clamping to +756 and after to +760, but ONLY when the clamp engages.
-            bool pi_r = false, pi_ne = false, pi_pl = false, pi_ci = false, pi_wd = false, pi_rr = false;
+            bool pi_r = false, pi_ne = false, pi_pl = false, pi_ci = false, pi_wd = false, pi_rr = false,
+                 pi_c = false;
+            json_bool(body, "pitch_corrected", pi_c);
             check(json_bool(body, "pitch_readable", pi_r) && pi_r,
                   "the pre- and post-clamp pitch fields read off CPlayerCamera");
             check(json_bool(body, "pitch_plausible_radians", pi_pl) && pi_pl,
@@ -4732,12 +4778,27 @@ int main(int argc, char** argv) {
             // THE HONEST PART: both fields are zero because the clamp has never engaged in this session, which
             // makes the range comparison VACUOUS -- zero lies inside every clamp. The suite records which case it
             // is in rather than letting a trivially-true check look like validation.
-            check(json_bool(body, "pitch_never_engaged", pi_ne) && pi_ne,
-                  "the clamp has NOT engaged this session -- both fields are still zero, so the range check "
-                  "below passes trivially and proves nothing about clamping");
-            check(json_has(body, "\"pitch_within_active\":true"),
-                  "the (vacuous) range check is consistent, asserted so a future non-zero record is compared "
-                  "rather than ignored");
+            // THE PREVIOUS PASS ASSERTED THAT THE CLAMP HAD NOT ENGAGED, and flagged the range check as vacuous
+            // because both fields were zero. That was an assertion about the SESSION, not about the code, and it
+            // broke the first time someone actually played: the clamp fired, correcting 0.1838 rad (10.53 deg)
+            // to 0.0873 (exactly 5.00 deg).
+            //
+            // 5.00 degrees is exactly the SlideKick bound, while the clamp the dispatcher would pick NOW is
+            // StandMoving -- which is the stance-change caveat this SDK documents, observed live: the record
+            // outlives the bounds that produced it. It also CONFIRMS the SlideKick branch fires, which the
+            // previous pass could only mark slide_kick_unchecked because the action-id test is unmapped.
+            //
+            // So the check becomes the INVARIANT, true in both states: either the clamp has not engaged, or it
+            // has and its recorded correction moved the pitch inward. That is what the code guarantees; whether
+            // anyone happened to look up is not.
+            check(pi_ne || (pi_c && pi_ci),
+                  "either the clamp has not engaged, or it has and its correction moved the pitch inward -- the "
+                  "invariant, rather than the previous pass's assertion about this particular session");
+            // AND THE RANGE CHECK IS NO LONGER VACUOUS: with a non-zero record it is a real comparison. Asserted
+            // as a conditional so it stays meaningful whichever state the game is in.
+            check(pi_ne || json_has(body, "\"pitch_within_active\":true"),
+                  "and once engaged, the recorded post-clamp pitch lies inside the clamp the engine would apply "
+                  "now -- a real comparison, no longer trivially satisfied by zero");
             check(json_bool(body, "pitch_range_refused", pi_rr) && pi_rr,
                   "an out-of-range slot yields neither the record nor the comparison");
 
@@ -4761,9 +4822,14 @@ int main(int argc, char** argv) {
                   "branch is the default rather than the exception");
             // THE CROSS-CHECK: two independent fields agree on the same state. The record is all zeros and the
             // timer is inactive with a zero duration -- the clamp has never engaged, said twice.
-            check(json_has(body, "\"pitch_timer_active\":false") && pi_ne,
-                  "the timer is inactive AND the record is zero -- two independent fields agreeing that the clamp "
-                  "has never engaged this session");
+            // THE CROSS-CHECK SURVIVES, but as an agreement rather than a state: the timer and the record must
+            // tell the SAME story. A dormant record with a running timer, or a corrected record with no timer,
+            // would mean one of the two offsets is wrong.
+            bool pi_ta = false;
+            json_bool(body, "pitch_timer_active", pi_ta);
+            check(pi_ne == !pi_ta,
+                  "the timer's state and the record agree: dormant record with an inactive timer, or an engaged "
+                  "record with a running one -- two independent fields telling one story");
 
             // ---- A SECOND PITCH LIMIT, WHICH IS NOT THE CLAMP ----
             //
@@ -5413,8 +5479,15 @@ int main(int argc, char** argv) {
                   "the movement state reads off the player's controller");
             check(json_bool(body, "ms_position_determinable", ms_pd) && ms_pd,
                   "the cached position can be compared against the engine object");
-            check(json_bool(body, "ms_position_matches_engine", ms_pm) && ms_pm,
-                  "the cached position equals the engine object's, bit for bit");
+            // SAME CLASS OF MISTAKE, and this one is documented three lines above in its own comment: "the
+            // player does not move in this fixture". That assumption was written down and then built on, and it
+            // is false the moment someone plays the game -- the cached position is recomputed per frame from
+            // (position - last_position), so while moving it necessarily trails the engine object.
+            bool ms_moving_now = false;
+            json_bool(body, "mv_moving", ms_moving_now);
+            check(ms_moving_now || ms_pm,
+                  "while stationary the cached position equals the engine object's bit for bit -- while moving "
+                  "it trails by construction, so equality is not required");
             check(json_bool(body, "ms_velocity_finite", ms_vf) && ms_vf,
                   "the velocity triple is finite");
             check(json_bool(body, "ms_position_finite", ms_pf) && ms_pf,
@@ -5425,8 +5498,14 @@ int main(int argc, char** argv) {
             double ms_to = -1.0, ms_tt = -1.0;
             const bool mstn = json_double(body, "ms_track_ok", ms_to) &&
                               json_double(body, "ms_track_total", ms_tt);
-            check(mstn && ms_tt > 1.0 && ms_to == ms_tt,
-                  "the cached position keeps tracking the engine position across repeated samples");
+            // THE STRONG FORM, BUT ONLY WHILE STATIONARY. Measured while the player moves: 0 of 8 samples match,
+            // because the cache is recomputed from (position - last_position) and therefore trails within the
+            // frame. The tracking test proves the cache is refreshed ONLY when there is nothing to trail.
+            bool ms_mv2 = false;
+            json_bool(body, "mv_moving", ms_mv2);
+            check(mstn && ms_tt > 1.0 && (ms_mv2 || ms_to == ms_tt),
+                  "while stationary the cached position keeps tracking the engine position across repeated "
+                  "samples -- while moving it trails, so agreement is not required");
 
             bool ms_ed = false, ms_sm = false, ms_pp = false, ms_rr = false;
             // The commit clears the accumulator unconditionally, so a completed frame leaves it zero.
@@ -5482,10 +5561,23 @@ int main(int argc, char** argv) {
             // THE ZEROING. The update path stores a zero vector into both fields three times a frame,
             // unconditionally -- so a zero reading on a player means "the game drives this", not "it is still".
             bool pe_vz = false, pe_az = false, pe_zp = false, pe_pr = false, pe_rr = false;
-            check(json_bool(body, "pe_velocity_zero", pe_vz) && pe_vz,
-                  "the physics target's velocity reads zero, as the unconditional stores require");
+            // "UNCONDITIONAL" WAS HALF WRONG, and playing the game is what showed it. That comment claims the
+            // update path stores a zero vector into BOTH fields three times a frame unconditionally. Measured
+            // with the player moving at 437 units/s:
+            //
+            //     pe_acceleration_zero  True    -- still zero, so THAT store really is unconditional
+            //     pe_velocity_zero      False   -- not zero, so that one is NOT
+            //
+            // The two fields were read as a pair and are not treated as one. Acceleration stays asserted
+            // outright; velocity becomes a conditional, since a zero reading is only guaranteed while still.
+            bool pe_mv = false;
+            json_bool(body, "mv_moving", pe_mv);
+            check(json_bool(body, "pe_velocity_zero", pe_vz) && (pe_mv || pe_vz),
+                  "while stationary the physics target's velocity reads zero -- while moving it does NOT, which "
+                  "retracts the claim that the zeroing stores are unconditional for this field");
             check(json_bool(body, "pe_acceleration_zero", pe_az) && pe_az,
-                  "its acceleration reads zero for the same reason");
+                  "its ACCELERATION reads zero even while moving, so that store IS unconditional -- the two "
+                  "fields are not treated alike, though an earlier pass read them as a pair");
             check(json_bool(body, "pe_zeroed_predicate", pe_zp) && pe_zp,
                   "the SDK identifies it as an object whose motion the game zeroes");
             check(json_bool(body, "pe_predicate_refuses_other", pe_pr) && pe_pr,

@@ -57,7 +57,8 @@ void send_response(SOCKET c, int32_t status, const std::string& body) {
                          : status == 503 ? "Service Unavailable"
                                          : "Error";
     std::string head = "HTTP/1.1 " + std::to_string(status) + " " + reason +
-                       "\r\nContent-Type: application/json\r\nContent-Length: " +
+                       "\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *"
+                       "\r\nContent-Length: " +
                        std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
     send(c, head.data(), static_cast<int32_t>(head.size()), 0);
     if (!body.empty()) send(c, body.data(), static_cast<int32_t>(body.size()), 0);
@@ -189,6 +190,15 @@ void handle_client(SOCKET c) {
             return;
         }
         send_response(c, 200, g_handlers.engine_hook(name));
+        return;
+    }
+
+    if (path.compare(0, 5, "/api/") == 0) {
+        if (!g_handlers.api) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no api handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.api(path));
         return;
     }
 

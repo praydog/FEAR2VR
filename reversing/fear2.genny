@@ -6797,6 +6797,17 @@ class CPlayerCamera 0x18C6 {
 //
 // 1410 checks, 0 failures.
 
+// ---- THE ZEROING STORES ARE NOT A PAIR ------------------------------------------------
+//
+// An earlier note here read the movement commit as storing a zero vector into velocity AND
+// acceleration, three times a frame, unconditionally. Measured live with the player moving at
+// 437 units/s: acceleration still reads zero (unconditional, confirmed), velocity does NOT.
+// The two fields sit together and were read together; only one of the stores is unconditional.
+//
+// The cached position likewise trails the engine object WHILE MOVING -- 0 of 8 samples agree --
+// because it is recomputed from (position - last_position). At rest it is bit-identical. Any
+// consumer comparing the controller's cache against the engine must gate on movement.
+
 // ---- THE CLAMP IS ONE SIGNED AXIS, AND THE DISPATCHER'S REAL INPUTS ARE CMoveMgr'S ---------------
 //
 // Last pass left two questions on the camera clamp. Both are answered by the dispatcher itself.
