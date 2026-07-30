@@ -693,6 +693,21 @@ public:
     // 0 until gameclient.dll is resolved; the caller may retry (RETRYABLE, per AGENT.MD rule 5).
     static uintptr_t apply_look_delta_fn();
 
+    // PlayerCamera_UpdateViewPose, the PER-FRAME half of the view path.
+    //
+    // ApplyLookDelta is driven by look INPUT: measured live, the frame hook ticked ~300/s while it stayed at
+    // exactly 0 with the mouse still. So it is the place to intercept a look delta and NOT a place to write a
+    // pose every frame -- a head-tracked view has to update whether or not the player touched the mouse.
+    // This one runs from the camera's own update path and is the candidate for that.
+    //
+    // ABI, from the disassembly: __thiscall with NO stack arguments (the single exit is a plain `retn`), so an
+    // x86 detour is __fastcall(this, edx_dummy) and the callee cleanup is zero either way. Note the prologue
+    // realigns the stack (`and esp, 0FFFFFFC0h`), which is why the whole prologue is matched rather than a
+    // short lead-in.
+    //
+    // 0 until gameclient.dll resolves; RETRYABLE, same as above.
+    static uintptr_t update_view_pose_fn();
+
     struct AimTrackingLimits {
         std::optional<float> normal_degrees;
         std::optional<float> zoomed_degrees;

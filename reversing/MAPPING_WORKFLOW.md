@@ -3810,3 +3810,31 @@ weapon where our composition says will be 27 units out with this weapon, and the
 metric except this cross-check. That the suite caught it by having a different gun in hand is the entire
 argument for cross-checking two independent producers instead of asserting one of them looks plausible.
 
+## The camera object LAGS the applied pose within the frame
+
+Hooking `PlayerCamera_UpdateViewPose` made a previously undecidable question answerable, and the answer was the
+opposite of the expectation.
+
+The question: does the applied pose equal the camera object's transform? Read from the IPC thread it is not
+decidable -- `UpdateViewPose` rewrites the pose every frame, so an out-of-band reader has no way to land in a
+known phase. Read inside the detour, immediately after the original returns, both sides are in the same phase.
+
+```
+same-phase, just after the write :  1 equal / 37 differ of 38
+out-of-band, settled frame       : 16 equal /  0 differ
+```
+
+So when `UpdateViewPose` returns, the camera object still holds the PREVIOUS frame's pose, and something later
+in the frame propagates it. By the time the frame settles the two agree.
+
+**Why this is the finding and not a curiosity:** it places the hook UPSTREAM of the camera object. A VR override
+here writes the pose and lets the engine carry it into the object, the render matrices and everything else
+derived from it -- rather than fighting the propagation by writing the object directly, which the write probes
+already showed is reclaimed within a frame. The two measurements together say the same thing from both ends:
+the object is downstream and not writable; the pose is upstream and is where an override belongs.
+
+It also corrects an assumption I had asserted twice: that same-phase reads would AGREE and out-of-band reads
+would tear. Exactly backwards. The out-of-band reader is sampling settled frames, which is why it looked clean,
+and the earlier "0 equal / 16 differ" readings came from heavy movement where the propagation had not caught up
+by the time the response was built.
+

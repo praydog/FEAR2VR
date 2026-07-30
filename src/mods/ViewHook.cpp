@@ -14,6 +14,7 @@ namespace {
 
 // THE HOOK'S NAME IS THE REGISTRY KEY and the detour's way back to the trampoline, so it is defined once.
 constexpr const char* kHookName = "CPlayerCamera::ApplyLookDelta";
+constexpr const char* kPoseHookName = "PlayerCamera::UpdateViewPose";
 
 // OBSERVATION STATE, written from the game thread and read from the IPC thread.
 //
@@ -25,6 +26,21 @@ std::atomic<uintptr_t> g_last_this{0};
 std::atomic<uint32_t> g_last_a3_bits{0};
 std::atomic<bool> g_installed{false};
 std::atomic<uintptr_t> g_target{0};
+std::atomic<uint64_t> g_pose_calls{0};
+// SAME-PHASE AGREEMENT, sampled on the engine thread.
+//
+// Whether the applied pose equals the camera object's transform is not decidable from the IPC thread: this
+// function REWRITES the pose every frame, so an out-of-band reader always lands mid-update and sees them
+// stably different. Read immediately after the original returns, both sides are in the same phase and the
+// question has an answer -- which is precisely what owning the writer buys.
+//
+// Sampled every 64th call to keep the hot path cheap; the counters are diagnostics, never decisions.
+std::atomic<uint64_t> g_pose_agree_equal{0};
+std::atomic<uint64_t> g_pose_agree_differ{0};
+std::atomic<uint64_t> g_pose_agree_other{0};
+std::atomic<uintptr_t> g_pose_last_this{0};
+std::atomic<bool> g_pose_installed{false};
+std::atomic<uintptr_t> g_pose_target{0};
 
 // The detour. `edx` is the dummy that makes an x86 __thiscall reachable as __fastcall (AGENT.MD rule 1), and
 // the three stack arguments match `retn 0Ch` at both of the original's exits.
@@ -54,6 +70,38 @@ int __fastcall apply_look_delta_detour(uintptr_t self, uintptr_t /*edx*/, float*
     return hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*, float, float*)>()(self, 0, a2, a3, a4);
 }
 
+// The per-frame view writer. NO stack arguments -- the original's single exit is a plain `retn` -- so this is
+// __fastcall(this, edx_dummy) and the cleanup is zero on both sides.
+//
+// This is the hot one: it runs from the camera's update path rather than from input, so it executes whether or
+// not the player is doing anything. Two relaxed stores and an increment is the entire budget here.
+int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
+    g_pose_calls.fetch_add(1, std::memory_order_relaxed);
+    g_pose_last_this.store(self, std::memory_order_relaxed);
+
+    auto* hook = Hooks::get().find(kPoseHookName);
+    if (hook == nullptr) {
+        return 0;
+    }
+    const int result = hook->original<int(__fastcall*)(uintptr_t, uintptr_t)>()(self, 0);
+
+    // AFTER the original, so the pose it just wrote and the camera object are in the same phase.
+    if ((g_pose_calls.load(std::memory_order_relaxed) & 63u) == 0u) {
+        switch (sdk::PlayerMgr::applied_pose_agreement(0)) {
+        case sdk::PlayerMgr::PoseAgreement::Equal:
+            g_pose_agree_equal.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case sdk::PlayerMgr::PoseAgreement::Differ:
+            g_pose_agree_differ.fetch_add(1, std::memory_order_relaxed);
+            break;
+        default:
+            g_pose_agree_other.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
 ViewHook& ViewHook::get() {
@@ -79,6 +127,22 @@ std::optional<std::string> ViewHook::on_initialize() {
 
     g_installed.store(true, std::memory_order_relaxed);
     LOGX("[viewhook] installed at 0x%08" PRIXPTR, target);
+
+    // THE PER-FRAME HALF. Reported independently: a miss on this one leaves the look-input hook working, and
+    // saying which of the two is unavailable is more useful than one combined failure.
+    const auto pose_target = sdk::PlayerMgr::update_view_pose_fn();
+    g_pose_target.store(pose_target, std::memory_order_relaxed);
+    if (pose_target == 0) {
+        LOGX("[viewhook] UpdateViewPose target unresolved; per-frame hook NOT installed");
+        return std::string{"PlayerCamera::UpdateViewPose pattern did not resolve"};
+    }
+    if (!Hooks::get().install(kPoseHookName, reinterpret_cast<void*>(pose_target),
+                              reinterpret_cast<void*>(&update_view_pose_detour))) {
+        LOGX("[viewhook] UpdateViewPose install FAILED at 0x%08" PRIXPTR, pose_target);
+        return std::string{"failed to install the UpdateViewPose hook"};
+    }
+    g_pose_installed.store(true, std::memory_order_relaxed);
+    LOGX("[viewhook] UpdateViewPose installed at 0x%08" PRIXPTR, pose_target);
     return std::nullopt;
 }
 
@@ -90,5 +154,12 @@ ViewHook::Observed ViewHook::observed() const {
     std::memcpy(&out.last_a3, &bits, sizeof(out.last_a3));
     out.installed = g_installed.load(std::memory_order_relaxed);
     out.target = g_target.load(std::memory_order_relaxed);
+    out.pose_calls = g_pose_calls.load(std::memory_order_relaxed);
+    out.pose_last_this = g_pose_last_this.load(std::memory_order_relaxed);
+    out.pose_installed = g_pose_installed.load(std::memory_order_relaxed);
+    out.pose_target = g_pose_target.load(std::memory_order_relaxed);
+    out.pose_agree_equal = g_pose_agree_equal.load(std::memory_order_relaxed);
+    out.pose_agree_differ = g_pose_agree_differ.load(std::memory_order_relaxed);
+    out.pose_agree_other = g_pose_agree_other.load(std::memory_order_relaxed);
     return out;
 }

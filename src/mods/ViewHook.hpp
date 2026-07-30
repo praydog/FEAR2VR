@@ -15,6 +15,12 @@
 // by the engine within one frame (PlayerMgr::probe_camera_object_rotation and probe_outer_operand both return
 // Reclaimed on a running game). A head-tracked view therefore cannot poke a field; it has to be the writer.
 //
+// TWO HOOKS, ONE CONCEPT. ApplyLookDelta is the LOOK INPUT path and PlayerCamera_UpdateViewPose is the
+// PER-FRAME path; a head-tracked view needs the second, because it must update whether or not the player
+// touched the mouse. Measured: the frame hook ticks ~300/s while ApplyLookDelta stays at exactly 0 with the
+// mouse still. Both live here because they are the same subsystem, and their counters are kept apart because
+// the difference in what drives them is the finding.
+//
 // THIS PASS INSTALLS AND OBSERVES ONLY. The detour counts calls, records the arguments it was handed, and
 // passes straight through. No behaviour changes, because the claim under test here is narrow and worth
 // establishing on its own: that this function is reachable, hookable, called every frame the camera updates,
@@ -50,6 +56,7 @@ public:
     // Read by the /sdk/shader-params reporter so the host-side suite can assert the hook FIRES rather than
     // merely that it installed. Static shape is necessary and never sufficient (TESTING.MD rule 3).
     struct Observed {
+        // ---- ApplyLookDelta: the LOOK INPUT path -----------------------------------------------
         uint64_t calls{};        // total detour entries since install
         uintptr_t last_this{};   // the CPlayerCamera the last call ran on
         // THE THIRD ARGUMENT, unnamed on purpose. Hex-Rays types it `float a3`, and it read exactly 0.0
@@ -58,6 +65,23 @@ public:
         float last_a3{};
         bool installed{};
         uintptr_t target{};      // resolved address, 0 when the pattern missed
+
+        // ---- UpdateViewPose: the PER-FRAME path ------------------------------------------------
+        //
+        // Held separately rather than summed, because the whole point of hooking the second one is that the two
+        // have DIFFERENT drivers: ApplyLookDelta only runs when the player looks, this one runs from the
+        // camera's update. A single counter would hide exactly the distinction being established.
+        uint64_t pose_calls{};
+        uintptr_t pose_last_this{};
+        bool pose_installed{};
+        uintptr_t pose_target{};
+
+        // SAME-PHASE agreement between the applied pose and the camera object, sampled inside the detour
+        // AFTER the original runs. Out-of-band this question has no answer -- the writer runs every frame, so
+        // an IPC-thread reader always lands mid-update -- which is why the counters live here.
+        uint64_t pose_agree_equal{};
+        uint64_t pose_agree_differ{};
+        uint64_t pose_agree_other{};   // unreadable or torn
     };
 
     Observed observed() const;

@@ -5051,6 +5051,79 @@ int main(int argc, char** argv) {
                 // look input rather than by the frame. A run with nobody at the controls cannot exercise it, and
                 // saying so is the honest outcome; asserting advance would make the suite depend on a human.
                 check(vh_nums && vh_c >= 0.0, "the call counter reads");
+
+                // ---- THE PER-FRAME HALF ---------------------------------------------------------
+                //
+                // This is the one a head-tracked view needs, and the assertion is LIVE BEHAVIOUR rather than
+                // installation: it must ADVANCE with nobody touching the controls, which is exactly what
+                // distinguishes it from ApplyLookDelta (measured at 0 with the mouse still while this ran at
+                // ~287/s). Gated on the engine's own clock, never on our own counters -- using the subject as
+                // its own gate would reclassify a broken hook as "not exercised" (TESTING.MD's frozen rule).
+                bool vh_pi = false;
+                double vh_pt = -1.0, vh_pc = -1.0, vh_poff = -1.0;
+                check(json_bool(body, "vh_pose_installed", vh_pi) && vh_pi,
+                      "the per-frame view hook is installed on PlayerCamera::UpdateViewPose");
+                const bool vh_pn = json_double(body, "vh_pose_target", vh_pt) &&
+                                   json_double(body, "vh_pose_calls", vh_pc) &&
+                                   json_double(body, "vh_pose_target_offset", vh_poff);
+                check(vh_pn && vh_pt > 0.0, "it resolved its own target by pattern");
+                if (have_gc) {
+                    const auto pvt = static_cast<uintptr_t>(vh_pt);
+                    check(pvt >= gc_mod.base && pvt < gc_mod.base + static_cast<uintptr_t>(gc_mod.size),
+                          "the per-frame hook target lies inside gameclient.dll per the HOST's module list");
+                }
+                // ---- WHERE THIS HOOK SITS IN THE FRAME -----------------------------------------
+                //
+                // The detour samples applied_pose_agreement AFTER the original returns -- on the engine thread,
+                // in the same phase. That answers a question the IPC thread cannot: this function rewrites the
+                // pose every frame, so an out-of-band reader never sees a mid-update state.
+                //
+                // The two readings DISAGREE, and the disagreement is the finding:
+                //     same-phase, just after the write : 1 equal / 37 differ of 38
+                //     out-of-band, settled frame       : 16 equal / 0 differ
+                // So the camera object still holds the PREVIOUS pose when this returns, and something later in
+                // the frame propagates it. A VR override therefore sits UPSTREAM of the camera object here --
+                // write the pose and let the engine carry it -- which is the whole reason to own this function
+                // rather than the object.
+                double vh_ae = -1.0, vh_ad = -1.0, vh_ao = -1.0;
+                const bool vh_agr = json_double(body, "vh_pose_agree_equal", vh_ae) &&
+                                    json_double(body, "vh_pose_agree_differ", vh_ad) &&
+                                    json_double(body, "vh_pose_agree_other", vh_ao);
+                check(vh_agr, "the same-phase agreement counters read");
+                check(vh_agr && (vh_ae + vh_ad + vh_ao) > 0.0,
+                      "the in-detour sampler actually ran, so the same-phase reading is not vacuous");
+                if (vh_agr) {
+                    printf("[fixture] same-phase pose vs camera object: %.0f equal / %.0f differ / %.0f other "
+                           "-- the object lags the pose within the frame\n", vh_ae, vh_ad, vh_ao);
+                }
+
+                // TWO POLLS, and the engine clock decides whether the result means anything.
+                {
+                    // THE GATE IS THE ENGINE'S OWN CLOCK, read from the same two bodies -- engine-side, and
+                    // not one of our counters, so a dead hook cannot excuse itself.
+                    double eng_a = -1.0, eng_b = -1.0;
+                    (void)json_double(body, "engine_seconds", eng_a);
+                    std::string sp2;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    double vh_pc2 = -1.0;
+                    if (http::get(port, "/sdk/shader-params", sp2)) {
+                        const std::string b2 = http::body_of(sp2);
+                        (void)json_double(b2, "vh_pose_calls", vh_pc2);
+                        (void)json_double(b2, "engine_seconds", eng_b);
+                    }
+                    const bool engine_live2 = eng_a >= 0.0 && eng_b >= 0.0 && eng_b != eng_a;
+                    if (engine_live2) {
+                        check(vh_pc2 > vh_pc,
+                              "UpdateViewPose FIRES without any input -- the per-frame view writer a "
+                              "head-tracked camera has to own");
+                        printf("[fixture] per-frame view hook: %.0f -> %.0f calls over 400ms "
+                               "(gameclient+0x%llX)\n", vh_pc, vh_pc2,
+                               static_cast<unsigned long long>(vh_poff));
+                    } else {
+                        printf("[fixture] NOTE: engine clock not advancing, so the per-frame view hook's "
+                               "firing was NOT exercised.\n");
+                    }
+                }
                 if (vh_c <= 0.0) {
                     printf("[fixture] NOTE: the view hook has not fired -- ApplyLookDelta is driven by LOOK "
                            "INPUT, not by the frame, so this run did not exercise it. Move the mouse while the "

@@ -1780,6 +1780,21 @@ std::optional<PlayerMgr::TimerState> PlayerMgr::timer_at(uintptr_t address) {
     return out;
 }
 
+uintptr_t PlayerMgr::update_view_pose_fn() {
+    static uintptr_t s_fn = 0;
+    if (s_fn != 0) {
+        return s_fn;
+    }
+    // PlayerCamera_UpdateViewPose prologue, gameclient 0x100E34E0. Wildcards cover two relative calls; UNIQUE
+    // in .text as of this mapping.
+    //     push ebp / mov ebp,esp / and esp,0FFFFFFC0h / sub esp,0F4h / push ebx,esi,edi / mov esi,ecx
+    //     call <a> / mov ecx,esi / call <b> / mov eax,[esi+4]
+    s_fn = Modules::get().scan_game_client(
+        "55 8B EC 83 E4 C0 81 EC F4 00 00 00 53 56 57 8B F1 E8 ? ? ? ? 8B CE E8 ? ? ? ? 8B 46 04",
+        "PlayerCamera::UpdateViewPose");
+    return s_fn;
+}
+
 uintptr_t PlayerMgr::apply_look_delta_fn() {
     // RETRYABLE, NOT LATCHED ON FAILURE. gameclient.dll is present for the whole process life once resolved,
     // but a caller may ask before Modules::initialize() has run -- and a function-local static would then cache

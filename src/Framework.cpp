@@ -5970,6 +5970,7 @@ std::string build_shader_params_json(bool include_write_probes) {
     // suite polls this twice and requires it to ADVANCE (TESTING.MD rule 3).
     {
         const auto vh = ViewHook::get().observed();
+        const auto* gc = sdk::Modules::get().game_client();
         json_append_bool(out, "vh_installed", vh.installed);
         json_append_double(out, "vh_target", static_cast<double>(vh.target), 0);
         json_append_double(out, "vh_calls", static_cast<double>(vh.calls), 0);
@@ -5978,10 +5979,22 @@ std::string build_shader_params_json(bool include_write_probes) {
         // THE TARGET MUST LIE INSIDE gameclient.dll. A pattern that matched in the wrong module, or a
         // resolution that drifted, shows up here rather than as a mystery crash -- and the host cross-checks it
         // against its OWN Toolhelp32 view of the module, which this cannot fake.
-        const auto* gc = sdk::Modules::get().game_client();
         json_append_bool(out, "vh_target_in_gameclient",
                          gc != nullptr && gc->base != 0 && vh.target >= gc->base &&
                              vh.target < gc->base + gc->size);
+        json_append_bool(out, "vh_pose_installed", vh.pose_installed);
+        json_append_double(out, "vh_pose_target", static_cast<double>(vh.pose_target), 0);
+        json_append_double(out, "vh_pose_calls", static_cast<double>(vh.pose_calls), 0);
+        // SAME-PHASE AGREEMENT, measured on the engine thread inside the detour. The out-of-band census in
+        // the pmgr_/eo_ blocks cannot answer this: UpdateViewPose rewrites the pose every frame, so an IPC
+        // reader always lands mid-update. This is the number that means something.
+        json_append_double(out, "vh_pose_agree_equal", static_cast<double>(vh.pose_agree_equal), 0);
+        json_append_double(out, "vh_pose_agree_differ", static_cast<double>(vh.pose_agree_differ), 0);
+        json_append_double(out, "vh_pose_agree_other", static_cast<double>(vh.pose_agree_other), 0);
+        json_append_double(out, "vh_pose_target_offset",
+                           static_cast<double>((gc != nullptr && gc->base != 0 && vh.pose_target >= gc->base)
+                                                   ? vh.pose_target - gc->base : 0),
+                           0);
         json_append_double(out, "vh_target_offset",
                            static_cast<double>((gc != nullptr && gc->base != 0 && vh.target >= gc->base)
                                                    ? vh.target - gc->base : 0),
