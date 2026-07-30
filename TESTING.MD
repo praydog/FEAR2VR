@@ -806,3 +806,23 @@ It is deterministic, and it tests strictly more than the original -- which could
 eyes sharing a centre from two eyes with opposite ones, the very property that makes the frustum
 asymmetric. When a check depends on which of several things happened most recently, stop sampling
 and arrange for only one of them to be true.
+
+## An idempotent request is not a stimulus
+
+A check compared the first-person rig's facing with a correction off and then on, applying the same
+45 degree head pose each time, and measured the correction as having done precisely nothing. The
+correction was fine.
+
+The engine writes that rotation ONLY when the view changes -- the same elision the watchpoint counts
+had already shown (zero hits while the view is still). Setting a pose the game is already in changes
+no view, so the writer never ran and there was nothing to correct. The test had asked the question in
+a form that could not produce an answer.
+
+Generalisation for any check driving an engine that skips redundant work: **the second half of an
+A/B comparison must re-establish the initial condition, not repeat the request.** Release, set the
+state under test, then apply the stimulus. If a mechanism is edge-triggered, a test that assumes it
+is level-triggered will report a working feature as broken -- or, worse in the other direction, a
+broken one as working because the previous state happened to persist.
+
+Both numbers now print (`uncorrected 44.646, corrected 0.355`), which is what made the diagnosis
+immediate rather than a hunt.

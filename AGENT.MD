@@ -543,3 +543,23 @@ whenever the view changes. Every candidate bone (`aimer`, `Pelvis_Cam`, `Pelvis`
 rotation is never written at all. `/sdk/shader-params` publishes `pmgr_object_addr`,
 `pmgr_holder_addr`, `pmgr_camera_addr` and `pmgr_model_addr`, and `/sdk/targets` publishes
 `shell_obj`, because every "who writes this" question starts by pasting one into `/watch/arm`.
+
+## Viewmodel decoupling
+
+`ViewmodelDecouple` stops head-look from swinging the weapon. The first-person rig hangs off
+`CClientShell::local_player`'s object (NOT `PlayerMgr`'s), whose rotation the engine rewrites to the
+VIEW whenever the view changes. The mod owns that setter and passes on `conj(outer) * incoming`,
+removing whatever is in the camera's additive slot.
+
+`/vr/viewmodel?on=1` arms it, `?on=0` releases. Measured at 45 degrees of head yaw: the rig's angle to
+the aim falls 44.646 -> 0.355, and the muzzle's world travel 59.08 -> 0.48.
+
+**Hook slot 4 of the OBJECT's own vtable, not the base setter.** Slot 4 dispatches per type: the
+player is a MODEL, so the live entry is `OT_MODEL_SetRotation` (0x428E1C), which calls
+`LTObject_SetRotation` and then a gated fixup. Taking the base would catch every OT_NORMAL in the
+level and miss that branch. `sdk::object_rotation_setter(obj)` resolves it from the object and
+refuses anything outside the exe, so no address is hardcoded.
+
+**The setter only fires when the view CHANGES** -- the engine elides it otherwise. Anything testing or
+driving this must release the pose, set its state, then apply the pose; setting the same pose twice
+measures nothing.
