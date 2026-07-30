@@ -149,4 +149,28 @@ bool looks_like_float(uint32_t raw) {
     return raw > (1u << 24);
 }
 
+std::string hex_window(uintptr_t at, size_t bytes) {
+    // The cap is the contract, not a suggestion: a caller passing something huge gets the window it can
+    // actually reason about rather than a refusal, since the alternative is the caller looping itself.
+    constexpr size_t kMax = 512;
+    const size_t want = bytes > kMax ? kMax : bytes;
+    if (want == 0) {
+        return {};
+    }
+    // A stack buffer, not a vector: this is the guarded-read path, and it allocates nothing anywhere else.
+    uint8_t buf[kMax] = {};
+    if (!copy(buf, at, want)) {
+        return {};
+    }
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(want * 2);
+    for (size_t i = 0; i < want; ++i) {
+        const uint8_t b = buf[i];
+        out.push_back(kDigits[(b >> 4) & 0xF]);
+        out.push_back(kDigits[b & 0xF]);
+    }
+    return out;
+}
+
 }  // namespace sdk::mem

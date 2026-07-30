@@ -121,6 +121,10 @@ using ObjectsFn = std::function<std::string()>;                   // full JSON o
 using ModelsFn = std::function<std::string()>;                    // full JSON object
 using InterfacesFn = std::function<std::string()>;                // full JSON object
 using ShaderParamsFn = std::function<std::string()>;              // full JSON object
+// Same payload as ShaderParamsFn, plus the probes that WRITE engine state and restore it. Separated because
+// those are visible in-game -- a single-frame camera snap -- so a caller must ask for them deliberately
+// rather than get them as a side effect of reading state.
+using WriteProbeFn = std::function<std::string()>;                // full JSON object
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -136,6 +140,7 @@ struct Handlers {
     ModelsFn models{};           // optional; /sdk/models 404s without it
     InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
     ShaderParamsFn shader_params{};  // optional; /sdk/shader-params 404s without it
+    WriteProbeFn write_probe{};      // optional; /sdk/write-probe 404s without it -- MUTATES then restores
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

@@ -72,6 +72,17 @@ inline std::optional<uint16_t> read_u16(uintptr_t at) { return read<uint16_t>(at
 inline std::optional<uint8_t> read_u8(uintptr_t at) { return read<uint8_t>(at); }
 inline std::optional<float> read_f32(uintptr_t at) { return read<float>(at); }
 
+// A BOUNDED HEX WINDOW around an address, for the case where a consumer has a structure but not the offset
+// of the field it cares about. This is how every named bit in this SDK was actually found: dump a window,
+// perform the action that should change the field, dump again, and diff. The offsets in these headers came
+// from static reading, and static reading cannot tell a crouch flag from a neighbouring bit that happens to
+// be clear -- only watching the value move under a deliberate action can.
+//
+// Bounded on purpose. A consumer asking for a window is exploring, and an unbounded dump of a live engine is
+// both a footgun and useless output; 512 bytes covers any structure field a consumer is reasoning about.
+// Returns an empty string when the address is unreadable, so a caller can tell "nothing there" from zeros.
+std::string hex_window(uintptr_t at, size_t bytes);
+
 // A pointer field. Separate from read_u32 only to say what the caller means at the call site; this build is
 // 32-bit, so the widths are the same.
 inline std::optional<uintptr_t> read_ptr(uintptr_t at) {

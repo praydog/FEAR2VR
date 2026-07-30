@@ -311,6 +311,84 @@ std::optional<bool> PlayerMgr::applied_pose_matches_camera_object(unsigned index
     return true;
 }
 
+namespace {
+
+// Bit equality over a float array, for the reason the accessors give: an epsilon comparison would hide a value
+// that has been recomputed to almost-but-not-quite the same thing, which is exactly what these detect.
+template <size_t N>
+bool bits_equal(const std::array<float, N>& a, const std::array<float, N>& b) {
+    for (size_t i = 0; i < N; ++i) {
+        uint32_t x = 0;
+        uint32_t y = 0;
+        std::memcpy(&x, &a[i], sizeof(x));
+        std::memcpy(&y, &b[i], sizeof(y));
+        if (x != y) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+PlayerMgr::PoseAgreement PlayerMgr::camera_rotation_agreement(unsigned index) {
+    const auto p1 = player(index);
+    if (!p1.has_value() || p1->camera_object == 0) {
+        return PoseAgreement::Unreadable;
+    }
+    std::array<float, 4> live1{};
+    if (!mem::copy(live1.data(), p1->camera_object + kObjectRotation, sizeof(live1))) {
+        return PoseAgreement::Unreadable;
+    }
+
+    // THE SECOND READ OF BOTH SIDES. A frame that landed in the window moved one of them, and the comparison
+    // below would then be measuring the clock rather than the mapping.
+    const auto p2 = player(index);
+    if (!p2.has_value() || p2->camera_object != p1->camera_object) {
+        return PoseAgreement::Unreadable;
+    }
+    std::array<float, 4> live2{};
+    if (!mem::copy(live2.data(), p2->camera_object + kObjectRotation, sizeof(live2))) {
+        return PoseAgreement::Unreadable;
+    }
+    if (!bits_equal(live1, live2) || !bits_equal(p1->pose.rotation, p2->pose.rotation)) {
+        return PoseAgreement::Torn;
+    }
+    return bits_equal(live1, p1->pose.rotation) ? PoseAgreement::Equal : PoseAgreement::Differ;
+}
+
+PlayerMgr::PoseAgreement PlayerMgr::applied_pose_agreement(unsigned index) {
+    const auto p1 = player(index);
+    if (!p1.has_value() || p1->camera_object == 0) {
+        return PoseAgreement::Unreadable;
+    }
+    std::array<float, 3> pos1{};
+    std::array<float, 4> rot1{};
+    if (!mem::copy(pos1.data(), p1->camera_object + kObjectPosition, sizeof(pos1)) ||
+        !mem::copy(rot1.data(), p1->camera_object + kObjectRotation, sizeof(rot1))) {
+        return PoseAgreement::Unreadable;
+    }
+
+    const auto p2 = player(index);
+    if (!p2.has_value() || p2->camera_object != p1->camera_object) {
+        return PoseAgreement::Unreadable;
+    }
+    std::array<float, 3> pos2{};
+    std::array<float, 4> rot2{};
+    if (!mem::copy(pos2.data(), p2->camera_object + kObjectPosition, sizeof(pos2)) ||
+        !mem::copy(rot2.data(), p2->camera_object + kObjectRotation, sizeof(rot2))) {
+        return PoseAgreement::Unreadable;
+    }
+    if (!bits_equal(pos1, pos2) || !bits_equal(rot1, rot2) ||
+        !bits_equal(p1->applied_pose.position, p2->applied_pose.position) ||
+        !bits_equal(p1->applied_pose.rotation, p2->applied_pose.rotation)) {
+        return PoseAgreement::Torn;
+    }
+    return (bits_equal(pos1, p1->applied_pose.position) && bits_equal(rot1, p1->applied_pose.rotation))
+               ? PoseAgreement::Equal
+               : PoseAgreement::Differ;
+}
+
 std::optional<bool> PlayerMgr::camera_rotation_matches_pose(unsigned index) {
     const auto p = player(index);
     if (!p.has_value() || p->camera_object == 0) {
@@ -435,6 +513,35 @@ std::optional<float> PlayerMgr::speed(unsigned index) {
     }
     const auto& v = s->velocity;
     return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+PlayerMgr::PoseAgreement PlayerMgr::cached_position_agreement(unsigned index) {
+    const auto read_pair = [index](std::array<float, 3>& cached, std::array<float, 3>& live) -> bool {
+        const auto s = movement_state(index);
+        const auto obj = engine_object(index);
+        if (!s.has_value() || !obj.has_value()) {
+            return false;
+        }
+        const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(*obj));
+        if (!info.has_value()) {
+            return false;
+        }
+        cached = s->cached_position;
+        live = {info->position.x, info->position.y, info->position.z};
+        return true;
+    };
+
+    std::array<float, 3> cached1{}, live1{}, cached2{}, live2{};
+    if (!read_pair(cached1, live1)) {
+        return PoseAgreement::Unreadable;
+    }
+    if (!read_pair(cached2, live2)) {
+        return PoseAgreement::Unreadable;
+    }
+    if (!bits_equal(cached1, cached2) || !bits_equal(live1, live2)) {
+        return PoseAgreement::Torn;
+    }
+    return bits_equal(cached1, live1) ? PoseAgreement::Equal : PoseAgreement::Differ;
 }
 
 std::optional<bool> PlayerMgr::cached_position_matches_engine(unsigned index) {
@@ -1463,16 +1570,14 @@ std::optional<bool> PlayerMgr::pitch_clamp_record_within_active(unsigned index) 
 }
 
 
-std::optional<PlayerMgr::TimerState> PlayerMgr::pitch_recovery_timer(unsigned index) {
-    const auto subs = camera_sub_objects(index);
-    if (!subs.has_value() || subs->player_camera == 0) {
+std::optional<PlayerMgr::TimerState> PlayerMgr::timer_at(uintptr_t address) {
+    if (address == 0) {
         return std::nullopt;
     }
-    const auto base = subs->player_camera + kCameraPitchRecoveryTimer;
-    const auto start = mem::read<double>(base);
-    const auto duration = mem::read<double>(base + 8);
-    const auto use_cached = mem::read<uint8_t>(base + 0x18);
-    const auto active = mem::read<uint8_t>(base + 0x19);
+    const auto start = mem::read<double>(address);
+    const auto duration = mem::read<double>(address + 8);
+    const auto use_cached = mem::read<uint8_t>(address + 0x18);
+    const auto active = mem::read<uint8_t>(address + 0x19);
     if (!start.has_value() || !duration.has_value() || !use_cached.has_value() || !active.has_value()) {
         return std::nullopt;
     }
@@ -1482,6 +1587,52 @@ std::optional<PlayerMgr::TimerState> PlayerMgr::pitch_recovery_timer(unsigned in
     out.use_cached = *use_cached != 0;
     out.active = *active != 0;
     return out;
+}
+
+std::optional<float> PlayerMgr::zoom_fraction(unsigned index, double now) {
+    const auto st = aim_state_raw(index);
+    if (!st.has_value()) {
+        return std::nullopt;
+    }
+    if (*st == 1) {
+        return 1.0f;
+    }
+    if (*st == 3) {
+        return 0.0f;
+    }
+    if (*st != 0 && *st != 2) {
+        return std::nullopt;
+    }
+
+    const auto p = player(index);
+    if (!p.has_value() || p->object == 0) {
+        return std::nullopt;
+    }
+    const auto sub = mem::read<uint32_t>(p->object + kAimSubObject);
+    if (!sub.has_value() || *sub == 0) {
+        return std::nullopt;
+    }
+    const auto t = timer_at(*sub + kZoomTransitionTimer);
+    if (!t.has_value()) {
+        return std::nullopt;
+    }
+    // AN ELAPSED OR INACTIVE TIMER IS A FINISHED TRANSITION, matching GameTimer_IsElapsed's own reading that an
+    // inactive timer counts as elapsed. UpdateTransition commits on exactly that condition.
+    float f = 1.0f;
+    if (t->active && t->duration > 0.0) {
+        const double done = (now - t->start) / t->duration;
+        f = static_cast<float>(done < 0.0 ? 0.0 : (done > 1.0 ? 1.0 : done));
+    }
+    return *st == 0 ? f : 1.0f - f;
+}
+
+std::optional<PlayerMgr::TimerState> PlayerMgr::pitch_recovery_timer(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return std::nullopt;
+    }
+    // Same layout as every other timer of this shape; read through the one reader rather than a second copy.
+    return timer_at(subs->player_camera + kCameraPitchRecoveryTimer);
 }
 
 PlayerMgr::AimTrackingLimits PlayerMgr::aim_tracking_limits() {
@@ -1495,16 +1646,58 @@ PlayerMgr::AimTrackingLimits PlayerMgr::aim_tracking_limits() {
     return out;
 }
 
-std::optional<bool> PlayerMgr::aim_tracking_flag(unsigned index) {
-    const auto subs = camera_sub_objects(index);
-    if (!subs.has_value() || subs->player_camera == 0) {
+std::optional<uint32_t> PlayerMgr::aim_state_raw(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->object == 0) {
         return std::nullopt;
     }
-    const auto b = mem::read<uint8_t>(subs->player_camera + kCameraAimTrackingFlag);
-    if (!b.has_value()) {
+    const auto sub = mem::read<uint32_t>(p->object + kAimSubObject);
+    if (!sub.has_value() || *sub == 0) {
         return std::nullopt;
     }
-    return *b != 0;
+    return mem::read<uint32_t>(*sub + kAimState);
+}
+
+std::optional<PlayerMgr::AimState> PlayerMgr::aim_state(unsigned index) {
+    const auto raw = aim_state_raw(index);
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    switch (*raw) {
+    case 0: return AimState::EnteringAds;
+    case 1: return AimState::Ads;
+    case 2: return AimState::LeavingAds;
+    case 3: return AimState::Hip;
+    default:
+        // A FIFTH VALUE WAS NEVER OBSERVED, so it is refused rather than folded into one of the four. Naming an
+        // unseen value is how a mapping starts lying.
+        return std::nullopt;
+    }
+}
+
+std::optional<bool> PlayerMgr::ads_fov_active(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->object == 0) {
+        return std::nullopt;
+    }
+    const auto sub = mem::read<uint32_t>(p->object + kAimSubObject);
+    if (!sub.has_value() || *sub == 0) {
+        return std::nullopt;
+    }
+    const auto v = mem::read<uint32_t>(*sub + kAdsFovFlag);
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return *v != 0;
+}
+
+std::optional<bool> PlayerMgr::uses_zoomed_aim_limit(unsigned index) {
+    const auto raw = aim_state_raw(index);
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    // ApplyLookDelta's own test, not a paraphrase of it: == 3 takes the normal limit.
+    return *raw != 3;
 }
 
 }  // namespace sdk

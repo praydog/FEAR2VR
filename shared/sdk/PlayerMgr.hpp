@@ -495,15 +495,78 @@ public:
     // The pitch-recovery timer's state. nullopt when the camera cannot be resolved.
     static std::optional<TimerState> pitch_recovery_timer(unsigned index);
 
+    // ANY timer of this shape, by address. The layout is shared: two doubles then two flags, and this SDK has
+    // now found it in two unrelated places (the camera's pitch recovery at camera+768 and the zoom transition
+    // at aim+232). A consumer that finds a third needs to read it without waiting for an accessor.
+    static std::optional<TimerState> timer_at(uintptr_t address);
+
     // ---- THE SECOND PITCH LIMIT, WHICH IS NOT THE CLAMP ----------------------------------------
     //
     // ApplyLookDelta tests the new pitch against a console variable as well as the clamp record:
-    // CameraAimTrackingYMax normally, or CameraAimTrackingYMaxZoomed when a state field says otherwise.
-    // Exceeding it clears a byte at camera+1005 and calls into the physics holder.
+    // CameraAimTrackingYMax (70 deg) normally, CameraAimTrackingYMaxZoomed (65 deg) otherwise.
     //
-    // WHICH VARIABLE APPLIES DEPENDS ON *(owner + 256) + 224 == 3, and what that field means is NOT established
-    // -- "zoomed" is the obvious reading given the variable names and nothing more.
-    static constexpr uintptr_t kCameraAimTrackingFlag = 1005;
+    // WHICH ONE APPLIES DEPENDS ON *(player + 256) + 224 == 3, and that field IS now established -- see the
+    // aim state machine below. Equal to 3 means hip fire and takes the normal limit; every other value is part
+    // of the ADS lifecycle and takes the zoomed one.
+    //
+    // AN EARLIER VERSION OF THIS COMMENT claimed the limit check "clears a byte at camera+1005", and named that
+    // byte as the zoom selector. It is neither: a live session aiming down sights six times left all 512 bytes
+    // around camera+1005 untouched, while the real field moved through four values.
+    // THE AIM SUB-OBJECT, a fourth pointer beside the three already mapped: controller +236, camera +252,
+    // THIS at +256, physics +260. CPlayerCamera reaches it as *(*(camera + 4) + 256).
+    static constexpr uintptr_t kAimSubObject = 256;
+
+    // THE AIM STATE MACHINE, four states, established by freezing the field live and watching the game:
+    //
+    //     3  hip fire        (steady state)
+    //     0  entering ADS    (transition in)
+    //     1  full ADS
+    //     2  leaving ADS     (transition out)
+    //
+    // CPlayerCamera_ApplyLookDelta compares it against 3: equal selects CameraAimTrackingYMax (70 deg), and
+    // ANY other value selects CameraAimTrackingYMaxZoomed (65 deg). So the tighter limit covers the whole ADS
+    // lifecycle including both transitions, which is why the fall-through is not the inversion it looks like.
+    //
+    // Frozen at 3 the FOV stops zooming while the weapon still animates into ADS -- and recoil stays hip-fire
+    // heavy, so this field gates recoil as well as the camera.
+    static constexpr uintptr_t kAimState = 224;
+
+    // A SEPARATE ADS FLAG, 1 while aiming. Frozen at 0 the FOV stops zooming but recoil stays ADS-light, which
+    // is what distinguishes it from kAimState: this one drives the FOV, that one drives the aim limit and
+    // recoil. A VR consumer wanting to keep the aim behaviour while suppressing the FOV zoom wants THIS one.
+    static constexpr uintptr_t kAdsFovFlag = 356;
+
+    enum class AimState {
+        EnteringAds = 0,
+        Ads = 1,
+        LeavingAds = 2,
+        Hip = 3,
+    };
+
+    // The raw dword, for a consumer that wants to see a value this mapping does not name.
+    static std::optional<uint32_t> aim_state_raw(unsigned index);
+    // Named, and std::nullopt for a value outside the four observed states rather than a guess.
+    static std::optional<AimState> aim_state(unsigned index);
+    // Is the FOV-zoom flag set? Independent of aim_state; see the note above.
+    static std::optional<bool> ads_fov_active(unsigned index);
+    // Which aim-tracking limit would ApplyLookDelta pick right now -- exactly its own test.
+    static std::optional<bool> uses_zoomed_aim_limit(unsigned index);
+
+    // The zoom transition's clock, at aim + 232. UpdateTransition commits the zoom when this elapses.
+    static constexpr uintptr_t kZoomTransitionTimer = 232;
+
+    // THE ZOOM FRACTION, 0 at the hip and 1 at full ADS, reproducing PlayerZoom_GetZoomFraction exactly:
+    //
+    //     state 1 -> 1.0                       state 3 -> 0.0
+    //     state 0 -> the timer's fraction      state 2 -> 1.0 - that fraction
+    //
+    // WHY A VR MOD WANTS THIS: it is the game's own progress through the aim transition, and it is what the
+    // engine interpolates depth-of-field with. A mod suppressing the FOV zoom still needs the fraction to keep
+    // anything it drives itself in step with the weapon animation.
+    //
+    // `now` is the engine clock the timer is measured against; pass Engine::seconds(). nullopt when the aim
+    // object cannot be resolved or the state is not one of the four.
+    static std::optional<float> zoom_fraction(unsigned index, double now);
 
     struct AimTrackingLimits {
         std::optional<float> normal_degrees;
@@ -514,8 +577,7 @@ public:
     // slot is unset.
     static AimTrackingLimits aim_tracking_limits();
 
-    // The byte ApplyLookDelta clears when the limit is exceeded.
-    static std::optional<bool> aim_tracking_flag(unsigned index);
+
 
     // Does the state machine currently select the Chase clamp? The only mapping established so far, exposed as a
     // question rather than as a full state decode.
@@ -1234,6 +1296,35 @@ public:
     // Do the camera object's rotation and the holder's pose agree exactly? Live this is true bit-for-bit, and it is
     // the cheapest way for a consumer to tell whether the anchor it is about to read has been refreshed this
     // frame -- the position lags, the rotation does not.
+    // COMPARING A CACHED COPY AGAINST THE LIVE FIELD IT MIRRORS, without lying when the engine writes between
+    // the two reads.
+    //
+    // The bool accessors below read one side, then the other. In a FROZEN game that is exact; in a running one
+    // a frame can land in the gap, and the two sides then disagree for a reason that has nothing to do with the
+    // mapping. This project passed those checks for many sessions purely because the game was always unfocused
+    // -- and therefore frozen -- while the suite ran. The first live run failed four of them at once.
+    //
+    // WHY A VR CONSUMER NEEDS THE DISTINCTION and not just a bool: reading the view pose every frame while the
+    // engine updates it is the entire job. "These disagree" and "I looked while it was being written" call for
+    // opposite responses -- the first means the mapping is wrong, the second means read it again.
+    enum class PoseAgreement {
+        Unreadable,  // an address was rejected, or the camera object moved between reads
+        Torn,        // the engine wrote one of the two sides while we were looking; ask again
+        Equal,       // both sides held still and hold the same bits
+        Differ,      // both sides held still and hold DIFFERENT bits -- a real disagreement
+    };
+
+    // Both sides are read twice; a change in either between the reads yields Torn rather than a verdict.
+    static PoseAgreement camera_rotation_agreement(unsigned index);
+    static PoseAgreement applied_pose_agreement(unsigned index);
+
+    // The controller's cached position against the engine object's, with the same double read. Same defect as
+    // the two above: the cached triple is read, then the engine object is looked up and read, and a frame in
+    // between moves one of them.
+    static PoseAgreement cached_position_agreement(unsigned index);
+
+    // The older bool forms, kept because callers exist. std::nullopt now means unreadable OR torn -- use the
+    // agreement accessors above when the difference matters, which in a running game it does.
     static std::optional<bool> camera_rotation_matches_pose(unsigned index);
 };
 

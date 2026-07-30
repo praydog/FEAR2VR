@@ -3330,7 +3330,7 @@ void json_append_double(std::string& out, const char* key, double value, int dec
     out += ',';
 }
 
-std::string build_shader_params_json() {
+std::string build_shader_params_json(bool include_write_probes) {
     const auto head = sdk::ShaderParams::list_head_address();
     if (head == 0) {
         return "{\"ok\":false,\"error\":\"exe not mapped\"}";
@@ -4639,6 +4639,29 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pmgr_applied_rot_unit", pm_player->applied_pose.rotation_is_unit());
         json_append_bool(out, "pmgr_camera_rot_matches",
                          sdk::PlayerMgr::camera_rotation_matches_pose(0).value_or(false));
+        // THE SAME TWO COMPARISONS AS VERDICTS, which is the only form that survives a running engine. The bool
+        // above reads one side then the other, so a frame landing in the gap makes them disagree for reasons
+        // that have nothing to do with the mapping -- four checks failed exactly that way on the first live run.
+        {
+            const auto verdict_name = [](sdk::PlayerMgr::PoseAgreement a) {
+                switch (a) {
+                case sdk::PlayerMgr::PoseAgreement::Equal: return "equal";
+                case sdk::PlayerMgr::PoseAgreement::Differ: return "differ";
+                case sdk::PlayerMgr::PoseAgreement::Torn: return "torn";
+                default: return "unreadable";
+                }
+            };
+            const auto rot_v = sdk::PlayerMgr::camera_rotation_agreement(0);
+            const auto app_v = sdk::PlayerMgr::applied_pose_agreement(0);
+            json_append_string(out, "pmgr_rot_agreement", verdict_name(rot_v));
+            json_append_string(out, "pmgr_applied_agreement", verdict_name(app_v));
+            // A consumer's actual question: is this reading usable right now? Torn is not a failure, it is
+            // "ask again"; Differ is the one that means the mapping is wrong.
+            json_append_bool(out, "pmgr_rot_never_differs",
+                             rot_v != sdk::PlayerMgr::PoseAgreement::Differ);
+            json_append_bool(out, "pmgr_applied_never_differs",
+                             app_v != sdk::PlayerMgr::PoseAgreement::Differ);
+        }
         if (const auto eye = sdk::PlayerMgr::eye_offset(0)) {
             json_append_double(out, "pmgr_eye_offset_y", (*eye)[1], 3);
             json_append_double(out, "pmgr_eye_offset_len",
@@ -4944,7 +4967,9 @@ std::string build_shader_params_json() {
                                  tmr->duration >= 0.0 && tmr->duration < 3600.0);
             }
             const auto aim = sdk::PlayerMgr::aim_tracking_limits();
-            const auto aflag = sdk::PlayerMgr::aim_tracking_flag(0);
+            const auto astate = sdk::PlayerMgr::aim_state_raw(0);
+            const auto azoom = sdk::PlayerMgr::uses_zoomed_aim_limit(0);
+            const auto afov = sdk::PlayerMgr::ads_fov_active(0);
             json_append_bool(out, "aim_normal_present", aim.normal_degrees.has_value());
             json_append_bool(out, "aim_zoomed_present", aim.zoomed_degrees.has_value());
             if (aim.normal_degrees.has_value()) {
@@ -4958,17 +4983,62 @@ std::string build_shader_params_json() {
             if (aim.normal_degrees.has_value() && aim.zoomed_degrees.has_value()) {
                 json_append_bool(out, "aim_limits_differ", *aim.normal_degrees != *aim.zoomed_degrees);
             }
-            json_append_bool(out, "aim_flag_readable", aflag.has_value());
-            // THE FLAG'S VALUE, not just its readability. The zoomed limit is the tighter of the two (65 vs 70
-            // degrees), and that inequality is the ONLY thing supporting the "zoomed" reading of this selector.
-            // Reporting the live value lets a consumer -- or a play session -- settle it: aim down sights and the
-            // flag must flip, which is direct evidence no amount of static reading can supply.
-            if (aflag.has_value()) {
-                json_append_bool(out, "aim_flag_value", *aflag);
+            // THE AIM STATE MACHINE, which is what actually selects the limit. Its four values were established
+            // by freezing the field in a live game: 3 hip, 0 entering ADS, 1 full ADS, 2 leaving. ApplyLookDelta
+            // compares against 3, so the zoomed limit covers the entire ADS lifecycle.
+            json_append_bool(out, "aim_state_readable", astate.has_value());
+            if (astate.has_value()) {
+                json_append_double(out, "aim_state", static_cast<double>(*astate), 0);
+            }
+            json_append_bool(out, "aim_zoom_determinable", azoom.has_value());
+            json_append_bool(out, "aim_uses_zoomed_limit", azoom.value_or(false));
+            // The SEPARATE FOV flag. Freezing this one stops the FOV zoom while recoil stays ADS-light, so it is
+            // not a duplicate of the state above -- it is the field a VR consumer wants to suppress.
+            json_append_bool(out, "aim_fov_determinable", afov.has_value());
+            json_append_bool(out, "aim_fov_active", afov.value_or(false));
+            // THE ZOOM FRACTION, the game's own progress through the aim transition. Measured against the engine
+            // clock the transition timer is expressed in, so it is comparable to what the renderer used.
+            {
+                const auto clk = sdk::Engine::client_time();
+                const double now = clk.has_value() ? clk->seconds : 0.0;
+                const auto zf = sdk::PlayerMgr::zoom_fraction(0, now);
+                json_append_bool(out, "aim_zoom_fraction_available", zf.has_value());
+                if (zf.has_value()) {
+                    json_append_double(out, "aim_zoom_fraction", static_cast<double>(*zf), 4);
+                }
+                // THE PAIR MUST AGREE AT THE ENDPOINTS: hip is exactly 0 and full ADS exactly 1, since those two
+                // states are constants in the game's own switch rather than anything interpolated.
+                const bool endpoints_ok =
+                    !zf.has_value() || !astate.has_value() ||
+                    (*astate == 3 ? *zf == 0.0f : (*astate == 1 ? *zf == 1.0f : (*zf >= 0.0f && *zf <= 1.0f)));
+                json_append_bool(out, "aim_zoom_fraction_endpoints", endpoints_ok);
+            }
+            // RAW WINDOWS FOR FINDING THE FLAGS, because both the crouch bit and this aim selector are offsets
+            // taken from static reading, and a play session that performs the action without moving them proves
+            // the offset wrong -- not that the player skipped the action. Dumping the neighbourhood lets a diff
+            // across a deliberate crouch or aim locate the byte that actually moves.
+            if (const auto subs = sdk::PlayerMgr::camera_sub_objects(0)) {
+                if (subs->player_camera != 0) {
+                    // 1005 is the mapped aim byte; the window starts 45 bytes earlier so it sits inside, not at
+                    // the edge, and covers the 8-byte-aligned neighbourhood a compiler would pack flags into.
+                    // THE FULL 512, because the first 96-byte window found NOTHING moving around the mapped
+                    // aim byte while a crouch in the same session moved three bits in the other window. Either
+                    // the offset is wrong or the state does not live in this object at all, and a wider window
+                    // is what separates those.
+                    const uintptr_t pcw = subs->player_camera + 768;
+                    json_append_double(out, "pcam_window_at", static_cast<double>(pcw), 0);
+                    json_append_string(out, "pcam_window_hex", sdk::mem::hex_window(pcw, 512).c_str());
+                }
+                if (subs->controller != 0) {
+                    // 296 is the mapped flags dword; same reasoning.
+                    const uintptr_t mmw = subs->controller + 272;
+                    json_append_double(out, "mm_window_at", static_cast<double>(mmw), 0);
+                    json_append_string(out, "mm_window_hex", sdk::mem::hex_window(mmw, 64).c_str());
+                }
             }
             json_append_bool(out, "aim_range_refused",
                              !sdk::PlayerMgr::pitch_recovery_timer(9).has_value() &&
-                                 !sdk::PlayerMgr::aim_tracking_flag(9).has_value());
+                                 !sdk::PlayerMgr::aim_state_raw(9).has_value());
 
             json_append_bool(out, "pitch_range_refused",
                              !sdk::PlayerMgr::camera_pitch_clamp_record(9).has_value() &&
@@ -5558,6 +5628,17 @@ std::string build_shader_params_json() {
     json_append_bool(out, "ms_resolved", ms.has_value());
     json_append_bool(out, "ms_position_determinable", ms_match.has_value());
     json_append_bool(out, "ms_position_matches_engine", ms_match.has_value() && *ms_match);
+    // AND AS A VERDICT. See the note on pmgr_rot_agreement: the bool above cannot distinguish "the offsets are
+    // wrong" from "a frame landed between the two reads", and only the first is a defect.
+    {
+        const auto v = sdk::PlayerMgr::cached_position_agreement(0);
+        const char* n = v == sdk::PlayerMgr::PoseAgreement::Equal      ? "equal"
+                        : v == sdk::PlayerMgr::PoseAgreement::Differ   ? "differ"
+                        : v == sdk::PlayerMgr::PoseAgreement::Torn     ? "torn"
+                                                                       : "unreadable";
+        json_append_string(out, "ms_position_agreement", n);
+        json_append_bool(out, "ms_position_never_differs", v != sdk::PlayerMgr::PoseAgreement::Differ);
+    }
     if (ms.has_value()) {
         const auto finite3 = [](const std::array<float, 3>& v) {
             return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
@@ -5777,15 +5858,30 @@ std::string build_shader_params_json() {
                      !sdk::Engine::find_cached_var("NoSuchCachedVariable").has_value() &&
                          !sdk::Engine::find_cached_var("").has_value());
 
-    // ---- MUTATION PROBES, DELIBERATELY LAST -----------------------------------------------
-    // These WRITE engine state and restore it. Everything above is read-only, so the probes run after
-    // it: an earlier version placed them first and the camera-object probe perturbed the object that a
-    // later read-only check compares the applied pose against, failing an assertion that was correct.
-    // A verification probe must not mutate state other assertions read.
-    // IS AN ATTACHMENT STEERING THE VIEW right now? Non-identity outer operand means yes.
+    // ---- MUTATION PROBES, OPT-IN ONLY -----------------------------------------------------
+    // These WRITE engine state and restore it, and a player reported seeing the camera snap away for a single
+    // frame on every injection. That is this code: it writes a 90-degree yaw into the camera rotation, samples
+    // for a few frames to see whether the engine reclaims it, then restores. The original comment called that
+    // "harmless for the frames it lasts" -- it is VISIBLE, and it ran on every single read of this endpoint, so
+    // a 171-sample coverage run perturbed the view 171 times.
+    //
+    // So they are gated. Nothing that merely observes state may mutate it; /sdk/write-probe opts in explicitly.
+    // They are kept rather than deleted because they produced real findings: the outer operand's writer runs
+    // every frame and reclaims anything written there, which is why a VR override cannot steer the view from it.
+    //
+    // Still ordered last within the probe set: an earlier version placed them first and the camera-object probe
+    // perturbed the object a later read-only check compares the applied pose against, failing a correct
+    // assertion. A verification probe must not mutate state other assertions read.
+    // IS AN ATTACHMENT STEERING THE VIEW right now? Non-identity outer operand means yes. READ-ONLY, so it
+    // stays on the observing path -- only the writing probes below are gated.
     const auto cro_att = sdk::PlayerMgr::camera_attachment_driving(0);
     json_append_bool(out, "cro_attachment_determinable", cro_att.has_value());
     json_append_bool(out, "cro_attachment_driving", cro_att.has_value() && *cro_att);
+    // The render-path liveness signal, also read-only, and needed to interpret anything else about the pipeline.
+    const auto fa = sdk::ShaderParams::frames_advanced();
+    json_append_bool(out, "fa_available", fa.has_value());
+    json_append_double(out, "fa_distinct_frames", static_cast<double>(fa.value_or(9999)), 0);
+    if (include_write_probes) {
     // DOES A WRITTEN VALUE SURVIVE? The operand's only writer runs every frame and rewrites it unconditionally,
     // so a consumer cannot steer the view by writing here. Measured rather than asserted: write a 90-degree yaw,
     // sample until it disappears, restore. 0 samples survived means it was reclaimed before the first sample.
@@ -5817,16 +5913,12 @@ std::string build_shader_params_json() {
                        static_cast<double>(cro_pc.has_value() ? cro_pc->frames_observed : 0), 0);
     json_append_double(out, "cro_object_probe_verdict",
                        static_cast<double>(cro_pc.has_value() ? static_cast<int>(cro_pc->verdict) : -1), 0);
-    // The render-path liveness signal on its own, so the verdicts above can be corroborated independently of the
-    // probes that consumed it.
-    const auto fa = sdk::ShaderParams::frames_advanced();
-    json_append_bool(out, "fa_available", fa.has_value());
-    json_append_double(out, "fa_distinct_frames", static_cast<double>(fa.value_or(9999)), 0);
     // After the probe the operand must be back to a unit quaternion -- the restore has to leave it usable.
     if (const auto after = sdk::PlayerMgr::camera_rotation_operands(0); after.has_value()) {
         const auto n = std::sqrt(after->outer[0] * after->outer[0] + after->outer[1] * after->outer[1] +
                                  after->outer[2] * after->outer[2] + after->outer[3] * after->outer[3]);
         json_append_bool(out, "cro_probe_left_unit", std::fabs(n - 1.0f) <= 0.01f);
+    }
     }
 
     // THE CAMERA'S CACHED TUNABLES. The claim under test is the GRID ORDERING, and the check is that a name
@@ -8413,7 +8505,7 @@ std::string build_api_state_json() {
 
         {
             const auto aim = sdk::PlayerMgr::aim_tracking_limits();
-            const auto aim_flag = sdk::PlayerMgr::aim_tracking_flag(0);
+            const auto aim_flag = sdk::PlayerMgr::ads_fov_active(0);
             std::string aobj;
             {
                 JsonFields ajf(aobj);
@@ -8902,7 +8994,9 @@ bool Framework::initialize() {
     handlers.objects = build_objects_json;
     handlers.models = build_models_json;
     handlers.interfaces = build_interfaces_json;
-    handlers.shader_params = build_shader_params_json;
+    // READ-ONLY BY DEFAULT. The mutation probes are visible in-game, so observing state never triggers them.
+    handlers.shader_params = [] { return build_shader_params_json(false); };
+    handlers.write_probe = [] { return build_shader_params_json(true); };
     handlers.engine_hook = build_engine_hook_json;
     handlers.api = build_api_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {

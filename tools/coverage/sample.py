@@ -118,6 +118,11 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--interval", type=float, default=0.4)
+    ap.add_argument(
+        "--until-covered",
+        action="store_true",
+        help="stop as soon as every target has been observed, instead of running the full duration",
+    )
     args = ap.parse_args()
 
     try:
@@ -168,6 +173,13 @@ def main() -> int:
         sp = _f(d, "mv_speed")
         if sp is not None:
             speed_max = max(speed_max, sp)
+
+        # EARLY EXIT once nothing is left to observe. The game runs in exclusive fullscreen, so whoever is
+        # playing cannot read a prompt without alt-tabbing -- which freezes the simulation and defeats the
+        # measurement. They work from a memorised list at their own pace; the sampler decides when it is done.
+        if args.until_covered and all(covered[l] or unknown[l] for l, _, _ in TARGETS):
+            print("all targets observed -- stopping early")
+            break
 
         time.sleep(args.interval)
 

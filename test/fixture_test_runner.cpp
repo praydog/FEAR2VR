@@ -4275,11 +4275,15 @@ int main(int argc, char** argv) {
             // The honest form is a CONDITIONAL: while stationary the two must agree bit for bit, and once the
             // player moves the snapshot is free to lag. Stated this way the check still catches a moved offset
             // whenever the player stands still, and stops lying when they do not.
-            bool mv_moving_now = false;
-            json_bool(body, "mv_moving", mv_moving_now);
-            check(mv_moving_now || pm_ar,
-                  "while the player is stationary the camera object's rotation is bit-identical to the camera "
-                  "pose -- and once moving the pose is a snapshot that may lag, so equality is not required");
+            // A VERDICT, NOT A GATE ON MOVEMENT. The previous form allowed the comparison whenever the player
+            // moved, which was the wrong axis: the two sides are read one after the other, so a frame landing
+            // between the reads makes them differ whether or not anybody is moving. The SDK now reads both sides
+            // TWICE and reports Torn when either moved, so the only failing outcome left is a real disagreement
+            // between two values that both held still.
+            bool pm_nd = false;
+            check(json_bool(body, "pmgr_rot_never_differs", pm_nd) && pm_nd,
+                  "the camera object's rotation never DIFFERS from the camera pose -- equal when both held "
+                  "still, torn when the engine wrote between the reads, and never a real disagreement");
 
             // ---- THE CAMERA'S COMPOSITION, READ FROM LINK STATE ------------------------------------
             //
@@ -4398,8 +4402,10 @@ int main(int argc, char** argv) {
             // alone would also hold if this SDK were reading one pair twice, and "they differ" alone would
             // hold if it were reading two unrelated fields.
             bool pm_applied = false, pm_gens = false, pm_arot = false;
-            check(json_bool(body, "pmgr_applied_matches_object", pm_applied) && pm_applied,
-                  "the applied pose is bit-identical to the camera object's own transform");
+            bool pm_and = false;
+            check(json_bool(body, "pmgr_applied_never_differs", pm_and) && pm_and,
+                  "the applied pose never DIFFERS from the camera object's own transform -- same double-read "
+                  "verdict, so a frame landing mid-comparison is reported rather than failed");
             check(json_bool(body, "pmgr_pose_generations_differ", pm_gens) && pm_gens,
                   "and the camera's other position generation is NOT the same value");
             check(json_bool(body, "pmgr_applied_rot_unit", pm_arot) && pm_arot,
@@ -4849,10 +4855,42 @@ int main(int argc, char** argv) {
             check(json_bool(body, "aim_limits_differ", ai_d) && ai_d && ai_zv < ai_nv,
                   "they DIFFER, and the zoomed limit is the tighter one -- which is the only evidence the "
                   "selector field means zoom, and is why the reading stays marked as unestablished");
-            check(json_bool(body, "aim_flag_readable", ai_f) && ai_f,
-                  "the byte the limit check clears is readable");
+            // THE STATE MACHINE, not a byte. An earlier pass named a byte at player_camera + 1005 as this
+            // selector; a live session aiming down sights six times left all 512 bytes around it untouched,
+            // which refuted it outright. The real field is *(player + 256) + 224, and its four values were
+            // established by freezing it and watching the game: 3 hip, 0 entering, 1 full ADS, 2 leaving.
+            int64_t ai_st = -1;
+            check(json_int(body, "aim_state", ai_st) && ai_st >= 0 && ai_st <= 3,
+                  "the aim state machine reads one of its four established values");
+            bool ai_zd = false, ai_zl = false, ai_fd = false;
+            check(json_bool(body, "aim_zoom_determinable", ai_zd) && ai_zd,
+                  "and which aim-tracking limit the engine would pick is therefore determinable");
+            json_bool(body, "aim_uses_zoomed_limit", ai_zl);
+            check((ai_st == 3) == !ai_zl,
+                  "hip fire takes the normal limit and every other state takes the zoomed one -- exactly the "
+                  "== 3 test ApplyLookDelta itself performs");
+            check(json_bool(body, "aim_fov_determinable", ai_fd) && ai_fd,
+                  "the separate FOV flag is readable -- freezing it stops the zoom while recoil stays "
+                  "ADS-light, so it is a different lever from the state above");
+
+            // THE ZOOM FRACTION, which is the game's own PlayerZoom_GetZoomFraction reproduced. Its two constant
+            // arms are the assertion worth making: hip is EXACTLY 0 and full ADS EXACTLY 1 in the game's switch,
+            // so anything else there means the state decode is wrong rather than merely imprecise.
+            bool ai_za = false, ai_ze = false;
+            check(json_bool(body, "aim_zoom_fraction_available", ai_za) && ai_za,
+                  "the zoom fraction resolves");
+            check(json_bool(body, "aim_zoom_fraction_endpoints", ai_ze) && ai_ze,
+                  "and its constant arms are exact -- hip fire reads 0 and full ADS reads 1, with the "
+                  "transitions in between");
+            double ai_zf = -1.0;
+            check(json_double(body, "aim_zoom_fraction", ai_zf) && ai_zf >= 0.0 && ai_zf <= 1.0,
+                  "the fraction stays inside 0..1");
+            // AND THE CROSS-CHECK against the state, since the two are read independently: a fraction of 0 with
+            // a non-hip state, or 1 while hip, would mean the timer and the state disagree.
+            check((ai_st == 3) == (ai_zf == 0.0),
+                  "a zero fraction means hip fire and hip fire means a zero fraction");
             check(json_bool(body, "aim_range_refused", ai_rr) && ai_rr,
-                  "an out-of-range slot yields neither the timer nor the flag");
+                  "an out-of-range slot yields neither the timer nor the aim state");
 
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
@@ -5319,18 +5357,29 @@ int main(int argc, char** argv) {
                       json_bool(body, "cro_attachment_driving", cro_ad) && !cro_ad,
                   "the outer operand is identity and no attachment is reported driving the view");
 
+            // ---- THE MUTATION PROBES LIVE ON THEIR OWN ENDPOINT --------------------------------
+            //
+            // They WRITE the camera rotation and restore it, which a player sees as the view snapping away for a
+            // single frame. That used to happen on every read of /sdk/shader-params, so merely observing state
+            // perturbed it -- a 171-sample coverage run jumped the view 171 times. Observing must not mutate, so
+            // the probes moved to /sdk/write-probe and this suite asks for them deliberately.
+            std::string presp;
+            check(http::get(port, "/sdk/write-probe", presp), "/sdk/write-probe transport");
+            const std::string pbody = http::body_of(presp);
+            check(json_has(pbody, "\"ok\":true"), "the opt-in mutation probes are reachable");
+
             double op_s = -1.0, op_n = -1.0, ip_s = -1.0, cp_s = -1.0, cp_n = -1.0;
             bool op_f = false, ip_f = false, pr1 = false, pr2 = false, pr3 = false;
-            const bool probes = json_bool(body, "cro_probe_ran", pr1) &&
-                                json_bool(body, "cro_inner_probe_ran", pr2) &&
-                                json_bool(body, "cro_object_probe_ran", pr3) &&
-                                json_double(body, "cro_probe_survived", op_s) &&
-                                json_double(body, "cro_probe_samples", op_n) &&
-                                json_double(body, "cro_inner_probe_survived", ip_s) &&
-                                json_double(body, "cro_object_probe_survived", cp_s) &&
-                                json_double(body, "cro_object_probe_samples", cp_n) &&
-                                json_bool(body, "cro_probe_view_followed", op_f) &&
-                                json_bool(body, "cro_inner_probe_view_followed", ip_f);
+            const bool probes = json_bool(pbody, "cro_probe_ran", pr1) &&
+                                json_bool(pbody, "cro_inner_probe_ran", pr2) &&
+                                json_bool(pbody, "cro_object_probe_ran", pr3) &&
+                                json_double(pbody, "cro_probe_survived", op_s) &&
+                                json_double(pbody, "cro_probe_samples", op_n) &&
+                                json_double(pbody, "cro_inner_probe_survived", ip_s) &&
+                                json_double(pbody, "cro_object_probe_survived", cp_s) &&
+                                json_double(pbody, "cro_object_probe_samples", cp_n) &&
+                                json_bool(pbody, "cro_probe_view_followed", op_f) &&
+                                json_bool(pbody, "cro_inner_probe_view_followed", ip_f);
             check(probes && pr1 && pr2 && pr3, "all three mutation probes ran and restored");
 
             // ---- THE PROBE GUARD: A VERDICT, NOT A COUNT -------------------------------------------
@@ -5343,12 +5392,12 @@ int main(int argc, char** argv) {
             // 0 = Inconclusive, 1 = Reclaimed, 2 = Held.
             double vd_o = -1.0, vd_c = -1.0, fr_o = -1.0, fr_c = -1.0, fa_n = -1.0;
             bool fa_ok = false;
-            const bool guard = json_double(body, "cro_probe_verdict", vd_o) &&
-                               json_double(body, "cro_object_probe_verdict", vd_c) &&
-                               json_double(body, "cro_probe_frames", fr_o) &&
-                               json_double(body, "cro_object_probe_frames", fr_c) &&
-                               json_bool(body, "fa_available", fa_ok) &&
-                               json_double(body, "fa_distinct_frames", fa_n);
+            const bool guard = json_double(pbody, "cro_probe_verdict", vd_o) &&
+                               json_double(pbody, "cro_object_probe_verdict", vd_c) &&
+                               json_double(pbody, "cro_probe_frames", fr_o) &&
+                               json_double(pbody, "cro_object_probe_frames", fr_c) &&
+                               json_bool(pbody, "fa_available", fa_ok) &&
+                               json_double(pbody, "fa_distinct_frames", fa_n);
             check(guard && fa_ok, "the render-path liveness signal is readable");
             check(guard && fa_n >= 1.0, "at least one frame value is observable");
             // THE EXACT RELATIONSHIP, valid in every state: Inconclusive if and only if the render path did not
@@ -5374,7 +5423,7 @@ int main(int argc, char** argv) {
                   "an idle pipeline reclaims none of the holder fields either");
             // A probe must LEAVE THE FIELD USABLE whatever it found.
             bool cro_lu = false;
-            check(json_bool(body, "cro_probe_left_unit", cro_lu) && cro_lu,
+            check(json_bool(pbody, "cro_probe_left_unit", cro_lu) && cro_lu,
                   "the probe restores a unit quaternion");
 
             bool cro_rr = false;
@@ -5483,11 +5532,11 @@ int main(int argc, char** argv) {
             // player does not move in this fixture". That assumption was written down and then built on, and it
             // is false the moment someone plays the game -- the cached position is recomputed per frame from
             // (position - last_position), so while moving it necessarily trails the engine object.
-            bool ms_moving_now = false;
-            json_bool(body, "mv_moving", ms_moving_now);
-            check(ms_moving_now || ms_pm,
-                  "while stationary the cached position equals the engine object's bit for bit -- while moving "
-                  "it trails by construction, so equality is not required");
+            // Same correction as the camera pose: a verdict rather than a movement gate.
+            bool ms_nd = false;
+            check(json_bool(body, "ms_position_never_differs", ms_nd) && ms_nd,
+                  "the cached position never DIFFERS from the engine object's -- equal when both held still, "
+                  "torn when a frame landed between the reads");
             check(json_bool(body, "ms_velocity_finite", ms_vf) && ms_vf,
                   "the velocity triple is finite");
             check(json_bool(body, "ms_position_finite", ms_pf) && ms_pf,
