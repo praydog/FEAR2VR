@@ -1702,16 +1702,63 @@ int main(int argc, char** argv) {
                     double wvh = -1.0, mfh = -1.0;
                     json_double(body, "weapon_vs_hand", wvh);
                     json_double(body, "muzzle_from_hand", mfh);
-                    check(wvh >= 0.0 && wvh < 0.05,
-                          "the ENGINE's placement of the weapon matches OUR socket "
-                          "composition for the hand holding it");
+                    // MEASURED IN PHASE, and that is the whole correction. This asserted
+                    // `wvh < 0.05` on two values read from THIS thread, and it failed
+                    // intermittently -- 0.000, then 0.159, then 2.139 across runs. None of
+                    // those measured the arithmetic: a frame boundary lands between the two
+                    // reads whenever it likes, and the idle animation sways the arm across
+                    // it, so the number reported WHEN the reads happened.
+                    //
+                    // WeaponAgreement does the same comparison on the engine's update tick,
+                    // where no boundary can intervene, and reports the worst disagreement
+                    // over frames in which the weapon was not moving -- the only frames that
+                    // can hold it to a tight bound, because they have no motion to hide
+                    // behind. Live that worst case is 0.0005 over thousands of still frames,
+                    // which is why this bound can be tight where the old one could not be.
+                    // The mod starts counting when the DLL is injected, which is moments
+                    // before this runs, so wait for a sample worth judging rather than
+                    // asserting on whatever happened to accumulate. A player who is moving
+                    // never produces one, and that is a skip, not a failure.
+                    constexpr double kStillFramesNeeded = 100.0;
+                    double wa_worst = -1.0, wa_still = -1.0;
+                    bool wa_valid = false;
+                    std::string wbody = body;
+                    for (int attempt = 0; attempt < 20; ++attempt) {
+                        wa_valid = false;
+                        wa_still = -1.0;
+                        if (json_bool(wbody, "wa_valid", wa_valid) && wa_valid &&
+                            json_double(wbody, "wa_still_frames", wa_still) &&
+                            wa_still >= kStillFramesNeeded) {
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                        if (http::get(port, "/sdk/targets", resp)) {
+                            wbody = http::body_of(resp);
+                        }
+                    }
+                    const bool wa_ok = json_bool(wbody, "wa_valid", wa_valid) && wa_valid &&
+                                       json_double(wbody, "wa_worst_at_rest", wa_worst) &&
+                                       json_double(wbody, "wa_still_frames", wa_still);
+                    check(wa_ok, "the engine's placement and ours are compared on the update "
+                                 "tick, so the two producers cannot be read a frame apart");
+                    check_gated(wa_ok && wa_still >= kStillFramesNeeded, "weapon in motion",
+                                g_skipped_motion, wa_worst >= 0.0 && wa_worst < 0.05,
+                                "the ENGINE's placement of the weapon matches OUR socket "
+                                "composition for the hand holding it, worst case, at rest");
+                    // The cross-thread read stays, bounded by BODY SCALE rather than by
+                    // epsilon: it can only be as good as its sampling, and asserting more of
+                    // it than that is what made this flake.
+                    check(wvh >= 0.0 && wvh < 400.0,
+                          "and the same comparison read across threads still lands on the "
+                          "player rather than somewhere else in the level");
                     // A muzzle is down a barrel from the grip: far enough to be a real
                     // offset, near enough to still be part of the weapon.
                     check(mfh > 5.0 && mfh < 150.0,
                           "the muzzle sits a BARREL LENGTH from the hand, not at it and "
                           "not across the level");
-                    printf("[fixture] muzzle: %.1f from the hand, engine agrees to %.3f\n",
-                           mfh, wvh);
+                    printf("[fixture] muzzle: %.1f from the hand; in-phase agreement worst "
+                           "%.4f over %.0f still frames (cross-thread read %.3f)\n",
+                           mfh, wa_worst, wa_still, wvh);
                 } else {
                     printf("[fixture] NOTE: nothing mounted on the player carries a "
                            "'flash' socket -- the attachment chain was NOT exercised.\n");

@@ -4562,3 +4562,24 @@ roughly itself -- the same phase trap that made the projection-centre check read
 
 Consumer API: `PlayerMgr::camera_rotation_operands_from_holder()`, `HeadTracking::set_head_rotation()` /
 `clear()`, `CameraPassHook::set_probe_point()` / `observed().probe_pixel`.
+
+## The weapon-socket "disagreement" was the test's sampling, not the arithmetic
+
+The strongest check in the suite -- the engine's placement of the held weapon against our own composition of
+the RightHand socket, two independent producers of one point -- had been failing intermittently at a 0.05
+bound. The failures were not reproducible: 0.000, then 0.159, then 2.139 on consecutive runs of unchanged
+code.
+
+Both values were read from the IPC thread. A frame boundary lands between the two reads whenever it likes,
+and the idle animation sways the arm across it, so the number reported WHEN the reads happened rather than
+whether the composition was right. A varying residual with no code change is the signature.
+
+`WeaponAgreement` does the same comparison on the engine's own update tick -- `Mod::on_frame`, the tick that
+places attached objects -- where no boundary can intervene. It also records the weapon's per-frame travel,
+because that is the scale a residual must be judged against: a broken composition is wrong by units however
+still the player stands, while sampling skew shrinks to nothing at rest.
+
+**In phase, the disagreement is 0.0000, worst case, over hundreds of still frames.** The composition was
+exact the whole time. The bound can now be tight where the old one could not be, and it is gated on having
+seen enough still frames for the claim to mean something -- a player who is moving yields a skip, not a
+failure, which is the same rule the rest of this suite follows.

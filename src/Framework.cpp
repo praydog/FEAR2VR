@@ -30,6 +30,7 @@
 #include "mods/ConsoleRunner.hpp"
 #include "mods/FocusKeeper.hpp"
 #include "mods/HeadTracking.hpp"
+#include "mods/WeaponAgreement.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -1281,6 +1282,18 @@ std::string build_targets_json() {
     // socket position this SDK composes independently. Two unrelated producers -- the
     // engine's attachment updater and our own composition -- landing on the same point is
     // real evidence the composition is right.
+    // IN-PHASE AGREEMENT, measured on the frame callback rather than here.
+    //
+    // Two independent producers of one point -- the engine's placement of the attached weapon, and our own
+    // composition of the hand socket -- can only be compared if they are read in the SAME frame. Read from
+    // this thread they are not: a frame boundary lands between them whenever it likes, and the idle animation
+    // sways the arm across it, so the disagreement measures WHEN the reads happened rather than whether the
+    // arithmetic is right. Sampled live it wandered 0.000 / 0.159 / 2.139 for that reason alone.
+    //
+    // The frame callback has no such gap. It also records how far the weapon travels per frame, which is the
+    // scale any residual has to be judged against: a broken composition is wrong by units no matter how
+    // still the player stands, while frame skew shrinks to nothing when nothing moves.
+    const auto wa = WeaponAgreement::get().observed();
     bool muzzle_ok = false, muzzle_clean = false;
     float muzzle[3] = {0, 0, 0};
     float weapon_vs_hand = -1.0f, muzzle_from_hand = -1.0f;
@@ -1391,6 +1404,8 @@ std::string build_targets_json() {
              // The muzzle, and the engine-vs-us agreement on where the weapon sits.
              "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
+             "\"wa_valid\":%s,\"wa_frames\":%llu,\"wa_disagreement\":%.4f,\"wa_step\":%.4f,"
+             "\"wa_worst_at_rest\":%.4f,\"wa_still_frames\":%llu,"
              // Where the player is in the world's own spatial terms.
              "\"sector_total\":%d,\"sector_candidates\":%d,\"sector_brute\":%d,\"sec_read_ok\":%d,\"sec_with_planes\":%d,\"sec_plane_total\":%d,"
              "\"sec_planed\":%d,\"sec_centre_in\":%d,"
@@ -1492,6 +1507,8 @@ std::string build_targets_json() {
              muzzle_clean ? "true" : "false",
              muzzle[0], muzzle[1], muzzle[2],
              muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
+             wa.valid ? "true" : "false", static_cast<unsigned long long>(wa.frames), wa.disagreement,
+             wa.step, wa.worst, static_cast<unsigned long long>(wa.still_frames),
              sector_total, sector_candidates, sector_brute,
              sec_read_ok, sec_with_planes, sec_plane_total, sec_planed, sec_centre_in,
              sec_plane_probed, sec_plane_pos, sec_plane_neg,
@@ -9837,6 +9854,7 @@ bool Framework::initialize() {
     // The head-orientation composition point. Independent of CameraPassHook: that one places the EYES, this
     // one turns the HEAD, and a VR mod needs both.
     Mods::get().add(&HeadTracking::get());
+    Mods::get().add(&WeaponAgreement::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
