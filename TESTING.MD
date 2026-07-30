@@ -851,3 +851,30 @@ simulating one.
 And what the suite asserts shrank to what is established: the input is delivered, it turns the
 player, its DIRECTION is consistent. The non-constant gain is printed, not asserted. Reporting an
 unexplained observation is not weakening a test; asserting it would be inventing one.
+
+## A control loop's tolerance is not the test's bound
+
+`TurnController` converges when it OBSERVES its heading error inside 0.5 degrees. The fixture reads
+the heading AFTERWARDS, and the smallest correction the controller can issue is one unit of look
+input, worth about 0.144 degrees. So what the design can promise a later reader is
+`tolerance + one quantum`, not `tolerance`.
+
+Asserting a flat 0.5 passed three runs and was measuring luck: live residuals reach 0.478. The bound
+is now written as `kTurnTolerance + kOneStep` with both named and both traceable to the mechanism --
+the controller's own constant and its input quantisation.
+
+This is the legitimate version of a widened bound, and the distinction is worth stating because it
+looks identical from outside a diff. A bound DERIVED from the mechanism's own resolution is evidence;
+a bound enlarged until the run went green is not. If you cannot name where each term came from, it is
+the second kind.
+
+## Gate a control loop on the thing being controllable
+
+A closed loop that drives game state has a failure mode an open one does not: the target stops
+responding while the input keeps being accepted. `TurnController` burned its entire 24-iteration
+budget against a heading frozen to the decimal, because the player had died -- and a dead player
+still accepts look input, it simply does nothing with it.
+
+The loop could not tell "cannot move" from "has not moved yet", and neither could its counters. Any
+loop of this shape needs a liveness gate on the subject, not just an iteration cap: the cap bounds
+the damage, the gate identifies the cause. `player_stats()->alive()` is the one here.

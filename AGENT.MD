@@ -580,3 +580,24 @@ sum. Route: `/input/look?dx=&dy=`.
 first delta after an injection was seen turning roughly double a later identical one. Anything
 needing an exact heading must CLOSE THE LOOP: read `sdk::PlayerMgr::aim_yaw()`, correct, repeat --
 converges in 1-3 iterations to under 0.3 degrees. That is also how a snap turn should be built.
+
+## Locomotion and snap turn
+
+**Movement is AIM-relative.** Measured: holding forward with a head pose composed in gives a velocity
+whose bearing equals `aim_yaw` to 0.00 degrees, at 312 units/second. The player walks where the body
+points, never where they look. `sdk::PlayerMgr::locomotion()` reports speed, bearing, and the bearing
+relative to both the aim and the view -- speed for a comfort vignette, bearing-to-view for "should I
+recentre".
+
+`TurnController` turns the player to a HEADING, which an open-loop delta cannot do because the
+engine's look gain is not constant. `/vr/turn?by=` snap-turns, `?to=` takes an absolute heading,
+`?recentre=1` faces the body where the head is looking (which is how "walk where I look" works, since
+movement follows the aim). Live: +/-30 and +/-90 land inside 0.5 degrees in 4-6 corrections.
+
+Three things it has to do, each learned by measuring the failure:
+- **Wait for a correction to land** (3 frames) before evaluating the next, or it corrects stale error
+  and oscillates into the iteration cap.
+- **Require two consecutive in-tolerance readings**, or it stops with a delta in flight and overshoots
+  by ~2 degrees.
+- **Gate on the player being alive.** Input is still accepted when dead, it just does nothing, so the
+  loop burns its whole budget against a frozen heading.
