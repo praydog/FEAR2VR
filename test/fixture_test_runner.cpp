@@ -7077,6 +7077,26 @@ int main(int argc, char** argv) {
             check(json_has(body, "t6=200/200/190/0"),
                   "type 6 satisfies BOTH readings in 190 of 200 -- recorded as undecided, since a measurement "
                   "that cannot separate two hypotheses is not evidence for either");
+
+            // ---- WHAT SEPARATES TYPE 4 FROM TYPE 5, AND WHAT THE HEADER IS NOT -------------------
+            //
+            // Both point to {uint32 header, char text[]}, so the layout cannot distinguish them. Reported as
+            // sampled/zero-headers/header-equals-text-hash/readable/IDS-keys.
+            check(json_has(body, "t5=33/z33/h0/r33/ids33"),
+                  "ALL 33 type-5 attributes in the database -- the whole population, not a sample -- have a zero "
+                  "header and text beginning IDS_, so type 5 is a localization key");
+            check(json_has(body, "t4=400/z107/h0/r373/ids0"),
+                  "and NONE of 400 type-4 samples is a localization key, so the tag carries the distinction "
+                  "rather than the layout");
+            // THE REFUTATION, kept as a check so the hypothesis is not retried: the header is NOT an interned
+            // hash. 0 of 433 headers equal String_HashI of their own text.
+            check(json_has(body, "/h0/") && json_has(body, "t4=400/z107/h0"),
+                  "no header equals the hash of its own text, refuting the interned-string reading -- what the "
+                  "header IS stays unestablished rather than guessed");
+            // AND THE WHOLE CHAIN READS END TO END: hash resolves to a name, pointer resolves to text.
+            check(json_has(body, "PlayerName=IDS_PLAYER_NAME"),
+                  "an attribute reads as a NAME and a VALUE together -- the hash resolved through the name index "
+                  "and the text through the layout");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

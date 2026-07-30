@@ -62,7 +62,7 @@ class CAPIHolder 0xC {
 // only their raw values are recorded (neutral names on purpose).
 class HashEntry 0x8 {
     uint32_t name_hash  @0x00   // CONFIRMED String_HashI of the attribute name; the key DatabaseMgr_FindAttributeByHash binary-searches
-    uint8_t type        @0x04   // CONFIRMED the type tag -- ONLY the low 6 bits (& 0x3F). Live 1..9, never 0. 1=bool(packed bit) 2=float 3=integer-like(not a pointer) 4,5=pointer to {uint32 header, char text[]} 6,7,8=pointer to 8/12/16 bytes 9,10=RECORD LINK (fixed up in place from a packed category/record index pair)
+    uint8_t type        @0x04   // CONFIRMED the type tag -- ONLY the low 6 bits (& 0x3F). Live 1..9, never 0. 1=bool(packed bit) 2=float 3=integer-like(not a pointer) 4=STRING and 5=LOCALIZATION KEY, both pointing to {uint32 header, char text[]} -- all 33 type-5 in the database are IDS_* keys, no type-4 is 6=8 bytes 7=LTVector(3 floats, measured) 8=16 bytes(4 floats, measured) 9,10=RECORD LINK (fixed up in place from a packed category/record index pair)
     uint8_t num_values  @0x05   // CONFIRMED the ELEMENT COUNT: every one of the nine typed getters bounds-checks its value index against it. The reference names the same thing GetNumValues(HATTRIBUTE). Live: 331635 values across 306570 attributes, 8251 multi-valued, 1877 with zero
     uint16_t value_index @0x06  // CONFIRMED index into the record's value_blob, IN DWORDS -- except for type 1 where it is a BIT index (blob + 4*(i>>5), bit i&0x1F). The genny's earlier "small values then constant 0x00" was this little-endian 16-bit field
 }
@@ -6650,3 +6650,37 @@ class CPlayerCamera 0x18C6 {
 // sample_struct_type.
 //
 // 1387 checks, 0 failures.
+
+// ---- TYPE 4 IS A STRING, TYPE 5 IS A LOCALIZATION KEY, AND THE HEADER IS NOT A HASH -------------
+//
+// Types 4 and 5 share the layout {uint32 header, char text[]}, so the layout can never separate them. The tag
+// does, and the evidence is a population rather than a sample:
+//
+//     t5 = 33 sampled / 33 zero-header / 0 header==hash / 33 readable / 33 IDS_ keys
+//     t4 = 400 sampled / 107 zero-header / 0 header==hash / 373 readable / 0 IDS_ keys
+//
+// The shipped database holds EXACTLY 33 type-5 attributes, so 33/33 is the whole population, not a sample.
+// Every one is an IDS_* localization key -- Profile/Multiplayer's PlayerName reads "IDS_PLAYER_NAME" -- and not
+// one of 400 type-4 samples is. So type 4 is an ordinary string and type 5 a key the game resolves elsewhere.
+//
+// THREE HYPOTHESES ABOUT THESE TWO TYPES WERE TESTED; TWO WERE REFUTED, AND BOTH CHECKS ARE KEPT:
+//   * "type 5 is a wide string" -- a POSITIVE UTF-16 test (printable low bytes, zero high bytes) matched 0 of
+//     33. The earlier reading rested on the ABSENCE of ASCII, which is not evidence of UTF-16.
+//   * "the header is String_HashI of the text", i.e. an interned string -- 0 of 433 headers across both types
+//     match. What the header IS remains unestablished. It is zero for all of type 5 and for 107 of 400 type-4
+//     samples, which is consistent with a runtime cache shipped empty, and nothing here shows that.
+//   * "type 5 is a localization key" -- 33 of 33. Established.
+//
+// TYPE 3 IS AN INTEGER BY ELIMINATION, and the argument is labelled rather than dressed as a measurement: the
+// measurement shows only that it is NOT a pointer (40 of 400 land in committed memory, none dereference to
+// text). The reference's scalar getters are GetBool, GetFloat, GetInt32, GetString, GetWString; types 1, 2, 4
+// and 5 account for four by direct evidence, leaving GetInt32. Signedness is NOT established.
+//
+// THE WHOLE CHAIN NOW READS END TO END. An attribute yields a NAME (hash resolved through the module-string
+// index) and a VALUE (pointer resolved through the layout): PlayerName = "IDS_PLAYER_NAME".
+//
+// Named in gamedatabase.dll: IDatabaseMgr_GetString, IDatabaseMgr_GetLocalizedStringKey, IDatabaseMgr_GetInt32.
+// Exposed as sdk::DatabaseMgr::attribute_text / sample_string_header, with Attribute::is_text and
+// is_localized_key, and kTypeString / kTypeLocalizedKey replacing the placeholder tag names.
+//
+// 1391 checks, 0 failures.

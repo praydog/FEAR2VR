@@ -7472,6 +7472,51 @@ std::string build_database_json() {
                         json_escape_append(entry0_json, st);
                     }
 
+                    // ---- WHAT IS THE STRING HEADER, AND WHAT SEPARATES 4 FROM 5? ----
+                    {
+                        std::string sh;
+                        for (uint8_t t : {sdk::DatabaseMgr::kTypeDwordB, sdk::DatabaseMgr::kTypeDwordC}) {
+                            const auto smp = sdk::DatabaseMgr::sample_string_header(e->record_a, t, 400);
+                            if (!sh.empty()) {
+                                sh += ";";
+                            }
+                            sh += "t" + std::to_string(t) + "=" + std::to_string(smp.sampled) + "/z" +
+                                  std::to_string(smp.header_zero) + "/h" +
+                                  std::to_string(smp.header_is_text_hash) + "/r" +
+                                  std::to_string(smp.text_readable) + "/ids" +
+                                  std::to_string(smp.text_is_ids_key);
+                        }
+                        entry0_json += ",\"attr_string_headers\":";
+                        json_escape_append(entry0_json, sh);
+                        // A NAMED, READ EXAMPLE of each, so the accessor is demonstrated and not just counted.
+                        std::string texts;
+                        for (size_t i = 0; i < ncat && texts.size() < 200; ++i) {
+                            auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                            const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                            for (size_t j = 0; j < nrec && texts.size() < 200; ++j) {
+                                auto* rec = sdk::DatabaseMgr::record(cat, j);
+                                const auto na = sdk::DatabaseMgr::attribute_count(rec);
+                                for (size_t k = 0; k < na && texts.size() < 200; ++k) {
+                                    const auto a = sdk::DatabaseMgr::attribute_at(rec, k);
+                                    if (!a.has_value() || a->type != sdk::DatabaseMgr::kTypeDwordC) {
+                                        continue;
+                                    }
+                                    const auto txt = sdk::DatabaseMgr::attribute_text(*a, 0);
+                                    const auto nm = sdk::DatabaseMgr::attribute_name(*a);
+                                    if (!txt.has_value()) {
+                                        continue;
+                                    }
+                                    if (!texts.empty()) {
+                                        texts += ";";
+                                    }
+                                    texts += nm.value_or("?") + "=" + *txt;
+                                }
+                            }
+                        }
+                        entry0_json += ",\"attr_type5_texts\":";
+                        json_escape_append(entry0_json, texts);
+                    }
+
                     // THE CROSS-ROUTE CHECK. These names come from gameclient's CMoveMgr_Init, which reads them
                     // as DATABASE attributes. Their hashes must appear as descriptors somewhere in the database
                     // -- names from one module's code, structures from another's data.

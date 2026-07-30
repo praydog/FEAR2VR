@@ -904,4 +904,65 @@ DatabaseMgr::StructSample DatabaseMgr::sample_struct_type(const regenny::Databas
     return out;
 }
 
+
+std::optional<std::string> DatabaseMgr::attribute_text(const Attribute& attribute, size_t i) {
+    if (attribute.type != kTypeDwordB && attribute.type != kTypeDwordC) {
+        return std::nullopt;
+    }
+    const auto raw = attribute_raw_dword(attribute, i);
+    if (!raw.has_value() || *raw <= 0x10000) {
+        return std::nullopt;
+    }
+    return mem::read_name(*raw + 4, 128, 1);
+}
+
+DatabaseMgr::StringHeaderSample DatabaseMgr::sample_string_header(const regenny::DatabaseMgrSubRecord* database,
+                                                                uint8_t type, size_t limit) {
+    StringHeaderSample out;
+    out.type = type;
+    if (type != kTypeDwordB && type != kTypeDwordC) {
+        return out;
+    }
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat && out.sampled < limit; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        for (size_t j = 0; j < nrec && out.sampled < limit; ++j) {
+            const auto* rec = record(cat, j);
+            const auto na = attribute_count(rec);
+            for (size_t k = 0; k < na && out.sampled < limit; ++k) {
+                const auto a = attribute_at(rec, k);
+                if (!a.has_value() || a->type != type) {
+                    continue;
+                }
+                const auto raw = attribute_raw_dword(*a, 0);
+                if (!raw.has_value() || *raw <= 0x10000) {
+                    continue;
+                }
+                const auto header = mem::read<uint32_t>(*raw);
+                if (!header.has_value()) {
+                    continue;
+                }
+                ++out.sampled;
+                if (*header == 0) {
+                    ++out.header_zero;
+                }
+                const auto text = mem::read_name(*raw + 4, 128, 1);
+                if (!text.has_value() || text->empty()) {
+                    continue;
+                }
+                ++out.text_readable;
+                if (text->rfind("IDS_", 0) == 0) {
+                    ++out.text_is_ids_key;
+                }
+                const auto want = hash_name(*text);
+                if (want.has_value() && *want == *header) {
+                    ++out.header_is_text_hash;
+                }
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace sdk

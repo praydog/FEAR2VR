@@ -293,16 +293,20 @@ public:
     //   2  FLOAT, read straight from the blob dword. YawClamp and YawBias carry it and CMoveMgr reads floats.
     //   3  NOT A POINTER. Sampled 400: only 40 land in committed memory and none dereference to text, so the
     //      dword is a value. Integer-like, and left at that.
-    //   4, 5  BOTH POINT TO A {uint32 header, char text[]} STRUCTURE, measured rather than assumed:
-    //        type 4  400/400 are pointers, and 293 read as text from offset 0 while the other 107 have a ZERO
-    //                header with text at +4. 293 + 107 = 400 exactly, so it is one layout whose header is
-    //                sometimes zero and sometimes not.
-    //        type 5  33/33 have the zero header with text at +4, and the one sampled reads "IDS_PLAYER_N..." --
-    //                a localization key, in Profile/Multiplayer.
-    //      WHAT SEPARATES 4 FROM 5 IS NOT ESTABLISHED. The layout is shared; only the tag and the population
-    //      differ. A wide-string reading of 5 was TESTED AND REFUTED: a positive UTF-16 check (printable low
-    //      bytes, zero high bytes) matched 0 of 33, which is why the check exists instead of inferring "wide"
-    //      from the absence of ASCII.
+    //   4  A STRING. Points to {uint32 header, char text[]}; 400/400 are pointers and 373 of 400 have readable
+    //      text at +4. NONE of the 400 is a localization key.
+    //   5  A LOCALIZATION KEY, same layout, and this is established over the WHOLE population rather than a
+    //      sample: the database holds exactly 33 type-5 attributes and ALL 33 have a zero header and text
+    //      beginning "IDS_" -- e.g. PlayerName = "IDS_PLAYER_NAME". So the tag, not the layout, carries the
+    //      distinction between an ordinary string and one the game must localize.
+    //
+    //      TWO READINGS OF 5 WERE TESTED AND REFUTED before this one, which is why both checks still exist:
+    //        * "wide string" -- a positive UTF-16 test (printable low bytes, zero high bytes) matched 0 of 33.
+    //          Inferring "wide" from the ABSENCE of ASCII would have been wrong.
+    //        * "the header is the text's hash", i.e. an interned string -- 0 of 433 type-4 and type-5 headers
+    //          equal String_HashI of their own text. What the header IS remains unestablished; it is zero for
+    //          all of type 5 and for 107 of 400 type-4 samples, which is consistent with a runtime cache the
+    //          data ships empty, but nothing here shows that.
     //   6  A POINTER to 8 bytes, copied as two dwords.
     //   7  A POINTER to 12 bytes. The size and shape of an LTVector, though nothing proves the components are
     //      floats.
@@ -322,9 +326,13 @@ public:
     static constexpr uint8_t kTypeMask = 0x3F;
     static constexpr uint8_t kTypeBool = 1;        // packed bit
     static constexpr uint8_t kTypeFloat = 2;
-    static constexpr uint8_t kTypeDwordA = 3;      // storage-identical trio, C type unestablished
-    static constexpr uint8_t kTypeDwordB = 4;
-    static constexpr uint8_t kTypeDwordC = 5;
+    static constexpr uint8_t kTypeDwordA = 3;          // integer-like: not a pointer, never text
+    static constexpr uint8_t kTypeString = 4;          // pointer to {uint32 header, char text[]}
+    static constexpr uint8_t kTypeLocalizedKey = 5;    // same layout; the text is an IDS_ localization key
+
+    // The historical names, kept because earlier records and comments use them.
+    static constexpr uint8_t kTypeDwordB = kTypeString;
+    static constexpr uint8_t kTypeDwordC = kTypeLocalizedKey;
     static constexpr uint8_t kType8Bytes = 6;
     static constexpr uint8_t kType12Bytes = 7;     // LTVector by size
     static constexpr uint8_t kType16Bytes = 8;     // LTVector4 / LTRotation by size
@@ -347,6 +355,11 @@ public:
         uintptr_t blob{};        // the record's value blob, needed to address elements
 
         bool is_bit() const { return type == kTypeBool; }
+        bool is_text() const { return type == kTypeString || type == kTypeLocalizedKey; }
+
+        // Is the text a localization key rather than a literal value? Established over the whole type-5
+        // population: all 33 begin "IDS_", and no type-4 sample does.
+        bool is_localized_key() const { return type == kTypeLocalizedKey; }
         bool is_record_link() const { return type == kTypeRecordLink || type == kTypeRecordLinkAlt; }
         bool is_struct() const { return struct_dword_count(type) != 0; }
 
@@ -496,6 +509,34 @@ public:
     // so is the result.
     static StructSample sample_struct_type(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
                                            size_t limit = 200);
+
+    // ---- WHAT THE STRING HEADER IS, AND WHETHER IT SEPARATES TYPES 4 AND 5 ----------------------
+    //
+    // Types 4 and 5 both point to {uint32 header, char text[]}. Type 5's header was zero in all 33 samples and
+    // type 4's was mixed, which is a difference in the DATA but says nothing about what the field MEANS or why
+    // there are two tags.
+    //
+    // The hypothesis worth testing is that the header is String_HashI of the text -- i.e. the structure is an
+    // INTERNED STRING, hash cached beside the characters. That is checkable exactly, not by shape: compute the
+    // hash and compare. It also gives a consumer a cheap comparison path if true.
+    struct StringHeaderSample {
+        uint8_t type{};
+        size_t sampled{};
+        size_t header_zero{};
+        size_t header_is_text_hash{};   // header == String_HashI(text at +4)
+        size_t text_readable{};
+        size_t text_is_ids_key{};       // the text begins "IDS_", the game's localization prefix
+    };
+
+    static StringHeaderSample sample_string_header(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
+                                                  size_t limit = 400);
+
+    // The text of a type 4 or 5 attribute element, read from +4 of the pointed-at structure. nullopt for any
+    // other type, an unreadable pointer, or text that is not printable.
+    //
+    // ONE ACCESSOR SERVES BOTH, because the layout is identical -- use is_localized_key() to decide whether the
+    // text is a value to show or a key to look up.
+    static std::optional<std::string> attribute_text(const Attribute& attribute, size_t i = 0);
 
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
