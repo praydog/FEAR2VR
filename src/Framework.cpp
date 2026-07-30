@@ -4776,6 +4776,54 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // ---- THE CAMERA CLAMP THE ENGINE WILL APPLY ----
+    {
+        auto* clamp_rec = sdk::PlayerMgr::camera_clamp_record(0);
+        const auto state = sdk::PlayerMgr::camera_clamp_state(0);
+        const auto chase = sdk::PlayerMgr::camera_state_is_chase(0);
+        json_append_bool(out, "cc_record_present", clamp_rec != nullptr);
+        json_append_bool(out, "cc_state_readable", state.has_value());
+        if (state.has_value()) {
+            json_append_double(out, "cc_state", static_cast<double>(*state), 0);
+        }
+        json_append_bool(out, "cc_chase_determinable", chase.has_value());
+        if (clamp_rec != nullptr) {
+            json_append_string(out, "cc_record_name", sdk::DatabaseMgr::record_name(clamp_rec).c_str());
+            const char* kStates[] = {"StandIdle", "StandMoving", "CrouchIdle",
+                                     "CrouchMoving", "Chase", "SlideKick"};
+            size_t found = 0, ordered = 0;
+            std::string vals;
+            for (const char* st : kStates) {
+                const auto c = sdk::PlayerMgr::camera_clamp(0, st);
+                if (!c.has_value()) {
+                    continue;
+                }
+                ++found;
+                if (c->first <= c->second) {
+                    ++ordered;
+                }
+                char buf[48]{};
+                snprintf(buf, sizeof(buf), "%s=%g/%g", st, static_cast<double>(c->first),
+                         static_cast<double>(c->second));
+                if (!vals.empty()) {
+                    vals += ";";
+                }
+                vals += buf;
+            }
+            json_append_double(out, "cc_states_found", static_cast<double>(found), 0);
+            json_append_double(out, "cc_states_ordered", static_cast<double>(ordered), 0);
+            json_append_string(out, "cc_values", vals.c_str());
+            // THE FALLBACK IS WIDER THAN THE REAL CLAMPS -- worth asserting, since it inverts the usual
+            // expectation that a missing record is more restrictive.
+            const auto ch = sdk::PlayerMgr::camera_clamp(0, "Chase");
+            json_append_bool(out, "cc_fallback_wider",
+                             ch.has_value() && ch->second < sdk::PlayerMgr::kCameraClampFallback);
+        }
+        json_append_bool(out, "cc_unknown_state_refused",
+                         !sdk::PlayerMgr::camera_clamp(0, "NoSuchState").has_value() &&
+                             !sdk::PlayerMgr::camera_clamp(9, "Chase").has_value());
+    }
+
     // THE PLAYER'S SUBSYSTEM TABLE. 24 slots at +228..+320; 22 are class instances built by one constructor.
     {
         const auto slots = sdk::PlayerMgr::subsystem_slots(0);
@@ -7515,6 +7563,134 @@ std::string build_database_json() {
                         }
                         entry0_json += ",\"attr_type5_texts\":";
                         json_escape_append(entry0_json, texts);
+                    }
+
+                    // ---- WHICH CATEGORIES CARRY CAMERA AND MOVEMENT TUNABLES? ----
+                    //
+                    // Recon: the FOV chain was established from console variables several passes ago. If the
+                    // database also ships camera settings, a mod has a data-side lever as well as a cvar one.
+                    {
+                        std::string cams;
+                        size_t hits = 0;
+                        for (size_t i = 0; i < ncat; ++i) {
+                            auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                            if (cat == nullptr) {
+                                continue;
+                            }
+                            const auto nm = sdk::DatabaseMgr::category_name(cat);
+                            const bool relevant =
+                                nm.find("Camera") != std::string::npos ||
+                                nm.find("camera") != std::string::npos ||
+                                nm.find("Movement") != std::string::npos ||
+                                nm.find("Player") != std::string::npos;
+                            if (!relevant) {
+                                continue;
+                            }
+                            ++hits;
+                            if (cams.size() < 400) {
+                                if (!cams.empty()) {
+                                    cams += ";";
+                                }
+                                cams += nm + "(" + std::to_string(sdk::DatabaseMgr::record_count(cat)) + ")";
+                            }
+                        }
+                        entry0_json += ",\"cam_categories\":" + std::to_string(hits);
+                        entry0_json += ",\"cam_category_list\":";
+                        json_escape_append(entry0_json, cams);
+
+                        // Client/CameraClamping is the one that matters for a head-tracked view: dump every
+                        // record it holds, named and typed.
+                        {
+                            auto* cc = sdk::DatabaseMgr::find_category(e->record_a, "Client/CameraClamping");
+                            std::string dump;
+                            size_t nrec = 0, attrs = 0, named = 0;
+                            if (cc != nullptr) {
+                                nrec = sdk::DatabaseMgr::record_count(cc);
+                                for (size_t r = 0; r < nrec; ++r) {
+                                    auto* rec2 = sdk::DatabaseMgr::record(cc, r);
+                                    const auto cov = sdk::DatabaseMgr::describe_coverage(rec2);
+                                    attrs += cov.attributes;
+                                    named += cov.named;
+                                    if (!dump.empty()) {
+                                        dump += " || ";
+                                    }
+                                    dump += "[" + sdk::DatabaseMgr::record_name(rec2) + "] ";
+                                    bool first = true;
+                                    for (const auto& l : sdk::DatabaseMgr::describe_record_lines(rec2, 3)) {
+                                        if (!first) {
+                                            dump += " | ";
+                                        }
+                                        dump += l;
+                                        first = false;
+                                    }
+                                }
+                            }
+                            entry0_json += ",\"clamp_records\":" + std::to_string(nrec);
+                            entry0_json += ",\"clamp_attrs\":" + std::to_string(attrs);
+                            entry0_json += ",\"clamp_named\":" + std::to_string(named);
+                            entry0_json += ",\"clamp_dump\":";
+                            json_escape_append(entry0_json, dump);
+                            // THE PAIRS AS FLOATS, and whether every one is an ordered (min, max) range.
+                            {
+                                size_t pairs = 0, ordered = 0, plausible_angles = 0;
+                                std::string defaults;
+                                auto* def = (cc != nullptr) ? sdk::DatabaseMgr::find_record(cc, "Default")
+                                                            : nullptr;
+                                for (size_t r = 0; r < nrec; ++r) {
+                                    auto* rec2 = sdk::DatabaseMgr::record(cc, r);
+                                    const auto na = sdk::DatabaseMgr::attribute_count(rec2);
+                                    for (size_t k = 0; k < na; ++k) {
+                                        const auto a = sdk::DatabaseMgr::attribute_at(rec2, k);
+                                        if (!a.has_value()) {
+                                            continue;
+                                        }
+                                        const auto p = sdk::DatabaseMgr::attribute_float_pair(*a, 0);
+                                        if (!p.has_value()) {
+                                            continue;
+                                        }
+                                        ++pairs;
+                                        if (p->ordered()) {
+                                            ++ordered;
+                                        }
+                                        // Angles in degrees: positive and within a turn.
+                                        if (p->first > 0.0f && p->second > 0.0f && p->second <= 360.0f) {
+                                            ++plausible_angles;
+                                        }
+                                        if (rec2 == def && defaults.size() < 200) {
+                                            const auto nm = sdk::DatabaseMgr::attribute_name(*a);
+                                            char buf[64]{};
+                                            snprintf(buf, sizeof(buf), "%g/%g", static_cast<double>(p->first),
+                                                     static_cast<double>(p->second));
+                                            if (!defaults.empty()) {
+                                                defaults += ";";
+                                            }
+                                            defaults += nm.value_or("?") + "=" + buf;
+                                        }
+                                    }
+                                }
+                                entry0_json += ",\"clamp_pairs\":" + std::to_string(pairs);
+                                entry0_json += ",\"clamp_ordered\":" + std::to_string(ordered);
+                                entry0_json += ",\"clamp_angles\":" + std::to_string(plausible_angles);
+                                entry0_json += ",\"clamp_defaults\":";
+                                json_escape_append(entry0_json, defaults);
+                                // A NON-TYPE-6 ATTRIBUTE MUST REFUSE the pair reader, or the type check is idle.
+                                bool refused = false;
+                                {
+                                    auto* sh2 = sdk::DatabaseMgr::find_category(e->record_a, "Client/Shared");
+                                    auto* rec3 = (sh2 != nullptr && sdk::DatabaseMgr::record_count(sh2) > 0)
+                                                     ? sdk::DatabaseMgr::record(sh2, 0)
+                                                     : nullptr;
+                                    if (rec3 != nullptr) {
+                                        const auto was =
+                                            sdk::DatabaseMgr::find_attribute(rec3, "WaterAffectsSpeed");
+                                        refused = was.has_value() &&
+                                                  !sdk::DatabaseMgr::attribute_float_pair(*was, 0).has_value();
+                                    }
+                                }
+                                entry0_json += ",\"clamp_pair_refused\":" +
+                                               std::string(refused ? "true" : "false");
+                            }
+                        }
                     }
 
                     // ---- READING Client/Shared THE WAY THE GAME DOES ----

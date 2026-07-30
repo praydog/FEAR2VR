@@ -307,7 +307,16 @@ public:
     //          equal String_HashI of their own text. What the header IS remains unestablished; it is zero for
     //          all of type 5 and for 107 of 400 type-4 samples, which is consistent with a runtime cache the
     //          data ships empty, but nothing here shows that.
-    //   6  A POINTER to 8 bytes, copied as two dwords.
+    //   6  A POINTER TO TWO FLOATS. Sampling could not settle this -- 190 of 200 sampled values passed as
+    //      small integers as well as floats, so the measurement was recorded as UNDECIDED. Reading a record
+    //      whose meaning is known settled it at once: every attribute of Client/CameraClamping is type 6 and
+    //      every dword is an exact round float and absurd as an integer -- 0x42A00000 is 80.0f, 0x42AA0000 is
+    //      85.0f, 0x40A00000 is 5.0f. The pairs are (min, max) camera clamp ranges per movement state.
+    //
+    //      THE LESSON, since the sampling was not wrong so much as blind: a random sample of a type whose
+    //      values are mostly small cannot separate float from int, because small floats and small ints look
+    //      alike. A sample from a record whose SEMANTICS are known does separate them, because the values are
+    //      then expected to be angles rather than counts.
     //   7  A POINTER to 12 bytes. The size and shape of an LTVector, though nothing proves the components are
     //      floats.
     //   8  A POINTER to 16 bytes -- an LTVector4 or an LTRotation by size.
@@ -333,7 +342,8 @@ public:
     // The historical names, kept because earlier records and comments use them.
     static constexpr uint8_t kTypeDwordB = kTypeString;
     static constexpr uint8_t kTypeDwordC = kTypeLocalizedKey;
-    static constexpr uint8_t kType8Bytes = 6;
+    static constexpr uint8_t kTypeFloatPair = 6;   // two floats; (min, max) wherever seen so far
+    static constexpr uint8_t kType8Bytes = kTypeFloatPair;  // historical name
     static constexpr uint8_t kType12Bytes = 7;     // LTVector by size
     static constexpr uint8_t kType16Bytes = 8;     // LTVector4 / LTRotation by size
     static constexpr uint8_t kTypeRecordLink = 9;
@@ -418,6 +428,22 @@ public:
 
     // The dwords of a type 6/7/8 struct element -- 2, 3 or 4 of them. Empty for any other type.
     static std::vector<uint32_t> attribute_struct(const Attribute& attribute, size_t i = 0);
+
+    // The components of a type 6/7/8 element AS FLOATS -- 2, 3 or 4 of them. All three are established as float
+    // vectors now (6 from Client/CameraClamping's exact round angles, 7 and 8 from the integer-absurdity test),
+    // so this is the accessor to prefer over the raw dwords.
+    static std::vector<float> attribute_floats(const Attribute& attribute, size_t i = 0);
+
+    // A type-6 element as an ordered pair. nullopt for any other type or an unreadable element. Every type-6
+    // attribute seen so far is a (min, max) range, which `ordered` reports rather than assumes.
+    struct FloatPair {
+        float first{};
+        float second{};
+
+        bool ordered() const { return first <= second; }
+    };
+
+    static std::optional<FloatPair> attribute_float_pair(const Attribute& attribute, size_t i = 0);
 
     // The raw dword of a type 3/4/5 attribute, whose C type is not established. Deliberately NOT called
     // attribute_int: this hands over the bits and says nothing about what they mean.

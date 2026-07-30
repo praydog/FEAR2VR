@@ -1045,7 +1045,9 @@ std::vector<DatabaseMgr::DescribedAttribute> DatabaseMgr::describe_record(
                 }
                 // Types 7 and 8 measured as floats; type 6 is UNDECIDED, so it renders as hex rather than
                 // committing to a reading the measurement did not support.
-                const bool as_float = (a->type == kType12Bytes || a->type == kType16Bytes);
+                // All three struct types are established as float vectors, type 6 by Client/CameraClamping's
+                // exact round angles rather than by the sampling, which could not discriminate.
+                const bool as_float = true;
                 rendered += "(";
                 for (size_t k = 0; k < dwords.size(); ++k) {
                     if (k != 0) {
@@ -1106,6 +1108,28 @@ DatabaseMgr::DescribeCoverage DatabaseMgr::describe_coverage(const regenny::Data
         }
     }
     return out;
+}
+
+
+std::vector<float> DatabaseMgr::attribute_floats(const Attribute& attribute, size_t i) {
+    std::vector<float> out;
+    for (const auto d : attribute_struct(attribute, i)) {
+        float f = 0.0f;
+        std::memcpy(&f, &d, sizeof(f));
+        out.push_back(f);
+    }
+    return out;
+}
+
+std::optional<DatabaseMgr::FloatPair> DatabaseMgr::attribute_float_pair(const Attribute& attribute, size_t i) {
+    if (attribute.type != kTypeFloatPair) {
+        return std::nullopt;
+    }
+    const auto f = attribute_floats(attribute, i);
+    if (f.size() != 2) {
+        return std::nullopt;
+    }
+    return FloatPair{f[0], f[1]};
 }
 
 } // namespace sdk

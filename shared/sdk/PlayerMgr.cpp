@@ -11,6 +11,7 @@
 #include "Memory.hpp"
 #include "Modules.hpp"
 #include "CClientShell.hpp"
+#include "DatabaseMgr.hpp"
 #include "Engine.hpp"
 #include "Model.hpp"
 #include "Object.hpp"
@@ -1298,6 +1299,51 @@ std::optional<float> PlayerMgr::spectator_speed_mul(unsigned index) {
         return std::nullopt;
     }
     return mem::read<float>(cache->record);
+}
+
+
+regenny::DatabaseMgrRecord* PlayerMgr::camera_clamp_record(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return nullptr;
+    }
+    const auto p = mem::read_ptr(subs->player_camera + kCameraClampRecord);
+    if (!p.has_value() || *p == 0) {
+        return nullptr;
+    }
+    return reinterpret_cast<regenny::DatabaseMgrRecord*>(*p);
+}
+
+std::optional<uint32_t> PlayerMgr::camera_clamp_state(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return std::nullopt;
+    }
+    return mem::read<uint32_t>(subs->player_camera + kCameraStateMachine);
+}
+
+std::optional<std::pair<float, float>> PlayerMgr::camera_clamp(unsigned index, std::string_view state) {
+    auto* rec = camera_clamp_record(index);
+    if (rec == nullptr) {
+        return std::nullopt;
+    }
+    const auto attr = DatabaseMgr::find_attribute(rec, state);
+    if (!attr.has_value()) {
+        return std::nullopt;
+    }
+    const auto pair = DatabaseMgr::attribute_float_pair(*attr, 0);
+    if (!pair.has_value()) {
+        return std::nullopt;
+    }
+    return std::make_pair(pair->first, pair->second);
+}
+
+std::optional<bool> PlayerMgr::camera_state_is_chase(unsigned index) {
+    const auto st = camera_clamp_state(index);
+    if (!st.has_value()) {
+        return std::nullopt;
+    }
+    return *st == 1 || *st == 7;
 }
 
 }  // namespace sdk

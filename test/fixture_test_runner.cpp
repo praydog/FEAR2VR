@@ -4634,6 +4634,36 @@ int main(int argc, char** argv) {
             check(json_bool(body, "creg_noop_absent_refused", cr_nar) && cr_nar,
                   "a command that does not exist yields no answer rather than false");
 
+            // ---- THE CAMERA CLAMP, WHICH IS WHAT LIMITS A HEAD-TRACKED VIEW ------------------------
+            //
+            // CPlayerCamera_GetActiveCameraClamp picks a clamp for the player's state and writes it as two
+            // floats. Its record lives at CPlayerCamera+6332 and its selector at +688 -- the nine-state machine
+            // an earlier pass mapped and could NOT explain. States 1 and 7 select the Chase clamp, the first
+            // concrete meaning attached to any of those nine values.
+            double cc_st = -1.0, cc_found = -1.0, cc_ord = -1.0;
+            bool cc_rp = false, cc_sr = false, cc_cd = false, cc_fw = false, cc_ur = false;
+            check(json_bool(body, "cc_record_present", cc_rp) && cc_rp,
+                  "the camera resolved a Client/CameraClamping record");
+            check(json_has(body, "\"cc_record_name\":\"Default\""),
+                  "and it is the Default one, not Turret or ElitePoweredArmor");
+            check(json_bool(body, "cc_state_readable", cc_sr) && cc_sr &&
+                      json_double(body, "cc_state", cc_st) && cc_st >= 0.0 && cc_st <= 8.0,
+                  "the state-machine selector reads inside the nine-value range that pass documented");
+            check(json_bool(body, "cc_chase_determinable", cc_cd) && cc_cd,
+                  "and whether it selects Chase is answerable");
+            check(json_double(body, "cc_states_found", cc_found) && cc_found == 6.0,
+                  "all six clamps the accessor family names are present on that record");
+            check(json_double(body, "cc_states_ordered", cc_ord) && cc_ord == cc_found,
+                  "and every one is an ordered pair");
+            check(json_has(body, "Chase=40/45") && json_has(body, "SlideKick=5/5"),
+                  "with the shipped values the game's own accessors read -- Chase 40/45, SlideKick locked at 5/5");
+            // THE FALLBACK INVERTS THE USUAL EXPECTATION, so it is asserted rather than mentioned: an absent
+            // record LOOSENS the view instead of locking it.
+            check(json_bool(body, "cc_fallback_wider", cc_fw) && cc_fw,
+                  "the 85/85 fallback is WIDER than the real Chase clamp, so a missing record loosens the view");
+            check(json_bool(body, "cc_unknown_state_refused", cc_ur) && cc_ur,
+                  "an unknown state name and an out-of-range slot are both refused");
+
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
             // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one

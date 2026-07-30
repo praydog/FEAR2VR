@@ -6724,3 +6724,53 @@ class CPlayerCamera 0x18C6 {
 // Exposed as sdk::DatabaseMgr::describe_record / describe_record_lines / describe_coverage.
 //
 // 1401 checks, 0 failures.
+
+// ---- TYPE 6 SETTLED BY READING A RECORD THAT MEANS SOMETHING, AND THE CAMERA CLAMP ---------------
+//
+// Attribute type 6 was recorded UNDECIDED last pass: 190 of 200 sampled values passed as small integers as well
+// as floats, so the measurement could not separate the readings. Pointing the now-working describer at a
+// category whose PURPOSE is known settled it immediately.
+//
+// Client/CameraClamping holds three records -- Default, Turret, ElitePoweredArmor -- and every one of their 18
+// attributes is type 6. The dwords are exact round floats and absurd as integers: 0x42A00000 is 80.0f,
+// 0x42AA0000 is 85.0f, 0x40A00000 is 5.0f, 0x42340000 is 45.0f.
+//
+// AND THE GAME'S OWN CODE PROVES IT INDEPENDENTLY. Six identical 103-byte accessors, one per movement state,
+// each declare `float out[2]` and hand it to IDatabaseMgr slot 28:
+//
+//     CameraClamp_GetStandIdle / GetStandMoving / GetCrouchIdle / GetCrouchMoving / GetChase / GetSlideKick
+//
+// > THE LESSON is not that the sampling was wrong but that it was BLIND. A random sample of a type whose values
+// > are mostly small cannot separate float from int, because small floats and small ints look alike. A sample
+// > from a record whose SEMANTICS are known does separate them, because the values are then expected to be
+// > angles rather than counts. When a measurement cannot discriminate, change the population, not the test.
+//
+// THE DISPATCHER IS THE FIND: CPlayerCamera_GetActiveCameraClamp.
+//
+//     out[0] = out[1] = 85.0        the FALLBACK when no record is set
+//     record = this+6332            the Client/CameraClamping record CPlayerCamera_Init resolved
+//     state  = this+688             THE NINE-STATE MACHINE an earlier pass mapped and could not explain
+//     states 1 and 7 -> Chase       the FIRST concrete meaning attached to any of those nine values
+//
+// Shipped Default clamps, in degrees: StandIdle 80/85, StandMoving 80/85, CrouchIdle 42/85, CrouchMoving 42/85,
+// Chase 40/45, SlideKick 5/5. Live the camera has resolved the Default record with state 0, all six present and
+// all ordered min <= max.
+//
+// THE FALLBACK IS WIDER THAN THE REAL CLAMPS, which inverts the usual expectation: an absent record LOOSENS the
+// view rather than locking it. Asserted rather than mentioned, because a VR consumer reasoning "no record means
+// restricted" would have it backwards.
+//
+// WHETHER THE TWO COMPONENTS ARE A MIN/MAX OF ONE AXIS OR LIMITS ON TWO AXES IS NOT ESTABLISHED. SlideKick's 5/5
+// reads as a lock either way and Chase's 40/45 as a narrow band either way, so the shipped values do not
+// separate the readings and neither does the accessor's `float[2]`.
+//
+// +6332 sits four bytes below saved_near_z at +6336, consistent with the >= 6342-byte CPlayerCamera size an
+// early pass derived from the constructor -- a third field pinning that bound.
+//
+// Named in IDA: CameraClamp_Get{StandIdle,StandMoving,CrouchIdle,CrouchMoving,Chase,SlideKick},
+// CPlayerCamera_GetActiveCameraClamp, Database_FindCameraClampingRecord, and g_pIDatabaseMgr for the interface
+// pointer gameclient reads all of this through.
+// Exposed as sdk::DatabaseMgr::attribute_floats / attribute_float_pair and sdk::PlayerMgr::camera_clamp_record /
+// camera_clamp_state / camera_clamp / camera_state_is_chase.
+//
+// 1410 checks, 0 failures.

@@ -6,6 +6,8 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+#include "regenny/Primitives.hpp"
+#include "regenny/regenny/DatabaseMgrRecord.hpp"
 
 //
 // THE GAME'S OWN VIEW OF THE PLAYER -- gameclient.dll's player manager, which is a different thing from the
@@ -335,6 +337,47 @@ public:
     // Exists because the gap is real rather than theoretical: a consumer asking "has anything touched the
     // movement tunables" would silently miss this variable otherwise.
     static std::optional<bool> spectator_speed_mul_is_default(unsigned index);
+
+    // ---- THE CAMERA CLAMP, WHICH IS WHAT LIMITS A HEAD-TRACKED VIEW -------------------------
+    //
+    // CPlayerCamera_GetActiveCameraClamp picks a clamp for the player's current state and writes it as two
+    // floats. Its inputs are both on CPlayerCamera:
+    //
+    //     +6332  the Client/CameraClamping record CPlayerCamera_Init resolved
+    //     +688   the nine-state machine an earlier pass mapped and could not explain -- states 1 and 7 select
+    //            the "Chase" clamp, which is the first concrete meaning attached to any of those values
+    //
+    // and its FALLBACK when no record is set is (85, 85) -- wider than most of the shipped clamps, so an absent
+    // record loosens the view rather than locking it.
+    //
+    // Shipped Default record, in degrees: StandIdle 80/85, StandMoving 80/85, CrouchIdle 42/85,
+    // CrouchMoving 42/85, Chase 40/45, SlideKick 5/5. All 18 pairs across the three records (Default, Turret,
+    // ElitePoweredArmor) are ordered min <= max.
+    //
+    // WHETHER THE TWO COMPONENTS ARE A MIN/MAX OF ONE AXIS OR LIMITS ON TWO AXES IS NOT ESTABLISHED. SlideKick's
+    // 5/5 reads naturally as a lock either way, and Chase's 40/45 as a narrow band either way, so the shipped
+    // values do not separate the readings.
+    //
+    // +6332 sits four bytes below saved_near_z at +6336, consistent with the >= 6342-byte class size an early
+    // pass derived from the constructor.
+    static constexpr uintptr_t kCameraClampRecord = 6332;
+    static constexpr uintptr_t kCameraStateMachine = 688;
+    static constexpr float kCameraClampFallback = 85.0f;
+
+    // The Client/CameraClamping record the camera resolved, or nullptr when none is set (in which case the
+    // engine uses the fallback above).
+    static regenny::DatabaseMgrRecord* camera_clamp_record(unsigned index);
+
+    // The camera's state-machine value, which selects among the clamp attributes.
+    static std::optional<uint32_t> camera_clamp_state(unsigned index);
+
+    // One named clamp from that record, e.g. "Chase" or "StandIdle". nullopt when the record is absent or the
+    // attribute is not a float pair.
+    static std::optional<std::pair<float, float>> camera_clamp(unsigned index, std::string_view state);
+
+    // Does the state machine currently select the Chase clamp? The only mapping established so far, exposed as a
+    // question rather than as a full state decode.
+    static std::optional<bool> camera_state_is_chase(unsigned index);
 
     struct CameraSubObjects {
         uintptr_t controller{};      // player + 236, embedded at player + 0xE88
