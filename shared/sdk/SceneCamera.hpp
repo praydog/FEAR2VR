@@ -545,6 +545,63 @@ public:
     // nullopt when the exe is not mapped or the read faulted; a zero pair before any target has been bound.
     static std::optional<std::array<int32_t, 2>> current_target_size();
 
+    // ---- THE ASYMMETRIC FRUSTUM, WHICH IS WHAT AN HMD ACTUALLY NEEDS ------------------
+    //
+    // A headset's two eyes do not look through symmetric frustums: each is off-centre, in opposite
+    // directions, because the lens axis is not the panel centre. CLTRenderer_SetupPassPerspective cannot
+    // express that -- it hardcodes the projection centre to (0,0) -- so the capability the record DOES have
+    // has to be reached another way.
+    //
+    // The record carries the centre at +0x38/+0x3C and SceneRenderer_BuildCameraMatrices turns it into a
+    // SHEAR that it composes into the projection:
+    //
+    //     shear = [1 0 -centre_x 0]      projection      = BuildPerspective(near) * shear
+    //             [0 1 -centre_y 0]      view_projection = projection * view
+    //             [0 0  1        0]      world_to_screen = viewport_transform * view_projection
+    //
+    // WHY THE REBUILD IS THE WHOLE POINT. Writing the centre alone does nothing -- the matrices were already
+    // built. Patching the projection alone is worse: view_projection and world_to_screen would still describe
+    // the old camera, and everything that projects a world point (the HUD, hit markers, anything screen-space)
+    // would disagree with what was drawn. Calling the engine's own builder recomputes all three from one set
+    // of inputs, which is the only way they stay coherent.
+    //
+    // Units are the same as the half view-plane: a centre of (0.1, 0) shifts the frustum by a tenth of the
+    // half-width at unit depth.
+
+    // The engine's own matrix builder, taking the camera record. 0 when the pattern did not resolve.
+    static uintptr_t build_camera_matrices_fn();
+
+    // The record's current projection centre. nullopt when the exe is not mapped or the read faulted.
+    static std::optional<std::array<float, 2>> projection_centre();
+
+    // Writes the centre and REBUILDS, so the change reaches all three matrices together. Returns false when
+    // the record or the builder could not be resolved, or the values are not finite.
+    //
+    // RENDER THREAD ONLY, and only between a pass setup and its draw: it rewrites the record the renderer is
+    // about to read. Called from the IPC thread it races the pass that is already running.
+    static bool set_projection_centre(float x, float y);
+
+    // DOES THE PROJECTION ACTUALLY CARRY THE CENTRE THE RECORD CLAIMS?
+    //
+    // An assertion the record can be checked against ITSELF, which is the strongest form available: no
+    // baseline, no sibling structure, nothing to drift. SceneRenderer_BuildCameraMatrices composes
+    // `BuildPerspective(near) * shear`, and multiplying those out gives row 0 as
+    //
+    //     m[0][0] = 1/half_x        m[0][2] = -centre_x / half_x = -centre_x * m[0][0]
+    //     m[1][1] = 1/half_y        m[1][2] = -centre_y * m[1][1]
+    //
+    // so the shear terms are determined by the centre and the scale already in the same matrix. If a centre
+    // was written but the rebuild did not happen -- or happened against different inputs -- this fails, which
+    // is exactly the mistake worth catching: the write succeeding proves nothing on its own.
+    //
+    // Only meaningful for a PERSPECTIVE record; nullopt for any other mode, or when a read faulted. Tolerance
+    // scales with the magnitude of the terms rather than being a fixed window.
+    static std::optional<bool> projection_centre_is_consistent(float tolerance = 1e-4f);
+
+    // Recomposes the three matrices from the record's current scalars without changing anything. Exposed
+    // because a consumer that writes several fields wants ONE rebuild, not one per field.
+    static bool rebuild_matrices();
+
     enum class RendererSlot {
         BeginFrame,            // 8,  takes the frame time; state 1 -> 2, and publishes k_fTime
         BeginRenderTarget,     // 11, state 2 -> 3; the target's dimensions become the viewport scale

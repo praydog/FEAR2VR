@@ -85,6 +85,17 @@ public:
     // about this build.
     void set_main_view_only(bool on);
 
+    // AN ASYMMETRIC FRUSTUM PER EYE, which is the difference between side-by-side and a headset.
+    //
+    // The pass entry hardcodes the projection centre to (0,0), so this is applied AFTER the setup call
+    // returns and before the draw: write the centre and let the engine's own builder recompose the
+    // projection, the view-projection and the world-to-screen matrix together. Patching one of the three
+    // would leave the others describing a different camera.
+    //
+    // `centre` is in half-view-plane units and is applied with OPPOSITE sign per eye, the way a real pair of
+    // lenses is offset. Zero disables it, which is also the default.
+    void set_frustum_centre(float centre_x, float centre_y);
+
     // ---- BOTH EYES IN ONE FRAME ------------------------------------------------------
     //
     // set_eye() renders ONE eye. This renders two, by repeating the pass group inside the target the engine
@@ -153,6 +164,13 @@ public:
         uint64_t skipped_aux{};     // passes left alone because their target is not the back buffer
         bool main_view_only{};
         std::array<int32_t, 2> target_size{};  // the target bound when the last pass was set up
+        std::array<float, 2> frustum_centre{}; // the requested per-eye centre offset
+        std::array<float, 2> centre_applied{}; // what the record actually held after the last rebuild
+        uint64_t rebuilds{};                   // matrix rebuilds performed
+        // The record's own shear identity, evaluated IN PHASE inside the detour. Checked from the IPC thread
+        // it is never determinable: the last pass of a frame is the ortho HUD pass, which builds differently.
+        uint64_t centre_checked{};
+        uint64_t centre_inconsistent{};
 
         // The ARGUMENTS the engine passed, captured in the detour. In-phase with the frame they configure,
         // unlike anything read from the record afterwards.

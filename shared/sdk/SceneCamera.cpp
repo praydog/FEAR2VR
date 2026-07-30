@@ -938,6 +938,82 @@ std::optional<std::array<int32_t, 4>> SceneCamera::predicted_viewport_pixels(
     return out;
 }
 
+// SceneRenderer_BuildCameraMatrices @ FEAR2_dump.exe 0x00610BA1. Prologue only, and relocation-free:
+// push ebp / lea ebp,[esp-74h] / sub esp,12Ch / push ebx / mov ebx,[ebp+7Ch] / mov eax,[ebx+0Ch] / sub eax,[ebx+4]
+static constexpr const char* kBuildCameraMatrices =
+    "55 8D 6C 24 8C 81 EC 2C 01 00 00 53 8B 5D 7C 8B 43 0C 2B 43 04";
+
+uintptr_t SceneCamera::build_camera_matrices_fn() {
+    static const uintptr_t s_fn =
+        Modules::get().scan_exe(kBuildCameraMatrices, "SceneRenderer_BuildCameraMatrices");
+    return s_fn;
+}
+
+std::optional<std::array<float, 2>> SceneCamera::projection_centre() {
+    const auto rec = exe_at(kRecordOffset);
+    if (rec == 0) {
+        return std::nullopt;
+    }
+    const auto x = mem::read<float>(rec + kProjCenterOffset);
+    const auto y = mem::read<float>(rec + kProjCenterOffset + 4);
+    if (!x.has_value() || !y.has_value()) {
+        return std::nullopt;
+    }
+    return std::array<float, 2>{*x, *y};
+}
+
+std::optional<bool> SceneCamera::projection_centre_is_consistent(float tolerance) {
+    const auto snap = snapshot();
+    const auto centre = projection_centre();
+    if (!snap.has_value() || !centre.has_value()) {
+        return std::nullopt;
+    }
+    if (!snap->is_perspective_projection()) {
+        return std::nullopt;  // the shear identity is a perspective one; ortho and affine build differently
+    }
+    const auto& m = snap->projection;
+    const float m00 = m[0];
+    const float m02 = m[2];
+    const float m11 = m[5];
+    const float m12 = m[6];
+    if (!std::isfinite(m00) || !std::isfinite(m02) || !std::isfinite(m11) || !std::isfinite(m12)) {
+        return std::nullopt;
+    }
+    const float want_x = -(*centre)[0] * m00;
+    const float want_y = -(*centre)[1] * m11;
+    // Scaled by the magnitude involved: these terms are products of a centre and a reciprocal half-width, so
+    // a fixed absolute window would be wrong at both ends of the range.
+    const float tol_x = tolerance * (1.0f + std::fabs(want_x));
+    const float tol_y = tolerance * (1.0f + std::fabs(want_y));
+    return std::fabs(m02 - want_x) <= tol_x && std::fabs(m12 - want_y) <= tol_y;
+}
+
+bool SceneCamera::rebuild_matrices() {
+    const auto rec = exe_at(kRecordOffset);
+    const uintptr_t fn = build_camera_matrices_fn();
+    if (rec == 0 || fn == 0) {
+        return false;
+    }
+    reinterpret_cast<void(__cdecl*)(uintptr_t)>(fn)(rec);
+    return true;
+}
+
+bool SceneCamera::set_projection_centre(float x, float y) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        return false;
+    }
+    const auto rec = exe_at(kRecordOffset);
+    if (rec == 0) {
+        return false;
+    }
+    if (!mem::store(rec + kProjCenterOffset, &x, sizeof(x)) ||
+        !mem::store(rec + kProjCenterOffset + 4, &y, sizeof(y))) {
+        return false;
+    }
+    // The write alone changes nothing -- the matrices were built before it.
+    return rebuild_matrices();
+}
+
 std::optional<std::array<int32_t, 2>> SceneCamera::current_target_size() {
     const auto at = exe_at(kStateOffset);
     if (at == 0) {

@@ -4487,3 +4487,44 @@ draw returns. The exact identity failed on one run of two, by exactly one. The b
 is asserted as such, with the reason written next to it -- widening it further would be the fudge this project
 prohibits.
 
+## The asymmetric frustum, which is the last thing between side-by-side and a headset
+
+`CLTRenderer_SetupPassPerspective` hardcodes the projection centre to (0,0), so the record's off-centre
+capability is unreachable through it. That was recorded as a limit twice. It is now reachable.
+
+`SceneRenderer_BuildCameraMatrices` (0x00610BA1, `__cdecl(record)`, renamed this pass) turns the centre into a
+SHEAR and composes everything from the record's own scalars:
+
+    shear = [1 0 -record[0x38] 0]
+            [0 1 -record[0x3C] 0]
+            [0 0  1            0]
+
+    record[0x78]  projection      = BuildPerspective(near=record[0x40]) * shear
+    record[0xB8]  view_projection = projection * view(record[0x48])
+    record[0xF8]  world_to_screen = viewport_transform * view_projection
+
+So the route is: write the centre AFTER the pass setup, then call the builder. The rebuild is the whole point
+-- writing the centre alone changes nothing, because the matrices were already built, and patching the
+projection alone is worse: view_projection and world_to_screen would still describe the old camera and
+everything screen-space would disagree with what was drawn.
+
+Live, applying opposite centres per eye: 254 rebuilds, 254 verified, ZERO inconsistent, `sc_w2s_coherent` true
+throughout.
+
+### The verification is the record checked against ITSELF
+
+Multiplying the composition out gives row 0 as `m[0][2] = -centre_x * m[0][0]`, with both terms in the SAME
+matrix. No baseline, no sibling structure, nothing to drift -- and it fails exactly when a centre was written
+without the rebuild reaching the projection, which is the mistake that would otherwise look like success.
+
+### And it had to be evaluated IN PHASE
+
+The first version called the check from the IPC thread and it answered "not determinable" every single time.
+The record is a PERSPECTIVE one only while a perspective pass is configured; by the time a diagnostic reads it,
+the last pass of the frame is the full-screen ortho HUD pass, for which the shear identity does not hold. The
+check moved into the detour, immediately after the rebuild, and started answering.
+
+That is the third distinct thing in this project that could only be measured inside the hook -- after the
+renderer gate and the pose comparison. The pattern is now unmistakable: **anything the render thread rewrites
+per pass can only be checked from inside a pass.**
+

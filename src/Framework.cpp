@@ -6175,6 +6175,17 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_bool(out, "cp_stereo", cp.stereo);
                 json_append_bool(out, "cp_main_view_only", cp.main_view_only);
                 json_append_double(out, "cp_skipped_aux", static_cast<double>(cp.skipped_aux), 0);
+                json_append_double(out, "cp_centre_x", cp.frustum_centre[0], 5);
+                json_append_double(out, "cp_centre_y", cp.frustum_centre[1], 5);
+                json_append_double(out, "cp_centre_applied_x", cp.centre_applied[0], 5);
+                json_append_double(out, "cp_centre_applied_y", cp.centre_applied[1], 5);
+                json_append_double(out, "cp_rebuilds", static_cast<double>(cp.rebuilds), 0);
+                // THE RECORD CHECKED AGAINST ITSELF: the projection's shear terms are determined by the
+                // centre and the scale already in the same matrix, so this fails if a centre was written
+                // without the rebuild reaching the projection.
+                json_append_double(out, "cp_centre_checked", static_cast<double>(cp.centre_checked), 0);
+                json_append_double(out, "cp_centre_inconsistent",
+                                   static_cast<double>(cp.centre_inconsistent), 0);
                 json_append_double(out, "cp_target_w", static_cast<double>(cp.target_size[0]), 0);
                 json_append_double(out, "cp_target_h", static_cast<double>(cp.target_size[1]), 0);
                 // THE PER-FRAME CENSUS. "One pass per frame" is not safe to assume, and this is the
@@ -9850,6 +9861,9 @@ bool Framework::initialize() {
             CameraPassHook::get().set_stereo(false, ipd, split);
             CameraPassHook::get().set_eye(eye, ipd, split);
         }
+        CameraPassHook::get().set_frustum_centre(
+            static_cast<float>(webapi_query_double(q, "centre_x", 0.0)),
+            static_cast<float>(webapi_query_double(q, "centre_y", 0.0)));
         CameraPassHook::get().set_fov_override(
             static_cast<float>(webapi_query_double(q, "fov_x", 0.0)),
             static_cast<float>(webapi_query_double(q, "fov_y", 0.0)));

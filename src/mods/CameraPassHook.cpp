@@ -28,6 +28,12 @@ std::atomic<bool> g_stereo{false};
 std::atomic<bool> g_main_only{true};
 std::atomic<uint64_t> g_skipped_aux{0};
 std::atomic<int32_t> g_target_size[2]{};
+std::atomic<float> g_centre_x{0.0f};
+std::atomic<float> g_centre_y{0.0f};
+std::atomic<float> g_centre_applied[2]{};
+std::atomic<uint64_t> g_rebuilds{0};
+std::atomic<uint64_t> g_centre_checked{0};
+std::atomic<uint64_t> g_centre_inconsistent{0};
 std::atomic<uint64_t> g_second_draws{0};
 std::atomic<uint64_t> g_draw_calls{0};
 std::atomic<uintptr_t> g_draw_target{0};
@@ -120,6 +126,36 @@ void close_frame_census() {
     g_published_count.store(n, std::memory_order_release);
     g_frame_slot.store(slot ^ 1u, std::memory_order_relaxed);
     g_filling_count = 0;
+}
+
+// Applies the per-eye projection centre AFTER the engine has built its matrices, then has the engine rebuild
+// them. The pass entry cannot express an off-centre frustum, so this is the only route to one.
+//
+// Opposite sign per eye, matching how a real pair of lenses sits either side of the panel centre.
+void apply_frustum_centre(CameraPassHook::Eye eye) {
+    const float cx = g_centre_x.load(std::memory_order_relaxed);
+    const float cy = g_centre_y.load(std::memory_order_relaxed);
+    if (cx == 0.0f && cy == 0.0f) {
+        return;
+    }
+    const float sign = eye == CameraPassHook::Eye::Left ? -1.0f : 1.0f;
+    if (sdk::SceneCamera::set_projection_centre(sign * cx, cy)) {
+        g_rebuilds.fetch_add(1, std::memory_order_relaxed);
+        if (const auto got = sdk::SceneCamera::projection_centre()) {
+            g_centre_applied[0].store((*got)[0], std::memory_order_relaxed);
+            g_centre_applied[1].store((*got)[1], std::memory_order_relaxed);
+        }
+        // IN PHASE, and it has to be. The record is a PERSPECTIVE one only while a perspective pass is
+        // configured; by the time the IPC thread reads it the last pass of the frame is the full-screen ortho
+        // HUD pass, and the shear identity does not apply to that. Evaluated from the IPC thread the check
+        // simply answered "not determinable" every time.
+        if (const auto ok = sdk::SceneCamera::projection_centre_is_consistent()) {
+            g_centre_checked.fetch_add(1, std::memory_order_relaxed);
+            if (!*ok) {
+                g_centre_inconsistent.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
 }
 
 // Reads the pixel viewport the engine just derived from the rect it was handed.
@@ -251,6 +287,7 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
 
     g_overridden.fetch_add(1, std::memory_order_relaxed);
     const char r = original(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
+    apply_frustum_centre(eye);
     capture_viewport();
     record_pass(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     return r;
@@ -334,6 +371,7 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
     if (setup_hook->original<SetupFn>()(&cam, fov, rect, g_pristine.depth_min, g_pristine.depth_max) == 0) {
         return first;
     }
+    apply_frustum_centre(CameraPassHook::Eye::Right);
     draw_original(a1, a2);
     g_second_draws.fetch_add(1, std::memory_order_relaxed);
     return first;
@@ -419,6 +457,12 @@ bool CameraPassHook::replay_setup(const regenny::LTNodeTransform& camera, const 
     return hook->original<SetupFn>()(&camera, fov, rect, depth_min, depth_max) != 0;
 }
 
+void CameraPassHook::set_frustum_centre(float centre_x, float centre_y) {
+    g_centre_x.store(centre_x, std::memory_order_relaxed);
+    g_centre_y.store(centre_y, std::memory_order_relaxed);
+    LOGX("[camerapass] frustum centre %.4f, %.4f", centre_x, centre_y);
+}
+
 void CameraPassHook::set_main_view_only(bool on) {
     g_main_only.store(on, std::memory_order_relaxed);
     LOGX("[camerapass] main-view-only %s", on ? "ON" : "OFF");
@@ -478,6 +522,13 @@ CameraPassHook::Observed CameraPassHook::observed() const {
     out.skipped_aux = g_skipped_aux.load(std::memory_order_relaxed);
     out.target_size = {g_target_size[0].load(std::memory_order_relaxed),
                        g_target_size[1].load(std::memory_order_relaxed)};
+    out.frustum_centre = {g_centre_x.load(std::memory_order_relaxed),
+                          g_centre_y.load(std::memory_order_relaxed)};
+    out.centre_applied = {g_centre_applied[0].load(std::memory_order_relaxed),
+                          g_centre_applied[1].load(std::memory_order_relaxed)};
+    out.rebuilds = g_rebuilds.load(std::memory_order_relaxed);
+    out.centre_checked = g_centre_checked.load(std::memory_order_relaxed);
+    out.centre_inconsistent = g_centre_inconsistent.load(std::memory_order_relaxed);
     out.second_eye_draws = g_second_draws.load(std::memory_order_relaxed);
     out.draw_calls = g_draw_calls.load(std::memory_order_relaxed);
     return out;

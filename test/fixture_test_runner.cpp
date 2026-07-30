@@ -8342,6 +8342,52 @@ int main(int argc, char** argv) {
                       "over one window, every displaced pass drew exactly one second eye, to within the single "
                       "pass that can be between its setup and its draw when the sample is taken");
 
+                // ---- THE ASYMMETRIC FRUSTUM ---------------------------------------------------
+                //
+                // The difference between side-by-side and a headset: each eye's projection is off-centre, in
+                // opposite directions. The pass entry cannot express it -- it hardcodes the centre to (0,0) --
+                // so the centre is written into the record AFTER setup and the engine's own builder recomposes
+                // the projection, the view-projection and the world-to-screen matrix together.
+                //
+                // Asserted by the record's own shear identity, which is the strongest form available here: no
+                // baseline and no sibling structure, because SceneRenderer_BuildCameraMatrices composes
+                // BuildPerspective(near) * shear, so row 0 must satisfy m[0][2] == -centre_x * m[0][0] using
+                // terms from the SAME matrix. A centre written without the rebuild reaching the projection
+                // fails it, which is precisely the mistake worth catching -- the write succeeding proves
+                // nothing on its own.
+                double reb0 = -1.0;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    json_double(http::body_of(resp), "cp_rebuilds", reb0);
+                }
+                http::get(port, "/stereo/eye?both=1&half_ipd=1&split=1&centre_x=0.12", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                double reb1 = -1.0, chk = -1.0, bad = -1.0, applied = -99.0;
+                bool w2s = false;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    const std::string b6 = http::body_of(resp);
+                    json_double(b6, "cp_rebuilds", reb1);
+                    json_double(b6, "cp_centre_checked", chk);
+                    json_double(b6, "cp_centre_inconsistent", bad);
+                    json_double(b6, "cp_centre_applied_x", applied);
+                    json_bool(b6, "sc_w2s_coherent", w2s);
+                }
+                check(reb1 > reb0,
+                      "an off-centre frustum triggers the engine's own matrix rebuild -- writing the centre "
+                      "alone changes nothing, because the matrices were already built");
+                check(chk > 0.0 && bad == 0.0,
+                      "and every rebuilt projection carries the shear the centre implies: m[0][2] equals "
+                      "-centre_x * m[0][0], checked against terms in the SAME matrix");
+                // The verification must be as frequent as the thing it verifies, or a rebuild could go
+                // unchecked and the zero above would mean nothing.
+                check(chk >= (reb1 - reb0) - 1.0,
+                      "every rebuild in the window was verified, so the zero-inconsistency count covers them "
+                      "rather than a sample");
+                check(applied > 0.11 && applied < 0.13,
+                      "the record holds the centre that was asked for");
+                check(w2s,
+                      "and world_to_screen still equals viewport * projection * view afterwards -- the three "
+                      "matrices stayed coherent, which patching one of them by hand would break");
+
                 // OFF AGAIN, unconditionally. Leaving the view displaced would be the suite mutating the
                 // fixture for every check that follows -- and for the player.
                 http::get(port, "/stereo/eye?eye=off", resp);
