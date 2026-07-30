@@ -521,3 +521,25 @@ its live hidden state; `?name=arms&hide=1` sets one, `?unhide_all=1` restores. T
 **The desktop capture is not currently usable as evidence.** It returns a black frame while the
 engine reports a live world and a climbing pass count. Verify through engine state -- the getter,
 the projection probe -- not a screenshot.
+
+## The three facing directions, and the two player objects
+
+`sdk::PlayerMgr::aim_vs_view()` reports where the camera looks, where the aim points and which way
+the body faces, plus the angles between them -- all from one read, so they share an instant.
+`sdk::forward_of()` and `sdk::rotate_vector()` (Object.hpp) are the primitives under it; this
+engine is +X right, +Y up, +Z FORWARD.
+
+Live, with a head pose composed in: view-vs-aim equals the commanded yaw to three decimals, and
+body-vs-aim never moves off a constant 90 degrees (an axis-convention offset, not a divergence).
+Head-look moves the view and nothing else.
+
+**The weapon is the exception, and it is not the bones.** The first-person rig rotates rigidly with
+the camera because the SHELL player object's rotation is rewritten through `LTObject_SetRotation`
+whenever the view changes. Every candidate bone (`aimer`, `Pelvis_Cam`, `Pelvis`, `Torso`,
+`attach`) is constant across a head sweep. Decoupling the gun means owning that writer.
+
+**TWO PLAYER OBJECTS, and watching the wrong one answers confidently and wrongly.**
+`CClientShell::local_player` and `PlayerMgr::player` return different allocations; the latter's
+rotation is never written at all. `/sdk/shader-params` publishes `pmgr_object_addr`,
+`pmgr_holder_addr`, `pmgr_camera_addr` and `pmgr_model_addr`, and `/sdk/targets` publishes
+`shell_obj`, because every "who writes this" question starts by pasting one into `/watch/arm`.

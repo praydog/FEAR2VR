@@ -769,3 +769,40 @@ leaves 30 units behind, and no amount of sway accounts for 30 units.
 
 Corollary: print the control measurement. A drift line in the log is what lets the next reader
 tell "the check is loose" from "the world was busy".
+
+## A gated block that says nothing when it skips is a suite that quietly stops testing
+
+Three consecutive runs reported 1605, 1598 and 1605 checks. Zero failures, zero skips, no
+explanation. Seven checks had simply not run: a block guarded by `if (mechanism_available)` did
+nothing at all when the mechanism was not, and the total stayed green.
+
+This is the same defect as a tautological check, arriving from the other side -- there, the check
+runs and proves nothing; here, it does not run and nobody is told. Both print a healthy number.
+
+- Every `if (available)` around a group of checks needs an `else` that REPORTS. `check_gated`
+  exists for this: it tallies the skip and prints the reason.
+- **A stable check count across runs is itself evidence.** Varying totals with no skip lines mean
+  something is silently conditional. Watch the number, not just the colour.
+
+## Assert the deterministic form, never the race
+
+`the record holds the centre that was asked for` had failed intermittently for three sessions. One
+printf in the failure path ended it immediately: the record held `-0.12000`, because an asymmetric
+frustum gives the two eyes opposite centres and the read lands on whichever finished last. The
+assertion had silently encoded "the right eye always wins".
+
+The first fix was worse than the bug: poll across frames until both signs are observed. That
+failed every run -- one eye reliably finishes last, so the poll detected a race rather than
+checking a property.
+
+What works is DRIVING the condition instead of waiting for it: ask each eye for the centre in turn
+and read it back.
+
+```
+[fixture] per-eye frustum centre: left -0.12000 right +0.12000
+```
+
+It is deterministic, and it tests strictly more than the original -- which could not have told two
+eyes sharing a centre from two eyes with opposite ones, the very property that makes the frustum
+asymmetric. When a check depends on which of several things happened most recently, stop sampling
+and arrange for only one of them to be true.
