@@ -4548,6 +4548,76 @@ std::string build_shader_params_json() {
     json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
     json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
 
+    // THE LIVE GFx MOVIE. This is the object the whole UI catalogue was missing, so the checks are about whether
+    // it is REACHABLE and USABLE, not about its contents: a movie whose SetVariable/SetVariableArray/Invoke slots
+    // do not resolve into the executable is not something a consumer should call through.
+    const auto mode = sdk::Events::ui_mode();
+    json_append_double(out, "gfx_mode", static_cast<double>(static_cast<uint32_t>(mode)), 0);
+    const auto movie = sdk::Events::active_movie();
+    json_append_bool(out, "gfx_resolved", movie.has_value());
+    if (movie.has_value()) {
+        json_append_double(out, "gfx_slot", static_cast<double>(movie->slot), 0);
+        json_append_bool(out, "gfx_usable", sdk::Events::movie_usable(*movie));
+        const auto* gcm = sdk::Modules::get().game_client();
+        const bool vt_outside_gc = gcm == nullptr || gcm->base == 0 ||
+                                   movie->vtable < gcm->base || movie->vtable >= gcm->base + gcm->size;
+        json_append_bool(out, "gfx_object_outside_gameclient",
+                         movie->object != 0 && movie->vtable != 0 && vt_outside_gc);
+        // The three slots must be distinct functions; a vtable read at the wrong stride tends to repeat one.
+        const auto set_var = sdk::Events::movie_method(*movie, sdk::Events::kGFxSetVariable);
+        const auto set_arr = sdk::Events::movie_method(*movie, sdk::Events::kGFxSetVariableArray);
+        const auto invoke = sdk::Events::movie_method(*movie, sdk::Events::kGFxInvoke);
+        json_append_bool(out, "gfx_slots_distinct",
+                         set_var != 0 && set_arr != 0 && invoke != 0 && set_var != set_arr &&
+                             set_arr != invoke && set_var != invoke);
+        json_append_double(out, "gfx_mode_of_movie", static_cast<double>(static_cast<uint32_t>(movie->mode)), 0);
+        // The holder is reachable a second way: reading it directly must produce the same movie.
+        const auto again = sdk::Events::read_movie_holder(movie->holder, movie->mode);
+        json_append_bool(out, "gfx_holder_reread_agrees",
+                         again.has_value() && again->object == movie->object && again->slot == movie->slot);
+
+        // THE TWO LAYERS. The wrapper holds the Scaleform movie at +4, and the inner interface is a different,
+        // larger vtable -- so the inner methods must resolve and must NOT be the wrapper's own.
+        const auto* exem = sdk::Modules::get().exe();
+        const auto in_exe = [exem](uintptr_t p) {
+            return exem != nullptr && exem->base != 0 && p >= exem->base && p < exem->base + exem->size;
+        };
+        const auto i_set = sdk::Events::inner_method(*movie, sdk::Events::kGFxInnerSetVariable);
+        const auto i_arr = sdk::Events::inner_method(*movie, sdk::Events::kGFxInnerSetVariableArray);
+        const auto i_inv = sdk::Events::inner_method(*movie, sdk::Events::kGFxInnerInvoke);
+        json_append_bool(out, "gfx_inner_present",
+                         movie->inner != 0 && movie->inner_vtable != 0 &&
+                             movie->inner != movie->object && movie->inner_vtable != movie->vtable);
+        json_append_bool(out, "gfx_inner_methods_resolve",
+                         in_exe(i_set) && in_exe(i_arr) && in_exe(i_inv) && i_set != i_arr && i_arr != i_inv);
+        json_append_bool(out, "gfx_inner_distinct_from_wrapper",
+                         i_set != sdk::Events::movie_method(*movie, sdk::Events::kGFxSetVariable) &&
+                             i_inv != sdk::Events::movie_method(*movie, sdk::Events::kGFxInvoke));
+
+        // THE STATE FLAG EARNS ITS KEEP. Count slots whose object field is non-null versus slots that are
+        // actually usable: live those numbers differ, which is the whole argument for checking state.
+        const auto slots = sdk::Events::movie_slots(movie->holder);
+        size_t sl_nonnull = 0, sl_live = 0, sl_usable = 0;
+        for (const auto& sl : slots) {
+            if (sl.object != 0) { ++sl_nonnull; }
+            if (sl.state == 1) { ++sl_live; }
+            if (sl.usable) { ++sl_usable; }
+        }
+        json_append_double(out, "gfx_slots_total", static_cast<double>(slots.size()), 0);
+        json_append_double(out, "gfx_slots_nonnull", static_cast<double>(sl_nonnull), 0);
+        json_append_double(out, "gfx_slots_live", static_cast<double>(sl_live), 0);
+        json_append_double(out, "gfx_slots_usable", static_cast<double>(sl_usable), 0);
+    }
+    // A garbage holder must be refused rather than producing a movie-shaped result.
+    json_append_bool(out, "gfx_bad_holder_refused",
+                     !sdk::Events::read_movie_holder(0).has_value() &&
+                         !sdk::Events::read_movie_holder(0xDEAD0000).has_value());
+    sdk::Events::GFxMovie fake{};
+    fake.object = 0x1000;
+    fake.vtable = 0x1000;
+    json_append_bool(out, "gfx_fake_movie_refused",
+                     !sdk::Events::movie_usable(fake) && sdk::Events::movie_method(fake, 9) == 0);
+
     // THE PANEL OBJECTS. The structural invariant is that each object's +0x04 still points at the binding table
     // the panel is recorded with -- and that is a genuine cross-check, because the object addresses came from the
     // static initialisers while the table addresses came from the accessors. Two routes, one answer.

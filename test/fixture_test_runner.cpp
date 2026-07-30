@@ -4509,6 +4509,82 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE LIVE GFx MOVIE, WHICH MAKES THE CATALOGUE CALLABLE ----------------------------
+            //
+            // 172 setters and 450 invoke targets all take the same first argument, and until now nothing named
+            // where the game keeps one. It keeps a four-slot holder per player and the engine's own accessor
+            // walks mode -> player -> holder -> slot; this mirrors that with pure reads.
+            //
+            // THE ASSERTIONS ARE CONDITIONED ON MODE rather than on the fixture happening to be in a level. "In
+            // game implies a movie resolves" is the invariant; "a movie resolves" is merely today's state, and
+            // asserting the latter would make this suite fail at a menu for the right reasons and the wrong
+            // check.
+            double gfx_mode = -1.0;
+            const bool gmn = json_double(body, "gfx_mode", gfx_mode);
+            bool gfx_res = false;
+            const bool grn = json_bool(body, "gfx_resolved", gfx_res);
+            check(gmn && (gfx_mode == 0.0 || gfx_mode == 1.0 || gfx_mode == 2.0),
+                  "the UI mode is one the engine resolves: none, menu or in-game");
+            check(gmn && grn && (gfx_mode != 2.0 || gfx_res),
+                  "in game, the movie chain resolves to a movie");
+
+            if (gfx_res) {
+                bool gfx_use = false, gfx_out = false, gfx_dist = false, gfx_re = false;
+                double gfx_slot = -1.0, gfx_mm = -1.0;
+                // USABILITY IS THE POINT. A pointer that reads is not a movie; its SetVariable, SetVariableArray
+                // and Invoke slots have to resolve into the executable before a consumer calls through it.
+                check(json_bool(body, "gfx_usable", gfx_use) && gfx_use,
+                      "the movie's three catalogued slots all resolve into the executable");
+                // The movie belongs to the ENGINE, not the game DLL -- which is why the SDK reports its
+                // addresses absolute. A vtable inside gameclient would mean this is some other object.
+                check(json_bool(body, "gfx_object_outside_gameclient", gfx_out) && gfx_out,
+                      "the movie's vtable lies outside gameclient -- Scaleform is the engine's");
+                // Three DISTINCT functions: a vtable walked at the wrong stride tends to repeat one entry.
+                check(json_bool(body, "gfx_slots_distinct", gfx_dist) && gfx_dist,
+                      "SetVariable, SetVariableArray and Invoke are three different functions");
+                check(json_double(body, "gfx_slot", gfx_slot) && gfx_slot >= 0.0 && gfx_slot < 4.0,
+                      "the active slot index is within the holder's four slots");
+                check(json_double(body, "gfx_mode_of_movie", gfx_mm) && gmn && gfx_mm == gfx_mode,
+                      "the movie records the mode it was resolved through");
+                // Reaching the holder a second way must yield the same movie -- the holder is a real object,
+                // not an artefact of the walk that found it.
+                check(json_bool(body, "gfx_holder_reread_agrees", gfx_re) && gfx_re,
+                      "re-reading the holder directly produces the same movie and slot");
+
+                // TWO LAYERS: Monolith's wrapper holds the Scaleform movie at +4 and forwards to it. The inner
+                // interface is larger and separate, so its identity is asserted as difference -- a wrapper that
+                // read as its own inner would mean the +4 field is not what this claims.
+                bool gi_p = false, gi_m = false, gi_d = false;
+                check(json_bool(body, "gfx_inner_present", gi_p) && gi_p,
+                      "the wrapper holds a distinct Scaleform movie with its own vtable");
+                check(json_bool(body, "gfx_inner_methods_resolve", gi_m) && gi_m,
+                      "the inner SetVariable, SetVariableArray and Invoke all resolve into the executable");
+                check(json_bool(body, "gfx_inner_distinct_from_wrapper", gi_d) && gi_d,
+                      "the inner methods are not the wrapper's own -- forwarding, not aliasing");
+
+                // THE STATE FLAG IS LOAD-BEARING, and this is the check that proves it rather than asserting it.
+                // Every slot's object field is non-null, but only the live one is a movie: the others' +0x04
+                // reads as a float, a 1 and a 0. Skipping the state check yields a pointer that reads perfectly
+                // and is not a movie, which is the worst kind of wrong.
+                double gs_t = -1.0, gs_n = -1.0, gs_l = -1.0, gs_u = -1.0;
+                const bool gsn = json_double(body, "gfx_slots_total", gs_t) &&
+                                 json_double(body, "gfx_slots_nonnull", gs_n) &&
+                                 json_double(body, "gfx_slots_live", gs_l) &&
+                                 json_double(body, "gfx_slots_usable", gs_u);
+                check(gsn && gs_t == 4.0, "the holder has exactly four slots");
+                check(gsn && gs_u >= 1.0 && gs_u <= gs_l,
+                      "at least one slot is live and usable, and usable never exceeds live");
+                check(gsn && gs_n > gs_u,
+                      "more slots hold non-null objects than are usable -- the state flag is load-bearing");
+            }
+
+            // These hold in every mode, so they are the checks that cannot pass by luck.
+            bool gfx_bad = false, gfx_fake = false;
+            check(json_bool(body, "gfx_bad_holder_refused", gfx_bad) && gfx_bad,
+                  "a null and an unmapped holder are both refused");
+            check(json_bool(body, "gfx_fake_movie_refused", gfx_fake) && gfx_fake,
+                  "a fabricated movie is not usable and resolves no method");
+
             // ---- THE PANEL OBJECTS, AND WHERE THE INVOKE PATH LIVES --------------------------------
             //
             // Each panel is a static C++ object: vtable, binding table at +0x04, a flag at +0x0C, and an inline

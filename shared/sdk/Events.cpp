@@ -2,6 +2,7 @@
 
 #include "Memory.hpp"
 #include "Modules.hpp"
+#include "PlayerMgr.hpp"
 
 namespace sdk {
 
@@ -552,6 +553,127 @@ std::optional<std::string> Events::invoke_target(std::string_view panel, std::st
         return std::nullopt;
     }
     return o->as_path + "." + std::string{method};
+}
+
+
+Events::UiMode Events::ui_mode() {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return UiMode::None;
+    }
+    switch (mem::read_u32(gc->base + kUiModeOffset).value_or(0)) {
+    case 1: return UiMode::Menu;
+    case 2: return UiMode::InGame;
+    default: return UiMode::None;  // the engine returns no movie for any other value
+    }
+}
+
+std::optional<Events::GFxMovie> Events::read_movie_holder(uintptr_t holder, UiMode mode) {
+    if (holder == 0) {
+        return std::nullopt;
+    }
+    const auto slot = mem::read_u32(holder + kHolderActiveSlotField);
+    if (!slot.has_value() || *slot >= kHolderSlots) {
+        return std::nullopt;
+    }
+    // The state and object arrays have DIFFERENT strides. Indexing one with the other's stride reads a
+    // neighbouring slot's field, which would still look like a pointer.
+    const auto state = mem::read_u32(holder + kHolderStateBase + *slot * kHolderStateStride);
+    if (!state.has_value() || *state != 1) {
+        return std::nullopt;  // the slot exists but is not live -- a state, not a failure
+    }
+    const auto object = mem::read_ptr(holder + kHolderObjectBase + *slot * kHolderObjectStride);
+    if (!object.has_value() || *object == 0) {
+        return std::nullopt;
+    }
+    GFxMovie m;
+    m.holder = holder;
+    m.slot = *slot;
+    m.mode = mode;
+    m.object = *object;
+    m.vtable = mem::read_ptr(*object).value_or(0);
+    m.inner = mem::read_ptr(*object + kUiMovieInnerField).value_or(0);
+    m.inner_vtable = m.inner != 0 ? mem::read_ptr(m.inner).value_or(0) : 0;
+    return m;
+}
+
+std::optional<Events::GFxMovie> Events::active_movie() {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return std::nullopt;
+    }
+    const auto mode = ui_mode();
+    if (mode == UiMode::Menu) {
+        return read_movie_holder(gc->base + kMenuHolderOffset, mode);
+    }
+    if (mode != UiMode::InGame) {
+        return std::nullopt;
+    }
+    const auto index = mem::read_u8(gc->base + kUiSystemStateOffset + kUiSystemPlayerIndexField);
+    if (!index.has_value() || *index == 0xFF) {
+        return std::nullopt;  // 0xFF is the engine's own "no active player"
+    }
+    const auto player = PlayerMgr::slot(*index);
+    if (!player.has_value() || *player == 0) {
+        return std::nullopt;
+    }
+    const auto holder = mem::read_ptr(*player + kPlayerMovieHolderField);
+    if (!holder.has_value()) {
+        return std::nullopt;
+    }
+    return read_movie_holder(*holder, mode);
+}
+
+uintptr_t Events::movie_method(const GFxMovie& movie, uint32_t vtable_slot) {
+    if (movie.vtable == 0) {
+        return 0;
+    }
+    return mem::read_ptr(movie.vtable + vtable_slot * sizeof(uintptr_t)).value_or(0);
+}
+
+bool Events::movie_usable(const GFxMovie& movie) {
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || movie.object == 0 || movie.vtable == 0) {
+        return false;
+    }
+    // The three slots the catalogue depends on must resolve INTO THE EXECUTABLE. Requiring the module bound is
+    // what distinguishes a real movie from any heap block whose first dword happens to be readable.
+    for (const auto slot : {kGFxSetVariable, kGFxSetVariableArray, kGFxInvoke}) {
+        const auto fn = movie_method(movie, slot);
+        if (fn < exe->base || fn >= exe->base + exe->size) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+std::vector<Events::MovieSlot> Events::movie_slots(uintptr_t holder) {
+    std::vector<MovieSlot> out;
+    if (holder == 0) {
+        return out;
+    }
+    for (uint32_t i = 0; i < kHolderSlots; ++i) {
+        MovieSlot s;
+        s.index = i;
+        s.state = mem::read_u32(holder + kHolderStateBase + i * kHolderStateStride).value_or(0);
+        s.object = mem::read_ptr(holder + kHolderObjectBase + i * kHolderObjectStride).value_or(0);
+        if (s.state == 1 && s.object != 0) {
+            GFxMovie m;
+            m.object = s.object;
+            m.vtable = mem::read_ptr(s.object).value_or(0);
+            s.usable = movie_usable(m);
+        }
+        out.push_back(s);
+    }
+    return out;
+}
+
+uintptr_t Events::inner_method(const GFxMovie& movie, uint32_t vtable_slot) {
+    if (movie.inner_vtable == 0) {
+        return 0;
+    }
+    return mem::read_ptr(movie.inner_vtable + vtable_slot * sizeof(uintptr_t)).value_or(0);
 }
 
 }  // namespace sdk

@@ -5255,3 +5255,58 @@ class LTInputDeviceMouse 0x30 {
 // SystemLayer breaks it by name, and that a deliberately corrupted object is reported inconsistent.
 //
 // 1073 checks, 0 failures.
+
+// ---- THE LIVE MOVIE: WHAT MADE THE WHOLE UI CATALOGUE CALLABLE ----------------------------------
+//
+// Five passes built a UI surface nothing could use: 172 named setters, 450 dotted identifiers, 623 bindings, 17
+// panel objects with ActionScript paths -- and every one of them takes the SAME first argument that nothing
+// named. The engine's own accessor (gameclient!UI_GetActiveGFxObject) walks to it, and the walk is short:
+//
+//     mode = g_nUiMode                                   1 = menu, 2 = in-game, else none
+//     menu:    holder = &g_MenuMovieHolder               static, in gameclient
+//     in-game: i      = *(u8*)(g_UiSystemState + 0x9D8)  0xFF = no active player
+//              player = g_pPlayerMgr's four-slot array at +0x50, index i
+//              holder = *(player + 0x138)
+//     slot s  = holder[0x140]                            < 4
+//     live if  *(u32*)(holder + 0x60 + s*0x20) == 1      state array, stride 0x20
+//     movie  = *(u32*)(holder + 0xF4 + s*0x18)           object array, stride 0x18
+//
+// TWO ARRAYS, TWO STRIDES, ONE INDEX -- not an array of structs. Deriving the object array from the state array
+// lands 8 bytes off per slot and still reads a pointer.
+//
+// IT CORROBORATES TWO EARLIER PASSES WITHOUT BEING TOLD TO. The player it lands on is 0x1C623438 -- the exact
+// object recorded earlier as the camera's delegate subject -- and it reaches it through g_pPlayerMgr, a global
+// named several passes ago for unrelated reasons.
+//
+// THE MOVIE LIVES IN THE ENGINE, NOT THE GAME DLL. Its vtable is in FEAR2.exe, so Scaleform belongs to the
+// engine and gameclient only calls in. Named in the exe IDB:
+//
+//     g_vtbl_UiMovie   0x678640  36 slots  Monolith's wrapper. Bounded by the "[UI - ActionScript]" string
+//                                          sitting immediately after it in .rdata.
+//     g_vtbl_GFxMovie  0x687DF8  45 slots  the Scaleform movie, held at wrapper+0x04
+//
+//     wrapper  9 UiMovie_SetVariable      -> inner 11 GFxMovie_SetVariable
+//     wrapper 11 UiMovie_SetVariableArray -> inner 13 GFxMovie_SetVariableArray
+//     wrapper 14 UiMovie_Invoke           -> inner 18 GFxMovie_Invoke
+//
+// The wrapper slots 9/11/14 were measured THREE independent ways in gameclient before this vtable was ever read
+// (the argument marshaller, the 108 scalar setters, the 64 array setters). Reading the vtable found functions at
+// exactly those three slots, all forwarding. That is the strongest single confirmation this project has produced.
+//
+// THE STATE FLAG IS LOAD-BEARING, and the live holder proves it rather than merely suggesting it:
+//
+//     slot 0  state=1  object=0x1C6454C0  inner=0x1CAC1F08   <- a movie
+//     slot 1  state=0  object=0x1C59F6CC  inner=0x4079999A   <- a FLOAT bit pattern
+//     slot 2  state=0  object=0x1C59F744  inner=0x00000001
+//     slot 3  state=0  object=0x1C59F7BC  inner=0x00000000
+//
+// > All four object fields are non-null. Only one is a movie. A consumer that indexed the array without checking
+// > state would get a pointer that reads perfectly and is garbage -- and the suite asserts nonnull > usable, so
+// > the guard is defended by measurement instead of by comment.
+//
+// Exposed as sdk::Events::active_movie / read_movie_holder / movie_slots / movie_method / inner_method /
+// movie_usable / ui_mode, with every chain offset as a named constant. movie_usable() requires all three
+// catalogued slots to resolve INTO the executable, which is what separates a movie from any readable heap block.
+// Assertions are conditioned on ui_mode so the suite stays honest at a menu instead of passing by luck.
+//
+// 1089 checks, 0 failures.

@@ -250,6 +250,117 @@ public:
     static std::optional<std::string> invoke_target(std::string_view panel, std::string_view method);
 
     //
+    // THE LIVE GFx MOVIE -- the object every setter and every invoke takes as its first argument.
+    //
+    // Everything catalogued above was inert without this. A consumer had 172 setters it could not call and 450
+    // invoke targets it could not reach, because none of it names WHERE the game keeps a movie. It keeps one per
+    // player, and reaches it through a chain the engine's own accessor walks (UI_GetActiveGFxObject in
+    // gameclient.dll, mirrored here as pure reads so no game code runs on the caller's thread):
+    //
+    //     mode = g_nUiMode                            1 = menu, 2 = in-game, anything else = none
+    //     menu:    holder = &g_MenuMovieHolder        a static object in gameclient
+    //     in-game: i      = *(u8*)(g_UiSystemState + 0x9D8)      0xFF means no active player
+    //              player = PlayerMgr::slot(i)                    the same four-slot array PlayerMgr reads
+    //              holder = *(player + 0x138)
+    //     then the holder's FOUR slots:
+    //              s = holder[0x140]                              active slot, must be < 4
+    //              valid if *(u32*)(holder + 0x60 + s*0x20) == 1  state array, stride 0x20
+    //              movie  = *(u32*)(holder + 0xF4 + s*0x18)       object array, stride 0x18
+    //
+    // TWO ARRAYS WITH DIFFERENT STRIDES, indexed by the same slot number -- not one array of structs. Deriving
+    // the second from the first would land 8 bytes off per slot and read a plausible pointer.
+    //
+    // THE MOVIE IS NOT IN gameclient. Its vtable lies in FEAR2.exe, so these addresses are ABSOLUTE rather than
+    // module-relative: Scaleform belongs to the engine and gameclient only calls into it. That also means the
+    // vtable slots this class exposes are engine methods, which is why they are given as slot numbers to be
+    // resolved live instead of as offsets to be trusted.
+    enum class UiMode : uint32_t {
+        None = 0,
+        Menu = 1,
+        InGame = 2,
+    };
+
+    // The current UI context. None also covers "gameclient not mapped".
+    static UiMode ui_mode();
+
+    // THE MOVIE IS TWO OBJECTS. `object` is Monolith's wrapper (36-slot vtable) and it holds the Scaleform
+    // movie at +0x04 (45-slot vtable). The wrapper's catalogued slots forward to the inner one:
+    //
+    //     wrapper slot  9 SetVariable      -> inner slot 11
+    //     wrapper slot 11 SetVariableArray -> inner slot 13
+    //     wrapper slot 14 Invoke           -> inner slot 18
+    //
+    // Which layer to hook depends on intent: the wrapper is per-movie and game-facing, the inner is shared by
+    // every movie and is where Scaleform actually does the work.
+    struct GFxMovie {
+        uintptr_t object{};       // ABSOLUTE -- Monolith's wrapper, in the engine's heap, not gameclient
+        uintptr_t vtable{};       // ABSOLUTE
+        uintptr_t inner{};        // the Scaleform movie at object+0x04, 0 when unreadable
+        uintptr_t inner_vtable{}; // ABSOLUTE
+        uintptr_t holder{};       // the four-slot holder it came from
+        uint32_t slot{};          // which of the holder's slots is active
+        UiMode mode{};            // the context it was resolved through
+    };
+
+    // One holder slot as it reads, WITHOUT the liveness filter -- so a consumer can see why a slot was rejected.
+    struct MovieSlot {
+        uint32_t index{};
+        uint32_t state{};    // 1 means live; the engine returns nothing for any other value
+        uintptr_t object{};  // the slot's object field, which is NOT a movie unless state == 1
+        bool usable{};       // does it pass movie_usable()?
+    };
+
+    // All four slots of a holder. THE STATE FLAG IS LOAD-BEARING: live, the three inactive slots hold non-null
+    // pointers whose +0x04 reads as a float, a 1, and a 0 respectively. A consumer that indexed the object array
+    // without checking state would get a pointer that reads perfectly and is not a movie.
+    static std::vector<MovieSlot> movie_slots(uintptr_t holder);
+
+    static constexpr uintptr_t kUiMovieInnerField = 0x04;
+    static constexpr uint32_t kGFxInnerSetVariable = 11;
+    static constexpr uint32_t kGFxInnerSetVariableArray = 13;
+    static constexpr uint32_t kGFxInnerInvoke = 18;
+
+    // Resolve one of the INNER (Scaleform) methods; use the kGFxInner* constants. 0 when unreadable.
+    static uintptr_t inner_method(const GFxMovie& movie, uint32_t vtable_slot);
+
+    // The movie the game itself would use right now, or nullopt when there is none -- no active player, an
+    // inactive slot, or a mode the engine does not resolve. nullopt is a normal state in menus and during level
+    // transitions, not an error.
+    static std::optional<GFxMovie> active_movie();
+
+    // Read a holder a caller already has -- e.g. a second player's, from PlayerMgr::slot(i) + 0x138. Exposed
+    // because split-screen has one holder per player and active_movie() only answers for the active one.
+    static std::optional<GFxMovie> read_movie_holder(uintptr_t holder, UiMode mode = UiMode::None);
+
+    // Resolve one of the movie's virtual methods, or 0 when it cannot be read. Use the slot constants below:
+    // a consumer hooking or calling Invoke wants movie_method(m, kGFxInvoke).
+    static uintptr_t movie_method(const GFxMovie& movie, uint32_t vtable_slot);
+
+    // Does this movie look like the interface the catalogue assumes -- a readable vtable whose SetVariable,
+    // SetVariableArray and Invoke slots all resolve into the executable? Worth asking before calling through a
+    // cached movie, since a level transition can retire one.
+    static bool movie_usable(const GFxMovie& movie);
+
+    // GFx interface slots, established from THREE independent code paths: the argument marshaller (slot 14), the
+    // scalar global setters (slot 9) and the array setters (slot 11).
+    static constexpr uint32_t kGFxSetVariable = 9;
+    static constexpr uint32_t kGFxSetVariableArray = 11;
+    static constexpr uint32_t kGFxInvoke = 14;
+
+    // Chain offsets, gameclient-relative where they name globals and object-relative otherwise.
+    static constexpr uintptr_t kUiModeOffset = 0x1FE26C;
+    static constexpr uintptr_t kMenuHolderOffset = 0x1FD960;
+    static constexpr uintptr_t kUiSystemStateOffset = 0x1FD958;
+    static constexpr uintptr_t kUiSystemPlayerIndexField = 0x9D8;
+    static constexpr uintptr_t kPlayerMovieHolderField = 0x138;
+    static constexpr uintptr_t kHolderActiveSlotField = 0x140;
+    static constexpr uintptr_t kHolderStateBase = 0x60;
+    static constexpr uintptr_t kHolderStateStride = 0x20;
+    static constexpr uintptr_t kHolderObjectBase = 0xF4;
+    static constexpr uintptr_t kHolderObjectStride = 0x18;
+    static constexpr uint32_t kHolderSlots = 4;
+
+    //
     // A PANEL'S BINDING TABLE -- the whole two-directional surface, with handler addresses.
     //
     // What I first called a "dispatcher" is a lazily-initialised accessor: it fills a static table on first
