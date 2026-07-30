@@ -878,3 +878,26 @@ still accepts look input, it simply does nothing with it.
 The loop could not tell "cannot move" from "has not moved yet", and neither could its counters. Any
 loop of this shape needs a liveness gate on the subject, not just an iteration cap: the cap bounds
 the damage, the gate identifies the cause. `player_stats()->alive()` is the one here.
+
+## A threshold below the noise floor IS the flaky test
+
+An assertion compared two directions -- the view's forward and the aim's -- and required the angle
+between them to be under 0.01 degrees when nothing was composed. It passed most runs and failed
+occasionally, across two sessions, and the failures were blamed first on ctest ordering and then on
+injection races. Both were coincidence.
+
+The angle is recovered with `acos` of a dot product, and **acos amplifies error near dot == 1**: for
+`dot = 1 - eps` the angle is approximately `sqrt(2 * eps)`. At single precision that is
+`sqrt(2 * 6e-8) ~ 3.5e-4` radians, or **0.02 degrees** -- twice the bound being asserted. Measured
+live with the operand verified identity across 20 samples: a steady 0.0198.
+
+The rule this yields, which generalises past angles:
+
+- **Before calling an intermittent check environmental, compute the precision its own arithmetic can
+  deliver.** Square roots, `acos` near 0 or pi, differences of large nearly-equal numbers, and
+  normalisation all amplify float error by orders of magnitude over eps.
+- A bound must sit above that floor and below the signal. Here 0.1 degrees is 5x the noise and 250x
+  smaller than the 25 degree effect the same check verifies, so it discriminates exactly as well as
+  intended while no longer sampling luck.
+- The tell is a residual that hovers at the SAME magnitude as the bound. If the two are within a
+  factor of two of each other, suspect the floor before suspecting the environment.

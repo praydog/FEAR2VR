@@ -5175,3 +5175,33 @@ payload).
 Unreproduced is not resolved. What is now different is that the next occurrence will be diagnosable:
 capture ctest output to a file rather than reading its tail, since `--output-on-failure` prints the
 failing checks and the earlier two occurrences were greped away.
+
+### RESOLVED, and it was never about ctest
+
+The section above ended "unreproduced is not resolved" and recommended capturing ctest's output next
+time. That worked immediately: the very next ctest run failed, with the output on disk.
+
+The failures were two aim-vs-view checks -- "with nothing composed the view and the aim point the
+same way". They assert `view_vs_aim < 0.01` degrees with the head released.
+
+**The bound was below the comparison's noise floor.** With the outer operand verified IDENTITY
+across 20 consecutive samples (so nothing was composed, by our code or the engine's), the angle
+reads a steady **0.0198 degrees**. The arithmetic says it must: the two directions are compared with
+`acos` of a dot product, and acos amplifies error near dot == 1 as `theta ~ sqrt(2*eps)`, so
+single-precision eps of ~6e-8 becomes ~3.5e-4 rad == 0.02 degrees.
+
+So the check passed whenever the float noise happened to land under 0.01 and failed when it did not.
+Nothing to do with ctest, nothing to do with injection order, nothing to do with the three preceding
+standalone runs -- the correlation with ctest was coincidence, and chasing it was chasing a
+coincidence. The bound is now 0.1 degrees with that derivation written beside it, still 250x smaller
+than the 25 degree signal the same check verifies.
+
+Two lessons worth more than the bug:
+
+- **A threshold set below the measurement's own noise floor produces exactly the symptom "flaky
+  suite".** Before believing an intermittent check is environmental, compute what precision the
+  comparison can actually deliver. For an angle recovered through acos near zero, that is
+  `sqrt(2 * eps)`, not `eps`.
+- **Capturing the output is the whole diagnosis.** Two earlier occurrences were greped down to a
+  summary line and cost two sessions of speculation about injection races. The third was captured
+  and took one command.

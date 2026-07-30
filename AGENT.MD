@@ -601,3 +601,22 @@ Three things it has to do, each learned by measuring the failure:
   by ~2 degrees.
 - **Gate on the player being alive.** Input is still accepted when dead, it just does nothing, so the
   loop burns its whole budget against a frozen heading.
+
+## Comfort (view-motion suppression)
+
+`Comfort` suppresses the VR nausea sources through the engine's OWN console variables --
+`HeadBobSpeedScale`, `CameraSwayXSpeed`, `CameraSwayYSpeed`, `DisableCameraShake` -- capturing the
+originals and restoring them on release and on shutdown. A console variable is engine state that
+OUTLIVES the DLL, so restoring exactly is the contract. `/vr/comfort?on=1` arms, `?on=0` releases.
+
+**Head bob is already off on this build.** All 24 `HeadBob*Wave*` variables and every `*Amp` read
+0.0, so `HeadBobSpeedScale` scales a wave with no amplitude: the bob system runs (`bob_active` true
+while walking) and displaces nothing. Measured in phase over ~100 passes, the camera-height
+excursion is 3.4592 with bob on and 3.4592 with it off -- that is the terrain of the path. Sway and
+shake still have non-zero settings and are worth suppressing.
+
+**Measure oscillation IN PHASE.** The published camera position is a snapshot of the last render
+pass; sampling it from the IPC thread aliases anything periodic and produced byte-identical
+"measurements" for two different walks. `CameraPassHook::reset_height_excursion()` plus
+`observed().height_min/max` accumulate one sample per pass, which is what makes a negative result
+trustworthy.

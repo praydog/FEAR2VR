@@ -8953,16 +8953,27 @@ int main(int argc, char** argv) {
                                  sample("/vr/head?clear=1", &va2, &ba2, &c2);
                 check(got, "the three facing directions are readable in every head pose");
                 if (got) {
-                    check(va0 < 0.01 && !c0,
-                          "with nothing composed the view and the aim point the same way, and the "
-                          "API says so rather than reporting a small number that means nothing");
+                    // BOUND SET BY THE ARITHMETIC, not by taste. The two directions are compared
+                    // with acos of a dot product, and acos AMPLIFIES error near dot == 1: for
+                    // dot = 1 - eps the angle is ~sqrt(2*eps), so single-precision eps of ~6e-8
+                    // becomes ~3.5e-4 rad == 0.02 degrees. Live, with the outer operand verified
+                    // IDENTITY across 20 samples, this reads a steady 0.0198.
+                    //
+                    // The original bound was 0.01 -- BELOW that floor. It passed most runs and
+                    // failed occasionally, which read as a flaky suite and was a threshold set
+                    // under the noise. 0.1 is still 250x smaller than the 25 degree signal below,
+                    // so nothing real is let through.
+                    constexpr double kAlignFloor = 0.1;
+                    check(va0 < kAlignFloor && !c0,
+                          "with nothing composed the view and the aim point the same way -- to "
+                          "within the float noise of an acos near zero, which is what bounds it");
                     check(fabs(va1 - 25.0) < 0.5 && c1,
                           "a 25 degree head yaw puts exactly 25 degrees between the view and the aim");
                     // THE DECOUPLING, which is the claim the whole head-tracking design rests on.
                     check(fabs(ba1 - ba0) < 1.0,
                           "and leaves the BODY where it was -- the head moves the view alone, so "
                           "locomotion and the weapon keep their own frame");
-                    check(va2 < 0.01 && !c2,
+                    check(va2 < kAlignFloor && !c2,
                           "releasing puts the view back on the aim, with nothing composed");
                 }
             }
