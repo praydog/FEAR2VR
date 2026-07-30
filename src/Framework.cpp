@@ -5711,6 +5711,8 @@ std::string build_shader_params_json(bool include_write_probes) {
                        avd.has_value() ? avd->body_to_aim_angle * 57.2957795 : -1.0, 4);
     {
         const auto yaw = sdk::PlayerMgr::aim_yaw(0);
+        const auto pitch = sdk::PlayerMgr::aim_pitch(0);
+        json_append_double(out, "aim_pitch_deg", pitch.value_or(0.0f) * 57.2957795, 4);
         json_append_bool(out, "aim_yaw_readable", yaw.has_value());
         json_append_double(out, "aim_yaw_deg", yaw.value_or(0.0f) * 57.2957795, 4);
     }

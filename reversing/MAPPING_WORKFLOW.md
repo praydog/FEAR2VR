@@ -5205,3 +5205,56 @@ Two lessons worth more than the bug:
 - **Capturing the output is the whole diagnosis.** Two earlier occurrences were greped down to a
   summary line and cost two sessions of speculation about injection races. The third was captured
   and took one command.
+
+## Firing is drivable, and the aim's pitch is now measurable
+
+`aim_pitch()` joins `aim_yaw()`: the elevation of the aim's forward axis, taken as `asin` of its Y
+component so it is a true angle rather than an Euler term whose meaning depends on application
+order. A VR mod reconciling a head pose with the weapon needs both, and recoil, the engine's pitch
+clamp and any look-assist all act on this axis rather than on yaw.
+
+**Proven behaviourally rather than by a static read.** A number near zero proves nothing about which
+angle it is, so the fixture fires the weapon: holding the trigger raises the pitch and releasing
+lets it recover. Live, a held burst peaks at 3.4 to 4.9 degrees and returns to 0.0000. That is the
+game's own mechanism confirming both that the shot happened and that this accessor tracks the axis
+recoil acts on -- no target, no baseline.
+
+Firing itself is `/input/tap?vk=256` (mouse button 0 encoded above the VK range), which had never
+been exercised before this pass.
+
+### The magazine drains, and that would have read as a broken accessor
+
+Nothing in the suite reloads, so the peak fell from 7.46 to 1.10 degrees across two runs as the
+weapon emptied. An empty weapon produces no recoil at all, and the check would then have failed
+looking exactly like `aim_pitch` being wrong. The test now taps R first; the peak is stable at
+3.4-4.9 across three runs.
+
+Generalisable: a behavioural probe that CONSUMES a resource needs to replenish it, or it degrades
+into a false negative at an unpredictable run count. The tell is a measurement that shrinks
+monotonically across otherwise identical runs.
+
+## The fire ray is still open, and here is what was ruled out
+
+The question that matters for VR: with the view decoupled from the aim, does the shot follow the gun
+or the camera? Still unanswered, and worth stating precisely rather than leaving as a vague TODO.
+
+Ruled out this pass:
+
+- **Not on the interfaces one would expect.** `ILTPhysics` (CLTPhysicsClient, 18 slots) has no trace
+  entry -- it is dims, velocity, acceleration, move and push. `ILTCommon` (19 slots) is flags,
+  attachments and parsing. Neither carries an IntersectSegment.
+- **No trace function is named in the IDB.** A sweep for ray/cast/intersect/trace/segment across
+  FEAR2_dump.exe returns nothing, and the same sweep over the 98-slot physics-sim vtable returns
+  nothing.
+
+Two routes remain, both bounded:
+
+1. **Observe the impact.** Firing spawns impact effects as client objects, so diffing the object
+   list across a shot gives the ray's endpoint, and its direction from the muzzle answers the
+   question outright. This needs a per-object position listing, which `/sdk/objects` does not
+   currently expose (it reports counts, banks and samples).
+2. **Trap the trace.** With firing now drivable, an execute watch on a candidate entry fires only
+   while shooting, and the watch report's registers would carry the segment endpoints directly.
+   This needs a candidate address, which route 1 would also supply.
+
+Route 1 subsumes route 2 and is the better next step.

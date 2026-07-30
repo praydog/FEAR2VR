@@ -1380,6 +1380,16 @@ public:
     // that silently mixed the two would be wrong at exactly the moments it mattered.
     static std::optional<float> aim_yaw(unsigned index);
 
+    // The aim's PITCH, in radians: positive looking up, from the forward axis' vertical component
+    // (asin of it, so it is a true elevation angle rather than an Euler term whose meaning depends
+    // on the order it is applied in).
+    //
+    // Wanted alongside `aim_yaw` for the same reason: a VR mod reconciling a head pose with the
+    // weapon needs both angles, and recoil, the pitch clamp and any look-assist all act here rather
+    // than on yaw. The engine clamps this (CPlayerCamera_ClampPitch, and `PitchClamp` is a console
+    // variable), so a consumer driving it should expect its writes to be bounded.
+    static std::optional<float> aim_pitch(unsigned index);
+
     // ---- WHERE THE PLAYER IS ACTUALLY GOING --------------------------------------------
     //
     // MEASURED, and it is the fact a VR locomotion scheme has to start from: movement is

@@ -769,6 +769,16 @@ std::optional<PlayerMgr::Locomotion> PlayerMgr::locomotion(unsigned index) {
     return out;
 }
 
+std::optional<float> PlayerMgr::aim_pitch(unsigned index) {
+    const auto d = aim_vs_view(index);
+    if (!d.has_value()) {
+        return std::nullopt;
+    }
+    float fy = d->aim_forward[1];
+    fy = fy < -1.0f ? -1.0f : (fy > 1.0f ? 1.0f : fy);
+    return std::asin(fy);
+}
+
 std::optional<float> PlayerMgr::aim_yaw(unsigned index) {
     const auto d = aim_vs_view(index);
     if (!d.has_value()) {

@@ -8537,6 +8537,70 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- THE AIM'S PITCH, PROVEN BY RECOIL ----------------------------------------------
+        //
+        // `aim_pitch` is the counterpart to `aim_yaw`: a VR mod reconciling a head pose with the
+        // weapon needs both angles, and recoil, the engine's pitch clamp and any look-assist all act
+        // on this one rather than on yaw.
+        //
+        // A static read cannot show it is the PITCH rather than some other angle that happens to be
+        // near zero. Firing can: recoil kicks the aim UP and then recovers, so holding the trigger
+        // must raise this number and releasing must bring it back. That is a behavioural proof of
+        // the accessor, using the game's own mechanism, and it needs no target and no baseline.
+        {
+            std::string pb0;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                pb0 = http::body_of(resp);
+            }
+            double pitch0 = -999.0;
+            const bool have_pitch = json_double(pb0, "aim_pitch_deg", pitch0);
+            check(have_pitch, "the aim's pitch is readable alongside its yaw");
+            if (have_pitch) {
+                check(fabs(pitch0) < 90.0,
+                      "and it is an elevation angle -- inside +/-90 by construction, which a "
+                      "mis-taken Euler term would not be");
+
+                // RELOAD FIRST. Nothing in this suite ever reloads, so the magazine drains a
+                // little every run -- measured falling from a 7.46 degree peak to 1.10 across two
+                // runs. An empty weapon produces no recoil, which would read as this accessor
+                // being broken rather than as the suite having run out of bullets.
+                http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
+                std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+
+                // HOLD THE TRIGGER and watch the recoil climb.
+                http::get(port, "/input/hold?vk=256&down=1", resp);
+                double peak = pitch0;
+                for (int i = 0; i < 12; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    if (!http::get(port, "/sdk/shader-params", resp)) {
+                        continue;
+                    }
+                    double p = 0.0;
+                    if (json_double(http::body_of(resp), "aim_pitch_deg", p) && p > peak) {
+                        peak = p;
+                    }
+                }
+                http::get(port, "/input/hold?vk=256&down=0", resp);
+                http::get(port, "/input/release", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+
+                double pitch1 = -999.0;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    json_double(http::body_of(resp), "aim_pitch_deg", pitch1);
+                }
+                printf("[fixture] recoil: pitch %+.4f -> peak %+.4f -> %+.4f deg\n",
+                       pitch0, peak, pitch1);
+                // The rise is the assertion: it proves the weapon fired AND that this accessor
+                // tracks the axis recoil acts on. Live it reaches ~2.2 degrees on a held burst.
+                check(peak - pitch0 > 0.5,
+                      "holding the trigger raises the aim's pitch -- recoil, which both proves the "
+                      "shot happened and that this is the axis it acts on");
+                // And it comes back, so the suite has not left the player aiming at the ceiling.
+                check(fabs(pitch1 - pitch0) < 0.5,
+                      "and the recoil recovers, so firing leaves the aim where it found it");
+            }
+        }
+
         // ---- VIEW-MOTION SUPPRESSION, AND WHAT IT DOES NOT PROVE ----------------------------
         //
         // Head bob, camera sway and shake are the standard VR nausea sources, and this engine
