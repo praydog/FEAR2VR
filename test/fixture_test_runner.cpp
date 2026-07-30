@@ -4457,6 +4457,58 @@ int main(int argc, char** argv) {
                       json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
                   "a three-argument payload measures three arguments and twelve stack bytes");
 
+            // ---- THE PANEL BINDING TABLES, AS A CENSUS ---------------------------------------------
+            //
+            // Each panel's lazily-initialised table holds 12-byte {name, handler, kind} entries terminated by a
+            // null name, and carries BOTH directions. The kind byte is the role.
+            //
+            // The rule under test is a naming/role correspondence over the WHOLE population, not a sample: every
+            // Game_* entry is a game-to-Flash entry, every _global.* entry a variable, every OnConstruct and
+            // OnDestruct a lifecycle entry. An earlier role map built from three panels' opening entries left
+            // 100 of 623 roles Unknown and mapped only 86 of the 172 globals, so the totals are asserted rather
+            // than the shape.
+            double bt_e = -1.0, bt_g = -1.0, bt_gok = -1.0, bt_gl = -1.0, bt_glok = -1.0;
+            double bt_l = -1.0, bt_lok = -1.0, bt_unk = -1.0, bt_p = -1.0;
+            const bool btn = json_double(body, "bt_entries", bt_e) &&
+                             json_double(body, "bt_game", bt_g) &&
+                             json_double(body, "bt_game_ok", bt_gok) &&
+                             json_double(body, "bt_global", bt_gl) &&
+                             json_double(body, "bt_global_ok", bt_glok) &&
+                             json_double(body, "bt_life", bt_l) &&
+                             json_double(body, "bt_life_ok", bt_lok) &&
+                             json_double(body, "bt_unknown_roles", bt_unk) &&
+                             json_double(body, "bt_panels", bt_p);
+            check(btn && bt_p == 17.0 && bt_e > 500.0,
+                  "every panel's table is initialised and they hold hundreds of bindings");
+            check(btn && bt_lok == bt_l && bt_l == bt_p * 2.0,
+                  "each panel contributes exactly one OnConstruct and one OnDestruct, all lifecycle");
+            check(btn && bt_gok == bt_g,
+                  "every Game_* binding is classified game-to-Flash, including the one exception kind");
+            check(btn && bt_glok == bt_gl,
+                  "every _global.* binding is classified as a Flash variable");
+            // ZERO unknown roles is the assertion the earlier map could not have passed.
+            check(btn && bt_unk == 0.0,
+                  "no binding carries a kind the role map does not cover");
+
+            // The roles must PARTITION the population -- summing to the total means none was double-counted or
+            // dropped, which counting each category alone cannot show.
+            double br_l = -1.0, br_f = -1.0, br_g = -1.0, br_v = -1.0;
+            const bool brn = json_double(body, "bt_role_lifecycle", br_l) &&
+                             json_double(body, "bt_role_flash_to_game", br_f) &&
+                             json_double(body, "bt_role_game_to_flash", br_g) &&
+                             json_double(body, "bt_role_global", br_v);
+            check(brn && btn && br_l + br_f + br_g + br_v == bt_e,
+                  "the four roles partition every binding exactly");
+            check(brn && br_f > 100.0 && br_g > 100.0,
+                  "both directions are heavily populated -- this is a two-way bridge");
+
+            double bt_cp = -1.0;
+            bool bt_abs = false;
+            check(json_double(body, "bt_controlpanel", bt_cp) && bt_cp == 7.0,
+                  "ControlPanel's table holds exactly seven bindings before its null terminator");
+            check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
+                  "an unknown panel and an unobserved kind are both refused");
+
             // ---- THE GFx SLOT MAP AND THE HUNGARIAN-PREFIX RULE ------------------------------------
             //
             // Three slots of the GFx object are identified, each by a distinct population of call sites rather

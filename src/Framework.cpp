@@ -4484,6 +4484,78 @@ std::string build_shader_params_json() {
                                  sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
                            : -1.0,
                        0);
+    // THE BINDING TABLES, walked live. The rule under test is a naming/role correspondence across the WHOLE
+    // population: every Game_* entry must be kind 7 (game->Flash), every _global.* entry a global setter, and
+    // every OnConstruct/OnDestruct a lifecycle entry. A kind byte that meant something else would break it.
+    size_t bt_panels = 0, bt_entries = 0, bt_game = 0, bt_game_ok = 0;
+    size_t bt_global = 0, bt_global_ok = 0, bt_life = 0, bt_life_ok = 0, bt_unknown = 0;
+    for (const auto& p : sdk::Events::ui_panels()) {
+        if (!sdk::Events::panel_table_initialised(p.name)) {
+            continue;
+        }
+        ++bt_panels;
+        for (const auto& b : sdk::Events::panel_bindings(p.name)) {
+            ++bt_entries;
+            const bool is_game = b.name.rfind("Game_", 0) == 0;
+            const bool is_global = b.name.rfind("_global.", 0) == 0;
+            const bool is_life = b.name.find(".OnConstruct") != std::string::npos ||
+                                 b.name.find(".OnDestruct") != std::string::npos;
+            if (is_game) {
+                ++bt_game;
+                if (b.role == sdk::Events::BindingRole::GameToFlash) {
+                    ++bt_game_ok;
+                }
+            } else if (is_global) {
+                ++bt_global;
+                if (b.role == sdk::Events::BindingRole::GlobalSetter) {
+                    ++bt_global_ok;
+                }
+            } else if (is_life) {
+                ++bt_life;
+                if (b.role == sdk::Events::BindingRole::Lifecycle) {
+                    ++bt_life_ok;
+                }
+            }
+            if (b.role == sdk::Events::BindingRole::Unknown) {
+                ++bt_unknown;
+            }
+        }
+    }
+    json_append_double(out, "bt_panels", static_cast<double>(bt_panels), 0);
+    json_append_double(out, "bt_entries", static_cast<double>(bt_entries), 0);
+    json_append_double(out, "bt_game", static_cast<double>(bt_game), 0);
+    json_append_double(out, "bt_game_ok", static_cast<double>(bt_game_ok), 0);
+    json_append_double(out, "bt_global", static_cast<double>(bt_global), 0);
+    json_append_double(out, "bt_global_ok", static_cast<double>(bt_global_ok), 0);
+    json_append_double(out, "bt_life", static_cast<double>(bt_life), 0);
+    json_append_double(out, "bt_life_ok", static_cast<double>(bt_life_ok), 0);
+    json_append_double(out, "bt_unknown_roles", static_cast<double>(bt_unknown), 0);
+    // Role coverage as a partition: every entry must land in exactly one role, so these must sum to the total.
+    size_t bt_role_life = 0, bt_role_f2g = 0, bt_role_g2f = 0, bt_role_glob = 0;
+    for (const auto& p : sdk::Events::ui_panels()) {
+        for (const auto& b : sdk::Events::panel_bindings(p.name)) {
+            switch (b.role) {
+            case sdk::Events::BindingRole::Lifecycle: ++bt_role_life; break;
+            case sdk::Events::BindingRole::FlashToGame: ++bt_role_f2g; break;
+            case sdk::Events::BindingRole::GameToFlash: ++bt_role_g2f; break;
+            case sdk::Events::BindingRole::GlobalSetter: ++bt_role_glob; break;
+            default: break;
+            }
+        }
+    }
+    json_append_double(out, "bt_role_lifecycle", static_cast<double>(bt_role_life), 0);
+    json_append_double(out, "bt_role_flash_to_game", static_cast<double>(bt_role_f2g), 0);
+    json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
+    json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
+    // ControlPanel's table is small enough to state exactly: 7 entries then a null name.
+    json_append_double(out, "bt_controlpanel",
+                       static_cast<double>(sdk::Events::panel_bindings("ControlPanel").size()), 0);
+    json_append_bool(out, "bt_absent_refused",
+                     sdk::Events::panel_bindings("NoSuchPanel").empty() &&
+                         !sdk::Events::panel_table_initialised("NoSuchPanel") &&
+                         sdk::Events::binding_role_for_kind(200) ==
+                             sdk::Events::BindingRole::Unknown);
+
     // THE HUNGARIAN-PREFIX RULE for Flash globals: every scalar prefix takes the SetVariable slot and every
     // array prefix the SetVariableArray slot, with no exceptions across 162 classified names. Checked on one
     // representative of each observed prefix, using the real names from the binary.

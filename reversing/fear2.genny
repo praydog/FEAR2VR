@@ -5135,3 +5135,41 @@ class LTInputDeviceMouse 0x30 {
 // unrecognised name yields NO slot -- defaulting to SetVariable would send an array through the scalar path.
 //
 // 1043 checks, 0 failures.
+
+// ---- THE PANEL "DISPATCHERS" ARE BINDING TABLES, AND A ROLE MAP THAT NEEDED THE CENSUS ------------
+//
+// What I called a panel dispatcher last pass is a lazily-initialised accessor: guarded by a once-flag, it fills
+// a static table on first call and returns it. THE TABLE IS THE SAME 12-BYTE DESCRIPTOR SHAPE as the engine's
+// console command and variable tables -- {const char* name, void* handler, uint8 kind} -- terminated by a NULL
+// NAME. Its file image is all zeros, so it must be read live and only after the guard's bit 0 is set.
+//
+// ONE TABLE CARRIES BOTH DIRECTIONS, which is what the "same panel from opposite directions" note was groping
+// at without a field to point to. The kind byte says which. Census of ALL 623 entries across all 17 panels:
+//
+//     kind 0, 1        17 each   <Panel>.OnConstruct / .OnDestruct
+//     kind 2, 3, 5, 6  208       <Panel>.<Method>       -- Flash calls the game
+//     kind 7           208       Game_<Panel>_<Event>   -- the game calls Flash
+//     kind 11          1         Game_Player_ShowSubtitle, the ONE Game_* entry off kind 7
+//     kind 12..21      172       _global.g_*            -- a Flash variable
+//
+// 34 + 208 + 209 + 172 = 623, with nothing left over.
+//
+// MY FIRST ROLE MAP WAS BUILT FROM THREE PANELS' OPENING ENTRIES and said "2, 3, 6" and "15, 16". Run over the
+// population it left 100 of 623 roles Unknown, matched only 86 of the 172 global entries, and missed kind 5
+// entirely. It also would have called 208 of 209 Game_* entries correct and quietly dropped one.
+//
+// > Three panels' first dozen entries produced a map that looked complete and covered 84% of the population.
+// > The census is what turned "the kind byte is the role" from a plausible reading into a partition -- and the
+// > assertion that earns is ZERO unknown roles, which the earlier map could not have passed.
+//
+// THE GLOBAL KINDS ENCODE THE VARIABLE'S TYPE, not setter versus getter, and five match the Hungarian census
+// EXACTLY: k15 = 54 = g_n, k16 = 32 = g_b, k20 = 30 = g_an, and k17 = k21 = 4 = g_ab and g_af in some order.
+// The rest (12, 13, 14, 18, 19) total 48 against g_s (12), g_as (26) and 10 unprefixed names -- consistent, but
+// which kind is which is NOT pinned, so the SDK reports them as variables without claiming an element type.
+//
+// EXPOSED AS sdk::Events::panel_bindings / panel_table_initialised / binding_role_for_kind, with the guard
+// checked rather than the address trusted: an uninitialised table reads as nulls, and reporting those as
+// bindings would invent an entire UI surface. The suite asserts the four roles PARTITION the 623 -- summing to
+// the total, which counting each category alone cannot show.
+//
+// 1052 checks, 0 failures.

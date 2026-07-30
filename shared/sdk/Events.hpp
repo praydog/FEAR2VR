@@ -189,8 +189,75 @@ public:
     struct UiPanel {
         const char* name;
         size_t method_count;
-        uintptr_t dispatch_offset;  // within gameclient.dll
+        uintptr_t dispatch_offset;  // the lazy initialiser, within gameclient.dll
+        uintptr_t guard_offset;     // its once-flag; bit 0 set means the table below is filled
+        uintptr_t table_offset;     // the binding table it returns
     };
+
+    //
+    // A PANEL'S BINDING TABLE -- the whole two-directional surface, with handler addresses.
+    //
+    // What I first called a "dispatcher" is a lazily-initialised accessor: it fills a static table on first
+    // call and returns it. The table is 12-byte entries of {const char* name, void* handler, uint8 kind},
+    // terminated by a NULL NAME, and it is the same descriptor shape as the engine's console command and
+    // variable tables.
+    //
+    // ITS FILE IMAGE IS ZERO. The initialiser writes every field at runtime, so this must be read live and only
+    // after the once-flag's bit 0 is set. Reading it early yields a table of nulls, which is why
+    // panel_bindings checks the guard rather than trusting the address.
+    //
+    // THE KIND BYTE IS THE ROLE, and the map below is a census of ALL 623 entries across all 17 panels rather
+    // than a rule read off the first few:
+    //
+    //     0, 1            17 each   <Panel>.OnConstruct / .OnDestruct
+    //     2, 3, 5, 6      208       <Panel>.<Method>        -- Flash calls the game
+    //     7               208       Game_<Panel>_<Event>    -- the game calls Flash
+    //     11              1         ONE Game_* exception: Game_Player_ShowSubtitle
+    //     12 .. 21        172       _global.g_*             -- a Flash variable
+    //
+    // AN EARLIER VERSION OF THIS MAP SAID "2, 3, 6" and "15, 16", from three panels' opening entries. It missed
+    // kind 5 entirely and covered only 86 of the 172 global entries; run over the population it left 100 roles
+    // Unknown. The counts above sum to 623 with none left over.
+    //
+    // THE GLOBAL KINDS ENCODE THE VARIABLE'S TYPE, not setter-versus-getter, and five of them match the
+    // Hungarian census EXACTLY: k15 = 54 = g_n, k16 = 32 = g_b, k20 = 30 = g_an, k17 = 4 = one of g_ab/g_af and
+    // k21 = 4 = the other. The remaining kinds (12, 13, 14, 18, 19) total 48 against g_s (12), g_as (26) and 10
+    // unprefixed names, which is consistent but does NOT pin which kind is which -- so this class reports them
+    // as GlobalSetter without claiming an element type.
+    //
+    // So ONE table carries both directions, which is what the "same panel from opposite directions" note two
+    // passes ago was describing without a field to point at. For a consumer the split is the useful part: hook
+    // a kind-7 handler to intercept the game telling the HUD, and a Flash-to-game handler to intercept the HUD
+    // asking the game for something.
+    //
+    enum class BindingRole {
+        Unknown,
+        Lifecycle,    // kinds 0, 1
+        FlashToGame,  // kinds 2, 3, 5, 6
+        GameToFlash,  // kind 7, and kind 11 for the single Game_* exception
+        GlobalSetter, // kinds 12..21 -- a _global variable, element type not pinned
+    };
+
+    struct PanelBinding {
+        std::string name;
+        uintptr_t handler{};
+        uint8_t kind{};
+        BindingRole role{BindingRole::Unknown};
+    };
+
+    static constexpr size_t kBindingEntryBytes = 12;
+
+    // The role a kind byte denotes. Unknown for a kind not yet observed, which is reported rather than guessed
+    // -- kinds up to 21 exist across the 17 panels and only these have been tied to a population.
+    static BindingRole binding_role_for_kind(uint8_t kind);
+
+    // Every binding of a panel, read live. Empty when the panel is unknown, gameclient is absent, or the
+    // panel's once-flag is still clear -- the last being a real state, not an error.
+    static std::vector<PanelBinding> panel_bindings(std::string_view panel);
+
+    // Is the panel's table filled yet? Distinguishes "not initialised" from "no bindings", which the empty
+    // vector above cannot.
+    static bool panel_table_initialised(std::string_view panel);
 
     static const std::vector<UiPanel>& ui_panels();
     static std::optional<UiPanel> find_panel(std::string_view name);

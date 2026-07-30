@@ -262,15 +262,23 @@ size_t Events::setter_slot_for_variable(std::string_view variable) {
 
 const std::vector<Events::UiPanel>& Events::ui_panels() {
     static const std::vector<UiPanel> s_panels = {
-        {"Multiplayer", 59, 0x13380},     {"Player", 34, 0x26C40},
-        {"Menu", 23, 0xCE60},             {"Performance", 17, 0x1EC50},
-        {"SaveGame", 15, 0x29060},        {"OnlineLogin", 14, 0x1AD40},
-        {"Global", 13, 0x5860},           {"Options", 13, 0x1D080},
-        {"MultiplayerHost", 12, 0x18320}, {"MultiplayerJoin", 11, 0x19260},
-        {"KeyBindings", 9, 0x8790},       {"WorldInterface", 6, 0x2A9D0},
-        {"ControlPanel", 5, 0x4670},      {"LayoutPanel", 4, 0x8AC0},
-        {"SecurityPanel", 3, 0x29310},    {"SystemLayer", 2, 0x29480},
-        {"WeaponDisplay", 2, 0x2A800},
+        {"Multiplayer", 59, 0x13380, 0x1F7558, 0x1F6E98},
+        {"Player", 34, 0x26C40, 0x1F8C24, 0x1F8378},
+        {"Menu", 23, 0xCE60, 0x1F6D6C, 0x1F6AF0},
+        {"Performance", 17, 0x1EC50, 0x1F7EE8, 0x1F7D98},
+        {"SaveGame", 15, 0x29060, 0x1F8D0C, 0x1F8C28},
+        {"OnlineLogin", 14, 0x1AD40, 0x1F7A7C, 0x1F7980},
+        {"Global", 13, 0x5860, 0x1F67CC, 0x1F66B8},
+        {"Options", 13, 0x1D080, 0x1F7CB4, 0x1F7A80},
+        {"MultiplayerHost", 12, 0x18320, 0x1F7734, 0x1F7560},
+        {"MultiplayerJoin", 11, 0x19260, 0x1F7964, 0x1F7838},
+        {"KeyBindings", 9, 0x8790, 0x1F6964, 0x1F68B0},
+        {"WorldInterface", 6, 0x2A9D0, 0x1F8E5C, 0x1F8DF0},
+        {"ControlPanel", 5, 0x4670, 0x1F6520, 0x1F64C0},
+        {"LayoutPanel", 4, 0x8AC0, 0x1F69C8, 0x1F6968},
+        {"SecurityPanel", 3, 0x29310, 0x1F8D78, 0x1F8D18},
+        {"SystemLayer", 2, 0x29480, 0x1F8DBC, 0x1F8D80},
+        {"WeaponDisplay", 2, 0x2A800, 0x1F8DE8, 0x1F8DC4},
     };
     return s_panels;
 }
@@ -297,6 +305,77 @@ uintptr_t Events::panel_dispatch(std::string_view name) {
         return 0;
     }
     return gc->base + p->dispatch_offset;
+}
+
+Events::BindingRole Events::binding_role_for_kind(uint8_t kind) {
+    switch (kind) {
+    case 0:
+    case 1:
+        return BindingRole::Lifecycle;
+    case 2:
+    case 3:
+    case 5:
+    case 6:
+        return BindingRole::FlashToGame;
+    case 7:
+    case 11:  // Game_Player_ShowSubtitle, the one Game_* entry not on kind 7
+        return BindingRole::GameToFlash;
+    default:
+        // 12..21 are all _global variable entries; the kind further encodes the element type, which is not
+        // pinned (see the header). Anything outside the observed range stays Unknown rather than being folded
+        // in, so a build with a new kind is visible instead of silently classified.
+        if (kind >= 12 && kind <= 21) {
+            return BindingRole::GlobalSetter;
+        }
+        return BindingRole::Unknown;
+    }
+}
+
+bool Events::panel_table_initialised(std::string_view panel) {
+    const auto p = find_panel(panel);
+    if (!p.has_value()) {
+        return false;
+    }
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return false;
+    }
+    const auto guard = mem::read_u32(gc->base + p->guard_offset);
+    return guard.has_value() && (*guard & 1u) != 0;
+}
+
+std::vector<Events::PanelBinding> Events::panel_bindings(std::string_view panel) {
+    std::vector<PanelBinding> out;
+    const auto p = find_panel(panel);
+    if (!p.has_value() || !panel_table_initialised(panel)) {
+        return out;  // an uninitialised table is all nulls; reading it would invent bindings
+    }
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return out;
+    }
+
+    const auto table = gc->base + p->table_offset;
+    // Generous but bounded: the largest panel observed holds around 60 entries.
+    constexpr size_t kMaxEntries = 256;
+    for (size_t i = 0; i < kMaxEntries; ++i) {
+        const auto at = table + i * kBindingEntryBytes;
+        const auto name_ptr = mem::read_ptr(at);
+        if (!name_ptr.has_value() || *name_ptr == 0) {
+            break;  // the null name IS the terminator
+        }
+        auto name = mem::read_name(*name_ptr, 96, 1);
+        if (!name.has_value()) {
+            break;
+        }
+        PanelBinding b{};
+        b.name = std::move(*name);
+        b.handler = mem::read_ptr(at + 4).value_or(0);
+        b.kind = mem::read_u8(at + 8).value_or(0);
+        b.role = binding_role_for_kind(b.kind);
+        out.push_back(std::move(b));
+    }
+    return out;
 }
 
 bool Events::verify_panel(const UiPanel& panel) {
