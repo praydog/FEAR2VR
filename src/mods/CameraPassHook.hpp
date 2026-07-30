@@ -116,6 +116,10 @@ public:
     //
     // GAME THREAD ONLY, and only between a BeginRenderTarget and its EndRenderTarget: it moves the renderer's
     // state machine. Returns false when the hook is not installed.
+    // Name the world point that gets projected every main-view pass. Off until a point is set.
+    void set_probe_point(float x, float y, float z);
+    void clear_probe_point();
+
     bool replay_setup(const regenny::LTNodeTransform& camera, const float fov[2], const float rect[4],
                       float depth_min, float depth_max);
 
@@ -192,6 +196,15 @@ public:
         float half_ipd{};
         bool split_viewport{};
         std::array<float, 2> fov_override{};
+
+        // A WORLD POINT PROJECTED IN-PHASE, i.e. while a PERSPECTIVE pass is configured. Reading the record
+        // from another thread lands on the frame's last pass -- the full-screen ortho HUD pass -- where a
+        // world point projects to roughly itself and says nothing about where the view is looking. Measured
+        // here, a stationary world point sliding across the screen is direct evidence the rendered view
+        // turned, with no screenshot involved.
+        bool probe_projected{};
+        std::array<float, 3> probe_point{};
+        std::array<float, 2> probe_pixel{};
     };
 
     Observed observed() const;

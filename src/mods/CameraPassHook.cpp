@@ -16,6 +16,11 @@ namespace {
 constexpr const char* kHookName = "CLTRenderer::SetupPassPerspective";
 
 std::atomic<uint64_t> g_passes{0};
+std::atomic<bool> g_probe_on{false};
+std::atomic<float> g_probe_pt[3]{{0.0f}, {0.0f}, {0.0f}};
+std::atomic<float> g_probe_px{0.0f};
+std::atomic<float> g_probe_py{0.0f};
+std::atomic<bool> g_probe_ok{false};
 std::atomic<uint64_t> g_overridden{0};
 std::atomic<uint64_t> g_rejected{0};
 std::atomic<uint8_t> g_eye{static_cast<uint8_t>(CameraPassHook::Eye::Off)};
@@ -159,6 +164,29 @@ void apply_frustum_centre(CameraPassHook::Eye eye) {
 }
 
 // Reads the pixel viewport the engine just derived from the rect it was handed.
+// Project the caller's world point through the record THAT THIS PASS JUST CONFIGURED. Only meaningful while
+// a perspective pass is live, which is why it runs here rather than off an IPC read.
+void project_probe(bool is_main_view) {
+    if (!is_main_view || !g_probe_on.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const auto scam = sdk::SceneCamera::snapshot();
+    if (!scam || !scam->is_perspective_projection()) {
+        g_probe_ok.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const auto p = scam->project_point(g_probe_pt[0].load(std::memory_order_relaxed),
+                                       g_probe_pt[1].load(std::memory_order_relaxed),
+                                       g_probe_pt[2].load(std::memory_order_relaxed));
+    if (!p) {
+        g_probe_ok.store(false, std::memory_order_relaxed);
+        return;
+    }
+    g_probe_px.store(p->x, std::memory_order_relaxed);
+    g_probe_py.store(p->y, std::memory_order_relaxed);
+    g_probe_ok.store(true, std::memory_order_relaxed);
+}
+
 void capture_viewport() {
     if (const auto snap = sdk::SceneCamera::snapshot()) {
         g_vp[0].store(snap->viewport_left, std::memory_order_relaxed);
@@ -242,6 +270,7 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     if (eye == CameraPassHook::Eye::Off || camera == nullptr) {
         const char r = original(camera, fov, rect, depth_min, depth_max);
         capture_viewport();
+        project_probe(is_main_view);
         record_pass(camera, fov, rect, depth_min, depth_max);
         return r;
     }
@@ -289,6 +318,7 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     const char r = original(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     apply_frustum_centre(eye);
     capture_viewport();
+    project_probe(is_main_view);
     record_pass(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     return r;
 }
@@ -491,6 +521,18 @@ uint32_t CameraPassHook::max_passes_in_a_frame() const {
     return g_max_passes.load(std::memory_order_relaxed);
 }
 
+void CameraPassHook::set_probe_point(float x, float y, float z) {
+    g_probe_pt[0].store(x, std::memory_order_relaxed);
+    g_probe_pt[1].store(y, std::memory_order_relaxed);
+    g_probe_pt[2].store(z, std::memory_order_relaxed);
+    g_probe_on.store(true, std::memory_order_relaxed);
+}
+
+void CameraPassHook::clear_probe_point() {
+    g_probe_on.store(false, std::memory_order_relaxed);
+    g_probe_ok.store(false, std::memory_order_relaxed);
+}
+
 CameraPassHook::Observed CameraPassHook::observed() const {
     Observed out;
     out.target = g_target.load(std::memory_order_relaxed);
@@ -531,5 +573,10 @@ CameraPassHook::Observed CameraPassHook::observed() const {
     out.centre_inconsistent = g_centre_inconsistent.load(std::memory_order_relaxed);
     out.second_eye_draws = g_second_draws.load(std::memory_order_relaxed);
     out.draw_calls = g_draw_calls.load(std::memory_order_relaxed);
+    out.probe_projected = g_probe_ok.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < 3; ++i) {
+        out.probe_point[i] = g_probe_pt[i].load(std::memory_order_relaxed);
+    }
+    out.probe_pixel = {g_probe_px.load(std::memory_order_relaxed), g_probe_py.load(std::memory_order_relaxed)};
     return out;
 }

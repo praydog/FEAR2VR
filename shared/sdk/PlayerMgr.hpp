@@ -1277,6 +1277,14 @@ public:
     // the holder or the camera object cannot be read.
     static std::optional<CameraRotationOperands> camera_rotation_operands(unsigned index);
 
+    // THE SAME, FROM A HOLDER THE CALLER ALREADY HAS. A detour on one of the camera's own methods has `this`
+    // in hand; re-resolving the player from a slot index to reach the same pointer would be work already done,
+    // and it would silently read a DIFFERENT player if the hook ever fired for a second one.
+    //
+    // Reads the two operands only -- `composed` and `actual` need the camera object, which the index form
+    // resolves and this one deliberately does not.
+    static std::optional<CameraRotationOperands> camera_rotation_operands_from_holder(uintptr_t holder);
+
     // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
     // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
     // the same algebra and need not round identically.
@@ -1338,6 +1346,34 @@ public:
     };
 
     // nullopt when the operand cannot be read or the write faulted.
+    // ---- WHERE A HEADSET ORIENTATION BELONGS -----------------------------------------------------
+    //
+    // The camera's rotation is `LTRotation_Multiply(holder[+552], holder[+324])`: an ADDITIVE outer operand
+    // times the player's own aim. Measured live with the view unperturbed, the outer operand is IDENTITY, so
+    // the product is the aim alone. That makes +552 the natural place for a head orientation -- it composes
+    // ON TOP of where the player is aiming instead of replacing it, which is exactly the split VR wants:
+    // the head turns freely while the body, the aim and the weapon stay under the player's control.
+    //
+    // It is strictly better than owning LTObject_SetPosRot for this purpose. That override seizes the whole
+    // rotation and the aim then has to be re-derived; this one lets the engine keep composing.
+    //
+    // BUT THE FIELD IS RECLAIMED EVERY FRAME. PlayerCamera_UpdateAttachedRotation writes it unconditionally --
+    // an attached object's rotation in the special case, IDENTITY in the ordinary one -- so a write from
+    // anywhere else is gone before it is read. probe_outer_operand() reports exactly that: Reclaimed.
+    //
+    // So the writer has to be owned, the same conclusion the camera object forced. This hands out the address
+    // to hook; src/mods/HeadTracking is the consumer that does it.
+    //
+    // 0 when the pattern did not resolve (gameclient.dll absent, or a different build).
+    static uintptr_t camera_attached_rotation_fn();
+
+    // Writes the outer operand directly. Only meaningful from inside a hook on the function above, AFTER the
+    // original has run -- from anywhere else the next frame overwrites it, which is what the probe measured.
+    //
+    // Takes the holder rather than a player index because the hook already has `this` in hand and re-resolving
+    // the player from a detour would be work the caller has already done.
+    static bool write_camera_outer_rotation(uintptr_t holder, const std::array<float, 4>& rotation);
+
     static std::optional<OuterOperandProbe> probe_outer_operand(unsigned index, unsigned samples = 12);
 
     // THE GENERAL FORM: does writing a quaternion at `holder_offset` steer the camera object? Answers the only

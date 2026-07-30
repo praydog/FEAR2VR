@@ -138,6 +138,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/vr/head", 0) == 0) {
+        if (!g_handlers.head) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no head handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.head(path));
+        return;
+    }
+
     if (path.rfind("/stereo/", 0) == 0) {
         if (!g_handlers.stereo) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no stereo handler registered\"}");

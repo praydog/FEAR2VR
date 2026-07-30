@@ -4528,3 +4528,37 @@ That is the third distinct thing in this project that could only be measured ins
 renderer gate and the pose comparison. The pattern is now unmistakable: **anything the render thread rewrites
 per pass can only be checked from inside a pass.**
 
+
+## A head-tracked view, and the observable that finally settled it
+
+The camera's rotation is the engine's own product `holder[+552] * holder[+324]`: an ADDITIVE slot times the
+player's aim. A head pose belongs in the additive one, so looking around composes with aiming instead of
+seizing it -- which is what `LTObject_SetPosRot` overriding did, and why that path fights the player.
+
+Writing `+552` from outside is reclaimed within a frame (`probe_outer_operand` said so long before this), so
+the mod owns the writer: `PlayerCamera_UpdateAttachedRotation` (gameclient +0xDED80, `__thiscall`, `this` IS
+the holder). It runs ~28x/sec, not per frame. A write watchpoint on the field found exactly two writers -- the
+engine's store at +0xDF179 and ours -- so nothing else contends for it.
+
+**Three separate measurements agreed and all three were worthless.** The camera object rotated;
+`camera == outer * inner` held; the pass argument turned 90 deg -> 150 deg for a 60 deg head yaw. Every one of
+those is an intermediate field, and the screen did not appear to move. The trap underneath: the desktop
+capture was STALE -- proven by a control, applying a 150-unit eye offset that had visibly moved the world
+earlier in the same session and now changed nothing on screen while `cp_passes` kept climbing.
+
+What settles it is a STATIONARY WORLD POINT changing pixel:
+
+```
+head yaw   0 deg -> x 1280.07   (screen centre of 2560)
+head yaw  +6 deg -> x 1158.90   world slides left
+head yaw +10 deg -> x 1076.79   further
+head yaw   0 deg -> x 1280.07   exactly back
+head yaw -10 deg -> x 1483.55   world slides right
+```
+
+Monotone, symmetric, exactly reversible. That projection MUST be taken inside the pass detour: read from the
+IPC thread it lands on the frame's last pass, the full-screen ortho HUD pass, where a world point projects to
+roughly itself -- the same phase trap that made the projection-centre check read "not determinable".
+
+Consumer API: `PlayerMgr::camera_rotation_operands_from_holder()`, `HeadTracking::set_head_rotation()` /
+`clear()`, `CameraPassHook::set_probe_point()` / `observed().probe_pixel`.

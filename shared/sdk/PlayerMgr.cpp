@@ -706,6 +706,53 @@ std::optional<bool> PlayerMgr::camera_attachment_driving(unsigned index) {
     return !identity;
 }
 
+// PlayerCamera_UpdateAttachedRotation @ gameclient.dll 0x100DED80. __thiscall; `this` is the camera holder,
+// the same object CPlayerCamera_ClampPitch reads +324 from. Prologue only, with the trailing call's
+// displacement left off so the signature carries no link-time offset:
+//   sub esp,88h / push ebx / push ebp / mov ebp,ecx / mov eax,[ebp+4] / mov ecx,[eax+0ECh] /
+//   mov ecx,[ecx+524h] / push esi / push edi
+static constexpr const char* kCameraAttachedRotation =
+    "81 EC 88 00 00 00 53 55 8B E9 8B 45 04 8B 88 EC 00 00 00 8B 89 24 05 00 00 56 57";
+
+std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_operands_from_holder(
+    uintptr_t holder) {
+    if (holder == 0) {
+        return std::nullopt;
+    }
+    CameraRotationOperands out{};
+    if (!mem::copy(out.outer.data(), holder + kCameraRotationOuter, sizeof(float) * 4) ||
+        !mem::copy(out.inner.data(), holder + kCameraRotationInner, sizeof(float) * 4)) {
+        return std::nullopt;
+    }
+    // Same conversion the index form uses -- multiply_rotations takes LTRotation, and the operands are stored
+    // here as plain float quads.
+    regenny::LTRotation a{};
+    regenny::LTRotation b{};
+    a.x = out.outer[0]; a.y = out.outer[1]; a.z = out.outer[2]; a.w = out.outer[3];
+    b.x = out.inner[0]; b.y = out.inner[1]; b.z = out.inner[2]; b.w = out.inner[3];
+    const auto prod = multiply_rotations(a, b);
+    out.composed = {prod.x, prod.y, prod.z, prod.w};
+    return out;
+}
+
+uintptr_t PlayerMgr::camera_attached_rotation_fn() {
+    static const uintptr_t s_fn =
+        Modules::get().scan_game_client(kCameraAttachedRotation, "PlayerCamera_UpdateAttachedRotation");
+    return s_fn;
+}
+
+bool PlayerMgr::write_camera_outer_rotation(uintptr_t holder, const std::array<float, 4>& rotation) {
+    if (holder == 0) {
+        return false;
+    }
+    for (float v : rotation) {
+        if (!std::isfinite(v)) {
+            return false;
+        }
+    }
+    return mem::store(holder + kCameraRotationOuter, rotation.data(), sizeof(float) * 4);
+}
+
 std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_outer_operand(unsigned index, unsigned samples) {
     return probe_holder_quaternion(index, kCameraRotationOuter, true, samples);
 }

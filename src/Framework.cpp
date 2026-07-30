@@ -29,6 +29,7 @@
 #include "mods/CameraPassHook.hpp"
 #include "mods/ConsoleRunner.hpp"
 #include "mods/FocusKeeper.hpp"
+#include "mods/HeadTracking.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -6237,6 +6238,13 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_double(out, "cp_cam_x", cp.camera_position[0], 3);
                 json_append_double(out, "cp_cam_y", cp.camera_position[1], 3);
                 json_append_double(out, "cp_cam_z", cp.camera_position[2], 3);
+                // THE ROTATION THE RENDERER IS ACTUALLY GIVEN. The camera OBJECT's rotation is a different
+                // thing and this project has already been misled by conflating them once; this is the
+                // transform the pass is set up with, captured as the argument.
+                json_append_double(out, "cp_cam_qx", cp.camera_rotation[0], 5);
+                json_append_double(out, "cp_cam_qy", cp.camera_rotation[1], 5);
+                json_append_double(out, "cp_cam_qz", cp.camera_rotation[2], 5);
+                json_append_double(out, "cp_cam_qw", cp.camera_rotation[3], 5);
                 // THE CROSS-CHECK THAT MATTERS: the FOV we captured as an ARGUMENT, pushed through the
                 // engine's own clamp-and-tan, must equal the half view-plane the record ends up holding.
                 // Two independent routes -- an intercepted call and a mapped field -- to one pair.
@@ -9826,6 +9834,9 @@ bool Framework::initialize() {
     // The perspective pass -- the stereo intervention point. Independent of RenderHook: that one brackets the
     // frame, this one configures the view inside it.
     Mods::get().add(&CameraPassHook::get());
+    // The head-orientation composition point. Independent of CameraPassHook: that one places the EYES, this
+    // one turns the HEAD, and a VR mod needs both.
+    Mods::get().add(&HeadTracking::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -9843,6 +9854,59 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.head = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& ht = HeadTracking::get();
+        if (webapi_query_int(q, "clear", 0) != 0) {
+            ht.clear();
+        } else if (q.find("yaw") != q.end() || q.find("pitch") != q.end() || q.find("w") != q.end()) {
+            // A quaternion is the honest interface -- a runtime hands you one -- but yaw/pitch in DEGREES is
+            // what a person testing by hand can reason about, so both are accepted.
+            if (q.find("w") != q.end()) {
+                ht.set_head_rotation({static_cast<float>(webapi_query_double(q, "x", 0.0)),
+                                      static_cast<float>(webapi_query_double(q, "y", 0.0)),
+                                      static_cast<float>(webapi_query_double(q, "z", 0.0)),
+                                      static_cast<float>(webapi_query_double(q, "w", 1.0))});
+            } else {
+                const double yaw = webapi_query_double(q, "yaw", 0.0) * 3.14159265358979 / 180.0;
+                const double pitch = webapi_query_double(q, "pitch", 0.0) * 3.14159265358979 / 180.0;
+                const double cy = cos(yaw * 0.5), sy = sin(yaw * 0.5);
+                const double cp = cos(pitch * 0.5), sp = sin(pitch * 0.5);
+                ht.set_head_rotation({static_cast<float>(sp * cy), static_cast<float>(cp * sy),
+                                      static_cast<float>(-sp * sy), static_cast<float>(cp * cy)});
+            }
+        }
+        const auto st = ht.state();
+
+        // AN OBSERVABLE THAT DOES NOT DEPEND ON A SCREENSHOT. Project a FIXED world point through the scene
+        // camera's own world_to_screen and report the pixel. If the rendered view turns, a stationary point
+        // must slide across the screen; if it does not move, the view did not turn no matter what any
+        // intermediate field says. The point defaults to one 500 units along +X so it is well away from the
+        // camera; a caller can name its own.
+        // The probe is measured INSIDE the pass detour; setting it here only names the point.
+        if (q.find("px") != q.end()) {
+            CameraPassHook::get().set_probe_point(static_cast<float>(webapi_query_double(q, "px", 0.0)),
+                                                  static_cast<float>(webapi_query_double(q, "py", 0.0)),
+                                                  static_cast<float>(webapi_query_double(q, "pz", 0.0)));
+        }
+        const auto cp = CameraPassHook::get().observed();
+
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", st.hooked).b("enabled", st.enabled).hex("target", st.target)
+              .hex("holder", st.last_holder)
+              .u("writer_calls", static_cast<size_t>(st.writer_calls))
+              .u("writes", static_cast<size_t>(st.writes))
+              .b("readback_matches", st.readback_matches)
+              .f("qx", st.requested[0], 5).f("qy", st.requested[1], 5)
+              .f("qz", st.requested[2], 5).f("qw", st.requested[3], 5);
+        jf.b("projected", cp.probe_projected)
+          .f("proj_x", cp.probe_pixel[0], 2).f("proj_y", cp.probe_pixel[1], 2);
+        }
+        return out;
+    };
+
     handlers.stereo = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         const std::string eye_s = webapi_query_string(q, "eye");

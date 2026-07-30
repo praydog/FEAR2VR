@@ -8402,6 +8402,100 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- A HEAD-TRACKED VIEW, MEASURED BY WHERE THE WORLD LANDS ON SCREEN ---------------
+        //
+        // The camera's rotation is the engine's own product `holder[+552] * holder[+324]` -- an additive slot
+        // times the player's aim. A head orientation belongs in the additive one, so looking around COMPOSES
+        // with aiming instead of seizing it. Writing that field from outside is reclaimed within a frame, so
+        // the mod owns the writer (PlayerCamera_UpdateAttachedRotation) and amends its result.
+        //
+        // WHY THE PROBE EXISTS: intermediate agreement proves nothing here. Earlier in this session the camera
+        // OBJECT rotated, `camera == outer * inner` held, and the pass argument turned -- all true, and none
+        // of it establishes that the rendered image moved. What establishes it is a STATIONARY WORLD POINT
+        // changing pixel. That projection is measured inside the pass detour, because a read from this thread
+        // lands on the frame's last pass -- the ortho HUD pass -- where a world point projects to itself.
+        {
+            std::string hb;
+            if (http::get(port, "/vr/head", resp)) {
+                hb = http::body_of(resp);
+            }
+            bool ht_hooked = false;
+            if (json_bool(hb, "ok", ht_hooked) && ht_hooked) {
+                check(true, "the head-rotation writer is hooked, so a head pose can be composed with the aim");
+
+                // Put the probe point on the camera's own forward axis, so it starts near screen centre and
+                // any turn moves it a lot. Read the camera from the pass, which is what draws.
+                std::string sb;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    sb = http::body_of(resp);
+                }
+                double cx = 0.0, cy = 0.0, cz = 0.0, qy = 0.0, qw = 1.0;
+                const bool cam_ok = json_double(sb, "cp_cam_x", cx) && json_double(sb, "cp_cam_y", cy) &&
+                                    json_double(sb, "cp_cam_z", cz) && json_double(sb, "cp_cam_qy", qy) &&
+                                    json_double(sb, "cp_cam_qw", qw);
+                if (cam_ok) {
+                    const double yaw0 = 2.0 * atan2(qy, qw);
+                    char pt[192];
+                    snprintf(pt, sizeof(pt), "px=%.1f&py=%.1f&pz=%.1f", cx + 400.0 * sin(yaw0), cy,
+                             cz + 400.0 * cos(yaw0));
+
+                    auto pixel_at = [&](const char* q, double& x) {
+                        char url[320];
+                        snprintf(url, sizeof(url), "/vr/head?%s&%s", q, pt);
+                        if (!http::get(port, url, resp)) {
+                            return false;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                        if (!http::get(port, "/vr/head", resp)) {
+                            return false;
+                        }
+                        const std::string b = http::body_of(resp);
+                        bool projected = false;
+                        return json_bool(b, "projected", projected) && projected && json_double(b, "proj_x", x);
+                    };
+
+                    double x0 = 0.0, xr = 0.0, xr2 = 0.0, xl = 0.0, xback = 0.0;
+                    const bool got = pixel_at("clear=1", x0) && pixel_at("yaw=6", xr) &&
+                                     pixel_at("yaw=12", xr2) && pixel_at("yaw=-6", xl) &&
+                                     pixel_at("clear=1", xback);
+                    check(got, "a world point projects to a pixel in every head pose, measured while a "
+                               "perspective pass is configured");
+                    if (got) {
+                        // Turning the head one way must slide the world the OTHER way. This is the check that
+                        // a screenshot would make, without the screenshot -- and it is the only one here that
+                        // distinguishes a rendered view that turned from a field that merely changed.
+                        check(xr < x0 - 20.0 && xl > x0 + 20.0,
+                              "turning the head right slides a stationary world point left and vice versa, so "
+                              "the RENDERED view is the thing that turned");
+                        check(xr2 < xr,
+                              "and twice the angle moves it further, so the composition scales rather than "
+                              "latching");
+                        // Reversibility is not cosmetic: the whole design claim is that this ADDS to the
+                        // player's aim rather than replacing it, so releasing must restore exactly.
+                        check(fabs(xback - x0) < 1.0,
+                              "releasing the head pose puts the point back where it started, so the override "
+                              "composes with the player's aim rather than overwriting it");
+                        const double right = x0 - xr;
+                        const double left = xl - x0;
+                        check(right > 0.0 && left > 0.0 && fabs(right - left) < 0.15 * (right + left),
+                              "equal and opposite angles move it equally far, so the composition is not "
+                              "skewed by the aim it composes with");
+                    }
+                }
+
+                // OFF AGAIN, unconditionally -- same reason as the eye offset above.
+                http::get(port, "/vr/head?clear=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::string hb2;
+                if (http::get(port, "/vr/head", resp)) {
+                    hb2 = http::body_of(resp);
+                }
+                bool en = true;
+                check(json_bool(hb2, "enabled", en) && !en,
+                      "and the head override releases, so the suite leaves the view as it found it");
+            }
+        }
+
         // ---- THE FRAME BOUNDARY, WHICH IS WHERE A STEREO PATH ATTACHES ----------------------
         //
         // Found with an execute watchpoint on d3d9's Present (no player input needed), then read in IDA. These
