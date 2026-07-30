@@ -1093,25 +1093,25 @@ struct SubsystemRecord {
 };
 
 constexpr SubsystemRecord kSubsystemRecords[] = {
-    {228, 0x0F3B70, 156, nullptr},
-    {232, 0x0EF8F0, 836, nullptr},
+    {228, 0x0F3B70, 156, "head bob"},
+    {232, 0x0EF8F0, 836, "flashlight"},
     {236, 0x10B390, 2220, "movement controller"},
     {240, 0x0FB470, 95, nullptr},
-    {244, 0x137B10, 536, nullptr},
-    {248, 0x1179C0, 360, nullptr},
+    {244, 0x137B10, 536, "weapon chooser"},
+    {248, 0x1179C0, 360, "target info"},
     {252, 0x0E3F80, 6345, "CPlayerCamera"},
     {256, 0x0D0D70, 352, nullptr},
     {260, 0x0DBDA0, 1949, "physics holder"},
-    {264, 0x0F9BC0, 84, nullptr},
-    {268, 0x0CF780, 19, nullptr},
-    {272, 0x0EDD30, 149, nullptr},
-    {276, 0x110CA0, 396, nullptr},
-    {280, 0x114110, 412, nullptr},
+    {264, 0x0F9BC0, 84, "ladder"},
+    {268, 0x0CF780, 19, "weapon perturb"},
+    {272, 0x0EDD30, 149, "damage fx"},
+    {276, 0x110CA0, 396, "special move"},
+    {280, 0x114110, 412, "health armor"},
     {284, 0x0EBA50, 500, nullptr},
     {288, 0, 0, nullptr},  // not a class instance -- a node table
     {292, 0x100400, 228, nullptr},
     {296, 0x0B8070, 48, nullptr},
-    {300, 0x0F5870, 109, nullptr},
+    {300, 0x0F5870, 109, "input bindings"},
     {304, 0x0F80A0, 4, nullptr},
     {308, 0x055FA0, 141, nullptr},
     {312, 0x11C680, 1896, nullptr},  // real class; its +4 is a link, not the owner
@@ -1193,6 +1193,57 @@ std::optional<bool> PlayerMgr::subsystem_vtables_distinct(unsigned index) {
         }
     }
     return true;
+}
+
+
+std::optional<PlayerMgr::Subsystem> PlayerMgr::subsystem_by_name(unsigned index, std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    for (const auto& s : subsystem_slots(index)) {
+        if (s.name != nullptr && name == s.name) {
+            return s;
+        }
+    }
+    return std::nullopt;
+}
+
+size_t PlayerMgr::named_subsystem_count() {
+    size_t n = 0;
+    for (const auto& rec : kSubsystemRecords) {
+        if (rec.name != nullptr) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+std::optional<PlayerMgr::Vitals> PlayerMgr::vitals(unsigned index) {
+    const auto sub = subsystem_by_name(index, "health armor");
+    if (!sub.has_value() || sub->object == 0) {
+        return std::nullopt;
+    }
+    const auto a = mem::read<int32_t>(sub->object + kHealthArmorFirstValue);
+    const auto b = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 4);
+    const auto c = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 8);
+    const auto d = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 12);
+    if (!a.has_value() || !b.has_value() || !c.has_value() || !d.has_value()) {
+        return std::nullopt;
+    }
+    Vitals out;
+    out.first.current = *a;
+    out.first.max = *b;
+    out.second.current = *c;
+    out.second.max = *d;
+    return out;
+}
+
+std::optional<bool> PlayerMgr::vitals_plausible(unsigned index) {
+    const auto v = vitals(index);
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return v->first.plausible() && v->second.plausible();
 }
 
 }  // namespace sdk

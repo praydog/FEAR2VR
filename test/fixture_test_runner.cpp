@@ -4527,6 +4527,50 @@ int main(int argc, char** argv) {
             check(json_bool(body, "ss_vtables_distinct", ss_vd) && ss_vd,
                   "no two subsystems share a vtable, so they are 23 distinct classes");
 
+            // ---- THE TEN ROLES IDENTIFIED FROM METHODS, AND THE ONE REFUTED -------------------------
+            //
+            // The constructors say nothing, but the classes' own methods name their console variables. A string
+            // sweep of each vtable would have named ELEVEN and one would have been wrong: reading a vtable
+            // picks up INHERITED methods, whose strings belong to the base. Address locality separates them,
+            // with a radius calibrated on the three classes established by other means (their own methods sit
+            // within 0x73B0 of their ctors). +312's strings are 0x89650 away, so they are a base's.
+            double ss_n = 0.0;
+            bool ss_nr = false, ss_un = false, ss_312u = false;
+            check(json_double(body, "ss_named", ss_n) && ss_n == 13.0,
+                  "13 of the 23 subsystems carry an established role -- 3 from earlier passes, 10 from this");
+            check(json_bool(body, "ss_names_resolve", ss_nr) && ss_nr,
+                  "every recorded name resolves to the slot it was recorded at, and to a class instance");
+            check(json_bool(body, "ss_unknown_name_refused", ss_un) && ss_un,
+                  "an unrecorded name and an empty name are both refused");
+            check(json_bool(body, "ss_312_unnamed", ss_312u) && ss_312u,
+                  "+312 stays unnamed: naming it from a base class's strings is the error this guards");
+
+            // ---- HEALTH AND ARMOR: int32, WHICH WAS GOT WRONG ONCE ----------------------------------
+            //
+            // Read as floats these four dwords are 1.4e-43 and 2.06e-43 -- DENORMALS. They are greater than
+            // zero, so a `max > 0.0f` plausibility check PASSED while every value printed as 0.0. The exact
+            // values are asserted here, not just their plausibility, because plausibility is what lied.
+            double v1c = 0.0, v1m = 0.0, v2c = 0.0, v2m = 0.0;
+            bool ss_vr = false, ss_vo = false, ss_vp = false, ss_vrr = false;
+            check(json_bool(body, "ss_vitals_resolved", ss_vr) && ss_vr,
+                  "the health/armor subsystem resolves by name and its fields read");
+            check(json_double(body, "ss_vital_1_cur", v1c) && v1c == 100.0, "first pair current is exactly 100");
+            check(json_double(body, "ss_vital_1_max", v1m) && v1m == 147.0, "first pair max is exactly 147");
+            check(json_double(body, "ss_vital_2_cur", v2c) && v2c == 100.0, "second pair current is exactly 100");
+            check(json_double(body, "ss_vital_2_max", v2m) && v2m == 150.0, "second pair max is exactly 150");
+            // INTEGERS, not floats: whole numbers with no fractional part, which a denormal reinterpretation
+            // could never produce. This is the assertion that would have caught the mistyping.
+            check(v1c == static_cast<double>(static_cast<int>(v1c)) &&
+                      v1m == static_cast<double>(static_cast<int>(v1m)) &&
+                      v2m == static_cast<double>(static_cast<int>(v2m)),
+                  "all four are whole numbers, so they are integers and not reinterpreted floats");
+            check(json_bool(body, "ss_vitals_pairs_ordered", ss_vo) && ss_vo,
+                  "each pair is ordered current <= max, which is what makes them (value, limit) pairs");
+            check(json_bool(body, "ss_vitals_plausible", ss_vp) && ss_vp,
+                  "and both pairs pass the plausibility guard -- now on the correct type");
+            check(json_bool(body, "ss_vitals_range_refused", ss_vrr) && ss_vrr,
+                  "an out-of-range slot yields no vitals");
+
             // THE TWO EXCEPTIONS, asserted as exceptions. Tolerating them silently would let the table's
             // shape drift without any test noticing.
             check(json_bool(body, "ss_288_not_instance", ss_288) && ss_288,

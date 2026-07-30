@@ -6189,3 +6189,58 @@ class CPlayerCamera 0x18C6 {
 // > figures one apart are easy to conflate; the suite is what caught it.
 //
 // 1266 checks, 0 failures.
+
+// ---- TEN OF THE TWENTY, FROM THEIR METHODS, AND ONE THE METHOD SWEEP GOT WRONG -----------------
+//
+// The table's constructors reference no strings and no console variables, which is why the previous pass left
+// twenty roles unestablished. The CLASSES' METHODS are a different matter -- each names its own cvars:
+//
+//     +228  head bob          'UseHeadBob', 'DefaultHeadBobGroup'
+//     +232  flashlight        'FlashlightBattery', 'FlashlightWaverSpeedScale'
+//     +244  weapon chooser    'KeepCurrentAmmo', 'ChooserAutoSwitchTime', 'ChooserAutoSwitchFreq'
+//     +248  target info       'DrawTarget', 'ClampInfoTarget'
+//     +264  ladder            'Ladder', 'ApproachDistanceBottom/Top', 'LadderBottomDist/TopDist'
+//     +268  weapon perturb    'DebugPerturb', 'DebugPerturbPercent'
+//     +272  damage FX         'EnableDamageFX'
+//     +276  special move      'SpecialMoveMinimumPlayTime'
+//     +280  health / armor    'Armor', 'MaxArmor', 'Health', 'MaxHealth', 'ShowHealthChanges'
+//     +300  input bindings    'SplitScreenShareController', 'DebugCommandSets', 'DebugPlayerInput'
+//
+// A STRING SWEEP ALONE WOULD HAVE NAMED ELEVEN AND ONE WOULD HAVE BEEN WRONG. A vtable's slots include
+// INHERITED methods, and their strings belong to the BASE class. The discriminator is address locality, and it
+// was CALIBRATED rather than guessed: the three classes established by other means keep their own vtable
+// methods within 0x73B0 of their constructors, so 0x8000 is a measured radius.
+//
+//     ten identified   every string-referencing function inside the radius
+//     +312 REFUTED     'BaseUIInputDeadZone', 'DrawInterface', 'ResourceBundlePC' -- all >= 0x89650 away
+//
+// So +312 looks like a player-UI class and is not established as one. It stays unnamed, and the suite asserts
+// that it stays unnamed, because the tempting mistake is now written down where a later pass will find it.
+//
+// HEALTH AND ARMOR ARE int32, AND THAT WAS GOT WRONG ONCE. The four dwords at the subsystem's +228..+240 read
+// 100 / 147 / 100 / 150 -- two (current, max) pairs, which is what identified the class. They were then typed
+// as float, and:
+//
+//     as float they are 1.4012985e-43 and 2.0599087e-43     DENORMALS
+//     `max > 0.0f` therefore PASSED                          the plausibility guard lied
+//     every value printed as 0.0                             the two readings contradicted each other
+//
+// The contradiction is what exposed it -- a guard reporting "plausible" beside values of zero. The integers had
+// already been seen in the very probe that identified the class. The float at +244 IS a real float (1.0f), so
+// the type boundary is exactly there and one field further would have been plausible either way.
+//
+// > MAPPING_WORKFLOW.MD's denormal warning was about reading values. It applies to a consumer's own guards too:
+// > `max > 0.0f` is not a validity test on data that may not be float at all. The suite now asserts the four
+// > values EXACTLY and asserts they are whole numbers, since plausibility is the thing that failed.
+//
+// WHICH PAIR IS HEALTH AND WHICH IS ARMOUR IS NOT ESTABLISHED. The literals sit in .rdata as 'Armor',
+// 'MaxArmor', 'Health', 'MaxHealth', which suggests the first pair is armour -- but literal order is not field
+// order, and this project has been wrong about exactly that inference before. Both pairs are returned by
+// position, labelled as such.
+//
+// Named in IDA: PlayerHeadBob_ctor, PlayerFlashlight_ctor, PlayerWeaponChooser_ctor, PlayerTargetInfo_ctor,
+// PlayerLadder_ctor, PlayerWeaponPerturb_ctor, PlayerDamageFX_ctor, PlayerSpecialMove_ctor,
+// PlayerHealthArmor_ctor, PlayerInputBindings_ctor, and each class's vtable as g_vtbl_<name>.
+// Exposed as sdk::PlayerMgr::subsystem_by_name / named_subsystem_count / vitals / vitals_plausible.
+//
+// 1279 checks, 0 failures.

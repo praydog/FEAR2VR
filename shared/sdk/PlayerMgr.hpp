@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 //
@@ -125,10 +126,37 @@ public:
     //     +252  CPlayerCamera         vtable +0x1D5B94  ctor 0x100E3F80  >= 6345 bytes
     //     +260  physics holder        vtable +0x1D582C  ctor 0x100DBDA0  >= 1949 bytes
     //
-    // The other TWENTY have a vtable, a constructor and a measured size, and NO ESTABLISHED ROLE. They are
-    // deliberately left unnamed: their constructors reference no strings and no console variables, so naming
-    // them needs each class's METHODS read, which is per-subsystem work. subsystem_slots() lists them so that
-    // work has somewhere to land.
+    // TEN MORE ARE NOW IDENTIFIED, from their METHODS rather than their constructors -- the ctors initialise
+    // fields and reference nothing, but the classes' own methods name their console variables:
+    //
+    //     +228  head bob          'UseHeadBob', 'DefaultHeadBobGroup'
+    //     +232  flashlight        'FlashlightBattery', 'FlashlightWaverSpeedScale'
+    //     +244  weapon chooser    'KeepCurrentAmmo', 'ChooserAutoSwitchTime', 'ChooserAutoSwitchFreq'
+    //     +248  target info       'DrawTarget', 'ClampInfoTarget'
+    //     +264  ladder            'Ladder', 'ApproachDistanceBottom/Top', 'LadderBottomDist/TopDist'
+    //     +268  weapon perturb    'DebugPerturb', 'DebugPerturbPercent'
+    //     +272  damage FX         'EnableDamageFX'
+    //     +276  special move      'SpecialMoveMinimumPlayTime'
+    //     +280  health / armor    'Armor', 'MaxArmor', 'Health', 'MaxHealth', 'ShowHealthChanges'
+    //     +300  input bindings    'SplitScreenShareController', 'DebugCommandSets', 'DebugPlayerInput'
+    //
+    // A STRING SWEEP ALONE WOULD HAVE NAMED ELEVEN, AND ONE WOULD HAVE BEEN WRONG. Reading a vtable's methods
+    // picks up INHERITED ones, whose strings belong to the base class. The discriminator is address locality,
+    // calibrated on the three classes established by other means: their vtable methods sit within 0x73B0 of
+    // their own constructors, so 0x8000 is a radius measured rather than chosen.
+    //
+    //   * for all ten above, EVERY function referencing those literals is inside the radius.
+    //   * +312 references 'BaseUIInputDeadZone', 'DrawInterface', 'ResourceBundlePC' -- and every one of those
+    //     functions is at least 0x89650 away. Those are a BASE class's strings, so the "player UI" reading they
+    //     invite is not established, and +312 stays unnamed.
+    //
+    // +280 was additionally confirmed at runtime: its fields read 100 / 147 / 100 / 150 at +228..+240, two
+    // (current, max) pairs, which is the shape a health and armor holder has and no other subsystem showed.
+    // Three independent routes for that one, two for the rest.
+    //
+    // NINE STILL HAVE NO ESTABLISHED ROLE (+240, +256, +284, +292, +296, +304, +308, +316, +320) plus +312.
+    // +292 and +304 do reference strings -- 'Shared', 'Mode', 'SupportedPatterns', 'PatternsInUse', 'Pattern'
+    // -- which pass the locality test but do not say what the class DOES, so they are recorded and not named.
     //
     // TWO SLOTS IN THE SPAN ARE NOT SUBSYSTEMS, and both were found by the checks below failing:
     //
@@ -177,6 +205,57 @@ public:
     // Every subsystem's vtable is distinct: 23 different classes, no aliasing. A repeat would mean the table
     // holds the same subsystem twice, which would invalidate reading them as separate objects.
     static std::optional<bool> subsystem_vtables_distinct(unsigned index);
+
+    // A subsystem by the role name recorded above ("head bob", "flashlight", ...). nullopt when the name is
+    // unknown or the player cannot be resolved. This is the accessor a consumer wants: reaching the flashlight
+    // by name rather than remembering that it lives at +232.
+    static std::optional<Subsystem> subsystem_by_name(unsigned index, std::string_view name);
+
+    // How many slots carry an established role -- THIRTEEN: the three earlier passes established plus the ten
+    // this table's methods sweep added. Deliberately not more. Exposed so a consumer can
+    // tell "this build maps N of the 23" rather than assuming the table is fully identified.
+    static size_t named_subsystem_count();
+
+    // ---- HEALTH AND ARMOR, THE ONE SUBSYSTEM WITH MAPPED FIELDS -----------------------------
+    //
+    // The health/armor subsystem at +280 holds two (current, max) pairs at its own +228..+240. Live they read
+    // 100 / 147 / 100 / 150, which is what identified the class in the first place.
+    //
+    // WHICH PAIR IS HEALTH AND WHICH IS ARMOR IS NOT ESTABLISHED. The string literals appear in .rdata in the
+    // order 'Armor', 'MaxArmor', 'Health', 'MaxHealth', which suggests the first pair is armour -- but literal
+    // order in .rdata is not field order, and this project has been wrong about exactly that kind of inference
+    // before. So the accessor returns two labelled-by-position pairs and says so.
+    // THEY ARE int32, NOT FLOAT, and this was got wrong once. Read as floats the four dwords give 1.4e-43 and
+    // 2.06e-43 -- DENORMALS, which are > 0.0f, so a "max > 0" plausibility check PASSED on them while every
+    // value printed as 0.0. The contradiction between those two readings is what exposed it; the values had
+    // already been seen as integers in the probe that identified the class, and were then re-typed by mistake.
+    //
+    // MAPPING_WORKFLOW.MD's warning about denormals applies to a consumer's own guards, not just to reading:
+    // `max > 0.0f` is not a validity test on data that might not be float at all.
+    //
+    // The float at +244 IS a real float (1.0f) -- so the boundary is exactly here, and one field further would
+    // have looked plausible in either type.
+    static constexpr uintptr_t kHealthArmorFirstValue = 228;
+
+    struct VitalPair {
+        int32_t current{};
+        int32_t max{};
+
+        // The invariant that holds for a real (value, limit) pair regardless of which quantity it is.
+        bool plausible() const { return max > 0 && current >= 0 && current <= max; }
+    };
+
+    struct Vitals {
+        VitalPair first;   // +228 / +232 -- the pair the literal order suggests is armour
+        VitalPair second;  // +236 / +240
+    };
+
+    // Both pairs, read from the health/armor subsystem. nullopt when it cannot be resolved or a read faults.
+    static std::optional<Vitals> vitals(unsigned index);
+
+    // Are both pairs plausible (current within [0, max], max positive)? The check a consumer should make
+    // before displaying either, and the one that would catch the offsets having moved in another build.
+    static std::optional<bool> vitals_plausible(unsigned index);
 
     struct CameraSubObjects {
         uintptr_t controller{};      // player + 236, embedded at player + 0xE88

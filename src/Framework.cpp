@@ -4665,6 +4665,49 @@ std::string build_shader_params_json() {
             sizes_bound_nodes = fits(*s236) && fits(*s252) && fits(*s260);
         }
         json_append_bool(out, "ss_sizes_bound_nodes", sizes_bound_nodes);
+        // ---- THE TEN IDENTIFIED ROLES ----
+        json_append_double(out, "ss_named", static_cast<double>(sdk::PlayerMgr::named_subsystem_count()), 0);
+        // EVERY recorded name must resolve to the slot it was recorded at. A name pointing at the wrong slot
+        // is the failure mode of a hand-written table.
+        const struct { const char* name; uintptr_t offset; } kExpect[] = {
+            {"head bob", 228},    {"flashlight", 232},     {"weapon chooser", 244},
+            {"target info", 248}, {"ladder", 264},         {"weapon perturb", 268},
+            {"damage fx", 272},   {"special move", 276},   {"health armor", 280},
+            {"input bindings", 300},
+        };
+        bool names_resolve = true;
+        for (const auto& e : kExpect) {
+            const auto got = sdk::PlayerMgr::subsystem_by_name(0, e.name);
+            if (!got.has_value() || got->offset != e.offset || !got->is_class_instance) {
+                names_resolve = false;
+            }
+        }
+        json_append_bool(out, "ss_names_resolve", names_resolve);
+        json_append_bool(out, "ss_unknown_name_refused",
+                         !sdk::PlayerMgr::subsystem_by_name(0, "player ui").has_value() &&
+                             !sdk::PlayerMgr::subsystem_by_name(0, "").has_value());
+        // +312 MUST STAY UNNAMED: its identifying strings are a base class's. If a later pass names it from
+        // those strings, this fails and asks for the locality evidence again.
+        const auto s312 = sdk::PlayerMgr::subsystem_at(0, 312);
+        json_append_bool(out, "ss_312_unnamed", s312.has_value() && s312->name == nullptr);
+
+        // ---- HEALTH AND ARMOR ----
+        const auto vit = sdk::PlayerMgr::vitals(0);
+        const auto vp = sdk::PlayerMgr::vitals_plausible(0);
+        json_append_bool(out, "ss_vitals_resolved", vit.has_value());
+        if (vit.has_value()) {
+            json_append_double(out, "ss_vital_1_cur", static_cast<double>(vit->first.current), 0);
+            json_append_double(out, "ss_vital_1_max", static_cast<double>(vit->first.max), 0);
+            json_append_double(out, "ss_vital_2_cur", static_cast<double>(vit->second.current), 0);
+            json_append_double(out, "ss_vital_2_max", static_cast<double>(vit->second.max), 0);
+            json_append_bool(out, "ss_vitals_pairs_ordered",
+                             vit->first.current <= vit->first.max &&
+                                 vit->second.current <= vit->second.max);
+        }
+        json_append_bool(out, "ss_vitals_plausible", vp.value_or(false));
+        json_append_bool(out, "ss_vitals_range_refused", !sdk::PlayerMgr::vitals(9).has_value() &&
+                                                            !sdk::PlayerMgr::vitals_plausible(9).has_value());
+
         json_append_bool(out, "ss_lookup_refused",
                          !sdk::PlayerMgr::subsystem_at(0, 224).has_value() &&
                              !sdk::PlayerMgr::subsystem_at(0, 324).has_value() &&
