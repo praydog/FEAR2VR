@@ -70,6 +70,7 @@ void check(bool ok, const char* name, const char* detail = nullptr) {
 // Defined with the other parsing helpers below; declared here because the quiescence gate needs it and the
 // gate belongs beside check() rather than buried among the parsers.
 bool json_double(const std::string& body, const char* key, double& out);
+bool json_bool(const std::string& body, const char* key, bool& out);
 
 // ---- QUIESCENCE, AS A REPORTED CONDITION ----------------------------------
 //
@@ -86,7 +87,11 @@ bool json_double(const std::string& body, const char* key, double& out);
 //
 // THE TALLY IS WHAT KEEPS THIS HONEST. Gating without counting turns red into invisible, which is worse than
 // red. A run that skipped a lot announces itself as weak.
+// Tallied per REASON, because "not exercised" for want of a settled world and for want of a world at all are
+// different gaps with different remedies -- stand still, versus load a level.
 int64_t g_not_exercised = 0;
+int64_t g_skipped_motion = 0;
+int64_t g_skipped_world = 0;
 
 // 90 frames, and the number is derived rather than picked: the longest interpolation mapped in this engine is
 // the camera's pitch recovery timer at 0.300s, and the per-frame view hook runs at ~300 calls/second, so 90
@@ -103,13 +108,33 @@ bool world_is_quiescent(const std::string& body) {
 
 // Assert `ok` only when the world is settled; otherwise record that the claim was not exercised and say so.
 // The message must describe the SETTLED-WORLD claim, since that is the only thing it can establish.
-void check_quiescent(bool quiescent, bool ok, const char* name) {
-    if (quiescent) {
-        check(ok, name);
+// The general form. `reason` names what was missing, and it goes in the log AND the tally so a green run cannot
+// hide behind a condition nobody counted.
+void check_gated(bool condition, const char* reason, int64_t& tally, bool ok, const char* name,
+                 const char* detail = nullptr) {
+    if (condition) {
+        check(ok, name, detail);
         return;
     }
     ++g_not_exercised;
-    printf("[fixture] NOT EXERCISED (world in motion): %s\n", name);
+    ++tally;
+    printf("[fixture] NOT EXERCISED (%s): %s\n", reason, name);
+}
+
+void check_quiescent(bool quiescent, bool ok, const char* name) {
+    check_gated(quiescent, "world in motion", g_skipped_motion, ok, name);
+}
+
+// IS THERE A WORLD AND A PLAYER AT ALL? At a main menu there is neither, and 145 checks in this file treated
+// that legitimate engine state as failure. `world_loaded` is the load-bearing half: the player object POINTER
+// survives leaving a level, so its presence proves nothing on its own.
+bool world_is_ready(const std::string& body) {
+    bool ready = false;
+    return json_bool(body, "ws_world_ready", ready) && ready;
+}
+
+void check_in_world(bool ready, bool ok, const char* name, const char* detail = nullptr) {
+    check_gated(ready, "no world loaded", g_skipped_world, ok, name, detail);
 }
 
 // ---- small parsing helpers (no JSON library; payloads are ours) ------------
@@ -709,6 +734,11 @@ int main(int argc, char** argv) {
         // as well as leaves. Both were got wrong here and the oracle caught both -- a
         // descent harvesting only leaves returned 2 candidates, neither of them the sector
         // the player was standing in.
+        // EVERY CHECK BELOW NEEDS A LOADED WORLD. At a main menu there are no sectors, no portals and no
+        // player location, and 145 checks in this region reported FAIL for that legitimate engine state.
+        // check_in_world() asserts when a level is up and records "not exercised" otherwise, tallied
+        // separately from the settled-world skips because the remedy is different: leave the menu.
+        const bool wr = world_is_ready(body);
         int64_t stot = -1, scand = -1, sbrute = -1, psec = -2, bsec = -2;
         int64_t swith = -1, splanes = -1, sreadok = -1;
         json_int(body, "sector_total", stot);
@@ -719,16 +749,16 @@ int main(int argc, char** argv) {
         json_int(body, "sec_with_planes", swith);
         json_int(body, "sec_plane_total", splanes);
         json_int(body, "sec_read_ok", sreadok);
-        check(stot > 0, "the world has visibility sectors");
-        check(sreadok == stot, "EVERY sector reads back through the public accessor");
+        check_in_world(wr, stot > 0, "the world has visibility sectors");
+        check_in_world(wr, sreadok == stot, "EVERY sector reads back through the public accessor");
         if (sbrute > 0) {
             // THE LOAD-BEARING ONE. Two independent routes to one answer.
-            check(psec == bsec,
+            check_in_world(wr, psec == bsec,
                   "the KD descent and a brute-force scan of all sectors name the SAME "
                   "sector for the player");
-            check(psec >= 0 && psec < stot, "the located sector index is in range");
+            check_in_world(wr, psec >= 0 && psec < stot, "the located sector index is in range");
             // The tree must actually NARROW, or the descent earns nothing over a scan.
-            check(scand > 0 && scand < stot,
+            check_in_world(wr, scand > 0 && scand < stot,
                   "the descent narrows the sector set instead of returning all of them");
             printf("[fixture] player in sector %lld of %lld (descent offered %lld "
                    "candidates)\n",
@@ -740,7 +770,7 @@ int main(int argc, char** argv) {
         }
         // REPORTED: most sectors are box-only. 19 of 263 carry planes live, so a consumer
         // must not require them -- which is what an earlier version of this API did.
-        check(swith >= 0 && swith <= stot,
+        check_in_world(wr, swith >= 0 && swith <= stot,
               "sectors carrying bounding planes are a reported fraction");
         printf("[fixture] sectors: %lld of %lld carry planes (%lld planes total)\n",
                static_cast<long long>(swith), static_cast<long long>(stot),
@@ -766,10 +796,10 @@ int main(int argc, char** argv) {
         json_int(body, "sec_plane_probed", sprobed);
         json_int(body, "sec_plane_pos", spos);
         json_int(body, "sec_plane_neg", sneg);
-        check(splaned > 0, "some sectors carry planes, so the sign is exercised");
-        check(scin == splaned,
+        check_in_world(wr, splaned > 0, "some sectors carry planes, so the sign is exercised");
+        check_in_world(wr, scin == splaned,
               "EVERY plane-bearing sector contains its own box centre (plane sign correct)");
-        check(sprobed > 0 && spos == sprobed && sneg == 0,
+        check_in_world(wr, sprobed > 0 && spos == sprobed && sneg == 0,
               "every plane reads POSITIVE at its sector's centre -- the engine's inside sign");
         printf("[fixture] plane sign: %lld/%lld sectors contain their own centre, %lld/%lld "
                "planes positive there\n",
@@ -789,13 +819,13 @@ int main(int argc, char** argv) {
         json_int(body, "region_probes", rprobes);
         json_int(body, "region_agree", ragree);
         json_int(body, "region_hits", rhits);
-        check(rprobes == 3, "all three region radii were probed");
+        check_in_world(wr, rprobes == 3, "all three region radii were probed");
         // NON-VACUITY FIRST. The failure this guards against is real and happened earlier in
         // this project: an oracle that finds nothing agrees with a query that finds nothing,
         // and 0 == 0 reads as success. Require the scan to have found sectors before believing
         // the agreement means anything.
-        check(rhits > 0, "the scan found sectors, so the agreement is not vacuous");
-        check(ragree == rprobes,
+        check_in_world(wr, rhits > 0, "the scan found sectors, so the agreement is not vacuous");
+        check_in_world(wr, ragree == rprobes,
               "the descent finds EXACTLY the sectors a full scan finds, at every radius");
         printf("[fixture] region queries: %lld/%lld radii agree with a full scan (%lld hits "
                "total)\n",
@@ -807,9 +837,9 @@ int main(int argc, char** argv) {
         json_int(body, "box_probes", bprobes);
         json_int(body, "box_agree", bagree);
         json_int(body, "box_hits", bhits);
-        check(bprobes == 3, "all three box extents were probed");
-        check(bhits > 0, "the scan found sectors, so the box agreement is not vacuous");
-        check(bagree == bprobes,
+        check_in_world(wr, bprobes == 3, "all three box extents were probed");
+        check_in_world(wr, bhits > 0, "the scan found sectors, so the box agreement is not vacuous");
+        check_in_world(wr, bagree == bprobes,
               "the box descent finds EXACTLY what a full scan finds, at every extent");
 
         // corner_code is DERIVED from the normal, and the engine's box test reads the stored
@@ -821,8 +851,8 @@ int main(int argc, char** argv) {
         int64_t cprobed = -1, ccur = -1;
         json_int(body, "code_probed", cprobed);
         json_int(body, "code_current", ccur);
-        check(cprobed > 0, "planes with a cached corner code exist");
-        check(ccur == cprobed, "EVERY cached corner code matches what its own normal implies");
+        check_in_world(wr, cprobed > 0, "planes with a cached corner code exist");
+        check_in_world(wr, ccur == cprobed, "EVERY cached corner code matches what its own normal implies");
         printf("[fixture] box queries: %lld/%lld extents agree (%lld hits); corner codes "
                "%lld/%lld current\n",
                static_cast<long long>(bagree), static_cast<long long>(bprobes),
@@ -841,9 +871,9 @@ int main(int argc, char** argv) {
         json_int(body, "contain_probes", cnp);
         json_int(body, "contain_ok", cnok);
         json_int(body, "contain_sphere", cnsph);
-        check(cnp == 3, "all three containment extents were probed");
-        check(cnsph > 0, "the sphere query found sectors, so containment is not vacuous");
-        check(cnok == cnp,
+        check_in_world(wr, cnp == 3, "all three containment extents were probed");
+        check_in_world(wr, cnsph > 0, "the sphere query found sectors, so containment is not vacuous");
+        check_in_world(wr, cnok == cnp,
               "every sector the sphere touches is also touched by the box that contains it");
         printf("[fixture] sphere inside box: %lld/%lld extents (%lld sphere hits), independent "
                "paths agree\n",
@@ -868,27 +898,27 @@ int main(int argc, char** argv) {
         json_int(body, "rec_only_extra", ronly_extra);
         json_int(body, "rec_both", rboth);
         json_int(body, "rec_consistent", rconsist);
-        check(robj > 0, "objects were walked");
-        check(rents > 0, "the engine holds spatial entries, so the comparison is not vacuous");
+        check_in_world(wr, robj > 0, "objects were walked");
+        check_in_world(wr, rents > 0, "the engine holds spatial entries, so the comparison is not vacuous");
 
         // THE LOAD-BEARING ONE. `extra` means the record names a sector the SDK's query does
         // not reach, which would be a hole in the traversal. Zero says the reimplementation
         // reproduces every association the engine made, and it is asserted rather than
         // reported because a regression here is a bug in this code, not in the scene.
-        check(rextra == 0,
+        check_in_world(wr, rextra == 0,
               "the SDK's query reaches EVERY sector the engine itself collected (no extras)");
-        check(ronly_extra == 0 && rboth == 0,
+        check_in_world(wr, ronly_extra == 0 && rboth == 0,
               "every disagreement is one-directional: the record is a subset, never a superset");
 
         // The maintained counter against the walked list length -- two representations of one
         // fact, both the engine's, neither derived from the other by this code.
-        check(rcnt_ok == robj, "entry_count equals the walked list length on EVERY object");
+        check_in_world(wr, rcnt_ok == robj, "entry_count equals the walked list length on EVERY object");
 
         // Consistency by the engine's own two-branch rule. The residual is real staleness --
         // renderable objects that reach somewhere their record was never told about, the same
         // phenomenon as the stale world-tree entries -- so it is bounded rather than required
         // to be zero. The DIRECTION is the invariant; the count is scene-dependent.
-        check(rconsist > robj - robj / 20,
+        check_in_world(wr, rconsist > robj - robj / 20,
               "at least 95% of objects are spatially consistent by the engine's own rule");
         printf("[fixture] engine records: %lld entries over %lld objects, %lld reachable by "
                "query, %lld missing; consistent %lld/%lld (%lld stale)\n",
@@ -908,8 +938,8 @@ int main(int argc, char** argv) {
         json_int(body, "gate_norend", gnr);
         json_int(body, "gate_norend_empty", gnr_empty);
         json_int(body, "gate_rend", gr);
-        check(gnr > 0 && gr > 0, "both sides of the collect gate are populated");
-        check(gnr_empty == gnr,
+        check_in_world(wr, gnr > 0 && gr > 0, "both sides of the collect gate are populated");
+        check_in_world(wr, gnr_empty == gnr,
               "EVERY non-renderable object has an empty entry list -- the gate is exact");
 
         // The record's own shape tag against the type rule: one bit the engine writes at store
@@ -919,8 +949,8 @@ int main(int argc, char** argv) {
         int64_t shp = -1, shp_ok = -1;
         json_int(body, "shape_probed", shp);
         json_int(body, "shape_agree", shp_ok);
-        check(shp > 0, "shapes were compared");
-        check(shp_ok == shp,
+        check_in_world(wr, shp > 0, "shapes were compared");
+        check_in_world(wr, shp_ok == shp,
               "the record's own shape tag agrees with the type rule on EVERY object");
         printf("[fixture] collect gate: %lld/%lld non-renderable released, %lld renderable; "
                "shape tag %lld/%lld agrees\n",
@@ -937,9 +967,9 @@ int main(int argc, char** argv) {
         json_int(body, "rev_probed", rvp);
         json_int(body, "rev_ok", rvok);
         json_int(body, "rev_pairs", rvpairs);
-        check(rvp > 0, "associations were probed in both directions");
-        check(rvok == rvp, "EVERY object->sector association is present in the reverse index");
-        check(rvpairs >= rvp, "the sectors' own lists hold at least the sampled associations");
+        check_in_world(wr, rvp > 0, "associations were probed in both directions");
+        check_in_world(wr, rvok == rvp, "EVERY object->sector association is present in the reverse index");
+        check_in_world(wr, rvpairs >= rvp, "the sectors' own lists hold at least the sampled associations");
         printf("[fixture] reverse index: %lld/%lld associations pair back (%lld total sector "
                "entries)\n",
                static_cast<long long>(rvok), static_cast<long long>(rvp),
@@ -959,21 +989,21 @@ int main(int argc, char** argv) {
         json_int(body, "neighbour_edges", edges);
         json_int(body, "symmetric_edges", sym);
         json_int(body, "player_neighbours", pnb);
-        check(ptot > 0, "the world has visibility portals");
-        check(pboth == ptot,
+        check_in_world(wr, ptot > 0, "the world has visibility portals");
+        check_in_world(wr, pboth == ptot,
               "EVERY portal resolves both of its sectors, and they are distinct");
         // The geometric invariant that pins the record's layout, asked through the public
         // struct: a portal's centre lies on the portal's own plane.
-        check(ponp == ptot, "EVERY portal's centre lies on its own plane");
-        check(sym == edges,
+        check_in_world(wr, ponp == ptot, "EVERY portal's centre lies on its own plane");
+        check_in_world(wr, sym == edges,
               "sector connectivity is SYMMETRIC -- every neighbour names you back");
         // A BOUND, not an equality: each portal contributes one edge per direction, and
         // sector_neighbours deduplicates, so two doors between the same pair collapse to one
         // edge. Live the two are equal (688 == 2*344) because this level has no duplicate
         // pair, but that is the art's business and not an invariant.
-        check(edges > 0 && edges <= 2 * ptot,
+        check_in_world(wr, edges > 0 && edges <= 2 * ptot,
               "the neighbour edge count is bounded by two per portal");
-        check(swn > 0 && swn <= stot,
+        check_in_world(wr, swn > 0 && swn <= stot,
               "connected sectors are a reported fraction of all sectors");
         printf("[fixture] portals: %lld joining %lld of %lld sectors, %lld edges "
                "(%lld symmetric)\n",
@@ -1000,21 +1030,21 @@ int main(int argc, char** argv) {
         // both, so the declared counts must sum to exactly twice the portal total. This is an
         // equality and not a bound -- unlike the deduplicated edge count above, a portal
         // appearing in both its sectors' arrays is the loader's own doing.
-        check(psum == 2 * ptot,
+        check_in_world(wr, psum == 2 * ptot,
               "the sectors' portal counts sum to EXACTLY two per portal");
         // Every declared element resolved to a real table entry. A mismatch here means the
         // pointer-to-index conversion is wrong, which is how this was caught the first time:
         // the portal bodies follow the pointer TABLE in memory, so the table base is not the
         // base to difference against, and differencing against it silently resolved nothing.
-        check(plisted == psum,
+        check_in_world(wr, plisted == psum,
               "EVERY portal pointer in a sector's array resolves to a table entry");
-        check(slok == slp,
+        check_in_world(wr, slok == slp,
               "for EVERY sector, its portal array and the portals' back-references agree");
 
         // The stored sector index against the index used to reach it -- the cheapest check that
         // the stride and table base are right. A wrong stride still yields sectors that look
         // plausible; it does not yield 0,1,2,...,n-1 in order.
-        check(sip > 0 && siok == sip,
+        check_in_world(wr, sip > 0 && siok == sip,
               "EVERY sector's stored index equals the index used to reach it");
         printf("[fixture] sector portal arrays: %lld links over %lld sectors, both directions "
                "agree %lld/%lld; stored indices %lld/%lld\n",
@@ -1035,24 +1065,24 @@ int main(int argc, char** argv) {
         json_int(body, "poly_on_plane", plplane);
         json_int(body, "poly_trunc", pltr);
         json_int(body, "poly_verts", plverts);
-        check(plp == ptot, "every portal yielded a polygon");
-        check(plok == plp,
+        check_in_world(wr, plp == ptot, "every portal yielded a polygon");
+        check_in_world(wr, plok == plp,
               "portal_polygon() returns EXACTLY vertex_count vertices for every portal");
 
         // The geometric check applied to the FULL polygon rather than the first four. Reading
         // further into a variable-length record and still landing on the portal's own plane is
         // what shows the later vertices are really vertices, and not whatever follows.
-        check(plplane == plp, "EVERY vertex of EVERY portal lies on that portal's plane");
+        check_in_world(wr, plplane == plp, "EVERY vertex of EVERY portal lies on that portal's plane");
 
         // A polygon needs three corners. This is a floor on the whole population rather than a
         // per-portal minimum, which is all the aggregate supports.
-        check(plverts >= 3 * plp, "the portals carry at least three vertices each on average");
+        check_in_world(wr, plverts >= 3 * plp, "the portals carry at least three vertices each on average");
 
         // TRUTHFUL ABOUT THE ART: nothing in this level exceeds the four the fixed array holds,
         // so Portal.vertices is complete for every portal here. Asserted so that a level which
         // DOES exceed it fails loudly, rather than silently handing consumers a clipped polygon
         // -- the flag exists precisely because the record permits more.
-        check(pltr == 0,
+        check_in_world(wr, pltr == 0,
               "no portal in this level exceeds the inline vertex array (none is truncated)");
         printf("[fixture] portal polygons: %lld vertices over %lld portals, all on-plane, "
                "%lld truncated\n",
@@ -1074,31 +1104,31 @@ int main(int argc, char** argv) {
         json_int(body, "rch_comp_ok", rco);
         json_int(body, "rch_comp_size", rcs);
         json_int(body, "rch_hops_ok", rho);
-        check(rp == stot, "every sector was walked");
+        check_in_world(wr, rp == stot, "every sector was walked");
 
         // Ties the walk to the primitive: one hop must be exactly the sector plus its
         // neighbours, nothing gained and nothing lost.
-        check(r1 == rp, "sectors_within(s,1) is EXACTLY s plus sector_neighbours(s)");
-        check(rm == rp, "the reachable set only grows with the hop limit");
-        check(rho == rp, "sector_hops(s,s) is zero for every sector");
+        check_in_world(wr, r1 == rp, "sectors_within(s,1) is EXACTLY s plus sector_neighbours(s)");
+        check_in_world(wr, rm == rp, "the reachable set only grows with the hop limit");
+        check_in_world(wr, rho == rp, "sector_hops(s,s) is zero for every sector");
 
         // THE STRONG ONE. Portal adjacency is symmetric -- established over all 688 links
         // without any traversal -- so reachability at a fixed radius must be symmetric too. A
         // walk that dropped or invented an edge fails this even though it would still return a
         // plausible-looking set.
-        check(rsp > 0, "the two-hop frontiers are non-empty, so symmetry is not vacuous");
-        check(rso == rsp,
+        check_in_world(wr, rsp > 0, "the two-hop frontiers are non-empty, so symmetry is not vacuous");
+        check_in_world(wr, rso == rsp,
               "reachability is SYMMETRIC: b is within n hops of a exactly when a is of b");
 
         // Transitivity, which cannot hold by accident across a component this size: every
         // member of a component must compute the same component.
-        check(rcs > 1, "the level has a multi-sector connected component");
-        check(rco == rcs, "EVERY member of a component agrees on that component");
+        check_in_world(wr, rcs > 1, "the level has a multi-sector connected component");
+        check_in_world(wr, rco == rcs, "EVERY member of a component agrees on that component");
 
         // AND IT RECONCILES WITH THE PORTAL DATA, from the other end: the portals were measured
         // to join `swn` of `stot` sectors, so the sectors outside the component are exactly the
         // portal-less ones. Two independent measurements of the same partition.
-        check(rcs == swn,
+        check_in_world(wr, rcs == swn,
               "the connected component is exactly the set of sectors the portals join");
         printf("[fixture] reachability: component of %lld/%lld sectors, symmetry %lld/%lld, "
                "one-hop agrees %lld/%lld\n",
@@ -7975,8 +8005,14 @@ int main(int argc, char** argv) {
     // is worse than red -- so a run that could not exercise its strong forms says so next to its verdict, and
     // a large number here means the run was weak however green it looks.
     if (g_not_exercised > 0) {
-        printf("[fixture] %lld check(s) NOT EXERCISED -- the world was in motion. Stand still to cover them.\n",
-               g_not_exercised);
+        printf("[fixture] %lld check(s) NOT EXERCISED", static_cast<long long>(g_not_exercised));
+        if (g_skipped_motion > 0) {
+            printf(" | %lld need a settled world (stand still)", static_cast<long long>(g_skipped_motion));
+        }
+        if (g_skipped_world > 0) {
+            printf(" | %lld need a level loaded (leave the menu)", static_cast<long long>(g_skipped_world));
+        }
+        printf("\n");
     }
     return g_failures == 0 ? kOk : kFail;
 }

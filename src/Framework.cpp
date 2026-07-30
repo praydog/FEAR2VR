@@ -6010,6 +6010,24 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_spr_camera", static_cast<double>(vh.spr_camera), 0);
         json_append_double(out, "vh_spr_overridden", static_cast<double>(vh.spr_overridden), 0);
         json_append_double(out, "ws_still_frames", static_cast<double>(vh.still_frames), 0);
+        // ---- IS THERE A WORLD AND A PLAYER TO TEST AGAINST? -------------------------------------
+        //
+        // At the main menu 145 checks FAIL rather than reporting themselves unexercised: sectors, planes,
+        // region and box queries, the client shell and the spatial index all assume a loaded world and a live
+        // player. That is one missing gate counted 145 times, and it is the same defect class as the
+        // stationary-world assumptions -- a legitimate engine state read as a failure.
+        //
+        // Reported as two independent signals plus the conjunction, so a run can say WHICH half is missing.
+        // gameserver.dll being absent at a menu is already documented as expected for the same reason.
+        {
+            const auto loaded = sdk::WorldBSP::is_world_loaded();
+            const auto lp = sdk::PlayerMgr::player(0);
+            const bool have_world = loaded.has_value() && *loaded;
+            const bool have_player = lp.has_value() && lp->object != 0;
+            json_append_bool(out, "ws_world_loaded", have_world);
+            json_append_bool(out, "ws_player_present", have_player);
+            json_append_bool(out, "ws_world_ready", have_world && have_player);
+        }
         json_append_double(out, "vh_ov_body_drift_deg",
                            static_cast<double>(vh.override_body_drift_deg), 4);
         // THE RENDER CHAIN'S OWN ADDRESSES, so a data breakpoint can find the writer that actually feeds the
