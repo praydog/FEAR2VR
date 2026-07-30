@@ -6825,3 +6825,42 @@ class CPlayerCamera 0x18C6 {
 // is_moving / predicted_clamp_state.
 //
 // 1425 checks, 0 failures.
+
+// ---- THE CLAMP'S CONSUMER NAMES ITS AXIS, AND IS WHERE A VR MOD MUST INTERVENE -------------------
+//
+// Last pass proved the clamp is ONE SIGNED AXIS from the negation, and inferred that axis was pitch from the
+// shape of the numbers. The consumer settles it with a read. CPlayerCamera_ClampPitch:
+//
+//     euler = Quaternion_ToEuler(this + 324, order 17)     the camera's rotation
+//     pitch = euler[1]
+//     GetActiveCameraClamp(this, &limits)                  limits[0] = +bound, limits[1] = -bound, radians
+//     if (pitch > limits[0] || pitch < limits[1]) {
+//         this+760 = the clamped value;  this+756 = the original
+//         if (g_cvar_SmoothPitchTime) ... else 0
+//     }
+//
+// THE CONSOLE VARIABLE IT CONSULTS IS CALLED SmoothPitchTime. That is what turns the inference into a read.
+// (An earlier pass had already listed SmoothPitchTime beside PitchClamp 2.0 and YawClamp 6.0 as "look
+// constraints" without connecting them -- and those two values are exactly what last pass found in the GunLead
+// record, so the cvars are seeded from that data.)
+//
+// TWO NEW FIELDS, and their write discipline matters more than their offsets:
+//     CPlayerCamera+756  float  pitch BEFORE clamping
+//     CPlayerCamera+760  float  pitch AFTER clamping
+// They are written ONLY when the clamp engages, so the pair is a record of the last violation rather than a
+// per-frame snapshot -- and nothing distinguishes "never engaged" from "engaged with these numbers". Live both
+// read 0.0, i.e. never engaged this session.
+//
+// > WHICH MAKES ONE OF THIS PASS'S OWN CHECKS VACUOUS, and the suite says so: zero lies inside every clamp, so
+// > "the record is within the active clamp" passes trivially and proves nothing about clamping. It is asserted
+// > for the day the record is non-zero, alongside an explicit pitch_never_engaged flag naming the current state.
+// > A trivially-true check that looks like validation is the failure this project keeps catching.
+//
+// ALSO FIXED: these endpoint keys are prefixed pitch_ because an early pass's PLATFORM CARRY block already uses
+// pc_, and two unrelated blocks sharing a prefix let a json_has assertion match the wrong one.
+//
+// Named in IDA: CPlayerCamera_ClampPitch, Quaternion_ToEuler (quaternion -> 4x4 matrix -> Matrix_ToEuler with an
+// axis order; order 17 puts pitch in component [1]), Matrix_ToEuler.
+// Exposed as sdk::PlayerMgr::camera_pitch_clamp_record / pitch_clamp_record_within_active.
+//
+// 1432 checks, 0 failures.

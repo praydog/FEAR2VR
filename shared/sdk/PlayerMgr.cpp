@@ -1434,4 +1434,32 @@ std::optional<PlayerMgr::ClampChoice> PlayerMgr::predicted_clamp_state(unsigned 
     return out;
 }
 
+
+std::optional<PlayerMgr::PitchClampRecord> PlayerMgr::camera_pitch_clamp_record(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return std::nullopt;
+    }
+    const auto before = mem::read<float>(subs->player_camera + kCameraPitchPreClamp);
+    const auto after = mem::read<float>(subs->player_camera + kCameraPitchPostClamp);
+    if (!before.has_value() || !after.has_value()) {
+        return std::nullopt;
+    }
+    return PitchClampRecord{*before, *after};
+}
+
+std::optional<bool> PlayerMgr::pitch_clamp_record_within_active(unsigned index) {
+    const auto rec = camera_pitch_clamp_record(index);
+    const auto pick = predicted_clamp_state(index);
+    if (!rec.has_value() || !pick.has_value()) {
+        return std::nullopt;
+    }
+    const auto bounds = camera_clamp_radians(index, pick->state);
+    if (!bounds.has_value()) {
+        return std::nullopt;
+    }
+    // bounds.first is the positive bound, bounds.second the negative one -- see camera_clamp_radians.
+    return rec->after <= bounds->first && rec->after >= bounds->second;
+}
+
 }  // namespace sdk

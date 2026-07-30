@@ -365,9 +365,10 @@ public:
     // degrees and the engine turns them into a SIGNED RANGE in radians: Default StandIdle 80/85 becomes
     // +1.396 / -1.484 rad, an ASYMMETRIC range. Chase is +40/-45 degrees and SlideKick a symmetric +-5.
     //
-    // [INFERENCE] the axis is PITCH. Asymmetric up/down limits are what pitch clamps look like, and a first-person
-    // game does not normally bound yaw at 80 degrees. The negation proves "one signed axis"; which axis rests on
-    // that reasoning rather than on a read.
+    // THE AXIS IS PITCH, AND THAT IS NOW A READ RATHER THAN AN INFERENCE. CPlayerCamera_ClampPitch is the
+    // consumer: it converts the camera's rotation at +324 to Euler angles, takes component [1], tests it against
+    // this signed range, and when the range is exceeded it consults a console variable named SmoothPitchTime.
+    // The variable names the axis.
     //
     // +6332 sits four bytes below saved_near_z at +6336, consistent with the >= 6342-byte class size an early
     // pass derived from the constructor.
@@ -432,6 +433,38 @@ public:
     };
 
     static std::optional<ClampChoice> predicted_clamp_state(unsigned index);
+
+    // ---- WHAT THE CLAMP DID, WHICH IS WHERE A VR MOD MUST INTERVENE -----------------------------
+    //
+    // CPlayerCamera_ClampPitch writes both sides of its decision, but ONLY when the clamp actually engages:
+    //
+    //     +756  float  the pitch BEFORE clamping
+    //     +760  float  the pitch AFTER clamping
+    //
+    // So the pair is a record of the last violation, not a per-frame snapshot. Equal values mean the last
+    // violation happened to need no correction on one bound; UNWRITTEN values mean the clamp has never engaged
+    // for this camera, and nothing distinguishes "never engaged" from "engaged with these numbers" -- which is
+    // why this is reported as a raw pair rather than as a "was clamped" boolean.
+    //
+    // FOR A HEAD-TRACKED VIEW this is the fight: the shipped Chase range is +40/-45 degrees, and a player looking
+    // further will have their pitch rewritten here every frame it happens.
+    static constexpr uintptr_t kCameraPitchPreClamp = 756;
+    static constexpr uintptr_t kCameraPitchPostClamp = 760;
+
+    struct PitchClampRecord {
+        float before{};
+        float after{};
+
+        // Did the recorded correction actually change the value?
+        bool corrected() const { return before != after; }
+    };
+
+    static std::optional<PitchClampRecord> camera_pitch_clamp_record(unsigned index);
+
+    // Is the recorded post-clamp pitch inside the clamp the engine would apply right now? A caller can use this
+    // to tell whether the last violation was resolved against the CURRENT stance's bounds or an earlier one --
+    // the record survives a stance change, the bounds do not.
+    static std::optional<bool> pitch_clamp_record_within_active(unsigned index);
 
     // Does the state machine currently select the Chase clamp? The only mapping established so far, exposed as a
     // question rather than as a full state decode.

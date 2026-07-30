@@ -4712,6 +4712,35 @@ int main(int argc, char** argv) {
             check(json_bool(body, "mv_range_refused", mv_rr) && mv_rr,
                   "an out-of-range slot yields no flags, no movement answer and no prediction");
 
+            // ---- WHAT THE CLAMP ACTUALLY DID, AND WHY ONE CHECK HERE IS VACUOUS ------------------
+            //
+            // CPlayerCamera_ClampPitch is the consumer that NAMES the axis: it converts the camera's rotation to
+            // Euler, takes component [1], tests it against the signed range, and on violation consults a console
+            // variable called SmoothPitchTime. That turns the previous pass's [INFERENCE] into a read. It writes
+            // the pitch before clamping to +756 and after to +760, but ONLY when the clamp engages.
+            bool pi_r = false, pi_ne = false, pi_pl = false, pi_ci = false, pi_wd = false, pi_rr = false;
+            check(json_bool(body, "pitch_readable", pi_r) && pi_r,
+                  "the pre- and post-clamp pitch fields read off CPlayerCamera");
+            check(json_bool(body, "pitch_plausible_radians", pi_pl) && pi_pl,
+                  "both are within +-pi, so the offsets are radians and not something else");
+            // A CLAMP NEVER PUSHES A VALUE FURTHER OUT. Holds trivially when no correction was recorded, which
+            // is exactly the state below -- so it is asserted for the invariant, not as evidence.
+            check(json_bool(body, "pitch_correction_inward", pi_ci) && pi_ci,
+                  "any recorded correction moves the pitch towards zero, never further out");
+            check(json_bool(body, "pitch_within_determinable", pi_wd) && pi_wd,
+                  "and the record can be compared against the clamp the engine would apply now");
+            // THE HONEST PART: both fields are zero because the clamp has never engaged in this session, which
+            // makes the range comparison VACUOUS -- zero lies inside every clamp. The suite records which case it
+            // is in rather than letting a trivially-true check look like validation.
+            check(json_bool(body, "pitch_never_engaged", pi_ne) && pi_ne,
+                  "the clamp has NOT engaged this session -- both fields are still zero, so the range check "
+                  "below passes trivially and proves nothing about clamping");
+            check(json_has(body, "\"pitch_within_active\":true"),
+                  "the (vacuous) range check is consistent, asserted so a future non-zero record is compared "
+                  "rather than ignored");
+            check(json_bool(body, "pitch_range_refused", pi_rr) && pi_rr,
+                  "an out-of-range slot yields neither the record nor the comparison");
+
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
             // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one

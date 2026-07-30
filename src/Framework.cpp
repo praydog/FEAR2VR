@@ -4875,6 +4875,37 @@ std::string build_shader_params_json() {
                                  !sdk::PlayerMgr::predicted_clamp_state(9).has_value());
         }
 
+        // ---- WHAT THE CLAMP ACTUALLY DID ----
+        //
+        // Keys are prefixed pitch_ rather than pc_: an early pass's PLATFORM CARRY block already uses pc_, and
+        // two unrelated blocks sharing a prefix means a json_has assertion can match the wrong one.
+        {
+            const auto rec2 = sdk::PlayerMgr::camera_pitch_clamp_record(0);
+            const auto within = sdk::PlayerMgr::pitch_clamp_record_within_active(0);
+            json_append_bool(out, "pitch_readable", rec2.has_value());
+            if (rec2.has_value()) {
+                json_append_double(out, "pitch_before", static_cast<double>(rec2->before), 4);
+                json_append_double(out, "pitch_after", static_cast<double>(rec2->after), 4);
+                json_append_bool(out, "pitch_corrected", rec2->corrected());
+                // BOTH ZERO MEANS THE CLAMP HAS NEVER ENGAGED for this camera -- the fields are only written on
+                // a violation. Reported explicitly, because it makes the range check below VACUOUS: zero is
+                // inside every clamp, so a pass there would prove nothing.
+                json_append_bool(out, "pitch_never_engaged",
+                                 rec2->before == 0.0f && rec2->after == 0.0f);
+                json_append_bool(out, "pitch_plausible_radians",
+                                 std::fabs(rec2->before) <= 3.15f && std::fabs(rec2->after) <= 3.15f);
+                // A CLAMP NEVER PUSHES A VALUE FURTHER OUT, so any recorded correction must move towards zero.
+                json_append_bool(out, "pitch_correction_inward",
+                                 !rec2->corrected() ||
+                                     std::fabs(rec2->after) <= std::fabs(rec2->before) + 1e-6f);
+            }
+            json_append_bool(out, "pitch_within_determinable", within.has_value());
+            json_append_bool(out, "pitch_within_active", within.value_or(false));
+            json_append_bool(out, "pitch_range_refused",
+                             !sdk::PlayerMgr::camera_pitch_clamp_record(9).has_value() &&
+                                 !sdk::PlayerMgr::pitch_clamp_record_within_active(9).has_value());
+        }
+
         json_append_bool(out, "cc_unknown_state_refused",
                          !sdk::PlayerMgr::camera_clamp(0, "NoSuchState").has_value() &&
                              !sdk::PlayerMgr::camera_clamp(9, "Chase").has_value());
