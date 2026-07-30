@@ -5886,3 +5886,41 @@ class LTInputDeviceMouse 0x30 {
 // because the engine's effective value is not the display's.
 //
 // 1205 checks, 0 failures.
+
+// ---- THE FOV CHAIN CLOSES, AND THE "UNEXPLAINED" FACTOR WAS THE DISPLAY -------------------------
+//
+// Last pass left the FOV pair identified but its magnitude unaccounted: the ratio recovered from the two angles is
+// 3.5556, and I recorded that as "32/9, EXACTLY TWICE 16/9" with a factor of two pointing at "a doubled-width or
+// halved-height rect". One disassembly window settles all of it.
+//
+// THE THREE CALL SITES NAME THEIR OWN INPUTS. Each does `mov ecx, esi` from its caller's this, so the rect is on
+// the POSE HOLDER at +196..224 -- and two of them load cached console variables that were already named by the
+// 474-pair pass:
+//
+//     0x100E1E80   supplies g_cvar_FovAspectRatioScale as the SCALE argument
+//     0x100E34E0   supplies g_cvar_FovY x dbl_101C1B08 (pi/180) as the VERTICAL FOV -- the NON-CINEMATIC path,
+//                  which is where the live pair comes from since holder[+1006] is clear
+//
+// READ LIVE, THE CHAIN IS EXACT:
+//
+//     FovY                  65.0 degrees        x pi/180   ->  holder[+296] = 1.134464 rad
+//     holder rect +196..224  5120 x 1440                   ->  aspect = 3.555556 = 32/9
+//     FovAspectRatioScale   1.0                            ->  scale
+//     fov_x = 2 * atan(tan(fov_y/2) * aspect) * scale       ->  holder[+292] = 2.31011 rad = 132.36 degrees
+//
+// > 5120 x 1440 IS A REAL FRAMEBUFFER. There is no factor of two: 32:9 is the display, and my "twice 16/9" was
+// > pattern-matching on a number whose cause was a rect I had not looked for. Twice in two passes the same field
+// > was misjudged by reasoning about its VALUE -- first "132 degrees is implausible so this is not a horizontal
+// > FOV", then "3.56 is twice 1.78 so something doubles it". Both dissolved on reading one more piece of code.
+//
+// The suite now asserts the DERIVATION rather than the outputs: fov_derivation_holds() recomputes both angles from
+// the two settings and the rect through the producer's own formula, and separately the aspect from PIXELS must equal
+// the one recovered by trigonometry from the stored angles -- two routes to one number. That is the assertion the
+// previous two drafts could not make.
+//
+// NEITHER CALL SITE IS RENAMED. Only the single call is established at each; 0x100E34E0 is 2426 bytes and naming it
+// from one call would be exactly the overreach this file keeps recording. Both are annotated instead.
+//
+// Exposed as sdk::PlayerMgr::viewport_rect / fov_inputs / fov_derivation_holds, beside camera_fov and aspect_ratio.
+//
+// 1211 checks, 0 failures.

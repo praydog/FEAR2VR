@@ -318,16 +318,23 @@ public:
     // beside a 65-degree vertical. The magnitude WAS the wrong thing to reason from: the identity is unambiguous in
     // the code, and what the magnitude actually tells us is the effective ratio the engine used.
     //
-    // AND THE RATIO IS A RECOGNISABLE NUMBER, which narrows what remains open. tan(fov_x/2) / tan(fov_y/2) recovers
-    // 3.5556 live -- that is 32/9, EXACTLY TWICE 16/9, not the 1.7778 a 16:9 viewport alone would give.
+    // AND THE WHOLE CHAIN IS NOW CLOSED, every input identified and read live. A previous draft called the 3.5556
+    // ratio "unexplained" and reasoned it was "twice 16/9". It is not a factor of two over anything -- it is the
+    // ACTUAL VIEWPORT:
     //
-    // The producer derives its aspect from a rect as (b + d - f - h) / (a + c - e - g) over integer fields, and
-    // separately multiplies the half-angle by a `scale` argument. A factor of exactly two therefore points at a
-    // doubled-width or halved-height rect rather than at an arbitrary scale -- but WHICH, and which object supplies
-    // the rect, is not established: the caller passes it in ECX and the decompiler does not show it.
+    //     FovY console variable        65.0 degrees   x pi/180  ->  holder[+296] = 1.134464 rad   (exact)
+    //     viewport rect                5120 x 1440              ->  aspect = 3.555556 = 32/9
+    //     FovAspectRatioScale          1.0                      ->  scale
+    //     fov_x = 2 * atan(tan(fov_y/2) * aspect) * scale       ->  holder[+292] = 2.31011 rad = 132.36 deg
     //
-    // aspect_ratio() returns the recovered ratio and names it for what it is. A VR consumer should use it rather
-    // than assuming the display aspect, precisely because the engine's effective value is not the display's.
+    // 5120 x 1440 is a real framebuffer, so 32:9 is simply the display. THE ASSUMPTION OF 16:9 WAS THE ERROR, not
+    // the engine, and "twice 16/9" was pattern-matching on a number that had a plainer cause.
+    //
+    // The rect lives on the POSE HOLDER at +196..224, which the three call sites establish: each does `mov ecx,
+    // esi` from its own `this`, so the object supplying the rect is the holder itself. Exposed as viewport_rect().
+    //
+    // fov_inputs() reads the two console variables and the rect together, and fov_derivation_holds() recomputes
+    // BOTH stored angles from them -- so the chain is checked end to end rather than at its output.
     //
     // THE CINEMATIC FLAG MATTERS TO A VR CONSUMER independently of the FOV: while a cinematic camera is driving
     // the view, overriding the pose fights the script. cinematic_active() is the cheap test, and the descriptor
@@ -364,6 +371,35 @@ public:
     //
     // nullopt when the pair cannot be read or either angle is outside (0, kFovClampRadians).
     static std::optional<float> aspect_ratio(unsigned index);
+
+    // The viewport rect the aspect comes from, on the pose holder. The producer reads it as
+    // (b + d - f - h) / (a + c - e - g) over eight integer fields at +196..224; live only two are non-zero, giving
+    // 5120 x 1440 directly. Reported as the numerator and denominator that arithmetic produces, so a consumer sees
+    // exactly what the engine divided rather than a guess at which fields are width and height.
+    struct ViewportRect {
+        int32_t fields[8]{};   // +196..224 verbatim
+        int32_t width{};       // the numerator of the engine's own expression
+        int32_t height{};      // its denominator
+    };
+
+    static std::optional<ViewportRect> viewport_rect(unsigned index);
+
+    // The three inputs the FOV pair is built from: the FovY setting in DEGREES, the FovAspectRatioScale setting,
+    // and the aspect the rect yields. nullopt when any is unavailable.
+    struct FovInputs {
+        float fov_y_degrees{};
+        float aspect_scale{};
+        float aspect{};
+    };
+
+    static std::optional<FovInputs> fov_inputs(unsigned index);
+
+    // Do the two stored angles follow from those three inputs, by the producer's own formula? This checks the
+    // ENTIRE chain -- console variable, degree conversion, rect-derived aspect, scale, clamp -- against the pair the
+    // engine stored, rather than checking the output against itself.
+    //
+    // nullopt when the inputs or the pair cannot be read.
+    static std::optional<bool> fov_derivation_holds(unsigned index, float tolerance = 1e-3f);
 
     // Is a cinematic camera currently driving the view? While it is, the pose comes from the descriptor's own
     // object and NearZ is overridden, with the previous value parked at kSavedNearZ until the cinematic ends.

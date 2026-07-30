@@ -4665,12 +4665,40 @@ std::string build_shader_params_json() {
         ar_round_trips = std::fabs(rebuilt - cfv->fov_x) <= 1e-4f;
     }
     json_append_bool(out, "cf_aspect_round_trips", ar_round_trips);
+    // THE FULL CHAIN. Every input identified: a console variable in degrees, a viewport rect, a scale setting.
+    // Recomputing BOTH stored angles from them checks the whole derivation rather than its output against itself.
+    const auto vr = sdk::PlayerMgr::viewport_rect(0);
+    const auto fi = sdk::PlayerMgr::fov_inputs(0);
+    const auto fd = sdk::PlayerMgr::fov_derivation_holds(0);
+    json_append_bool(out, "cf_rect_available", vr.has_value());
+    if (vr.has_value()) {
+        json_append_double(out, "cf_rect_w", static_cast<double>(vr->width), 0);
+        json_append_double(out, "cf_rect_h", static_cast<double>(vr->height), 0);
+        // A viewport has to be a positive, sane pixel count -- a wrong offset gives zero or nonsense.
+        json_append_bool(out, "cf_rect_plausible",
+                         vr->width > 16 && vr->width <= 16384 && vr->height > 16 && vr->height <= 16384);
+    }
+    json_append_bool(out, "cf_inputs_available", fi.has_value());
+    if (fi.has_value()) {
+        json_append_double(out, "cf_in_fov_deg", static_cast<double>(fi->fov_y_degrees), 4);
+        json_append_double(out, "cf_in_scale", static_cast<double>(fi->aspect_scale), 4);
+        json_append_double(out, "cf_in_aspect", static_cast<double>(fi->aspect), 6);
+        // The rect-derived aspect must equal the ratio recovered from the stored angles -- two routes to the same
+        // number, one from pixels and one from trigonometry on the outputs.
+        json_append_bool(out, "cf_aspect_from_rect_matches",
+                         ar.has_value() && std::fabs(fi->aspect - *ar) <= 0.01f);
+    }
+    json_append_bool(out, "cf_derivation_determinable", fd.has_value());
+    json_append_bool(out, "cf_derivation_holds", fd.has_value() && *fd);
     json_append_bool(out, "cf_range_refused",
                      !sdk::PlayerMgr::camera_fov(9).has_value() &&
                          !sdk::PlayerMgr::cinematic_active(9).has_value() &&
                          !sdk::PlayerMgr::saved_near_z(9).has_value() &&
                          !sdk::PlayerMgr::fov_y_matches_projection(9).has_value() &&
-                         !sdk::PlayerMgr::aspect_ratio(9).has_value());
+                         !sdk::PlayerMgr::aspect_ratio(9).has_value() &&
+                         !sdk::PlayerMgr::viewport_rect(9).has_value() &&
+                         !sdk::PlayerMgr::fov_inputs(9).has_value() &&
+                         !sdk::PlayerMgr::fov_derivation_holds(9).has_value());
 
     // WHERE THE CAMERA POSE COMES FROM: a model socket named in gameclient's code, plus three tunable floats.
     // The socket name is the cross-check -- a string literal in the DLL against the model ASSET's own socket table,

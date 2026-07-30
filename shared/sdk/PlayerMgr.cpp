@@ -870,4 +870,65 @@ std::optional<float> PlayerMgr::aspect_ratio(unsigned index) {
     return std::tan(fov->fov_x * 0.5f) / ty;
 }
 
+
+std::optional<PlayerMgr::ViewportRect> PlayerMgr::viewport_rect(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    ViewportRect out;
+    for (size_t i = 0; i < 8; ++i) {
+        const auto v = mem::read<int32_t>(p->holder + 196 + i * sizeof(int32_t));
+        if (!v.has_value()) {
+            return std::nullopt;
+        }
+        out.fields[i] = *v;
+    }
+    // The producer's own expression, indices relative to this[49]: numerator uses [4],[2] minus [6],[0];
+    // denominator uses [3],[5] minus [7],[1].
+    out.width = out.fields[4] + out.fields[2] - out.fields[6] - out.fields[0];
+    out.height = out.fields[3] + out.fields[5] - out.fields[7] - out.fields[1];
+    return out;
+}
+
+std::optional<PlayerMgr::FovInputs> PlayerMgr::fov_inputs(unsigned index) {
+    const auto fov_var = Engine::find_cached_var("FovY");
+    const auto scale_var = Engine::find_cached_var("FovAspectRatioScale");
+    if (!fov_var.has_value() || !scale_var.has_value()) {
+        return std::nullopt;
+    }
+    const auto fov = Engine::read_cached(*fov_var);
+    const auto scale = Engine::read_cached(*scale_var);
+    const auto rect = viewport_rect(index);
+    if (!fov.has_value() || !scale.has_value() || !rect.has_value()) {
+        return std::nullopt;
+    }
+    FovInputs out;
+    out.fov_y_degrees = *fov;
+    out.aspect_scale = *scale;
+    // The engine falls back to 16:9 when the denominator is zero, so this reproduces that rather than failing.
+    out.aspect = rect->height != 0 ? static_cast<float>(rect->width) / static_cast<float>(rect->height)
+                                   : 1.7777778f;
+    return out;
+}
+
+std::optional<bool> PlayerMgr::fov_derivation_holds(unsigned index, float tolerance) {
+    const auto in = fov_inputs(index);
+    const auto pair = camera_fov(index);
+    if (!in.has_value() || !pair.has_value() || !std::isfinite(tolerance) || tolerance < 0.0f) {
+        return std::nullopt;
+    }
+    const auto clamp = [](float v) {
+        if (!(v >= 0.0f)) {
+            return 0.0f;
+        }
+        return v > kFovClampRadians ? kFovClampRadians : v;
+    };
+    constexpr float kDegToRad = 0.01745329238474369f;
+    const auto want_y = clamp(in->fov_y_degrees * kDegToRad);
+    const auto want_x =
+        clamp(2.0f * std::atan(std::tan(want_y * 0.5f) * in->aspect) * in->aspect_scale);
+    return std::fabs(want_y - pair->fov_y) <= tolerance && std::fabs(want_x - pair->fov_x) <= tolerance;
+}
+
 }  // namespace sdk

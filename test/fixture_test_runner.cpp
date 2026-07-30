@@ -4552,11 +4552,38 @@ int main(int argc, char** argv) {
                   "the pair yields a plausible ratio above one");
             check(json_bool(body, "cf_aspect_round_trips", ar_rt) && ar_rt,
                   "that ratio rebuilds the horizontal FOV from the vertical, as the producer computes it");
-            // RECORDED, NOT EXPLAINED: the live ratio is 32/9, exactly twice 16/9. Asserted loosely so a different
-            // viewport shows up as a change rather than passing silently, without pretending the factor is
-            // understood.
-            check(ar_av && std::fabs(ar_v - 3.5556) < 0.05,
-                  "the effective ratio is twice 16:9 on this build -- measured, not accounted for");
+            // ---- AND THE WHOLE CHAIN, END TO END ---------------------------------------------------
+            //
+            // The ratio needed no special explanation. It is the VIEWPORT: 5120 x 1440 is 32:9. An earlier draft
+            // called it "twice 16/9" and left it unaccounted -- pattern-matching a number that had a plainer cause,
+            // and assuming a 16:9 display that is not this one.
+            //
+            // Every input is now identified and read: the FovY console variable in DEGREES, the viewport rect on
+            // the pose holder, and the FovAspectRatioScale setting. Recomputing BOTH stored angles from them checks
+            // the entire derivation -- setting, degree conversion, rect-derived aspect, scale, clamp -- instead of
+            // checking the output against itself.
+            bool vr_a = false, vr_p = false, fi_a = false, fi_m = false, fd_d = false, fd_h = false;
+            double vr_w = -1.0, vr_h = -1.0, fi_deg = -1.0, fi_sc = -1.0, fi_as = -1.0;
+            check(json_bool(body, "cf_rect_available", vr_a) && vr_a &&
+                      json_double(body, "cf_rect_w", vr_w) && json_double(body, "cf_rect_h", vr_h),
+                  "the viewport rect reads off the pose holder");
+            check(json_bool(body, "cf_rect_plausible", vr_p) && vr_p,
+                  "its width and height are sane pixel counts, not zero or nonsense");
+            check(json_bool(body, "cf_inputs_available", fi_a) && fi_a &&
+                      json_double(body, "cf_in_fov_deg", fi_deg) && json_double(body, "cf_in_scale", fi_sc) &&
+                      json_double(body, "cf_in_aspect", fi_as),
+                  "the FOV setting, the scale setting and the derived aspect all read");
+            // THE SETTING IS IN DEGREES and must be a sane FOV -- which is also what makes the stored radian value
+            // a round number of degrees.
+            check(fi_a && fi_deg > 20.0 && fi_deg < 170.0, "the FovY setting is a plausible angle in degrees");
+            // TWO ROUTES TO THE ASPECT: from pixels, and from trigonometry on the two stored angles.
+            check(json_bool(body, "cf_aspect_from_rect_matches", fi_m) && fi_m,
+                  "the aspect from the viewport pixels equals the one recovered from the stored angles");
+            // THE WHOLE DERIVATION. This is the assertion the previous draft could not make.
+            check(json_bool(body, "cf_derivation_determinable", fd_d) && fd_d,
+                  "the derivation can be evaluated");
+            check(json_bool(body, "cf_derivation_holds", fd_h) && fd_h,
+                  "both stored angles follow from the settings and the viewport by the producer's own formula");
 
             const bool fov_y_known = json_bool(body, "cf_fov_y_determinable", cfv_yd);
             json_bool(body, "cf_fov_y_matches", cfv_ym);
