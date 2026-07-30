@@ -4545,31 +4545,44 @@ int main(int argc, char** argv) {
             check(json_bool(body, "ss_312_unnamed", ss_312u) && ss_312u,
                   "+312 stays unnamed: naming it from a base class's strings is the error this guards");
 
-            // ---- HEALTH AND ARMOR: int32, WHICH WAS GOT WRONG ONCE ----------------------------------
+            // ---- CPlayerStats, AND A GUARD THAT COULD NOT DISCRIMINATE -------------------------------
             //
-            // Read as floats these four dwords are 1.4e-43 and 2.06e-43 -- DENORMALS. They are greater than
-            // zero, so a `max > 0.0f` plausibility check PASSED while every value printed as 0.0. The exact
-            // values are asserted here, not just their plausibility, because plausibility is what lied.
-            double v1c = 0.0, v1m = 0.0, v2c = 0.0, v2m = 0.0;
-            bool ss_vr = false, ss_vo = false, ss_vp = false, ss_vrr = false;
-            check(json_bool(body, "ss_vitals_resolved", ss_vr) && ss_vr,
-                  "the health/armor subsystem resolves by name and its fields read");
-            check(json_double(body, "ss_vital_1_cur", v1c) && v1c == 100.0, "first pair current is exactly 100");
-            check(json_double(body, "ss_vital_1_max", v1m) && v1m == 147.0, "first pair max is exactly 147");
-            check(json_double(body, "ss_vital_2_cur", v2c) && v2c == 100.0, "second pair current is exactly 100");
-            check(json_double(body, "ss_vital_2_max", v2m) && v2m == 150.0, "second pair max is exactly 150");
-            // INTEGERS, not floats: whole numbers with no fractional part, which a denormal reinterpretation
-            // could never produce. This is the assertion that would have caught the mistyping.
-            check(v1c == static_cast<double>(static_cast<int>(v1c)) &&
-                      v1m == static_cast<double>(static_cast<int>(v1m)) &&
-                      v2m == static_cast<double>(static_cast<int>(v2m)),
-                  "all four are whole numbers, so they are integers and not reinterpreted floats");
-            check(json_bool(body, "ss_vitals_pairs_ordered", ss_vo) && ss_vo,
-                  "each pair is ordered current <= max, which is what makes them (value, limit) pairs");
-            check(json_bool(body, "ss_vitals_plausible", ss_vp) && ss_vp,
-                  "and both pairs pass the plausibility guard -- now on the correct type");
-            check(json_bool(body, "ss_vitals_range_refused", ss_vrr) && ss_vrr,
-                  "an out-of-range slot yields no vitals");
+            // CPlayerStats_Init registers five console programs -- Armor, MaxArmor, Health, MaxHealth, Air --
+            // and the reference source registers exactly those five names in exactly that order, which names
+            // the class. The FIELD ORDER comes from the setters' clamping: SetHealth clamps +228 to +236,
+            // SetArmor clamps +232 to +240. So it is {health, armor, maxHealth, maxArmor}, both currents first.
+            //
+            // THE PREVIOUS PASS READ IT AS TWO (current, max) PAIRS and guarded with current <= max. Both
+            // pairings satisfy that guard, so it was never evidence. That is asserted below rather than merely
+            // written down, because the next reader will otherwise re-derive the same false confidence.
+            double p_h = 0.0, p_a = 0.0, p_mh = 0.0, p_ma = 0.0, p_air = 0.0, p_lost = 0.0;
+            bool p_r = false, p_lim = false, p_ar = false, p_alive = false, p_mis = false, p_con = false,
+                 p_rr = false, p_ren = false;
+            check(json_bool(body, "ps_resolved", p_r) && p_r, "CPlayerStats resolves by name and reads");
+            check(json_double(body, "ps_health", p_h) && p_h == 100.0, "health is 100");
+            check(json_double(body, "ps_max_health", p_mh) && p_mh == 100.0, "max health is 100");
+            check(json_double(body, "ps_armor", p_a) && p_a == 147.0, "armor is 147");
+            check(json_double(body, "ps_max_armor", p_ma) && p_ma == 150.0, "max armor is 150");
+            // THE PAIRING, stated as the thing the setters proved: health is at its OWN max, armour is below
+            // its own. Under the mispairing health would be 100 of 147, which is a different claim entirely.
+            check(p_h == p_mh && p_a < p_ma,
+                  "health sits at its own maximum while armour is below its own -- the correct pairing");
+            check(json_double(body, "ps_air", p_air) && p_air >= 0.0 && p_air <= 1.0,
+                  "air is a fraction in [0,1], not a percentage");
+            check(json_double(body, "ps_health_lost", p_lost) && p_lost >= 0.0,
+                  "the accumulated health-lost counter is non-negative");
+            check(json_bool(body, "ps_limits", p_lim) && p_lim, "each current is within its own limit");
+            check(json_bool(body, "ps_air_range", p_ar) && p_ar,
+                  "the air range check passes -- and unlike the ordering check it is discriminating, since a "
+                  "float in [0,1] is not what wrong offsets would yield");
+            check(json_bool(body, "ps_alive", p_alive) && p_alive, "the player is alive");
+            check(json_bool(body, "ps_consistent", p_con) && p_con, "the whole consistency guard passes");
+            // THE POINT: the discredited guard ALSO passes, so it never distinguished the two readings.
+            check(json_bool(body, "ps_mispairing_also_ordered", p_mis) && p_mis,
+                  "the previous pass's pairing satisfies an ordering check too, so that check proved nothing");
+            check(json_bool(body, "ps_range_refused", p_rr) && p_rr, "an out-of-range slot yields no stats");
+            check(json_bool(body, "ps_renamed", p_ren) && p_ren,
+                  "the subsystem is named for its class now, and the provisional name no longer resolves");
 
             // THE TWO EXCEPTIONS, asserted as exceptions. Tolerating them silently would let the table's
             // shape drift without any test noticing.
@@ -4651,6 +4664,19 @@ int main(int argc, char** argv) {
                   "its 8 nodes are attached to 8 distinct subjects -- one publisher each, none detached");
             check(json_bool(body, "dg_subjects_bounded", dg_sb) && dg_sb,
                   "subjects never outnumber nodes, which a double-count would break");
+            // SLOT 1 IS THE HANDLER, read off Delegate_Notify's dispatch rather than assumed. That function
+            // also confirms two things this SDK had been taking on faith: a subject head is a {prev,next} pair,
+            // and a node base is link - 4.
+            bool dg_hr = false, dg_nf = false, dg_nc = false, dg_nd = false, dg_hx = false;
+            check(json_bool(body, "dg_handlers_resolve", dg_hr) && dg_hr,
+                  "every node's slot-1 handler resolves to a code address");
+            check(json_bool(body, "dg_notify_found", dg_nf) && dg_nf, "Delegate_Notify resolves in the module");
+            check(json_bool(body, "dg_notify_is_code", dg_nc) && dg_nc, "and lands in a code section");
+            check(json_bool(body, "dg_notify_differs_from_detach", dg_nd) && dg_nd,
+                  "notify and detach are different functions, so the two slot constants describe different "
+                  "things");
+            check(json_bool(body, "dg_handler_refused", dg_hx) && dg_hx, "a null node yields no handler");
+
             check(json_bool(body, "dg_empty_refused", dg_er) && dg_er,
                   "a null object and a too-small extent both yield nothing");
 

@@ -206,4 +206,21 @@ std::vector<uintptr_t> Delegates::subscribed_subjects(uintptr_t object, size_t e
     return out;
 }
 
+
+uintptr_t Delegates::notify_fn() {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return 0;
+    }
+    return gc->base + 0x7BFB0;
+}
+
+std::optional<uintptr_t> Delegates::handler_of(uintptr_t node) {
+    const auto listener = read_node(node);
+    if (!listener.has_value() || !listener->vtable_valid) {
+        return std::nullopt;
+    }
+    return mem::read<uintptr_t>(listener->vtable + kHandlerSlot * sizeof(uintptr_t));
+}
+
 }  // namespace sdk

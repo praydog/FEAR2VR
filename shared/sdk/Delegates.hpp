@@ -49,6 +49,37 @@ public:
     // Slot 2 of every delegate vtable. The offset a validator checks.
     static constexpr size_t kDetachSlot = 2;
 
+    // ---- WHICH SLOT ACTUALLY RUNS, FROM THE FUNCTION THAT DISPATCHES IT --------------------------
+    //
+    // The header above describes a delegate vtable as {handler, handler, Detach} without saying which handler
+    // is invoked. Delegate_Notify (gameclient 0x1007BFB0) settles it, and it corroborates this whole layout
+    // from the CONSUMING side rather than the teardown side:
+    //
+    //     _DWORD* p = subject[1];                    // the head's `next`
+    //     while (p != subject) {                     // CIRCULAR -- terminates by returning to the head
+    //         next = p[1];
+    //         (*(*(p - 1) + 4))(p - 1, a2, a3);      // p - 1 is the NODE BASE; +4 is SLOT 1
+    //         p = next;
+    //     }
+    //
+    // Three things that were assumed are now read off dispatching code: a subject head really is a {prev,next}
+    // pair, a node base really is link - 4 (the adjustment read_node_from_link exists for), and SLOT 1 is the
+    // method that runs. Slot 0 is therefore not the notification entry point, whatever else it is.
+    //
+    // Every CPlayerStats setter calls it with (new_value, old_value), so a handler receives two dwords.
+    static constexpr size_t kHandlerSlot = 1;
+
+    // Runtime address of the shared notify function, or 0 when gameclient is not mapped. The counterpart to
+    // detach_fn(), and useful to a consumer that wants to hook notification centrally rather than per class.
+    static uintptr_t notify_fn();
+
+    // The function that runs when this node's subject notifies -- slot 1 of its vtable, bounds-checked.
+    // nullopt when the node is unreadable or its vtable is not a delegate's.
+    //
+    // This is the address a consumer hooks to observe one specific listener, which is the practical reason to
+    // enumerate nodes at all.
+    static std::optional<uintptr_t> handler_of(uintptr_t node);
+
     struct Listener {
         uintptr_t node{};     // the node's base address
         uintptr_t vtable{};   // its three-slot vtable

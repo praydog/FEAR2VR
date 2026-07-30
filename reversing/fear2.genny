@@ -6244,3 +6244,61 @@ class CPlayerCamera 0x18C6 {
 // Exposed as sdk::PlayerMgr::subsystem_by_name / named_subsystem_count / vitals / vitals_plausible.
 //
 // 1279 checks, 0 failures.
+
+// ---- CPlayerStats, AND A GUARD THAT PASSED UNDER THE WRONG STRUCTURE ----------------------------
+//
+// Last pass left an open question: which of the two (current, max) pairs at the +280 subsystem is health and
+// which is armour. The question was wrong -- THERE ARE NO SUCH PAIRS.
+//
+// CPlayerStats_Init registers five console programs through ILTClient slot 77, already mapped by an earlier
+// pass as CLTClient_RegisterConsoleProgram: 'Armor', 'MaxArmor', 'Health', 'MaxHealth', 'Air'. The reference
+// source's FEAR/ClientShellDLL/PlayerStats.cpp registers exactly those five names in exactly that order, which
+// names the class CPlayerStats. Each registration pairs the name with its own setter, and the SETTERS' CLAMPS
+// give the field order with no ambiguity at all:
+//
+//     +228 int32 health        SetHealth clamps to +236, and adds (old - new) into +284 when health drops
+//     +232 int32 armor         SetArmor clamps to +240
+//     +236 int32 maxHealth     SetMaxHealth re-clamps health when lowered below it
+//     +240 int32 maxArmor
+//     +244 float airPercent    a FRACTION in [0,1]; the console handler passes atof(arg)/100
+//     +284 int32 accumulated health lost
+//
+// The reference declares m_nHealth, m_nArmor, m_nMaxHealth, m_nMaxArmor, m_fAirPercent in that same order.
+// Live: health 100/100, armor 147/150, air 1.0, lost 219.
+//
+// SO IT IS {health, armor, maxHealth, maxArmor} -- BOTH CURRENTS, THEN BOTH MAXES. Last pass paired them
+// (100,147) and (100,150) and guarded with `current <= max`. The real pairs are (100,100) and (147,150), and
+// the interesting part is that the guard cannot tell:
+//
+//     wrong pairing:   100 <= 147   and  100 <= 150      PASSES
+//     right pairing:   100 <= 100   and  147 <= 150      PASSES
+//
+// An invariant satisfied by the wrong structure as well as the right one is not evidence for either. It looked
+// like confirmation and was arithmetic coincidence. The suite now ASSERTS that the discredited ordering still
+// holds, so the next reader cannot mistake it for support, and asserts instead the claims that do discriminate:
+// health sits at its OWN max while armour is below its own, and +244 is a float in [0,1].
+//
+// > A guard is only evidence for a structure if it would FAIL on the alternatives. This project has written
+// > several that would, and this one that would not.
+//
+// ---- Delegate_Notify, WHICH VALIDATES THE NODE LAYOUT FROM THE OTHER SIDE ----
+//
+// Every CPlayerStats setter ends by calling gameclient 0x1007BFB0 with (new_value, old_value). That function is
+// the notify counterpart to Delegate_Detach:
+//
+//     p = subject[1];                          // the head's `next`
+//     while (p != subject) {                   // CIRCULAR, terminating by return to the head
+//         next = p[1];
+//         (*(*(p - 1) + 4))(p - 1, a2, a3);    // p - 1 is the NODE BASE; +4 is SLOT 1
+//         p = next; }
+//
+// Three things the SDK had been taking on faith are now read off dispatching code: a subject head IS a
+// {prev,next} pair, a node base IS link - 4 -- the adjustment read_node_from_link was written for -- and SLOT 1
+// is the method that runs on notification. The header had said {handler, handler, Detach} without saying which.
+//
+// Named in IDA: CPlayerStats_ctor/_Init, CPlayerStats_SetHealth/SetArmor/SetMaxHealth/SetMaxArmor/SetAirPercent,
+// five CPlayerStats_ConsoleFn_* handlers, g_vtbl_CPlayerStats, PlayerMgr_GetLocalPlayer, Delegate_Notify.
+// Exposed as sdk::PlayerMgr::player_stats / player_stats_consistent and
+// sdk::Delegates::kHandlerSlot / notify_fn / handler_of.
+//
+// 1290 checks, 0 failures.

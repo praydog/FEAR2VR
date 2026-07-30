@@ -216,46 +216,72 @@ public:
     // tell "this build maps N of the 23" rather than assuming the table is fully identified.
     static size_t named_subsystem_count();
 
-    // ---- HEALTH AND ARMOR, THE ONE SUBSYSTEM WITH MAPPED FIELDS -----------------------------
+    // ---- CPlayerStats: THE SUBSYSTEM AT +280, AND ITS FIVE VALUES ---------------------------
     //
-    // The health/armor subsystem at +280 holds two (current, max) pairs at its own +228..+240. Live they read
-    // 100 / 147 / 100 / 150, which is what identified the class in the first place.
+    // IDENTIFIED, and by a route that also names the class. CPlayerStats_Init registers five console programs
+    // through ILTClient slot 77 -- 'Armor', 'MaxArmor', 'Health', 'MaxHealth', 'Air' -- and the reference
+    // source's FEAR/ClientShellDLL/PlayerStats.cpp registers exactly those five names in exactly that order.
+    // (Slot 77 was already mapped as CLTClient_RegisterConsoleProgram by an earlier pass, so the call site
+    // cross-validates that mapping too.)
     //
-    // WHICH PAIR IS HEALTH AND WHICH IS ARMOR IS NOT ESTABLISHED. The string literals appear in .rdata in the
-    // order 'Armor', 'MaxArmor', 'Health', 'MaxHealth', which suggests the first pair is armour -- but literal
-    // order in .rdata is not field order, and this project has been wrong about exactly that kind of inference
-    // before. So the accessor returns two labelled-by-position pairs and says so.
-    // THEY ARE int32, NOT FLOAT, and this was got wrong once. Read as floats the four dwords give 1.4e-43 and
-    // 2.06e-43 -- DENORMALS, which are > 0.0f, so a "max > 0" plausibility check PASSED on them while every
-    // value printed as 0.0. The contradiction between those two readings is what exposed it; the values had
-    // already been seen as integers in the probe that identified the class, and were then re-typed by mistake.
+    // THE FIELDS COME FROM THE SETTERS' CLAMPING, not from the order of string literals:
     //
-    // MAPPING_WORKFLOW.MD's warning about denormals applies to a consumer's own guards, not just to reading:
-    // `max > 0.0f` is not a validity test on data that might not be float at all.
+    //     +228 int32  health       CPlayerStats_SetHealth clamps it to +236
+    //     +232 int32  armor        CPlayerStats_SetArmor clamps it to +240
+    //     +236 int32  max_health
+    //     +240 int32  max_armor
+    //     +244 float  air          a FRACTION in [0,1] -- the console handler passes atof(arg)/100
+    //     +284 int32  health lost, accumulated: SetHealth adds (old - new) whenever health drops
     //
-    // The float at +244 IS a real float (1.0f) -- so the boundary is exactly here, and one field further would
-    // have looked plausible in either type.
-    static constexpr uintptr_t kHealthArmorFirstValue = 228;
+    // The reference declares m_nHealth, m_nArmor, m_nMaxHealth, m_nMaxArmor, m_fAirPercent in that same order.
+    // Three routes agree: the setters' code, the live values, and the reference.
+    //
+    // WHICH RETRACTS THE PREVIOUS PASS, and the way it was wrong is the useful part. That pass read the four
+    // dwords as two (current, max) pairs -- (100,147) and (100,150) -- and guarded them with `current <= max`.
+    // The real pairs are (100,100) and (147,150). BOTH PAIRINGS SATISFY THE GUARD:
+    //
+    //     wrong:  100 <= 147   and  100 <= 150      passes
+    //     right:  100 <= 100   and  147 <= 150      passes
+    //
+    // An invariant that holds under the wrong structure as well as the right one cannot discriminate between
+    // them, so it was never evidence for the pairing it appeared to confirm. The pairing needed the setters.
+    static constexpr uintptr_t kStatsHealth = 228;
+    static constexpr uintptr_t kStatsArmor = 232;
+    static constexpr uintptr_t kStatsMaxHealth = 236;
+    static constexpr uintptr_t kStatsMaxArmor = 240;
+    static constexpr uintptr_t kStatsAir = 244;
+    static constexpr uintptr_t kStatsHealthLost = 284;
 
-    struct VitalPair {
-        int32_t current{};
-        int32_t max{};
+    struct PlayerStats {
+        int32_t health{};
+        int32_t armor{};
+        int32_t max_health{};
+        int32_t max_armor{};
+        float air{};              // [0,1]
+        int32_t health_lost{};    // cumulative, never decreases while alive
 
-        // The invariant that holds for a real (value, limit) pair regardless of which quantity it is.
-        bool plausible() const { return max > 0 && current >= 0 && current <= max; }
+        // Each current within its OWN limit -- the pairing the setters establish.
+        bool limits_respected() const {
+            return max_health > 0 && max_armor > 0 && health >= 0 && armor >= 0 && health <= max_health &&
+                   armor <= max_armor;
+        }
+
+        bool air_in_range() const { return air >= 0.0f && air <= 1.0f; }
+
+        // The check a consumer should make before trusting any of it. air_in_range is the DISCRIMINATING part:
+        // a float in [0,1] at +244 is not something the wrong offsets would produce, whereas the ordering
+        // check passes under the mispairing too.
+        bool consistent() const { return limits_respected() && air_in_range(); }
+
+        bool alive() const { return health > 0; }
     };
 
-    struct Vitals {
-        VitalPair first;   // +228 / +232 -- the pair the literal order suggests is armour
-        VitalPair second;  // +236 / +240
-    };
+    // The five values plus the accumulator, read from CPlayerStats. nullopt when it cannot be resolved or a
+    // read faults.
+    static std::optional<PlayerStats> player_stats(unsigned index);
 
-    // Both pairs, read from the health/armor subsystem. nullopt when it cannot be resolved or a read faults.
-    static std::optional<Vitals> vitals(unsigned index);
-
-    // Are both pairs plausible (current within [0, max], max positive)? The check a consumer should make
-    // before displaying either, and the one that would catch the offsets having moved in another build.
-    static std::optional<bool> vitals_plausible(unsigned index);
+    // consistent() over a live read, as one call. nullopt when the stats cannot be read at all.
+    static std::optional<bool> player_stats_consistent(unsigned index);
 
     struct CameraSubObjects {
         uintptr_t controller{};      // player + 236, embedded at player + 0xE88

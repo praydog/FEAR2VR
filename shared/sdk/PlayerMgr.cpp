@@ -1106,7 +1106,7 @@ constexpr SubsystemRecord kSubsystemRecords[] = {
     {268, 0x0CF780, 19, "weapon perturb"},
     {272, 0x0EDD30, 149, "damage fx"},
     {276, 0x110CA0, 396, "special move"},
-    {280, 0x114110, 412, "health armor"},
+    {280, 0x114110, 412, "player stats"},
     {284, 0x0EBA50, 500, nullptr},
     {288, 0, 0, nullptr},  // not a class instance -- a node table
     {292, 0x100400, 228, nullptr},
@@ -1218,32 +1218,37 @@ size_t PlayerMgr::named_subsystem_count() {
     return n;
 }
 
-std::optional<PlayerMgr::Vitals> PlayerMgr::vitals(unsigned index) {
-    const auto sub = subsystem_by_name(index, "health armor");
+std::optional<PlayerMgr::PlayerStats> PlayerMgr::player_stats(unsigned index) {
+    const auto sub = subsystem_by_name(index, "player stats");
     if (!sub.has_value() || sub->object == 0) {
         return std::nullopt;
     }
-    const auto a = mem::read<int32_t>(sub->object + kHealthArmorFirstValue);
-    const auto b = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 4);
-    const auto c = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 8);
-    const auto d = mem::read<int32_t>(sub->object + kHealthArmorFirstValue + 12);
-    if (!a.has_value() || !b.has_value() || !c.has_value() || !d.has_value()) {
+    const auto health = mem::read<int32_t>(sub->object + kStatsHealth);
+    const auto armor = mem::read<int32_t>(sub->object + kStatsArmor);
+    const auto max_health = mem::read<int32_t>(sub->object + kStatsMaxHealth);
+    const auto max_armor = mem::read<int32_t>(sub->object + kStatsMaxArmor);
+    const auto air = mem::read<float>(sub->object + kStatsAir);
+    const auto lost = mem::read<int32_t>(sub->object + kStatsHealthLost);
+    if (!health.has_value() || !armor.has_value() || !max_health.has_value() || !max_armor.has_value() ||
+        !air.has_value() || !lost.has_value()) {
         return std::nullopt;
     }
-    Vitals out;
-    out.first.current = *a;
-    out.first.max = *b;
-    out.second.current = *c;
-    out.second.max = *d;
+    PlayerStats out;
+    out.health = *health;
+    out.armor = *armor;
+    out.max_health = *max_health;
+    out.max_armor = *max_armor;
+    out.air = *air;
+    out.health_lost = *lost;
     return out;
 }
 
-std::optional<bool> PlayerMgr::vitals_plausible(unsigned index) {
-    const auto v = vitals(index);
-    if (!v.has_value()) {
+std::optional<bool> PlayerMgr::player_stats_consistent(unsigned index) {
+    const auto s = player_stats(index);
+    if (!s.has_value()) {
         return std::nullopt;
     }
-    return v->first.plausible() && v->second.plausible();
+    return s->consistent();
 }
 
 }  // namespace sdk

@@ -4672,7 +4672,7 @@ std::string build_shader_params_json() {
         const struct { const char* name; uintptr_t offset; } kExpect[] = {
             {"head bob", 228},    {"flashlight", 232},     {"weapon chooser", 244},
             {"target info", 248}, {"ladder", 264},         {"weapon perturb", 268},
-            {"damage fx", 272},   {"special move", 276},   {"health armor", 280},
+            {"damage fx", 272},   {"special move", 276},   {"player stats", 280},
             {"input bindings", 300},
         };
         bool names_resolve = true;
@@ -4691,22 +4691,32 @@ std::string build_shader_params_json() {
         const auto s312 = sdk::PlayerMgr::subsystem_at(0, 312);
         json_append_bool(out, "ss_312_unnamed", s312.has_value() && s312->name == nullptr);
 
-        // ---- HEALTH AND ARMOR ----
-        const auto vit = sdk::PlayerMgr::vitals(0);
-        const auto vp = sdk::PlayerMgr::vitals_plausible(0);
-        json_append_bool(out, "ss_vitals_resolved", vit.has_value());
-        if (vit.has_value()) {
-            json_append_double(out, "ss_vital_1_cur", static_cast<double>(vit->first.current), 0);
-            json_append_double(out, "ss_vital_1_max", static_cast<double>(vit->first.max), 0);
-            json_append_double(out, "ss_vital_2_cur", static_cast<double>(vit->second.current), 0);
-            json_append_double(out, "ss_vital_2_max", static_cast<double>(vit->second.max), 0);
-            json_append_bool(out, "ss_vitals_pairs_ordered",
-                             vit->first.current <= vit->first.max &&
-                                 vit->second.current <= vit->second.max);
+        // ---- CPlayerStats ----
+        const auto st = sdk::PlayerMgr::player_stats(0);
+        json_append_bool(out, "ps_resolved", st.has_value());
+        if (st.has_value()) {
+            json_append_double(out, "ps_health", static_cast<double>(st->health), 0);
+            json_append_double(out, "ps_armor", static_cast<double>(st->armor), 0);
+            json_append_double(out, "ps_max_health", static_cast<double>(st->max_health), 0);
+            json_append_double(out, "ps_max_armor", static_cast<double>(st->max_armor), 0);
+            json_append_double(out, "ps_air", st->air, 3);
+            json_append_double(out, "ps_health_lost", static_cast<double>(st->health_lost), 0);
+            json_append_bool(out, "ps_limits", st->limits_respected());
+            json_append_bool(out, "ps_air_range", st->air_in_range());
+            json_append_bool(out, "ps_alive", st->alive());
+            // THE MISPAIRING THE PREVIOUS PASS USED also satisfies an ordering check, which is why the check
+            // was not evidence. Reported so the suite can assert the guard is non-discriminating rather than
+            // leave that as a claim in a comment.
+            json_append_bool(out, "ps_mispairing_also_ordered",
+                             st->health <= st->armor && st->max_health <= st->max_armor);
         }
-        json_append_bool(out, "ss_vitals_plausible", vp.value_or(false));
-        json_append_bool(out, "ss_vitals_range_refused", !sdk::PlayerMgr::vitals(9).has_value() &&
-                                                            !sdk::PlayerMgr::vitals_plausible(9).has_value());
+        json_append_bool(out, "ps_consistent", sdk::PlayerMgr::player_stats_consistent(0).value_or(false));
+        json_append_bool(out, "ps_range_refused", !sdk::PlayerMgr::player_stats(9).has_value() &&
+                                                      !sdk::PlayerMgr::player_stats_consistent(9).has_value());
+        // The subsystem is now named for its class, so the old name must no longer resolve.
+        json_append_bool(out, "ps_renamed",
+                         sdk::PlayerMgr::subsystem_by_name(0, "player stats").has_value() &&
+                             !sdk::PlayerMgr::subsystem_by_name(0, "health armor").has_value());
 
         json_append_bool(out, "ss_lookup_refused",
                          !sdk::PlayerMgr::subsystem_at(0, 224).has_value() &&
@@ -4797,6 +4807,33 @@ std::string build_shader_params_json() {
                 }
             }
             json_append_bool(out, "dg_node_vtables_in_data", vt_data);
+            // SLOT 1 IS THE HANDLER, established from Delegate_Notify's dispatch. Every node's handler must
+            // resolve and must be CODE -- and it must differ from the detach method in slot 2, or the two
+            // slot constants would be describing the same thing.
+            bool handlers_ok = !ps.empty();
+            for (const auto& n : ps) {
+                const auto hf = sdk::Delegates::handler_of(n.node);
+                if (!hf.has_value()) {
+                    handlers_ok = false;
+                    break;
+                }
+                const auto sec = sdk::Modules::section_of(*hf);
+                if (!sec.has_value() || sec->kind != sdk::Modules::SectionKind::Code ||
+                    *hf == sdk::Delegates::detach_fn()) {
+                    handlers_ok = false;
+                    break;
+                }
+            }
+            json_append_bool(out, "dg_handlers_resolve", handlers_ok);
+            json_append_bool(out, "dg_notify_found", sdk::Delegates::notify_fn() != 0);
+            json_append_bool(out, "dg_notify_is_code", [] {
+                const auto sec = sdk::Modules::section_of(sdk::Delegates::notify_fn());
+                return sec.has_value() && sec->kind == sdk::Modules::SectionKind::Code;
+            }());
+            json_append_bool(out, "dg_notify_differs_from_detach",
+                             sdk::Delegates::notify_fn() != sdk::Delegates::detach_fn());
+            json_append_bool(out, "dg_handler_refused", !sdk::Delegates::handler_of(0).has_value());
+
             // THE SUBJECTS: who publishes what these objects react to.
             const auto csub = sdk::Delegates::subscribed_subjects(subs->player_camera, 6342);
             json_append_double(out, "dg_camera_subjects", static_cast<double>(csub.size()), 0);
