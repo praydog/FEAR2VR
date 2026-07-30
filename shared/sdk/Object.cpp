@@ -5,6 +5,7 @@
 
 #include "Memory.hpp"
 #include "CClientMgr.hpp"
+#include "Modules.hpp"
 #include "regenny/regenny/LTAttachment.hpp"
 // The cull rule reads per-type fields, so it needs the concrete object classes.
 #include "regenny/regenny/LTModelObject.hpp"
@@ -118,6 +119,27 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj) {
     out.scale = r.scale;
     out.slot_index = r.slot_index;
     return out;
+}
+
+uintptr_t set_pos_rot_fn() {
+    static const uintptr_t s_fn = Modules::get().scan_exe(
+        // push ebp / mov ebp,esp / sub esp,18h / mov eax,[ebp+arg_0] / fld [eax] / push esi / mov esi,ecx
+        // fstp [esi+14h] / add eax,0Ch / fld [eax-8] / push eax / fstp [esi+18h] / lea ecx,[esi+20h]
+        // fld [eax-4] / fstp [esi+1Ch] / call LTRotation_Copy
+        "55 8B EC 83 EC 18 8B 45 08 D9 00 56 8B F1 D9 5E 14 83 C0 0C D9 40 F8 50 D9 5E 18 8D 4E 20 "
+        "D9 40 FC D9 5E 1C E8 ? ? ? ?",
+        "LTObject::SetPosRot");
+    return s_fn;
+}
+
+uintptr_t set_rotation_fn() {
+    // FEAR2.exe is always mapped in-process, so a miss here is DEFINITIVE and latching it is correct.
+    static const uintptr_t s_fn = Modules::get().scan_exe(
+        // push esi / push [esp+4+arg_0] / mov esi,ecx / lea ecx,[esi+20h] / call LTRotation_Copy
+        // mov ecx,[esi+34h] / mov eax,[ecx] / push 4 / push esi / call [eax+10h] / pop esi / retn 4
+        "56 FF 74 24 08 8B F1 8D 4E 20 E8 ? ? ? ? 8B 4E 34 8B 01 6A 04 56 FF 50 10 5E C2 04 00",
+        "LTObject::SetRotation");
+    return s_fn;
 }
 
 std::optional<bool> is_renderable(const regenny::LTObject* obj) {

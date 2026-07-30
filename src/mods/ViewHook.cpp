@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "sdk/Memory.hpp"
+#include "sdk/Object.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/PlayerMgr.hpp"
 
@@ -18,6 +19,8 @@ namespace {
 // THE HOOK'S NAME IS THE REGISTRY KEY and the detour's way back to the trampoline, so it is defined once.
 constexpr const char* kHookName = "CPlayerCamera::ApplyLookDelta";
 constexpr const char* kPoseHookName = "PlayerCamera::UpdateViewPose";
+constexpr const char* kSetRotHookName = "LTObject::SetRotation";
+constexpr const char* kSetPosRotHookName = "LTObject::SetPosRot";
 
 // OBSERVATION STATE, written from the game thread and read from the IPC thread.
 //
@@ -69,6 +72,17 @@ std::atomic<uint32_t> g_ov_applied_drift_bits{0};
 std::atomic<uint32_t> g_ov_object_drift_bits{0};
 // Times the applied pose was replaced right after ApplyLookDelta wrote it -- the render chain's entry point.
 std::atomic<uint64_t> g_ov_applied_writes{0};
+// The engine's own setter, and the only write path that reaches the renderer.
+std::atomic<uint64_t> g_setrot_calls{0};
+std::atomic<uint64_t> g_setrot_camera{0};    // calls whose object IS the player's camera
+std::atomic<uint64_t> g_setrot_overridden{0};
+std::atomic<bool> g_setrot_installed{false};
+std::atomic<uintptr_t> g_setrot_target{0};
+// The move-and-turn path, which is where a camera actually goes.
+std::atomic<uint64_t> g_spr_calls{0};
+std::atomic<uint64_t> g_spr_camera{0};
+std::atomic<uint64_t> g_spr_overridden{0};
+std::atomic<bool> g_spr_installed{false};
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
@@ -368,6 +382,63 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
     return result;
 }
 
+// THE ENGINE'S ROTATION SETTER. __thiscall with ONE stack argument (the original's single exit is `retn 4`),
+// so __fastcall(this, edx_dummy, quat) and the callee cleanup matches.
+//
+// This is where the rendered view is actually written. Overriding the camera holder's fields does not reach it:
+// with the source field pinned to 0.00 degrees of drift, the camera object still sat 58.82 degrees from the
+// override's intent, and forcing the applied pose too made it 109.47. The object is written HERE, and the
+// quaternion arrives as an argument -- so it is replaced in flight, the same shape that fixed ApplyLookDelta.
+//
+// FILTERED ON THE CAMERA OBJECT. This setter moves every object in the world; touching anything but the
+// player's camera would be a mod rewriting the game's physics by accident.
+int __fastcall set_rotation_detour(uintptr_t self, uintptr_t /*edx*/, float* quat) {
+    g_setrot_calls.fetch_add(1, std::memory_order_relaxed);
+
+    if (quat != nullptr && g_ov_frames.load(std::memory_order_relaxed) > 0) {
+        const auto p = sdk::PlayerMgr::player(0);
+        if (p.has_value() && p->camera_object != 0 && self == p->camera_object) {
+            g_setrot_camera.fetch_add(1, std::memory_order_relaxed);
+            std::array<float, 4> out{};
+            if (override_rotation(out)) {
+                std::memcpy(quat, out.data(), sizeof(out));
+                g_setrot_overridden.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    auto* hook = Hooks::get().find(kSetRotHookName);
+    if (hook == nullptr) {
+        return 0;
+    }
+    return hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*)>()(self, 0, quat);
+}
+
+// THE MOVE-AND-TURN PATH. Same ABI shape as the rotation setter -- __thiscall with one stack argument, single
+// exit `retn 4` -- but the argument is SEVEN floats: position at [0..2] and the quaternion at [3..6]. Only the
+// rotation is replaced; moving the camera's position would be a different feature and a worse bug.
+int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posrot) {
+    g_spr_calls.fetch_add(1, std::memory_order_relaxed);
+
+    if (posrot != nullptr && g_ov_frames.load(std::memory_order_relaxed) > 0) {
+        const auto p = sdk::PlayerMgr::player(0);
+        if (p.has_value() && p->camera_object != 0 && self == p->camera_object) {
+            g_spr_camera.fetch_add(1, std::memory_order_relaxed);
+            std::array<float, 4> out{};
+            if (override_rotation(out)) {
+                std::memcpy(posrot + 3, out.data(), sizeof(out));
+                g_spr_overridden.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    auto* hook = Hooks::get().find(kSetPosRotHookName);
+    if (hook == nullptr) {
+        return 0;
+    }
+    return hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*)>()(self, 0, posrot);
+}
+
 }  // namespace
 
 ViewHook& ViewHook::get() {
@@ -409,6 +480,33 @@ std::optional<std::string> ViewHook::on_initialize() {
     }
     g_pose_installed.store(true, std::memory_order_relaxed);
     LOGX("[viewhook] UpdateViewPose installed at 0x%08" PRIXPTR, pose_target);
+
+    // THE ENGINE'S SETTER, in FEAR2.exe rather than gameclient -- the write path that reaches the renderer.
+    const auto sr_target = sdk::set_rotation_fn();
+    g_setrot_target.store(sr_target, std::memory_order_relaxed);
+    if (sr_target == 0) {
+        LOGX("[viewhook] LTObject::SetRotation unresolved; render-path hook NOT installed");
+        return std::string{"LTObject::SetRotation pattern did not resolve"};
+    }
+    if (!Hooks::get().install(kSetRotHookName, reinterpret_cast<void*>(sr_target),
+                              reinterpret_cast<void*>(&set_rotation_detour))) {
+        LOGX("[viewhook] LTObject::SetRotation install FAILED at 0x%08" PRIXPTR, sr_target);
+        return std::string{"failed to install the LTObject::SetRotation hook"};
+    }
+    g_setrot_installed.store(true, std::memory_order_relaxed);
+    LOGX("[viewhook] LTObject::SetRotation installed at 0x%08" PRIXPTR, sr_target);
+
+    const auto spr_target = sdk::set_pos_rot_fn();
+    if (spr_target == 0) {
+        LOGX("[viewhook] LTObject::SetPosRot unresolved; move-and-turn hook NOT installed");
+        return std::string{"LTObject::SetPosRot pattern did not resolve"};
+    }
+    if (!Hooks::get().install(kSetPosRotHookName, reinterpret_cast<void*>(spr_target),
+                              reinterpret_cast<void*>(&set_pos_rot_detour))) {
+        return std::string{"failed to install the LTObject::SetPosRot hook"};
+    }
+    g_spr_installed.store(true, std::memory_order_relaxed);
+    LOGX("[viewhook] LTObject::SetPosRot installed at 0x%08" PRIXPTR, spr_target);
     return std::nullopt;
 }
 
@@ -439,6 +537,15 @@ ViewHook::Observed ViewHook::observed() const {
     out.override_drift_frames = g_ov_drift_frames.load(std::memory_order_relaxed);
     out.override_inflight = g_ov_inflight.load(std::memory_order_relaxed);
     out.override_applied_writes = g_ov_applied_writes.load(std::memory_order_relaxed);
+    out.setrot_calls = g_setrot_calls.load(std::memory_order_relaxed);
+    out.setrot_camera = g_setrot_camera.load(std::memory_order_relaxed);
+    out.setrot_overridden = g_setrot_overridden.load(std::memory_order_relaxed);
+    out.setrot_installed = g_setrot_installed.load(std::memory_order_relaxed);
+    out.setrot_target = g_setrot_target.load(std::memory_order_relaxed);
+    out.spr_calls = g_spr_calls.load(std::memory_order_relaxed);
+    out.spr_camera = g_spr_camera.load(std::memory_order_relaxed);
+    out.spr_overridden = g_spr_overridden.load(std::memory_order_relaxed);
+    out.spr_installed = g_spr_installed.load(std::memory_order_relaxed);
     uint32_t ab = g_ov_applied_drift_bits.load(std::memory_order_relaxed);
     std::memcpy(&out.override_applied_drift_deg, &ab, sizeof(out.override_applied_drift_deg));
     uint32_t ob = g_ov_object_drift_bits.load(std::memory_order_relaxed);

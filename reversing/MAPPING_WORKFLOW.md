@@ -3960,3 +3960,48 @@ Next step is a data breakpoint on the camera object's rotation, `object + 0x20`.
 engine's pool rather than gameclient, so its writer may be in FEAR2.exe -- a different IDB from everything in
 this chain so far.
 
+## The camera reaches the renderer through LTObject_SetPosRot, and that is the override point
+
+Four candidates, each eliminated by measurement rather than by reading. The numbers are the worst deviation of
+each stage from what the override intended, with a player actively fighting it:
+
+```
+                          +324 only   +324 & +244   + SetRotation   + SetPosRot
++324  source (we write)     0.0000       0.0000        0.0000         0.0000
++244  applied pose         58.8223       8.5281        2.8086         1.1405
+camera object (RENDERED)   58.8223     109.4697      106.1483         0.0000
+```
+
+**LTObject_SetRotation was not it, and only a live hook could say so.** It fired 50,475 times in eight seconds
+and NOT ONCE on the player's camera object. Reading the disassembly would have made it look ideal -- it is the
+engine's own rotation setter, it copies into `+0x20`, three callers -- and it is simply not on the camera's path.
+
+**LTObject_SetPosRot (FEAR2.exe 0x004202B6) is it.** 1912 calls on the camera object in eight seconds, about
+240/s, i.e. once per frame. It takes SEVEN floats: position at [0..2] and the quaternion at [3..6]. Replacing
+only the quaternion brings the rendered rotation to exactly 0.00 degrees of deviation.
+
+That it sets position AND rotation together is the tell in hindsight: a camera moves and turns as one operation
+every frame, so it never needed the rotation-only setter.
+
+### What this chain actually looks like
+
+The three writable stages are not a pipeline. Forcing one does not feed the next:
+
+* `holder+324` -- persists when written and steers MOVEMENT direction, but the renderer does not read it.
+* `holder+244` -- the applied pose. A write is consumed (the view visibly blurs) but recomputed every frame.
+* the camera object's `+0x20` -- what the renderer reads, written once per frame via SetPosRot.
+
+Forcing `+244` while `+324` was pinned made the camera object WORSE, from 58.82 to 109.47 degrees: they share
+an upstream and desynchronising them helps nothing. Only intercepting the engine's own setter reaches the view.
+
+### The method that worked, after three that did not
+
+1. Instruction scan for the field's offset: **67 functions** across unrelated classes. Useless.
+2. Data breakpoint on the live address: found `LTRotation_Copy` -- a 43-caller helper. Necessary but not enough.
+3. Filtering those 43 callers to the ones that target an object's `+0x20`: seven candidates, all named.
+4. Hooking each and counting calls ON THE CAMERA OBJECT: one had 1912, the other zero.
+
+Step 4 is the one that decides, and it is a runtime measurement. A consumer hooking a general-purpose engine API
+must count how often it fires on the object it cares about before believing it is the right one -- 50,475 calls
+with zero on the target looks identical, from the disassembly, to the function that works.
+

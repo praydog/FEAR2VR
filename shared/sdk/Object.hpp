@@ -104,6 +104,42 @@ std::optional<ObjectInfo> object_info(const regenny::LTObject* obj);
 // live, 40 objects pass the gate and hold no spatial entries).
 std::optional<bool> is_renderable(const regenny::LTObject* obj);
 
+// ---- THE ENGINE'S OWN ROTATION SETTER, FOR HOOKING ------------------------------------------------
+//
+// LTObject_SetRotation (FEAR2.exe 0x00420290). THE write path for an object's rotation, and the one that
+// reaches the renderer -- found by a data breakpoint on the live camera object's rotation, which caught
+// LTRotation_Copy and led here through the only callers that target an object's +0x20.
+//
+// Why this and not a field write: overriding the camera holder's fields does not reach the rendered view.
+// Measured with the source field pinned to 0.00 degrees of drift, the applied pose and the camera object both
+// sat 58.82 degrees from the override's intent, and forcing the applied pose too made the object WORSE
+// (109.47). The object is not a copy of either -- it is written here, by the engine, through this function.
+//
+//     __thiscall, `this` = the LTObject
+//     ONE 4-byte stack argument, a pointer to the quaternion (the single exit is `retn 4`)
+//     copies it into this+0x20 via LTRotation_Copy, then fires a virtual notify with code 4
+//
+// So an x86 detour is __fastcall(this, edx_dummy, float* quat), and a consumer overriding a view replaces the
+// QUATERNION THE CALLER PASSED rather than the field afterwards -- the same lesson as ApplyLookDelta, where
+// writing the destination lost a race with the code below the call.
+//
+// Only three callers, so this is a narrow interception rather than a general-purpose API hook. 0 on a miss.
+uintptr_t set_rotation_fn();
+
+// LTObject_SetPosRot (FEAR2.exe 0x004202B6). The MOVE-AND-TURN path, and the likelier one for a camera: it
+// sets position and rotation together, recomputes the world AABB, re-adds the object to the world tree and
+// notifies with code 6.
+//
+// LTObject_SetRotation was ruled out by measurement rather than by reading: hooked live it fired 50,475 times
+// in eight seconds and NOT ONCE on the player's camera object, so the camera does not travel that path.
+//
+//     __thiscall, `this` = the LTObject
+//     ONE 4-byte stack argument (single exit is `retn 4`), pointing at SEVEN floats:
+//         [0..2] position, [3..6] rotation quaternion (the copy source is arg + 0x0C)
+//
+// So a detour is __fastcall(this, edx_dummy, float* posrot), and a view override replaces posrot[3..6].
+uintptr_t set_pos_rot_fn();
+
 // THE ENGINE'S OTHER "RENDERABLE" PREDICATE, and the two are NOT the same test:
 //
 //   is_renderable()    (flags & 1) && !(flags2 & 0x700)          -- will it be DRAWN

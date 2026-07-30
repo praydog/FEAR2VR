@@ -6000,6 +6000,15 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_ov_drift_frames", static_cast<double>(vh.override_drift_frames), 0);
         json_append_double(out, "vh_ov_inflight", static_cast<double>(vh.override_inflight), 0);
         json_append_double(out, "vh_ov_applied_writes", static_cast<double>(vh.override_applied_writes), 0);
+        json_append_bool(out, "vh_setrot_installed", vh.setrot_installed);
+        json_append_double(out, "vh_setrot_target", static_cast<double>(vh.setrot_target), 0);
+        json_append_double(out, "vh_setrot_calls", static_cast<double>(vh.setrot_calls), 0);
+        json_append_double(out, "vh_setrot_camera", static_cast<double>(vh.setrot_camera), 0);
+        json_append_double(out, "vh_setrot_overridden", static_cast<double>(vh.setrot_overridden), 0);
+        json_append_bool(out, "vh_spr_installed", vh.spr_installed);
+        json_append_double(out, "vh_spr_calls", static_cast<double>(vh.spr_calls), 0);
+        json_append_double(out, "vh_spr_camera", static_cast<double>(vh.spr_camera), 0);
+        json_append_double(out, "vh_spr_overridden", static_cast<double>(vh.spr_overridden), 0);
         // THE RENDER CHAIN'S OWN ADDRESSES, so a data breakpoint can find the writer that actually feeds the
         // renderer. Scanning for the offset is what failed here before: 67 functions share it.
         if (const auto pp = sdk::PlayerMgr::player(0); pp.has_value()) {

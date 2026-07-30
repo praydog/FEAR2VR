@@ -109,6 +109,21 @@ public:
         float override_applied_drift_deg{};   // +244, the applied pose
         float override_object_drift_deg{};    // the camera object's LTObject.rotation
         uint64_t override_applied_writes{};   // replacements of +244, the render chain's entry point
+
+        // ---- LTObject::SetRotation, the engine's own setter ------------------------------------
+        //
+        // The write path that actually reaches the renderer, in FEAR2.exe rather than gameclient. Filtered on
+        // the player's camera object: this setter moves every object in the world.
+        uint64_t setrot_calls{};
+        uint64_t setrot_camera{};       // calls whose object IS the player's camera
+        uint64_t setrot_overridden{};
+        bool setrot_installed{};
+        uintptr_t setrot_target{};
+        // LTObject::SetPosRot -- the move-and-turn path, which SetRotation's zero camera hits pointed at.
+        uint64_t spr_calls{};
+        uint64_t spr_camera{};
+        uint64_t spr_overridden{};
+        bool spr_installed{};
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
