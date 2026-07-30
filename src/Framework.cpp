@@ -9915,6 +9915,26 @@ bool Framework::initialize() {
                                           static_cast<int32_t>(webapi_query_int(q, "y", 0)));
         }
         const auto hp = HudPassHook::get().observed();
+
+        // Named rather than bare: an address in a log is a lookup, and the classifier already exists. Built
+        // BEFORE the field block, because JsonFields closes the object when it goes out of scope.
+        std::string callers = "[";
+        for (size_t i = 0; i < hp.callers.size(); ++i) {
+            if (hp.callers[i] == 0) {
+                continue;
+            }
+            const auto info = Watchpoints::classify(hp.callers[i]);
+            char one[224];
+            snprintf(one, sizeof(one),
+                     "%s{\"at\":\"0x%08" PRIXPTR "\",\"module\":\"%s\",\"static\":\"0x%08" PRIXPTR
+                     "\",\"n\":%u}",
+                     callers.size() > 1 ? "," : "", hp.callers[i],
+                     info.module.empty() ? "?" : info.module.c_str(), info.static_address,
+                     hp.caller_counts[i]);
+            callers += one;
+        }
+        callers += "]";
+
         std::string out;
         {
             JsonFields jf(out);
@@ -9924,6 +9944,9 @@ bool Framework::initialize() {
               .b("ortho", hp.stored_ortho)
               .b("gate", hp.offset_gate).b("gate_read", hp.offset_read)
               .b("armed", hp.offset_armed).u("writes", static_cast<size_t>(hp.offset_writes))
+              .u("distinct_callers", static_cast<size_t>(hp.distinct_callers))
+              .raw("callers", callers)
+
               .i("req_x", hp.offset_requested[0]).i("req_y", hp.offset_requested[1])
               .i("stored_x", hp.offset_stored[0]).i("stored_y", hp.offset_stored[1])
               .i("effective_x", hp.offset_effective[0]).i("effective_y", hp.offset_effective[1])

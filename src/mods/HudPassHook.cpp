@@ -1,6 +1,7 @@
 #include "HudPassHook.hpp"
 
 #include <atomic>
+#include <intrin.h>
 #include <cstring>
 
 #include "sdk/SceneCamera.hpp"
@@ -31,6 +32,33 @@ std::atomic<uint32_t> g_stored_this_frame{0};
 std::atomic<uint32_t> g_stored_last_frame{0};
 std::atomic<bool> g_stored_ortho{false};
 std::atomic<int32_t> g_stored_viewport[4]{{0}, {0}, {0}, {0}};
+// A tiny fixed table: the caller set is expected to be small, and a growing container on a render-thread
+// hot path would be a worse bug than a truncated census.
+constexpr size_t kMaxCallers = 8;
+std::atomic<uintptr_t> g_callers[kMaxCallers]{};
+std::atomic<uint32_t> g_caller_counts[kMaxCallers]{};
+
+void note_caller(uintptr_t ret) {
+    for (size_t i = 0; i < kMaxCallers; ++i) {
+        uintptr_t have = g_callers[i].load(std::memory_order_relaxed);
+        if (have == ret) {
+            g_caller_counts[i].fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (have == 0) {
+            uintptr_t expected = 0;
+            if (g_callers[i].compare_exchange_strong(expected, ret, std::memory_order_relaxed)) {
+                g_caller_counts[i].fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            if (g_callers[i].load(std::memory_order_relaxed) == ret) {
+                g_caller_counts[i].fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+}
+
 std::atomic<bool> g_off_armed{false};
 std::atomic<int32_t> g_off_req[2]{{0}, {0}};
 std::atomic<uint64_t> g_off_writes{0};
@@ -89,6 +117,7 @@ char __stdcall stored_detour(int a1) {
             g_off_writes.fetch_add(1, std::memory_order_relaxed);
         }
     }
+    note_caller(reinterpret_cast<uintptr_t>(_ReturnAddress()));
     const char r = hook->original<StoredFn>()(a1);
     g_stored_passes.fetch_add(1, std::memory_order_relaxed);
     g_stored_this_frame.fetch_add(1, std::memory_order_relaxed);
@@ -187,6 +216,13 @@ HudPassHook::Observed HudPassHook::observed() const {
     }
     out.offset_read = g_off_read.load(std::memory_order_relaxed);
     out.offset_armed = g_off_armed.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < kMaxCallers && i < out.callers.size(); ++i) {
+        out.callers[i] = g_callers[i].load(std::memory_order_relaxed);
+        out.caller_counts[i] = g_caller_counts[i].load(std::memory_order_relaxed);
+        if (out.callers[i] != 0) {
+            ++out.distinct_callers;
+        }
+    }
     out.offset_writes = g_off_writes.load(std::memory_order_relaxed);
     for (size_t i = 0; i < 2; ++i) {
         out.offset_requested[i] = g_off_req[i].load(std::memory_order_relaxed);

@@ -66,6 +66,13 @@ public:
         bool offset_armed{};
         std::array<int32_t, 2> offset_requested{};
         uint64_t offset_writes{};   // passes in which the shift was actually applied
+
+        // WHO DRIVES THE PASSES. Captured as return addresses from inside the detour, because the call is a
+        // vtable dispatch and the interesting question -- whether one function issues the whole HUD, and so
+        // could be replayed for a second eye -- is about the live callers, not the table.
+        uint32_t distinct_callers{};
+        std::array<uintptr_t, 8> callers{};
+        std::array<uint32_t, 8> caller_counts{};
     };
 
     // ARM THE VIEWPORT SHIFT. Writing +0x17C from outside is reclaimed -- the descriptor is rebuilt every

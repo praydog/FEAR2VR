@@ -461,3 +461,17 @@ its result. Drive it with `/vr/head?yaw=&pitch=` or `?x=&y=&z=&w=`, release with
 `CameraPassHook` projects inside the pass detour; a stationary point sliding across the screen is the only
 direct evidence the rendered view turned. Read from any other thread the projection lands on the frame's
 ortho HUD pass and means nothing. Desktop captures in this session were stale while the renderer was fine.
+
+## The 2D / HUD pass
+
+`HudPassHook` owns CLTRenderer slot 17 (`SetupPassStored`), which is where the HUD is painted -- established
+by hooking slots 16 and 17 together and watching which one runs. Slot 16 never fires in normal play; slot 17
+fires ~10 times a frame and leaves the record orthographic.
+
+Its viewport comes from a bound-target descriptor, not from an argument: `+0x170` is the target pointer
+(flag bit `0x800` gates the offset), `+0x174/+0x178` the dimensions, `+0x17C/+0x180` the offset added to all
+four edges. An external write there is reclaimed -- the descriptor is rebuilt per target bind -- so the mod
+writes it inside the pass entry. `/vr/hud?x=&y=` translates the HUD exactly; `?clear=1` restores.
+
+Both the descriptor and the gate read as unavailable from the IPC thread, because no target is bound between
+frames. Read them in phase or not at all.

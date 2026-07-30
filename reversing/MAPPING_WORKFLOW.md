@@ -4634,3 +4634,27 @@ released   vp = [   0    0  2560  1440]
 Exact translation on both axes, independent, and releasing restores the engine's own rect. That is the
 per-eye HUD mechanism. Consumer API: `SceneCamera::pass_offset()` / `pass_offset_stored()` /
 `pass_offset_enabled()`, `HudPassHook::set_offset()` / `clear_offset()`, route `/vr/hud`.
+
+### Who issues the 2D passes, and why the HUD cannot simply be replayed
+
+Captured as return addresses from inside the slot-17 detour -- a vtable dispatch has no useful static caller
+list, and the live one took a minute:
+
+```
+gameclient +0x31201  Screen2D_IssuePass_Shared           n=4 per frame
+gameclient +0x11A741 Screen2D_IssuePass_Streaming        n=1
+gameclient +0x80CA5  Screen2D_IssuePass_ScreenEffects    n=1
+gameclient +0x80BE1  Screen2D_IssuePass_ScreenEffects    n=1
+gameclient +0x11A2B3 Screen2D_IssuePass_Streaming        n=1
+gameclient +0x311B2  Screen2D_IssuePass_Shared           n=1
+<unmapped module>                                        n=1
+```
+
+Seven sites, ten passes, and the counts add up exactly. `ScreenEffects` is post-processing (EnableMotionBlur,
+Perf_HDR_Enable) and is the only one reached from code -- `CGameClientShell_Update`. The rest are referenced
+ONLY from vtables.
+
+That is the answer to "can the HUD be drawn twice": **not by replaying one call.** The second eye works for
+the scene because `DrawScene` is a single entry that can be re-issued; the HUD is a list of elements each
+with its own virtual draw, so duplicating it means driving that list again. Moving the HUD is a different
+question and is already solved.
