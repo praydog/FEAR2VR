@@ -563,3 +563,20 @@ refuses anything outside the exe, so no address is hardcoded.
 **The setter only fires when the view CHANGES** -- the engine elides it otherwise. Anything testing or
 driving this must release the pose, set its state, then apply the pose; setting the same pose twice
 measures nothing.
+
+## Turning the player (VR stick turn)
+
+`sdk::Input::send_mouse_look(dx, dy)` drives the engine's own `LTInputDevice_Mouse_OnMouseMove`, so
+sensitivity, acceleration, the pitch clamp and every downstream consumer behave exactly as they do
+for a mouse -- unlike writing the aim, which bypasses all of it and fights
+`CPlayerCamera_ApplyLookToRotation`. The entry takes an ABSOLUTE client point; the SDK does the
+centre-relative arithmetic and takes a delta.
+
+`SyntheticInput::queue_look(dx, dy)` is the one to call: it puts the move on the game thread (device
+state is read without a lock) and ACCUMULATES, so two deltas in a frame become one move of their
+sum. Route: `/input/look?dx=&dy=`.
+
+**The gain is not constant.** dx=200 turns ~28.5-28.9 degrees, dx=400 turns less than twice that, and the
+first delta after an injection was seen turning roughly double a later identical one. Anything
+needing an exact heading must CLOSE THE LOOP: read `sdk::PlayerMgr::aim_yaw()`, correct, repeat --
+converges in 1-3 iterations to under 0.3 degrees. That is also how a snap turn should be built.

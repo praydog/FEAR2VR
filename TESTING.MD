@@ -826,3 +826,28 @@ broken one as working because the previous state happened to persist.
 
 Both numbers now print (`uncorrected 44.646, corrected 0.355`), which is what made the diagnosis
 immediate rather than a hunt.
+
+## If the mechanism is not symmetric, restore with a loop, not an assumption
+
+A test that turns the player has to put them back. The first version sent an equal-and-opposite
+delta and asserted the result matched -- and one run in three finished exactly one turn's worth off,
+because the engine's look gain is not constant (the first delta after an injection turns about twice
+as far as later identical ones).
+
+Two things were wrong and only one of them was the assumption:
+
+- **Measuring the wrong quantity.** It compared WEAPON POSITIONS, which the arm animation moves on
+  its own; a run went red at 1.897 units while the turn itself was identical to the millimetre. The
+  heading is what changed, so the heading is what to measure.
+- **Assuming reversibility.** Equal-and-opposite is a property of the input, not of the engine's
+  response to it.
+
+The restore is now a closed loop: measure the heading, apply a correction, repeat until within
+tolerance (1-3 iterations, under 0.3 degrees). That is strictly better than a symmetric-input
+assumption because it also HAPPENS to be how the shipped feature must work -- a VR snap turn against
+a non-linear input is the same loop -- so the test exercises the real mechanism instead of
+simulating one.
+
+And what the suite asserts shrank to what is established: the input is delivered, it turns the
+player, its DIRECTION is consistent. The non-constant gain is printed, not asserted. Reporting an
+unexplained observation is not weakening a test; asserting it would be inventing one.
