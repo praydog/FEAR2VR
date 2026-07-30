@@ -1780,6 +1780,27 @@ std::optional<PlayerMgr::TimerState> PlayerMgr::timer_at(uintptr_t address) {
     return out;
 }
 
+std::optional<bool> PlayerMgr::pose_generations_differ(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto other = read_pose(p->holder, false);
+    if (!other.has_value()) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < other->position.size(); ++i) {
+        uint32_t a = 0;
+        uint32_t b = 0;
+        std::memcpy(&a, &other->position[i], sizeof(a));
+        std::memcpy(&b, &p->applied_pose.position[i], sizeof(b));
+        if (a != b) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<std::array<float, 4>> PlayerMgr::applied_rotation(unsigned index) {
     const auto p = player(index);
     if (!p.has_value() || p->holder == 0) {

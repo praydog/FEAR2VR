@@ -8034,6 +8034,157 @@ int main(int argc, char** argv) {
         check(http::port_open(port), "IPC still responsive after the in-process DatabaseMgr traversal");
     }
 
+    // 5b. HARDWARE DATA BREAKPOINTS -- /watch/*.
+    //
+    // A debugging instrument that lies is worse than no instrument, and this project has already been sent down
+    // two wrong paths by an offset scan that answered a question nobody asked. So the load-bearing check here is
+    // not that the routes accept input: it is that arming a watch on an address the engine demonstrably writes
+    // produces a hit whose instruction resolves inside a real module.
+    {
+        std::string resp;
+        std::string body;
+        check(http::get(port, "/watch/report", resp), "/watch/report transport");
+        body = http::body_of(resp);
+        bool w_reg = false;
+        check(json_bool(body, "handler_registered", w_reg) && w_reg,
+              "the vectored exception handler is registered, so watches can arm");
+
+        // NEGATIVE CONTROLS FIRST. Each of these is a way to silently watch the WRONG BYTES, which is the
+        // failure mode that would make every later measurement untrustworthy without ever looking broken.
+        check(http::get(port, "/watch/arm?addr=0", resp) &&
+                  json_has(http::body_of(resp), "\"ok\":false"),
+              "a null address is refused");
+        check(http::get(port, "/watch/arm?addr=0x10000001&size=4", resp) &&
+                  json_has(http::body_of(resp), "\"ok\":false"),
+              "an address not aligned to its length is refused -- an unaligned watch covers the wrong bytes");
+        check(http::get(port, "/watch/arm?addr=0x10000000&size=3", resp) &&
+                  json_has(http::body_of(resp), "\"ok\":false"),
+              "a size the hardware cannot encode is refused rather than rounded");
+
+        // THE READ-ONLY DOWNGRADE IS ANNOUNCED, NOT HIDDEN. x86 encodes execute, write and read-or-write; a
+        // caller who asked for reads and silently also caught writes would misattribute every hit.
+        if (http::get(port, "/watch/arm?addr=0x10000000&size=4&type=read&max_hits=1", resp)) {
+            const std::string rb = http::body_of(resp);
+            check(json_has(rb, "read-or-write"),
+                  "asking for a read-only watch reports the hardware downgrade to read-or-write");
+            http::get(port, "/watch/clear?all=1", resp);
+        }
+
+        // FOUR SLOTS IS THE HARDWARE BUDGET, and exhaustion must be an error rather than a silently dropped
+        // watch -- a caller who believes it armed five would read a missing writer as "nothing writes here".
+        {
+            int32_t armed_ok = 0;
+            for (int32_t k = 0; k < 4; ++k) {
+                char q[128];
+                snprintf(q, sizeof(q), "/watch/arm?addr=0x%X&size=4&max_hits=1", 0x10000000u + k * 0x100u);
+                if (http::get(port, q, resp) && json_has(http::body_of(resp), "\"ok\":true")) {
+                    ++armed_ok;
+                }
+            }
+            check(armed_ok == 4, "all four hardware slots arm");
+            check(http::get(port, "/watch/arm?addr=0x10000400&size=4", resp) &&
+                      json_has(http::body_of(resp), "\"ok\":false"),
+                  "a fifth watch is refused -- the four-slot limit is reported, not silently dropped");
+            check(http::get(port, "/watch/clear?all=1", resp), "clear-all accepted");
+            check(http::get(port, "/watch/report", resp), "report after clear");
+            body = http::body_of(resp);
+            check(!json_has(body, "\"armed\":true"), "and no slot remains armed afterwards");
+        }
+
+        // DOES IT ACTUALLY CATCH AN ACCESS? Two watches, both on things the engine touches CONTINUOUSLY WITH NO
+        // PLAYER INPUT, because a check that needs a human to move the mouse is not a check -- it is a
+        // coincidence detector. This block's first version depended on the camera's rotation being written every
+        // frame. It is not: idle, the watch saw zero hits in five seconds; with the mouse moving, 957 in six. The
+        // engine elides that write when the view does not change, so the check only ever passed by accident.
+        //
+        // `g_ClientGlob_bClientActive` is the right target. CClientMgr::Update and the main loop read it every
+        // frame through LTClient_IsClientActive whether or not anything is happening, and it needs no world, no
+        // player and no input. Measured ~480 reads/second at rest.
+        const auto exe_base = static_cast<unsigned>(0x400000);
+        double active_off = -1.0;
+        std::string sp;
+        if (http::get(port, "/sdk/shader-params", resp)) {
+            sp = http::body_of(resp);
+            json_double(sp, "input_client_active_offset", active_off);
+        }
+        check(active_off > 0.0, "the client-active flag's offset is published, so a watch target exists");
+
+        if (active_off > 0.0) {
+            const auto flag = exe_base + static_cast<unsigned>(active_off);
+            char q[192];
+
+            // ---- READS, THE HALF A WRITE WATCH IS BLIND TO ----------------------------------------
+            //
+            // x86 cannot watch reads alone, so this arms read-or-write and the reply says so. What makes it a
+            // sound check is the asymmetry: this flag is READ constantly and WRITTEN almost never -- only
+            // LTClient_WndProc touches it, on a focus transition -- so essentially every hit is a read.
+            snprintf(q, sizeof(q), "/watch/arm?addr=0x%X&size=1&type=rw&max_hits=3000", flag);
+            if (http::get(port, q, resp) && json_has(http::body_of(resp), "\"ok\":true")) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                check(http::get(port, "/watch/report", resp), "report after the read watch ran");
+                body = http::body_of(resp);
+                double hits = 0.0;
+                json_double(body, "total_hits", hits);
+                check(hits > 0.0,
+                      "a read watch on the client-active flag CAUGHT ACCESSES with no player input at all -- the "
+                      "engine reads it every frame, so this is exercised unconditionally");
+                // Attribution is the entire point: a hit that cannot be placed in a module is not actionable,
+                // and this flag lives in the executable, so its readers must too.
+                check(json_has(body, "\"module\":\"FEAR2.exe\""),
+                      "and attributes the accessing instruction to FEAR2.exe, where the flag lives");
+                check(json_has(body, "\"static\":\"0x"),
+                      "reporting a static address, so the hit is actionable in a disassembler");
+                check(json_has(body, "\"caller_candidates\":[{"),
+                      "and recovers at least one caller candidate from the stack");
+                http::get(port, "/watch/clear?all=1", resp);
+            } else {
+                check(false, "a read-or-write watch on the client-active flag arms");
+            }
+
+            // ---- EXECUTE, THE PATH THAT HANGS THE GAME IF IT IS WRONG ----------------------------
+            //
+            // An execute breakpoint is a FAULT, not a trap: resuming re-runs the same instruction and faults
+            // again forever unless the handler sets EFlags.RF. So this is really a check on that one line in
+            // Watchpoints.cpp, and if it regresses the game locks up here rather than failing quietly.
+            //
+            // LTClient_IsClientActive is a six-byte accessor called from the main loop and CClientMgr::Update
+            // ~380 times a second at rest. Its address is stable because this executable is not relocated --
+            // which the read watch above just demonstrated by resolving the flag from a static offset.
+            double exec_hits = 0.0;
+            snprintf(q, sizeof(q), "/watch/arm?addr=0x%X&type=exec&max_hits=800", exe_base + 0x68976u);
+            if (http::get(port, q, resp) && json_has(http::body_of(resp), "\"ok\":true")) {
+                const std::string ab = http::body_of(resp);
+                double eff = -1.0;
+                check(json_double(ab, "size", eff) && eff == 1.0,
+                      "an execute watch reports its EFFECTIVE length of one byte rather than the size asked for "
+                      "-- a debugging tool that misreports its own configuration is worse than none");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                check(http::get(port, "/watch/report", resp), "report after the execute watch ran");
+                body = http::body_of(resp);
+                json_double(body, "total_hits", exec_hits);
+                check(exec_hits > 0.0,
+                      "an execute watch fired and the game did NOT hang -- the resume flag is doing its job");
+                check(json_has(body, "\"is_fault\":true"),
+                      "and reports the hit as a fault, where the address IS the instruction rather than the one "
+                      "after it");
+                check(json_has(body, "\"instruction\":{"),
+                      "naming the field 'instruction' for a fault instead of 'eip_after'");
+                http::get(port, "/watch/clear?all=1", resp);
+            } else {
+                check(false, "an execute watch on LTClient_IsClientActive arms");
+            }
+
+            // DELIBERATELY LEFT ARMED FOR THE UNLOAD BELOW. Debug registers live in every thread's context and
+            // the vectored handler lives in code about to be unmapped, so uninjecting with a watch live is the
+            // dangerous ordering: clear the hardware first, remove the handler second. Step 6's existing "game
+            // process survived uninjection" assertion is the proof, and it only means something if something was
+            // actually armed -- which is why this target needs no world and no input.
+            snprintf(q, sizeof(q), "/watch/arm?addr=0x%X&size=1&type=rw&max_hits=1000000", flag);
+            check(http::get(port, q, resp) && json_has(http::body_of(resp), "\"ok\":true"),
+                  "a watch is armed on purpose across the uninject that follows -- teardown order is the test");
+        }
+    }
+
     // 6. Graceful unload proof: module vanishes, game keeps running.
     {
         check(run_injector(injector, "unload", dll, port) == 0, "injector --unload accepted");

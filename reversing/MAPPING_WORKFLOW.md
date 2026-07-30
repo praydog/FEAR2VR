@@ -4169,3 +4169,70 @@ distinct instances in this project, all found by somebody actually using the gam
 With both corrected the suite passes twice consecutively -- 1477 and 1484 checks, zero failures -- where it had
 been intermittently red.
 
+## Hardware data breakpoints, and what they answered in the first hour
+
+`/watch/arm`, `/watch/report`, `/watch/clear` -- DR0-DR3 plus a vectored exception handler, four slots,
+byte-exact. This exists because of the offset-collision trap recorded above: scanning for instructions that
+store to a struct OFFSET answered "what writes +144 on ANY object" (67 functions, unrelated classes) when the
+question was "what writes THIS object's +144". Every such scan in this project produced a plausible wrong
+answer.
+
+**Known-answer validation.** Armed on the camera object's rotation, it reported `eip_after = 0x0060C2E9`
+inside `LTRotation_Copy`, whose store `fstp dword ptr [eax]` ends at `0x0060C2E7` -- and a caller candidate of
+`0x004202DF`, the return address of `call LTRotation_Copy` inside `LTObject_SetPosRot`. That is exactly the
+chain a Cheat Engine breakpoint plus hours of scanning produced earlier, reproduced in one shot.
+
+**Semantics that mislead, now asserted rather than remembered.** A data watch is a TRAP: the reported address
+is the instruction AFTER the accessor, so the field is named `eip_after` and never "the accessing
+instruction". An execute watch is a FAULT and reports the instruction itself (`is_fault`), and it requires
+EFlags.RF or the game locks up re-faulting forever. x86 has no read-only data breakpoint; a request for reads
+is served by read-or-write and the reply says so.
+
+## The camera's rotation is NOT written every frame
+
+Measured, and it refuted the premise of the first watch test written: idle, zero hits in five seconds; with
+the mouse moving, 957 in six. The engine ELIDES the write when the view has not changed, which is why
+`vh_spr_camera` also reads 0 at rest. Any test that needs that write to happen needs a human moving the mouse,
+which makes it a coincidence detector rather than a check -- so the suite now watches
+`g_ClientGlob_bClientActive` instead, read ~480 times a second with no input, no world and no player.
+
+## Alt-tab: TWO flags, and the one that throttles is not the one that gates
+
+`WinMain`'s loop, read from the decompiler rather than guessed:
+
+    while ( !g_bQuitRequested ) {
+      if ( g_ClientGlob_bLostFocus )   Sleep(5u);            // 0x6E4738 -- caps the loop at ~200/s
+      if ( CClientMgr__Update(g_pClientMgr) ) break;
+      LTClient_PumpMessages();
+      if ( g_cvCursorCenter && !g_ClientGlob_bLostFocus ) ILTCursor->slot9();
+    }
+
+* `g_ClientGlob_bClientActive` (0x6E4734) gates the two simulation steps inside `CClientShell::Update` and the
+  ILTInput poll in `CClientMgr::Update`.
+* `g_ClientGlob_bLostFocus` (0x6E4738) makes the MAIN LOOP sleep, and gates cursor centring.
+
+Both are written only by `LTClient_WndProc` (plus `WinMain` at init) -- established by xref, not by scanning.
+Forcing `bClientActive` alone was measured NOT to resume the world (2473 re-asserts over 18s, never observed
+cleared, engine clock advanced 0.000) and then HUNG the process: the input poll and render path run on an
+unfocused window every iteration. So that flag is necessary, insufficient, and unsafe to force on its own.
+Holding focus needs the pair, and clearing `bLostFocus` re-enables cursor warping into whatever window the
+user is actually looking at. That is the hazard to solve before this becomes a feature.
+
+## Two instrument bugs found by their own tests, worth remembering
+
+* `/watch/report` had `hits` twice in one document -- a number inside `slots`, an array at top level. A
+  consumer parsing by find() read `[` as a number and got zero. Renamed to `accessors`, with `total_hits`
+  added so nobody has to reach into the slot array.
+* `HttpClient::get` APPENDED to the caller's buffer while its own comment promised "the full raw response in
+  out". Reusing one buffer across a dozen requests concatenated 54 KB, and `body_of()` returned the FIRST
+  body: a report read as empty while `json_has` assertions passed against data further down the blob. `get`
+  and `post` now clear. Two contracts in one header is the actual defect.
+
+## Retraction: the frame hook was never broken
+
+Reported here earlier in the session as a defect on the evidence that `frame_ticks` and `fk_writes` both read
+zero. Both numbers were artefacts: `frame_ticks` is published by `/health`, not `/sdk/shader-params`, so the
+delta was `0 - 0` on an absent key; and `fk_writes` only counts while FocusKeeper is actively holding, which
+it was not. `/health` showed `frame_ticks: 19988`. Absent-key arithmetic read as a measurement -- the same
+shape as the `armor is 147` class of error, and the reason a missing key must never read as a value.
+

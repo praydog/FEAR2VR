@@ -49,8 +49,15 @@ inline bool request_raw(int32_t port, const std::string& request, std::string& o
     return ok;
 }
 
-// GET path -> full raw response in `out`.
+// GET path -> full raw response in `out`, REPLACING whatever was there.
+//
+// The clear is load-bearing and was missing. request_raw APPENDS, deliberately, but these two wrappers promise
+// "the full raw response in out" -- and a caller that reused one buffer across several requests silently got a
+// concatenation, with body_of() then returning the FIRST response's body. That cost a long debugging detour in
+// the fixture: a report read as empty while assertions using find() passed against data further down the blob.
+// Either contract is defensible; having both in one header was not.
 inline bool get(int32_t port, const char* path, std::string& out) {
+    out.clear();
     char req[256];
     int32_t n = snprintf(req, sizeof(req),
                          "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", path);
@@ -59,6 +66,7 @@ inline bool get(int32_t port, const char* path, std::string& out) {
 
 // POST path with `body` -> full raw response in `out`.
 inline bool post(int32_t port, const char* path, const std::string& body, std::string& out) {
+    out.clear();
     char hdr[256];
     int32_t n = snprintf(hdr, sizeof(hdr),
                          "POST %s HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %zu\r\n"

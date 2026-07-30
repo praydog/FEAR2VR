@@ -129,6 +129,15 @@ using WriteProbeFn = std::function<std::string()>;                // full JSON o
 // MUTATES THE VIEW for a bounded number of frames -- the second route in this server that changes the game
 // rather than reporting on it, and like /sdk/write-probe it must be asked for deliberately.
 using ViewOverrideFn = std::function<std::string(const std::string& request_target)>;
+// HOLDS SIMULATION ON while the desktop window is not active. Mutating, and the second reason (after the view
+// override) that this server can change the game: it exists so a tester can read output in another window
+// without the world stopping underneath the measurement.
+using FocusKeepFn = std::function<std::string(const std::string& request_target)>;
+
+// HARDWARE DATA BREAKPOINTS -- /watch/arm, /watch/report, /watch/clear. One handler for the whole family because
+// the mod owns its own sub-routing. MUTATES nothing in the game's memory, but it does write the debug registers
+// of every thread, which is why it lives behind an explicit route rather than in a read-only report.
+using WatchFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -146,6 +155,8 @@ struct Handlers {
     ShaderParamsFn shader_params{};  // optional; /sdk/shader-params 404s without it
     WriteProbeFn write_probe{};      // optional; /sdk/write-probe 404s without it -- MUTATES then restores
     ViewOverrideFn view_override{};  // optional; /view-override 404s without it -- MUTATES the view, bounded
+    FocusKeepFn focus_keep{};        // optional; /focus-keep 404s without it -- MUTATES the engine's focus gate
+    WatchFn watch{};                 // optional; /watch/* 404s without it -- writes thread debug registers
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

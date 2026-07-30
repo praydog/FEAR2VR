@@ -26,6 +26,8 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Delegates.hpp"
 #include "sdk/Modules.hpp"
+#include "mods/FocusKeeper.hpp"
+#include "mods/Watchpoints.hpp"
 #include "mods/ViewHook.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
@@ -6048,6 +6050,38 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_spr_camera", static_cast<double>(vh.spr_camera), 0);
         json_append_double(out, "vh_spr_overridden", static_cast<double>(vh.spr_overridden), 0);
         json_append_double(out, "ws_still_frames", static_cast<double>(vh.still_frames), 0);
+        // VIEW BOB AS A MEASURED ENVIRONMENT FACT, not something to force off.
+        //
+        // The camera's two pose generations differ EXACTLY when bob is active -- established by a controlled
+        // A/B: with bob on, 2 of 47 same-phase samples matched; with it off, 46 of 46. So this is a free and
+        // exact bob detector, and checks affected by bob can be mode-aware instead of the suite dictating a
+        // graphics setting. Forcing it off would mean only ever testing a mode no player uses, and bob-on is
+        // what exposed four real defects.
+        json_append_bool(out, "ws_bob_active",
+                         sdk::PlayerMgr::pose_generations_differ(0).value_or(false));
+        {
+            const auto fk = FocusKeeper::get().state();
+            json_append_bool(out, "fk_holding", fk.holding);
+            json_append_bool(out, "fk_flag_resolved", fk.flag_resolved);
+            json_append_bool(out, "fk_window_active", fk.window_active);
+            json_append_double(out, "fk_writes", static_cast<double>(fk.writes), 0);
+            json_append_double(out, "fk_observed_cleared", static_cast<double>(fk.observed_cleared), 0);
+            json_append_double(out, "fk_input_while_inactive",
+                               static_cast<double>(fk.input_while_inactive), 0);
+            // THE REST OF THE FOCUS STATE, because holding the client-active flag proved NECESSARY BUT NOT
+            // SUFFICIENT: 2473 re-asserts over 18 seconds with the flag never observed cleared, and the engine
+            // clock did not advance by a single millisecond. Something upstream of that flag also stops, and our
+            // own hook fell from ~300 to ~137 calls/second, which is the signature of a Sleep on the pump rather
+            // than a branch being skipped.
+            //
+            // So the other latches get reported: whichever of these is set while unfocused is the next candidate.
+            if (const auto fs = sdk::Input::focus()) {
+                json_append_bool(out, "fk_lost_focus", fs->lost_focus);
+                json_append_bool(out, "fk_minimized", fs->minimized);
+                json_append_bool(out, "fk_renderer_shutdown", fs->renderer_shutdown);
+                json_append_bool(out, "fk_render_initted", fs->render_initted);
+            }
+        }
         // ---- IS THERE A WORLD AND A PLAYER TO TEST AGAINST? -------------------------------------
         //
         // At the main menu 145 checks FAIL rather than reporting themselves unexercised: sectors, planes,
@@ -9127,6 +9161,215 @@ std::string build_api_db_record_json(const WebApiQuery& q) {
 // Safe on _Structures: has_attribute() is a per-record binary search over that record's OWN
 // (small) attribute list, and the loop stops as soon as `limit` matches are collected --
 // describe_record()/find_attribute() (the more expensive calls) only ever run on a MATCH.
+// ---- /watch/* : HARDWARE DATA BREAKPOINTS ------------------------------------------------------------
+//
+// The reply is deliberately verbose about semantics, because the two facts most likely to send a reader down a
+// wrong path are properties of the hardware rather than of this code: a data breakpoint reports the instruction
+// AFTER the one that touched the memory, and x86 cannot watch reads without also catching writes.
+std::string build_watch_json(const std::string& request_target) {
+    const WebApiQuery q = webapi_parse_query(request_target);
+    const size_t qpos = request_target.find('?');
+    const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
+
+    auto& wp = Watchpoints::get();
+
+    // Attribution as a nested object, reused for the hit itself and for every plausible return address.
+    auto addr_json = [](uintptr_t a) {
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.hex("address", a);
+            const auto info = Watchpoints::classify(a);
+            if (info.known) {
+                jf.s("module", info.module).hex("offset", info.offset).hex("static", info.static_address);
+            } else {
+                jf.n("module").n("offset").n("static");
+            }
+        }
+        return out;
+    };
+
+    if (route == "/watch/arm") {
+        const std::string addr_s = webapi_query_string(q, "addr");
+        if (addr_s.empty()) {
+            return "{\"ok\":false,\"error\":\"addr is required, e.g. /watch/arm?addr=0x1C6A5C40&size=4\"}";
+        }
+        const uintptr_t address = static_cast<uintptr_t>(strtoull(addr_s.c_str(), nullptr, 0));
+        const auto size = static_cast<uint8_t>(webapi_query_int(q, "size", 4));
+        const uint64_t max_hits = static_cast<uint64_t>(webapi_query_int(q, "max_hits", 4000));
+
+        const std::string type = webapi_query_string(q, "type");
+        auto access = Watchpoints::Access::Write;
+        std::string note;
+        if (type == "exec" || type == "execute") {
+            access = Watchpoints::Access::Execute;
+        } else if (type == "rw" || type == "readwrite") {
+            access = Watchpoints::Access::ReadWrite;
+        } else if (type == "read") {
+            // Told, not silently substituted. x86 encodes execute, write, and read-or-write; there is no
+            // read-only data breakpoint, so a caller asking for reads gets writes too whether or not they know.
+            access = Watchpoints::Access::ReadWrite;
+            note = "x86 has no read-only data breakpoint; armed as read-or-write, so writes are caught too";
+        }
+
+        const auto res = wp.arm(address, size, access, max_hits);
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", res.ok);
+            if (!res.ok) {
+                jf.s("error", res.error);
+            } else {
+                jf.i("slot", res.slot)
+                  .hex("address", address)
+                  // THE EFFECTIVE length, not the requested one: an execute watch is forced to a
+                  // single byte, and echoing the request would misdescribe the hardware.
+                  .u("size", res.effective_size)
+                  .u("threads_applied", res.threads_applied)
+                  .u("max_hits", static_cast<size_t>(max_hits));
+            }
+            if (!note.empty()) {
+                jf.s("note", note);
+            }
+        }
+        return out;
+    }
+
+    if (route == "/watch/clear") {
+        const bool all = webapi_query_int(q, "all", 0) != 0;
+        if (all) {
+            wp.disarm_all();
+        } else {
+            wp.disarm(static_cast<int>(webapi_query_int(q, "slot", -1)));
+        }
+        return std::string{"{\"ok\":true,\"cleared\":"} + (all ? "\"all\"" : "\"slot\"") + "}";
+    }
+
+    // Bare /watch and /watch/report both report.
+    std::string slots_json = "[";
+    const auto slots = wp.slots();
+    for (size_t i = 0; i < slots.size(); ++i) {
+        if (i != 0) {
+            slots_json += ',';
+        }
+        std::string one;
+        {
+            JsonFields jf(one);
+            jf.u("slot", i).b("armed", slots[i].armed);
+            if (slots[i].armed || slots[i].hits != 0) {
+                const char* kind = slots[i].access == Watchpoints::Access::Execute
+                                       ? "exec"
+                                       : (slots[i].access == Watchpoints::Access::ReadWrite ? "rw" : "write");
+                jf.hex("address", slots[i].address)
+                  .u("size", slots[i].size)
+                  .s("type", kind)
+                  .u("hits", static_cast<size_t>(slots[i].hits))
+                  .u("max_hits", static_cast<size_t>(slots[i].max_hits))
+                  .b("auto_disarmed", slots[i].auto_disarmed)
+                  .u("threads_applied", slots[i].threads_applied);
+            }
+        }
+        slots_json += one;
+    }
+    slots_json += ']';
+
+    // NAMED `accessors`, NOT `hits`. It held "hits" and collided with the per-slot COUNT also called "hits":
+    // one a number, one an array, same key in one document. A consumer parsing "hits" by find() got whichever
+    // came first and silently read a `[` as a number -- which is exactly how this went wrong the first time.
+    // The name is also more accurate: these are DISTINCT accessing instructions, not individual traps.
+    std::string hits_json = "[";
+    const auto hits = wp.hits();
+    for (size_t i = 0; i < hits.size(); ++i) {
+        if (i != 0) {
+            hits_json += ',';
+        }
+        const auto& hit = hits[i];
+        std::string one;
+        {
+            JsonFields jf(one);
+            jf.u("slot", hit.slot).u("count", static_cast<size_t>(hit.count)).u("thread", hit.thread_id);
+            // NAMED FOR WHAT IT IS. For a data watch this is the instruction AFTER the accessor, so a reader who
+            // disassembles here sees the wrong line unless the name tells them. `is_fault` marks the execute
+            // case, where the address IS the instruction.
+            jf.b("is_fault", hit.is_fault).raw(hit.is_fault ? "instruction" : "eip_after", addr_json(hit.eip_after));
+            std::string regs;
+            {
+                JsonFields r(regs);
+                r.hex("eax", hit.eax).hex("ebx", hit.ebx).hex("ecx", hit.ecx).hex("edx", hit.edx);
+                r.hex("esi", hit.esi).hex("edi", hit.edi).hex("ebp", hit.ebp).hex("esp", hit.esp);
+            }
+            jf.raw("regs", regs);
+            // ECX SEPARATELY, because __thiscall puts `this` there and identifying the OBJECT is the entire
+            // reason a breakpoint beats an offset scan: it distinguishes "writes +144 on something" from
+            // "writes +144 on THE camera".
+            jf.raw("ecx_object", addr_json(hit.ecx));
+            if (hit.value_size != 0) {
+                std::string v;
+                for (uint8_t k = 0; k < hit.value_size; ++k) {
+                    char tmp[4];
+                    snprintf(tmp, sizeof(tmp), "%02X", hit.value[k]);
+                    v += tmp;
+                }
+                jf.s("value_at_trap", v);
+                if (hit.value_size == 4) {
+                    float as_float = 0.0f;
+                    memcpy(&as_float, hit.value.data(), sizeof(as_float));
+                    if (std::isfinite(as_float)) {
+                        jf.f("value_as_float", static_cast<double>(as_float), 6);
+                    } else {
+                        jf.n("value_as_float");
+                    }
+                }
+            }
+            // CALLERS. Raw stack words filtered to those a tracked module owns -- a heuristic, so they are
+            // labelled candidates rather than a call stack. Frame pointers are omitted in this build, which is
+            // why a scan is the only option that works at all.
+            std::string callers = "[";
+            size_t kept = 0;
+            for (size_t k = 0; k < hit.stack.size() && kept < 8; ++k) {
+                const uintptr_t v = hit.stack[k];
+                if (v == 0) {
+                    continue;
+                }
+                const auto info = Watchpoints::classify(v);
+                if (!info.known) {
+                    continue;
+                }
+                if (kept != 0) {
+                    callers += ',';
+                }
+                callers += addr_json(v);
+                ++kept;
+            }
+            callers += ']';
+            jf.raw("caller_candidates", callers);
+        }
+        hits_json += one;
+    }
+    hits_json += ']';
+
+    std::string out;
+    {
+        JsonFields jf(out);
+        jf.b("ok", wp.handler_registered());
+        jf.b("handler_registered", wp.handler_registered());
+        uint64_t total = 0;
+        for (const auto& s2 : slots) {
+            total += s2.hits;
+        }
+        jf.raw("slots", slots_json);
+        // A TOP-LEVEL TOTAL, so a caller never has to reach into the slot array to answer "did anything happen".
+        // Its absence is what pushed the fixture into parsing an ambiguous key.
+        jf.u("total_hits", static_cast<size_t>(total));
+        jf.raw("accessors", hits_json);
+        jf.u("distinct_accessors", hits.size());
+        jf.s("semantics",
+             "data watches are traps: eip_after is the instruction FOLLOWING the accessor; x86 cannot watch "
+             "reads without writes; four hardware slots total, per thread");
+    }
+    return out;
+}
+
 std::string build_api_db_find_json(const WebApiQuery& q) {
     std::string out;
     JsonFields top(out);
@@ -9339,6 +9582,12 @@ bool Framework::initialize() {
     // SDK resolution having happened. ViewHook is the first: it owns CPlayerCamera_ApplyLookDelta, which is the
     // only way to steer the view (writing the rotation fields is reclaimed within a frame -- measured).
     Mods::get().add(&ViewHook::get());
+    // Holds simulation on while the desktop window is not active -- see FocusKeeper.hpp. Registered after
+    // ViewHook because its input-leak detector reads ViewHook's look counter.
+    Mods::get().add(&FocusKeeper::get());
+    // Hardware data breakpoints. Registered last so its on_shutdown -- which clears every thread's debug
+    // registers and unregisters the vectored handler -- runs while the rest of the mod state is still intact.
+    Mods::get().add(&Watchpoints::get());
     Mods::get().on_initialize();
 
     cmdsrv::Handlers handlers;
@@ -9353,6 +9602,23 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.watch = build_watch_json;
+    handlers.focus_keep = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const bool on = webapi_query_int(q, "on", 1) != 0;
+        FocusKeeper::get().hold(on);
+        const auto st = FocusKeeper::get().state();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", st.flag_resolved);
+            jf.b("holding", st.holding);
+            jf.hex("flag", st.flag_address);
+            jf.b("window_active", st.window_active);
+        }
+        return out;
+    };
+
     handlers.view_override = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         // Yaw in whole degrees: the experiment only needs a magnitude big enough to SEE, and an integer keeps

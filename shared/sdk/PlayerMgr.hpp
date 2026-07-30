@@ -743,6 +743,23 @@ public:
     // can read exactly the value it is about to replace, with no other fields in the way.
     static std::optional<std::array<float, 4>> applied_rotation(unsigned index);
 
+    // DO THE CAMERA'S TWO POSE GENERATIONS HOLD DIFFERENT POSITIONS? Which is, in practice, a VIEW BOB
+    // DETECTOR -- established by a controlled A/B rather than inferred:
+    //
+    //     bob ON  : 2 of 47 same-phase samples matched
+    //     bob OFF : 46 of 46 matched, and the applied pose became bit-identical to the camera object
+    //
+    // So the difference between the generations IS the bob/sway offset. Two consequences worth stating:
+    //
+    //   * A VR mod must know this. A head-tracked view has to suppress bob, and this is how a consumer tells
+    //     whether it is still active without owning the setting.
+    //   * A test suite must not force it off. Two checks in this project were passing only because bob was on,
+    //     and bob-on is the mode every real player runs.
+    //
+    // Compares POSITION, because that is where the offset lands; the rotations can agree while the positions do
+    // not. nullopt when the camera holder cannot be read.
+    static std::optional<bool> pose_generations_differ(unsigned index);
+
     struct AimTrackingLimits {
         std::optional<float> normal_degrees;
         std::optional<float> zoomed_degrees;
