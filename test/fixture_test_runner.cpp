@@ -4610,6 +4610,54 @@ int main(int argc, char** argv) {
             check(json_bool(body, "pe_range_refused", pe_rr) && pe_rr,
                   "an out-of-range slot yields nothing rather than slot zero's answer");
 
+            // ---- EVERY CACHED CONSOLE VARIABLE, FOUND BY DISCOVERY ---------------------------------
+            //
+            // The camera's 67 tunables turned out not to be special: the whole game DLL caches its console
+            // variables as {LTConVar* record, ILTClient* owner} pairs in .data. These are SCANNED OUT rather than
+            // listed, with the section bounds from the PE headers and the owner from the interface registry, so
+            // no literal address appears in the SDK.
+            //
+            // THE CHECK IS TWO ROUTES AGREEING. Each discovered record must be findable in the console tables BY
+            // ITS OWN NAME, and the address the tables return must equal the cached pointer. One route is a byte
+            // scan of a data section; the other is a hash-table walk. They share no code, so agreement on the
+            // whole population is the strongest statement available here.
+            double cv_t = -1.0, cv_n = -1.0, cv_a = -1.0, cv_d = -1.0, cv_o = -1.0;
+            const bool cvdn = json_double(body, "cv_total", cv_t) &&
+                              json_double(body, "cv_named", cv_n) &&
+                              json_double(body, "cv_agree", cv_a) &&
+                              json_double(body, "cv_distinct_records", cv_d) &&
+                              json_double(body, "cv_same_owner", cv_o);
+            bool cv_or = false;
+            check(json_bool(body, "cv_owner_resolved", cv_or) && cv_or,
+                  "the ILTClient every cached pair shares resolves through the registry");
+            check(cvdn && cv_t > 400.0, "discovery finds hundreds of cached console variables");
+            check(cvdn && cv_n == cv_t, "every discovered pair carries a readable variable name");
+            check(cvdn && cv_a == cv_t,
+                  "every cached record round-trips through the console tables to the same address");
+            check(cvdn && cv_o == cv_t, "every pair's owner word holds that one interface");
+            // RECORDS MAY BE SHARED: two subsystems can cache the same variable, so distinct records are fewer
+            // than pairs. The bound is what matters -- a scan that collapsed would show far fewer.
+            check(cvdn && cv_d <= cv_t && cv_d >= cv_t - 8.0,
+                  "records are nearly all distinct, allowing for a variable cached by two subsystems");
+
+            // THE HARDCODED CAMERA TABLE MUST BE A SUBSET of what discovery finds, name and record matching at
+            // the same cache offsets. The table was written from a disassembled initialiser; the scan knows
+            // nothing about the camera, so this ties last pass's work to this one.
+            double cv_cf = -1.0, cv_ct = -1.0;
+            const bool cvcn = json_double(body, "cv_camera_found", cv_cf) &&
+                              json_double(body, "cv_camera_total", cv_ct);
+            check(cvcn && cv_ct > 0.0 && cv_cf == cv_ct,
+                  "every camera tunable appears in the discovered set at the same offset, name and record");
+
+            bool cv_sf = false, cv_sr = false, cv_ar = false;
+            // A name a VR consumer would actually reach for, resolved end to end.
+            check(json_bool(body, "cv_shake_found", cv_sf) && cv_sf,
+                  "DisableCameraShake is discoverable by name with a live record");
+            check(json_bool(body, "cv_shake_readable", cv_sr) && cv_sr,
+                  "and its value reads through the cached pointer");
+            check(json_bool(body, "cv_absent_refused", cv_ar) && cv_ar,
+                  "an unknown name and an empty name are both refused");
+
             // ---- THE CAMERA'S CACHED TUNABLES, AND THE HEAD-BOB GRID -------------------------------
             //
             // The camera resolves 67 console variables once and caches each as a {record, owner} pair, so it

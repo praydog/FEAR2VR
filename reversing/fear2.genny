@@ -5467,3 +5467,43 @@ class LTInputDeviceMouse 0x30 {
 // units per second because dt is seconds -- the number a comfort vignette or locomotion blend actually wants.
 //
 // 1123 checks, 0 failures.
+
+// ---- THE CAMERA'S TUNABLE CACHE IS NOT SPECIAL: 474 OF THEM, FOUND BY PATTERN --------------------
+//
+// Last pass mapped the camera's 67 {LTConVar* record, ILTClient* owner} pairs from a disassembled initialiser
+// and treated them as a camera feature. They are not. THE WHOLE GAME DLL CACHES ITS CONSOLE VARIABLES THIS WAY.
+//
+// HOW IT SURFACED, and the route is worth keeping: chasing three unnamed interface globals, I scanned
+// gameclient's .data for dwords pointing at objects whose vtable is in the exe's catalogue. That returned 504
+// hits -- but ~450 of them were the SAME CLTClient pointer at 8-BYTE STRIDE in long runs. Interface singletons
+// do not come in strided runs. The stride was the tell: those are the OWNER words of cache pairs, and the scan
+// had accidentally enumerated every cached console variable in the DLL.
+//
+//     474 pairs, in 62 contiguous runs. The camera's is one run of 61.
+//     Largest runs: 81 pairs @0x1FF328, 61 @0x1FFB00 (camera), 42 @0x1FF7C8, 35 @0x1F9E84.
+//
+// TWO ROUTES AGREE ON THE WHOLE POPULATION. Each discovered record was looked up in the console tables BY ITS
+// OWN NAME, and the address the tables returned compared against the cached pointer: 474 of 474. One route is a
+// byte scan of a data section; the other is a hash-table walk. They share no code.
+//
+// AND IT TIES BACK TO LAST PASS. The camera's hardcoded 67, written from a disassembled initialiser, are a
+// SUBSET of what the scan finds -- same offsets, same names, same records, 67 of 67. The scan knows nothing
+// about the camera.
+//
+// 473 DISTINCT RECORDS FOR 474 PAIRS. One variable is cached twice: `DialogueCinematicSndRadius`, at
+// 0x101F91C4 and 0x101F91CC. Two subsystems resolved the same name independently. The suite asserts distinct <=
+// pairs with a small bound rather than equality, so sharing is allowed and a collapsed scan still fails.
+//
+// > A hardcoded table of 474 offsets would have been unverifiable and would rot. Discovery derives the section
+// > bounds from the PE headers and the owner from the interface registry, so the SDK contains no literal address
+// > for any of them -- and every one is checked against an independent lookup before being handed out.
+//
+// WHAT IT IS FOR: this is the game's entire per-frame tunable surface, each with a writable float. For VR it
+// includes DisableCameraShake, DisableOverlayFX, PlayerAimTracking, FPSMode and the whole head-bob grid, all
+// reachable with a four-byte store and no lookup.
+//
+// NAMED IN IDA: 395 record globals as g_cvar_<Name> and 406 owner globals as g_cvarOwner_<Name> (79 were
+// already named by the camera pass). Exposed as sdk::Engine::cached_console_vars / find_cached_var /
+// cached_var_owner, reusing the CachedVar struct and read_cached/write_cached from last pass.
+//
+// 1133 checks, 0 failures.

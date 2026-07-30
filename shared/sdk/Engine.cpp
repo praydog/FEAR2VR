@@ -8,6 +8,9 @@
 #include "Modules.hpp"
 #include "CClientMgr.hpp"
 #include "regenny/regenny/LTConVar.hpp"
+#include "interfaces/Registry.hpp"
+#include <utility/Module.hpp>
+#include <algorithm>
 
 namespace sdk {
 
@@ -471,6 +474,75 @@ std::pair<size_t, size_t> Engine::camera_tunable_agreement() {
         }
     }
     return {agreeing, populated};
+}
+
+
+uintptr_t Engine::cached_var_owner() {
+    return reinterpret_cast<uintptr_t>(interfaces::Registry::get().resolve("ILTClient.Default"));
+}
+
+std::vector<Engine::CachedVar> Engine::cached_console_vars(size_t limit) {
+    std::vector<CachedVar> out;
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0 || gc->handle == nullptr) {
+        return out;
+    }
+    const auto owner = cached_var_owner();
+    if (owner == 0) {
+        return out;  // without the owner there is no pattern to match, so scan nothing
+    }
+    // Section bounds from the PE headers rather than a literal: a hardcoded range would silently stop covering
+    // the data if anything about the layout differed.
+    const auto sections = utility::get_module_sections(gc->handle);
+    if (!sections.has_value()) {
+        return out;
+    }
+    for (const auto& sec : *sections) {
+        if (sec.name != ".data") {
+            continue;
+        }
+        const auto lo = sec.virtual_address;
+        const auto hi = lo + sec.virtual_size;
+        for (uintptr_t at = lo; at + 2 * sizeof(uintptr_t) <= hi && out.size() < limit;
+             at += sizeof(uintptr_t)) {
+            if (mem::read_ptr(at + sizeof(uintptr_t)).value_or(0) != owner) {
+                continue;
+            }
+            const auto record = mem::read_ptr(at).value_or(0);
+            if (record == 0) {
+                continue;
+            }
+            // A record's name must READ AS AN IDENTIFIER. That is what separates a console-variable cache from
+            // any other pair whose second word happens to hold the interface.
+            const auto name_ptr = mem::read_ptr(record + offsetof(regenny::LTConVar, name)).value_or(0);
+            if (name_ptr == 0) {
+                continue;
+            }
+            const auto name = mem::read_name(name_ptr, 96, 3);
+            if (!name.has_value()) {
+                continue;
+            }
+            CachedVar v;
+            v.name = *name;
+            v.cache_offset = at - gc->base;
+            v.record = record;
+            v.owner = owner;
+            out.push_back(std::move(v));
+        }
+    }
+    return out;
+}
+
+std::optional<Engine::CachedVar> Engine::find_cached_var(std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    for (auto& v : cached_console_vars()) {
+        if (v.name == name) {
+            return v;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace sdk

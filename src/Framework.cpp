@@ -3286,6 +3286,23 @@ void json_append_bool(std::string& out, const char* key, bool value) {
     out += ',';
 }
 
+void json_append_string(std::string& out, const char* key, const char* value) {
+    // Trailing-comma convention, matching json_append_bool/double above.
+    out += '"';
+    out += key;
+    out += "\":\"";
+    for (const char* p = value; p != nullptr && *p != '\0'; ++p) {
+        // Only the two characters that would break the document are escaped; the payload is identifiers,
+        // offsets and separators.
+        if (*p == '"' || *p == '\\') {
+            out += '\\';
+        }
+        out += *p;
+    }
+    out += '"';
+    out += ',';
+}
+
 void json_append_double(std::string& out, const char* key, double value, int decimals = 4) {
     char buf[64];
     snprintf(buf, sizeof(buf), "%.*f", decimals, value);
@@ -4692,6 +4709,69 @@ std::string build_shader_params_json() {
                          !sdk::PlayerMgr::engine_object_is_shell_object(9).has_value() &&
                          !sdk::PlayerMgr::movement_controller(9).has_value() &&
                          !sdk::PlayerMgr::movement_controller_owner_agrees(9).has_value());
+
+    // EVERY CACHED CONSOLE VARIABLE, BY DISCOVERY. The pattern is scanned out of gameclient's .data rather than
+    // listed, and the check is that a data scan and a hash-table walk agree: each discovered record must be
+    // findable in the console tables BY ITS OWN NAME, at the very address the cache holds.
+    const auto disc = sdk::Engine::cached_console_vars();
+    size_t cv_named = 0, cv_agree = 0, cv_distinct_recs = 0, cv_same_owner = 0;
+    std::vector<uintptr_t> cv_recs;
+    const auto cv_owner = sdk::Engine::cached_var_owner();
+    for (const auto& v : disc) {
+        if (!v.name.empty()) { ++cv_named; }
+        if (v.owner == cv_owner && cv_owner != 0) { ++cv_same_owner; }
+        if (v.record != 0) { cv_recs.push_back(v.record); }
+        // The name round-trips through the console tables to the same record.
+        if (const auto found = sdk::Engine::console_var(v.name.c_str());
+            found.has_value() && found->address == v.record) {
+            ++cv_agree;
+        }
+    }
+    std::sort(cv_recs.begin(), cv_recs.end());
+    cv_distinct_recs = static_cast<size_t>(std::unique(cv_recs.begin(), cv_recs.end()) - cv_recs.begin());
+    json_append_double(out, "cv_total", static_cast<double>(disc.size()), 0);
+    json_append_double(out, "cv_named", static_cast<double>(cv_named), 0);
+    json_append_double(out, "cv_agree", static_cast<double>(cv_agree), 0);
+    json_append_double(out, "cv_distinct_records", static_cast<double>(cv_distinct_recs), 0);
+    json_append_double(out, "cv_same_owner", static_cast<double>(cv_same_owner), 0);
+    json_append_bool(out, "cv_owner_resolved", cv_owner != 0);
+    // THE CAMERA'S HARDCODED TABLE MUST BE A SUBSET of what discovery finds, at the same cache offsets. Two
+    // routes to the same 67 pairs: one a recorded table, the other a scan that knows nothing about the camera.
+    size_t cv_cam_found = 0, cv_cam_total = 0;
+    for (const auto& t : sdk::Engine::camera_tunable_cache()) {
+        if (t.record == 0) { continue; }
+        ++cv_cam_total;
+        for (const auto& d : disc) {
+            if (d.cache_offset == t.cache_offset) {
+                if (d.name == t.name && d.record == t.record) { ++cv_cam_found; }
+                break;
+            }
+        }
+    }
+    json_append_double(out, "cv_camera_found", static_cast<double>(cv_cam_found), 0);
+    json_append_double(out, "cv_camera_total", static_cast<double>(cv_cam_total), 0);
+    // A VR-relevant name a consumer would actually reach for must be discoverable and readable.
+    const auto shake = sdk::Engine::find_cached_var("DisableCameraShake");
+    json_append_bool(out, "cv_shake_found", shake.has_value() && shake->record != 0);
+    if (shake.has_value()) {
+        json_append_bool(out, "cv_shake_readable", sdk::Engine::read_cached(*shake).has_value());
+    }
+    // The discovered set as a compact list, so the reversing side can name these globals in IDA from the same
+    // data the SDK produced rather than from a re-implementation of the scan.
+    {
+        std::string list;
+        for (const auto& v : disc) {
+            if (!list.empty()) { list += ';'; }
+            char buf[32]{};
+            std::snprintf(buf, sizeof(buf), "%X|", static_cast<unsigned>(v.cache_offset));
+            list += buf;
+            list += v.name;
+        }
+        json_append_string(out, "cv_list", list.c_str());
+    }
+    json_append_bool(out, "cv_absent_refused",
+                     !sdk::Engine::find_cached_var("NoSuchCachedVariable").has_value() &&
+                         !sdk::Engine::find_cached_var("").has_value());
 
     // THE CAMERA'S CACHED TUNABLES. The claim under test is the GRID ORDERING, and the check is that a name
     // COMPOSED from (channel, axis, parameter) resolves through the console tables to the very record cached at

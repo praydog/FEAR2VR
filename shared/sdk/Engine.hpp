@@ -236,6 +236,36 @@ public:
     // ties the cache to the tables: two independent routes to one record. Returns {agreeing, populated}.
     static std::pair<size_t, size_t> camera_tunable_agreement();
 
+    // ---- EVERY CACHED CONSOLE VARIABLE IN THE GAME DLL, BY DISCOVERY -----------------
+    //
+    // The camera's 67 tunables are not special. THE WHOLE GAME DLL CACHES ITS CONSOLE VARIABLES THIS WAY: a
+    // {LTConVar* record, ILTClient* owner} pair in .data per variable, resolved once and then read with a single
+    // load. Live there are 474 such pairs in 62 contiguous runs, the camera's being one run of 61.
+    //
+    // WHY DISCOVERY RATHER THAN A TABLE: a hardcoded list of 474 offsets would be unverifiable and would rot.
+    // These are found by SCANNING gameclient's .data for the pattern -- second word equal to the one ILTClient
+    // every pair shares, first word a plausible LTConVar whose name reads as an identifier. The section bounds
+    // come from the PE headers at runtime and the owner from the interface registry, so nothing here is a
+    // literal address.
+    //
+    // AND THE RESULT IS CHECKABLE, which is the point: every discovered record must be findable in the console
+    // tables BY ITS OWN NAME, and the address the tables give must equal the cached pointer. That is a data scan
+    // and a hash-table walk agreeing -- two routes that share no code.
+    //
+    // WHAT IT IS FOR: this is the game's entire per-frame tunable surface with a writable pointer for each, and
+    // for VR specifically it includes DisableCameraShake, DisableOverlayFX and the head-bob grid. A consumer
+    // changes one with a four-byte store through read_cached/write_cached, no lookup and no engine call.
+    //
+    // The scan is bounded and reports what it found; it never assumes a count.
+    static std::vector<CachedVar> cached_console_vars(size_t limit = 4096);
+
+    // One by exact name, from the discovered set.
+    static std::optional<CachedVar> find_cached_var(std::string_view name);
+
+    // The ILTClient every pair's owner word holds, resolved through the registry. 0 when unavailable, which is
+    // what makes discovery return nothing rather than scanning for a null.
+    static uintptr_t cached_var_owner();
+
     static constexpr size_t kCameraTunableCount = 67;
     static constexpr size_t kHeadBobChannels = 4;
     static constexpr size_t kHeadBobAxes = 3;
