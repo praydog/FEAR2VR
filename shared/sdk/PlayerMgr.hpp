@@ -1303,6 +1303,51 @@ public:
     // reading means the canceller did not run, not that roll is supported.
     static std::optional<float> aim_roll(unsigned index);
 
+    // ---- WHERE YOU LOOK vs WHERE THE GUN POINTS ---------------------------------------
+    //
+    // THE QUESTION A HEAD-TRACKED VIEW CREATES. Composing a head pose into the outer operand
+    // turns the CAMERA without turning the aim -- that is the entire point, and it is also a new
+    // problem: the weapon now points somewhere the player is not looking, and a VR mod has to
+    // decide what to do about it (reconcile, show a gun-direction reticle, or leave the two
+    // decoupled on purpose because that is how you aim with a controller).
+    //
+    // None of those decisions can be made without the number, so here it is. Both directions come
+    // from the same read of the holder, so they share an instant -- which matters, because this is
+    // exactly the kind of pair that goes wrong when sampled separately.
+    struct AimViewDivergence {
+        // Where the CAMERA faces: the forward axis of the camera object's own rotation, i.e. what
+        // the renderer was actually given, not a recomputation of it.
+        std::array<float, 3> view_forward{};
+        // Where the AIM faces: the forward axis of holder[+324], which is what the player's weapon
+        // and the game's own crosshair follow.
+        std::array<float, 3> aim_forward{};
+        // The angle between them, in RADIANS. Zero when nothing is composed into the outer operand.
+        float angle{};
+        // Is anything actually being added? False means the outer operand is identity, so the two
+        // directions are the same by construction and the angle above is uninformative rather than
+        // meaningful -- the distinction a caller needs before acting on a small number.
+        bool composed{};
+
+        // ---- AND THE BODY, WHICH IS THE THIRD DIRECTION AND THE ONE THAT SURPRISED ----
+        //
+        // The player OBJECT's own forward. A VR mod has three directions to reconcile, not two:
+        // where you look, where the gun points, and which way the body faces -- locomotion is in
+        // the body's frame, so getting it from the view is how you end up strafing sideways when
+        // you glance left.
+        //
+        // MEASURED, and not what a first-person game leads you to expect: this does NOT follow the
+        // camera. Turning the head 45 degrees moves the view by 45 and leaves the body where it
+        // was, which is why `body_to_view_angle` exists as its own number rather than being
+        // assumed equal to `angle`.
+        std::array<float, 3> body_forward{};
+        float body_to_view_angle{};  // radians between body_forward and view_forward
+        float body_to_aim_angle{};   // radians between body_forward and aim_forward
+        bool body_readable{};        // false when the player object's transform could not be read
+    };
+
+    // nullopt when the player, the holder or the camera object cannot be read.
+    static std::optional<AimViewDivergence> aim_vs_view(unsigned index);
+
     // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
     // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
     // the same algebra and need not round identically.

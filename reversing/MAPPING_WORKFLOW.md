@@ -4887,3 +4887,82 @@ active, prints the drift, and judges every later comparison against it. In a set
 drift is 0.0000, so the check is exactly as tight as before; when the player is moving it widens
 by precisely as much as the world moved and no more. What it still catches is the failure that
 matters -- an override that does not come off leaves 30 units behind, which no sway explains.
+
+## Three directions, and the one that still follows your head
+
+A head-tracked view creates a question it must then answer: the camera turns and the aim does not,
+so where does everything else point? `PlayerMgr::aim_vs_view` makes it a number instead of a
+belief, and the numbers are exact:
+
+```
+head yaw | view-vs-aim | body-vs-view | body-vs-aim
+   +0    |    0.000    |    90.000    |   90.000
+  +25    |   25.000    |   115.000    |   90.000
+  +45    |   45.000    |   135.000    |   90.000
+```
+
+`view-vs-aim` IS the commanded yaw, to three decimals. `body-vs-aim` never moves -- it is a
+constant 90 degrees, an axis-convention offset between the body's forward and the aim's, not a
+divergence. So neither the aim nor the body follows the head. That is the decoupling the whole
+head-tracking design rests on, and it is now asserted rather than assumed.
+
+### But the weapon still swings, and it is not the bones
+
+Turning the head 25 degrees moves the hand socket 17.8 units and the muzzle 35.1. Chord geometry
+(`2r sin(theta/2)`) gives radii 41.1 and 81.1, differing by 40.0 -- against a measured hand-to-muzzle
+distance of 39.49. So the whole viewmodel rig rotates rigidly about the camera.
+
+Four candidate bones were checked and all four are innocent: `aimer` (identity throughout),
+`Pelvis_Cam`, `Pelvis`, `Torso` and `attach` all hold rotations that do not change by a
+thousandth of a degree across a head sweep. The hand-to-hand bearing, however, rotates by 27 and
+49 degrees for head yaws of 25 and 45.
+
+A write watch found it. The SHELL player object -- the one `CClientShell::local_player` returns,
+which is a DIFFERENT allocation from `PlayerMgr`'s (0x29C9F188 vs 0x18C855B0, and the latter's
+rotation is never written at all) -- has its rotation set through `LTObject_SetRotation`, and the
+write fires exactly when the view changes: two hits for a two-step sweep, four for a four-step
+one, none while the view is still.
+
+**So decoupling the weapon from head-look means owning that writer for that object and feeding it
+the aim rather than the composed camera rotation.** That is the next VR piece, and it now has an
+address instead of a hypothesis.
+
+### A trap worth naming: two player objects
+
+`CClientShell::local_player` and `PlayerMgr::player` return different objects. Watching the wrong
+one produces a confident zero -- "nothing writes this rotation" -- which is true and useless. The
+`pmgr_*_addr` diagnostics now publish both, plus the camera and model objects, because every
+"who writes this" question starts by pasting one of them into `/watch/arm`.
+
+## The frustum-centre check was asserting a race
+
+`the record holds the centre that was asked for` failed intermittently for three sessions. Adding
+one printf to the failure ended it in a single run: the record held **-0.12000**.
+
+An asymmetric frustum gives the two eyes OPPOSITE centres (`sign = eye == Left ? -1 : +1`), and
+with both eyes drawn per frame the record carries whichever finished last. The assertion had
+silently encoded "the right eye always wins that race".
+
+The first replacement was worse: poll across frames until both signs are seen. That failed every
+run, because one eye reliably finishes last -- it was a race detector wearing a check's clothes.
+
+What works is driving each eye deliberately and reading the centre each time:
+
+```
+[fixture] per-eye frustum centre: left -0.12000 right +0.12000
+```
+
+Deterministic, and it tests MORE than the original: the original could not have distinguished two
+eyes sharing one centre from two eyes with opposite ones, which is the entire property that makes
+the frustum asymmetric.
+
+## A block that vanishes takes its checks with it
+
+Three consecutive runs reported 1605, 1598 and 1605 checks. No failures, no skips, no explanation
+-- seven checks simply did not run, because a block gated on `if (mechanism_available)` said
+nothing at all when the mechanism was not. A suite can stop testing something and still print
+green.
+
+Every gate added this session now goes through `check_gated`, which tallies and prints the reason.
+The count is stable at 1606 across three runs, and that stability is itself the evidence the gates
+are reporting.

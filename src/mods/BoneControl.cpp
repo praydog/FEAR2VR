@@ -37,6 +37,7 @@ std::atomic<bool> g_rot_armed{false};
 std::atomic<float> g_rot[4]{{0.0f}, {0.0f}, {0.0f}, {1.0f}};
 
 std::atomic<float> g_seen[3]{{0.0f}, {0.0f}, {0.0f}};
+std::atomic<float> g_seen_rot[4]{{0.0f}, {0.0f}, {0.0f}, {1.0f}};
 std::atomic<float> g_wrote[3]{{0.0f}, {0.0f}, {0.0f}};
 std::atomic<bool> g_readback_ok{false};
 
@@ -69,6 +70,10 @@ void __cdecl node_callback(sdk::NodeControlData* data, void* userdata) {
     g_seen[0].store(xf->position.x, std::memory_order_relaxed);
     g_seen[1].store(xf->position.y, std::memory_order_relaxed);
     g_seen[2].store(xf->position.z, std::memory_order_relaxed);
+    g_seen_rot[0].store(xf->rotation.x, std::memory_order_relaxed);
+    g_seen_rot[1].store(xf->rotation.y, std::memory_order_relaxed);
+    g_seen_rot[2].store(xf->rotation.z, std::memory_order_relaxed);
+    g_seen_rot[3].store(xf->rotation.w, std::memory_order_relaxed);
 
     // THE LAYOUT CLAIM, CHECKED WHERE IT IS CHECKABLE. `record_is_consistent` compares the
     // record's transform pointer against the model's own node_transforms array, which only
@@ -304,6 +309,9 @@ BoneControl::Observed BoneControl::observed() const {
     for (size_t i = 0; i < 3; ++i) {
         out.last_seen_position[i] = g_seen[i].load(std::memory_order_relaxed);
         out.last_written_position[i] = g_wrote[i].load(std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        out.last_seen_rotation[i] = g_seen_rot[i].load(std::memory_order_relaxed);
     }
     out.readback_matches = g_readback_ok.load(std::memory_order_relaxed);
 

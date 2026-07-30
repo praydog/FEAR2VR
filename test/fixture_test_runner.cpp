@@ -8476,8 +8476,49 @@ int main(int argc, char** argv) {
                 printf("[fixture] frustum centre: requested 0.12, record holds %.5f "
                        "(rebuilds %.0f->%.0f, checked %.0f, inconsistent %.0f)\n",
                        applied, reb0, reb1, chk, bad);
-                check(applied > 0.11 && applied < 0.13,
-                      "the record holds the centre that was asked for");
+                // THE SIGN ALTERNATES, AND THAT IS THE FEATURE. This asserted `applied` was in
+                // (0.11, 0.13) and failed intermittently -- the instrumented run above caught it
+                // holding -0.12000. An asymmetric frustum gives the two eyes OPPOSITE centres
+                // (CameraPassHook: `sign = eye == Left ? -1 : +1`), and with both eyes rendering
+                // per frame the record carries whichever ran last. The old check silently assumed
+                // the right eye always won the race.
+                //
+                // So the invariant is the MAGNITUDE, and the alternation gets asserted in its own
+                // right below -- which tests more than the original did, not less.
+                check(fabs(fabs(applied) - 0.12) < 0.01,
+                      "the record holds the centre that was asked for, to the eye's own sign");
+
+                // THE PER-EYE ASYMMETRY, DRIVEN RATHER THAN SAMPLED. A first attempt polled across
+                // frames waiting to observe both signs and failed every run: with both eyes drawn
+                // per frame, one of them reliably finishes last, so the record almost always shows
+                // the same sign and the poll was a race detector rather than a check.
+                //
+                // Asking each eye for the centre in turn is deterministic and tests the same claim
+                // more directly -- if the two eyes shared a centre, the frustum would not be
+                // asymmetric and these two reads would agree.
+                auto centre_for = [&](const char* eye, double* out_v) {
+                    char url[128];
+                    snprintf(url, sizeof(url), "/stereo/eye?eye=%s&half_ipd=1&split=0&centre_x=0.12", eye);
+                    if (!http::get(port, url, resp)) {
+                        return false;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    if (!http::get(port, "/sdk/shader-params", resp)) {
+                        return false;
+                    }
+                    return json_double(http::body_of(resp), "cp_centre_applied_x", *out_v);
+                };
+                double c_left = 0.0, c_right = 0.0;
+                const bool eyes_ok = centre_for("left", &c_left) && centre_for("right", &c_right);
+                check(eyes_ok, "the frustum centre is readable with each eye driven on its own");
+                if (eyes_ok) {
+                    printf("[fixture] per-eye frustum centre: left %+.5f right %+.5f\n", c_left, c_right);
+                    check(c_left < -0.11 && c_right > 0.11,
+                          "the two eyes are given OPPOSITE frustum centres -- which is what makes the "
+                          "frustum asymmetric, and what a headset needs from a stereo pair");
+                }
+                http::get(port, "/stereo/eye?both=1&half_ipd=1&split=1&centre_x=0.12", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
                 check(w2s,
                       "and world_to_screen still equals viewport * projection * view afterwards -- the three "
                       "matrices stayed coherent, which patching one of them by hand would break");
@@ -8493,6 +8534,61 @@ int main(int argc, char** argv) {
                 double eye_now = -1.0;
                 check(json_double(pb4, "cp_eye", eye_now) && eye_now == 0.0,
                       "and the override releases, so the suite leaves the view as it found it");
+            }
+        }
+
+        // ---- WHERE YOU LOOK, WHERE THE GUN POINTS, AND WHICH WAY THE BODY FACES -------------
+        //
+        // A head-tracked view creates a problem it must then be held to: the camera turns and the
+        // aim does not. That is the design -- looking around must not swing the weapon -- but
+        // "must not" is a claim, and `PlayerMgr::aim_vs_view` is what makes it a number.
+        //
+        // The strong assertion here is the INVARIANT, not the magnitude: turning the head must move
+        // view-vs-aim by exactly the commanded angle AND leave body-vs-aim untouched. A wrong
+        // composition (writing the head into the aim, or into the body's rotation) breaks the second
+        // one immediately, while still looking plausible on the first.
+        {
+            std::string vb;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                vb = http::body_of(resp);
+            }
+            bool avd_ok = false;
+            const bool avd_live = json_bool(vb, "avd_readable", avd_ok) && avd_ok;
+            check_gated(avd_live, "no player camera", g_skipped_world, true,
+                        "the view, aim and body facings are all resolvable");
+            if (avd_live) {
+                auto sample = [&](const char* q, double* view_aim, double* body_aim, bool* composed) {
+                    if (!http::get(port, q, resp)) {
+                        return false;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    if (!http::get(port, "/sdk/shader-params", resp)) {
+                        return false;
+                    }
+                    const std::string b = http::body_of(resp);
+                    return json_double(b, "avd_angle_deg", *view_aim) &&
+                           json_double(b, "avd_body_aim_deg", *body_aim) &&
+                           json_bool(b, "avd_composed", *composed);
+                };
+                double va0 = -1.0, ba0 = -1.0, va1 = -1.0, ba1 = -1.0, va2 = -1.0, ba2 = -1.0;
+                bool c0 = true, c1 = false, c2 = true;
+                const bool got = sample("/vr/head?clear=1", &va0, &ba0, &c0) &&
+                                 sample("/vr/head?yaw=25", &va1, &ba1, &c1) &&
+                                 sample("/vr/head?clear=1", &va2, &ba2, &c2);
+                check(got, "the three facing directions are readable in every head pose");
+                if (got) {
+                    check(va0 < 0.01 && !c0,
+                          "with nothing composed the view and the aim point the same way, and the "
+                          "API says so rather than reporting a small number that means nothing");
+                    check(fabs(va1 - 25.0) < 0.5 && c1,
+                          "a 25 degree head yaw puts exactly 25 degrees between the view and the aim");
+                    // THE DECOUPLING, which is the claim the whole head-tracking design rests on.
+                    check(fabs(ba1 - ba0) < 1.0,
+                          "and leaves the BODY where it was -- the head moves the view alone, so "
+                          "locomotion and the weapon keep their own frame");
+                    check(va2 < 0.01 && !c2,
+                          "releasing puts the view back on the aim, with nothing composed");
+                }
             }
         }
 
@@ -8520,9 +8616,11 @@ int main(int argc, char** argv) {
             const bool have = json_bool(pb, "ok", piece_ok) && piece_ok &&
                               json_double(pb, "piece_count", piece_count) &&
                               json_double(pb, "hidden", hidden0);
-            if (have && piece_count > 0.0) {
-                check(true, "the player's model enumerates pieces, so per-piece visibility has "
-                            "something to act on");
+            const bool piece_live = have && piece_count > 0.0;
+            check_gated(piece_live, "no model with pieces", g_skipped_world, true,
+                        "the player's model enumerates pieces, so per-piece visibility has "
+                        "something to act on");
+            if (piece_live) {
                 check(hidden0 == 0.0,
                       "and none of them starts hidden, so a hide below is a state CHANGE rather "
                       "than a reading of what was already true");
@@ -8595,9 +8693,14 @@ int main(int argc, char** argv) {
                 bb = http::body_of(resp);
             }
             bool bone_ok = false;
-            if (json_bool(bb, "ok", bone_ok) && bone_ok) {
-                check(true, "the node-control mechanism resolves: ILTModel is live and the catalogue "
-                            "supplies its add/remove slots");
+            const bool bone_live = json_bool(bb, "ok", bone_ok) && bone_ok;
+            // REPORTED WHEN IT DOES NOT RUN. A block that silently vanishes takes its checks with
+            // it, and the run still prints a green total -- which is how a suite quietly stops
+            // testing something. Measured: one run came in 7 checks short with no explanation.
+            check_gated(bone_live, "node control unavailable", g_skipped_world, true,
+                        "the node-control mechanism resolves: ILTModel is live and the catalogue "
+                        "supplies its add/remove slots");
+            if (bone_live) {
 
                 // SOCKET vs NODE, cross-checked between two independent SDK routes. "RightHand" is a
                 // SOCKET on this skeleton riding a node, and there is NO node of that name -- so a
@@ -8630,7 +8733,7 @@ int main(int argc, char** argv) {
                                  json_double(ab, "engine_registered", engine_reg) &&
                                  json_bool(ab, "same_thread", same_thread);
                 check(got && attached, "registering a node-control callback on the player's model succeeds");
-                if (got && attached) {
+                if (got && attached) {  // the checks below are counted by the gate above failing loudly
                     check(node == sk_node,
                           "and it drives the node the skeleton listing named for that socket -- two "
                           "independent routes to one index");

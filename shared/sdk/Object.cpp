@@ -522,6 +522,26 @@ bool is_finite_f(float v) {
 
 }  // namespace
 
+regenny::LTVector rotate_vector(const regenny::LTRotation& q, const regenny::LTVector& v) {
+    // t = 2 * cross(q.xyz, v);  out = v + q.w * t + cross(q.xyz, t)
+    const float tx = 2.0f * (q.y * v.z - q.z * v.y);
+    const float ty = 2.0f * (q.z * v.x - q.x * v.z);
+    const float tz = 2.0f * (q.x * v.y - q.y * v.x);
+    regenny::LTVector out{};
+    out.x = v.x + q.w * tx + (q.y * tz - q.z * ty);
+    out.y = v.y + q.w * ty + (q.z * tx - q.x * tz);
+    out.z = v.z + q.w * tz + (q.x * ty - q.y * tx);
+    return out;
+}
+
+regenny::LTVector forward_of(const regenny::LTRotation& q) {
+    regenny::LTVector z{};
+    z.x = 0.0f;
+    z.y = 0.0f;
+    z.z = 1.0f;
+    return rotate_vector(q, z);
+}
+
 regenny::LTRotation multiply_rotations(const regenny::LTRotation& a, const regenny::LTRotation& b) {
     // Term-for-term as the client computes it (0x100016B0), with `a` the ecx operand.
     regenny::LTRotation out{};

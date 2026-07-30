@@ -112,6 +112,11 @@ public:
         // rather than inferring it from the absence of a complaint.
         std::array<float, 3> last_seen_position{};
         std::array<float, 3> last_written_position{};
+        // WHAT THE ANIMATION PRODUCED for this node's orientation, before any override. A consumer
+        // driving a bone needs to know what it is replacing -- and it is the only way to tell an
+        // animation that tracks the view from one that does not, which is the difference between a
+        // weapon that waves around when you look and one that stays where you pointed it.
+        std::array<float, 4> last_seen_rotation{};
         bool readback_matches{};
 
         // How many callbacks the engine reports on this node, ours included. The difference

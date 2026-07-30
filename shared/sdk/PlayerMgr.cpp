@@ -735,6 +735,51 @@ std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_oper
     return out;
 }
 
+std::optional<PlayerMgr::AimViewDivergence> PlayerMgr::aim_vs_view(unsigned index) {
+    const auto ops = camera_rotation_operands(index);
+    if (!ops.has_value()) {
+        return std::nullopt;
+    }
+    auto as_rot = [](const std::array<float, 4>& q) {
+        regenny::LTRotation r{};
+        r.x = q[0];
+        r.y = q[1];
+        r.z = q[2];
+        r.w = q[3];
+        return r;
+    };
+    const auto view = forward_of(as_rot(ops->actual));
+    const auto aim = forward_of(as_rot(ops->inner));
+
+    AimViewDivergence out{};
+    out.view_forward = {view.x, view.y, view.z};
+    out.aim_forward = {aim.x, aim.y, aim.z};
+
+    // The outer operand is identity when nothing is leaning, shaking or head-tracking the view.
+    // Compared against 1 rather than against zero components, so a sign convention cannot fool it.
+    out.composed = std::fabs(ops->outer[3]) < 0.99999f || std::fabs(ops->outer[0]) > 1e-4f ||
+                   std::fabs(ops->outer[1]) > 1e-4f || std::fabs(ops->outer[2]) > 1e-4f;
+
+    auto angle_between = [](const regenny::LTVector& a, const regenny::LTVector& b) {
+        float d = a.x * b.x + a.y * b.y + a.z * b.z;
+        d = d < -1.0f ? -1.0f : (d > 1.0f ? 1.0f : d);
+        return std::acos(d);
+    };
+    out.angle = angle_between(view, aim);
+
+    // The body's own facing, from the player object's transform rather than from either operand.
+    if (const auto p = player(index); p.has_value() && p->object != 0) {
+        if (const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(p->object))) {
+            const auto body = forward_of(info->rotation);
+            out.body_forward = {body.x, body.y, body.z};
+            out.body_to_view_angle = angle_between(body, view);
+            out.body_to_aim_angle = angle_between(body, aim);
+            out.body_readable = true;
+        }
+    }
+    return out;
+}
+
 std::optional<float> PlayerMgr::aim_roll(unsigned index) {
     const auto p = player(index);
     if (!p.has_value() || p->holder == 0) {

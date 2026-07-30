@@ -1404,6 +1404,7 @@ std::string build_targets_json() {
              "\"hands_distinct\":%s,\"hands_reach\":%.2f,"
              "\"lhand\":[%.2f,%.2f,%.2f],\"rhand\":[%.2f,%.2f,%.2f],"
              // The muzzle, and the engine-vs-us agreement on where the weapon sits.
+             "\"shell_obj\":\"0x%08" PRIXPTR "\","
              "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
              "\"wa_valid\":%s,\"wa_frames\":%llu,\"wa_disagreement\":%.4f,\"wa_step\":%.4f,"
@@ -1505,6 +1506,7 @@ std::string build_targets_json() {
              hands_distinct ? "true" : "false", hands_reach,
              lhand[0], lhand[1], lhand[2],
              rhand[0], rhand[1], rhand[2],
+             player.has_value() ? reinterpret_cast<uintptr_t>(player->object) : 0,
              muzzle_ok ? "true" : "false",
              muzzle_clean ? "true" : "false",
              muzzle[0], muzzle[1], muzzle[2],
@@ -4539,6 +4541,19 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_bool(out, "pmgr_rotation_unit", pm_player->pose.rotation_is_unit());
         json_append_bool(out, "pmgr_has_camera_object", pm_player->camera_object != 0);
         json_append_bool(out, "pmgr_has_model", pm_player->model_object != 0);
+        // ADDRESSES, as hex. Diagnostics only, but the ones a reverser actually needs: every
+        // "who writes this" question starts by pasting one of these into /watch/arm.
+        {
+            char ab[96];
+            snprintf(ab, sizeof(ab), "\"0x%08" PRIXPTR "\"", pm_player->object);
+            json_append_raw(out, "pmgr_object_addr", ab);
+            snprintf(ab, sizeof(ab), "\"0x%08" PRIXPTR "\"", pm_player->holder);
+            json_append_raw(out, "pmgr_holder_addr", ab);
+            snprintf(ab, sizeof(ab), "\"0x%08" PRIXPTR "\"", pm_player->camera_object);
+            json_append_raw(out, "pmgr_camera_addr", ab);
+            snprintf(ab, sizeof(ab), "\"0x%08" PRIXPTR "\"", pm_player->model_object);
+            json_append_raw(out, "pmgr_model_addr", ab);
+        }
         // TWO CO-LOCATED PLAYER MODELS, not one. The holder's model and the shell's share asset, dims and
         // position -- which is what an earlier pass mistook for identity -- and differ by the engine's own
         // server/client discriminator. Both halves are asserted: same description, different objects.
@@ -5677,9 +5692,20 @@ std::string build_shader_params_json(bool include_write_probes) {
     // establishes BOTH operands AND the multiplication order in one measurement.
     const auto cro = sdk::PlayerMgr::camera_rotation_operands(0);
     const auto aim_roll = sdk::PlayerMgr::aim_roll(0);
+    const auto avd = sdk::PlayerMgr::aim_vs_view(0);
     const auto cro_ok = sdk::PlayerMgr::camera_rotation_is_composed(0);
     json_append_bool(out, "cro_resolved", cro.has_value());
     json_append_bool(out, "cro_determinable", cro_ok.has_value());
+    json_append_bool(out, "avd_readable", avd.has_value());
+    json_append_bool(out, "avd_composed", avd.has_value() && avd->composed);
+    json_append_double(out, "avd_angle_deg", avd.has_value() ? avd->angle * 57.2957795 : -1.0, 4);
+    json_append_double(out, "avd_view_fz", avd.has_value() ? avd->view_forward[2] : 0.0, 4);
+    json_append_double(out, "avd_aim_fz", avd.has_value() ? avd->aim_forward[2] : 0.0, 4);
+    json_append_bool(out, "avd_body_readable", avd.has_value() && avd->body_readable);
+    json_append_double(out, "avd_body_view_deg",
+                       avd.has_value() ? avd->body_to_view_angle * 57.2957795 : -1.0, 4);
+    json_append_double(out, "avd_body_aim_deg",
+                       avd.has_value() ? avd->body_to_aim_angle * 57.2957795 : -1.0, 4);
     json_append_bool(out, "aim_roll_readable", aim_roll.has_value());
     json_append_double(out, "aim_roll_deg", aim_roll.value_or(0.0f) * 57.2957795, 5);
     json_append_bool(out, "cro_composed_matches", cro_ok.has_value() && *cro_ok);
@@ -10076,7 +10102,9 @@ bool Framework::initialize() {
               .f("seen_x", o.last_seen_position[0], 4).f("seen_y", o.last_seen_position[1], 4)
               .f("seen_z", o.last_seen_position[2], 4)
               .f("wrote_x", o.last_written_position[0], 4).f("wrote_y", o.last_written_position[1], 4)
-              .f("wrote_z", o.last_written_position[2], 4);
+              .f("wrote_z", o.last_written_position[2], 4)
+              .f("seen_qx", o.last_seen_rotation[0], 5).f("seen_qy", o.last_seen_rotation[1], 5)
+              .f("seen_qz", o.last_seen_rotation[2], 5).f("seen_qw", o.last_seen_rotation[3], 5);
         }
         return out;
     };

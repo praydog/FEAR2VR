@@ -400,6 +400,25 @@ std::optional<Matrix34> rotation_matrix(const regenny::LTRotation& q);
 // SceneCamera::invert_transform, which makes the same point from the other direction.
 regenny::LTRotation multiply_rotations(const regenny::LTRotation& a, const regenny::LTRotation& b);
 
+// A VECTOR THROUGH A ROTATION, i.e. `q * v * conj(q)` -- the operation every consumer of a quaternion
+// here actually wants, and which nothing in this SDK previously offered. Without it a caller building a
+// direction either constructs a matrix (three times the work when one axis is wanted) or hand-rolls the
+// algebra at the call site, and hand-rolled quaternion maths is exactly the thing that comes out wrong by
+// a sign in one branch and looks right everywhere else.
+//
+// Uses `v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)`, which materialises no matrix and needs no
+// normalisation for a unit input.
+regenny::LTVector rotate_vector(const regenny::LTRotation& q, const regenny::LTVector& v);
+
+// The FORWARD axis of a rotation. This engine is +X right, +Y up, +Z FORWARD, pinned by
+// LTRotation_FromForwardUp: feeding forward = +Z and up = +Y yields the identity (see SceneCamera's note,
+// where the handedness had to come off the disassembly because the decompiler hides which operand the
+// cross receives).
+//
+// So this is rotate_vector(q, {0, 0, 1}) -- named, because "the direction a thing faces" is what callers
+// mean, and because spelling the axis out at every call site is how one of them ends up with +X.
+regenny::LTVector forward_of(const regenny::LTRotation& q);
+
 // The world model's cached local->world transform, and the inverse the engine keeps
 // beside it. Same type gate as world_to_brush: WorldModel or Camera only, since the
 // fields live past LTObject's end.
