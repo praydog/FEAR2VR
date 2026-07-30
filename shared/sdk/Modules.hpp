@@ -114,6 +114,13 @@ public:
     // a Modules job; each SDK class owns its own patterns and calls this.
     uintptr_t scan_exe(const char* pattern, const char* name) const;
 
+    // THE SAME, AGAINST Game\gameclient.dll. Separate from scan_exe because the module is a different
+    // resource with a different presence guarantee: the exe is always mapped in-process, so a miss there is
+    // definitive, while a caller resolving a gameclient pattern before Modules::initialize() has run must be
+    // able to try again. Callers latch only once this returns non-zero -- see AGENT.MD rule 5 on RETRYABLE vs
+    // DEFINITIVE resolution.
+    uintptr_t scan_game_client(const char* pattern, const char* name) const;
+
 private:
     Modules() = default;
 

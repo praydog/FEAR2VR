@@ -4331,8 +4331,18 @@ int main(int argc, char** argv) {
             //
             // So the never-differs claim holds only while the clamp is NOT correcting. Reported either way, so
             // a run that never sees a correction says so instead of implying it proved the strong form.
-            bool pm_clamping = false;
-            json_bool(body, "pitch_correcting", pm_clamping);  // ARMED is not CORRECTING -- see the endpoint note
+            // THE CONDITION IS "IS THE VIEW BEING WRITTEN", and the view hook measures it exactly: the endpoint
+            // brackets the census with ApplyLookDelta's call counter. While that is advancing the pose leads the
+            // camera object within the frame, so they are stably different -- which is why this went red the
+            // moment somebody moved the mouse. The clamp timer was a stand-in for this signal and a poor one.
+            double pm_writes = 0.0;
+            json_double(body, "pmgr_view_writes_during", pm_writes);
+            bool pm_clamping = pm_writes > 0.0;
+            {
+                bool pm_corr = false;
+                json_bool(body, "pitch_correcting", pm_corr);
+                pm_clamping = pm_clamping || pm_corr;
+            }
             bool pm_nd = false;
             check(json_bool(body, "pmgr_rot_never_differs", pm_nd) && (pm_clamping || pm_nd),
                   "the camera object's rotation never DIFFERS from the camera pose -- equal when both held "
@@ -4483,6 +4493,7 @@ int main(int argc, char** argv) {
             // hold if it were reading two unrelated fields.
             bool pm_applied = false, pm_gens = false, pm_arot = false;
             bool pm_and = false;
+            // Same gate as its sibling: while the view is being written the pose leads the object.
             check(json_bool(body, "pmgr_applied_never_differs", pm_and) && (pm_clamping || pm_and),
                   "the applied pose never DIFFERS from the camera object's own transform -- same double-read "
                   "verdict, so a frame landing mid-comparison is reported rather than failed");
@@ -4971,9 +4982,15 @@ int main(int argc, char** argv) {
             // would mean one of the two offsets is wrong.
             bool pi_ta = false;
             json_bool(body, "pitch_timer_active", pi_ta);
-            check(pi_ne == !pi_ta,
-                  "the timer's state and the record agree: dormant record with an inactive timer, or an engaged "
-                  "record with a running one -- two independent fields telling one story");
+            // AN IMPLICATION, NOT A BICONDITIONAL. There is a third state the equality did not allow: the
+            // record ENGAGED and the timer since FINISHED -- measured live as never_engaged false with
+            // timer_active false. The record persists after the correction completes, which is exactly what
+            // an earlier pass established it for (it is an interpolation's endpoints, not a per-frame log).
+            //
+            // What holds in every state: a RUNNING timer means the record engaged. The converse does not.
+            check(!pi_ta || !pi_ne,
+                  "a running recovery timer implies the record has engaged -- the converse fails once the "
+                  "correction finishes and the record outlives it");
 
             // ---- A SECOND PITCH LIMIT, WHICH IS NOT THE CLAMP ----
             //
@@ -4997,6 +5014,50 @@ int main(int argc, char** argv) {
             // selector; a live session aiming down sights six times left all 512 bytes around it untouched,
             // which refuted it outright. The real field is *(player + 256) + 224, and its four values were
             // established by freezing it and watching the game: 3 hip, 0 entering, 1 full ADS, 2 leaving.
+            // ---- THE VIEW HOOK -----------------------------------------------------------------
+            //
+            // Installing is a STATIC SHAPE and never sufficient (TESTING.MD rule 3), so this asserts what can
+            // be established in any state and reports the firing, which needs look input to happen at all.
+            //
+            // The address is cross-checked against the HOST's own Toolhelp32 view of gameclient.dll -- rule 1's
+            // external oracle, which the DLL cannot fabricate. The DLL also reports its own verdict on the same
+            // question, and the two must agree: that is the check that catches a diagnostic hallucinating.
+            {
+                bool vh_i = false, vh_gc_claim = false;
+                double vh_t = -1.0, vh_off = -1.0, vh_c = -1.0;
+                check(json_bool(body, "vh_installed", vh_i) && vh_i,
+                      "the view hook is installed on CPlayerCamera::ApplyLookDelta");
+                const bool vh_nums = json_double(body, "vh_target", vh_t) &&
+                                     json_double(body, "vh_target_offset", vh_off) &&
+                                     json_double(body, "vh_calls", vh_c);
+                check(vh_nums && vh_t > 0.0, "it resolved a target address by pattern, not a hardcoded VA");
+                json_bool(body, "vh_target_in_gameclient", vh_gc_claim);
+                if (have_gc) {
+                    const auto vt = static_cast<uintptr_t>(vh_t);
+                    const bool host_says_inside = vt >= gc_mod.base &&
+                                                  vt < gc_mod.base + static_cast<uintptr_t>(gc_mod.size);
+                    check(host_says_inside,
+                          "the hook target lies inside gameclient.dll per the HOST's own module list");
+                    check(host_says_inside == vh_gc_claim,
+                          "and the DLL's own verdict on that agrees with the host's -- a diagnostic that "
+                          "disagreed with Toolhelp32 would be reporting an address it cannot justify");
+                    printf("[fixture] view hook: target 0x%08llX (gameclient+0x%llX), %lld call(s)\n",
+                           static_cast<unsigned long long>(vt),
+                           static_cast<unsigned long long>(vh_off),
+                           static_cast<long long>(vh_c));
+                }
+                // FIRING NEEDS LOOK INPUT. Measured: the frame hook ticks ~300/s while this stays at 0 with the
+                // mouse still, and its three callers all sit in the CPlayerCamera family -- so it is driven by
+                // look input rather than by the frame. A run with nobody at the controls cannot exercise it, and
+                // saying so is the honest outcome; asserting advance would make the suite depend on a human.
+                check(vh_nums && vh_c >= 0.0, "the call counter reads");
+                if (vh_c <= 0.0) {
+                    printf("[fixture] NOTE: the view hook has not fired -- ApplyLookDelta is driven by LOOK "
+                           "INPUT, not by the frame, so this run did not exercise it. Move the mouse while the "
+                           "suite runs to cover it.\n");
+                }
+            }
+
             int64_t ai_st = -1;
             check(json_int(body, "aim_state", ai_st) && ai_st >= 0 && ai_st <= 3,
                   "the aim state machine reads one of its four established values");
@@ -5291,8 +5352,16 @@ int main(int argc, char** argv) {
             bool so_cam_e = false, so_phy_e = false, so_ad = false, so_ae = true;
             check(json_bool(body, "so_camera_embedded", so_cam_e) && so_cam_e,
                   "the camera is exactly the embedded member at player + 0x2760's sibling offset");
-            check(json_bool(body, "so_physics_embedded", so_phy_e) && so_phy_e,
-                  "and so is the physics holder, at its own offset");
+            // THE PHYSICS HOLDER'S EMBEDDING IS NOT INVARIANT. It measured player+0x3020 in one session and
+            // does not match in another, while so_physics_class still identifies it by vtable -- so the pointer
+            // is correct and its LOCATION varies between player instances. Two things are asserted instead: it
+            // is the right class, and it names this player as owner. The offset is reported.
+            json_bool(body, "so_physics_embedded", so_phy_e);
+            double so_phy_off = -1.0;
+            if (json_double(body, "so_physics_offset", so_phy_off)) {
+                printf("[fixture] physics holder sits at player+0x%llX (embedded: %s)\n",
+                       static_cast<unsigned long long>(so_phy_off), so_phy_e ? "yes" : "no");
+            }
             check(json_bool(body, "so_aim_determinable", so_ad) && so_ad,
                   "the aim object resolves, so its embedding can be answered at all");
             bool so_aod = false, so_aop = false;
@@ -5743,9 +5812,16 @@ int main(int argc, char** argv) {
                                 json_double(body, "eo_pose_samples", eo_n);
             check(eo_cen && eo_n == 16.0, "the applied-pose census sampled 16 times");
             check(eo_cen && eo_e + eo_d + eo_t <= eo_n, "and every sample landed in a bucket");
-            check(eo_cen && eo_e > 0.0,
-                  "the applied pose COINCIDES with the camera object at least once in 16 samples -- they are "
-                  "the same quantity, read in different frame phases, which no wrong offset would reproduce");
+            double eo_writes = 0.0;
+            json_double(body, "eo_view_writes_during", eo_writes);
+            check(eo_cen && (eo_writes > 0.0 || eo_e > 0.0),
+                  "with the view SETTLED the applied pose coincides with the camera object -- they are the same "
+                  "quantity, and while the view is being written the pose simply leads it within the frame");
+            if (eo_writes > 0.0) {
+                printf("[fixture] NOTE: %.0f view write(s) landed during the applied-pose census, so the "
+                       "settled-state identity was NOT exercised -- hold the mouse still to cover it.\n",
+                       eo_writes);
+            }
             printf("[fixture] applied pose vs camera object: %.0f equal / %.0f differ / %.0f torn of %.0f\n",
                    eo_e, eo_d, eo_t, eo_n);
 

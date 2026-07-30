@@ -3778,3 +3778,35 @@ is the clock choice, and it is the next thing to do before any view-override wor
 with no sleep. If it already differs, the write never landed and no amount of frame accounting matters. That
 separates "a producer reclaims it" from "this address is not what steers the view" for the cost of one read.
 
+## The engine-vs-our-composition agreement is weapon-dependent
+
+The strongest check in the fixture composes the weapon's mount point two independent ways -- the engine moves
+the attached object with ITS arithmetic, we compose the same point from the asset's socket record and the bone
+cache with OURS -- and required them within 0.05. Its comment records "live they agree EXACTLY (0.000)", which
+is what justified a tolerance that tight.
+
+With a different weapon in hand it is off by **27.5 units**:
+
+```
+muzzle_mdl        weapons\submachinegun\submachinegun.mdl
+hands_clean       True     <- bones are NOT stale
+muzzle_clean      True
+muzzle_from_hand  66.73    <- inside the 5..150 barrel range, so that check is fine
+weapon_vs_hand    27.548   <- required < 0.05
+```
+
+Both cheap explanations are ruled out by the same sample: the bones are clean, so it is not a stale cache, and
+the muzzle distance is plausible, so the socket chain resolves. The disagreement is 27.5 units with everything
+else healthy, which is a real gap in the composition rather than noise.
+
+The likely cause, and the thing to test next: the comparison pits the weapon's ORIGIN against the **RightHand**
+socket, and a weapon need not be mounted on that socket. A two-handed or differently-rigged weapon attaches
+elsewhere, and composing against the wrong socket produces exactly this -- a fixed offset, clean data, wrong
+answer. `attached_socket()` already returns the attachment's own record, so the fix is to compare against the
+socket the ENGINE says the weapon is mounted to instead of assuming the right hand.
+
+**Why it matters more than a red check:** hand and weapon placement IS the VR problem. A mod that puts the
+weapon where our composition says will be 27 units out with this weapon, and the error is invisible in any
+metric except this cross-check. That the suite caught it by having a different gun in hand is the entire
+argument for cross-checking two independent producers instead of asserting one of them looks plausible.
+

@@ -25,6 +25,20 @@ uintptr_t Modules::scan_exe(const char* pattern, const char* name) const {
     return *result;
 }
 
+uintptr_t Modules::scan_game_client(const char* pattern, const char* name) const {
+    if (game_client()->handle == nullptr) {
+        LOGX("[sdk] scan '%s': gameclient.dll module unresolved", name);
+        return 0;
+    }
+    const auto result = utility::scan(game_client()->handle, pattern);
+    if (!result) {
+        LOGX("[sdk] pattern MISS: %s", name);
+        return 0;
+    }
+    LOGX("[sdk] %-22s -> 0x%08" PRIXPTR, name, *result);
+    return *result;
+}
+
 bool Modules::initialize() {
     // Statically initialized: the table exists from image load; only the
     // resolution pass happens here.

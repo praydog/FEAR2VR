@@ -1780,6 +1780,26 @@ std::optional<PlayerMgr::TimerState> PlayerMgr::timer_at(uintptr_t address) {
     return out;
 }
 
+uintptr_t PlayerMgr::apply_look_delta_fn() {
+    // RETRYABLE, NOT LATCHED ON FAILURE. gameclient.dll is present for the whole process life once resolved,
+    // but a caller may ask before Modules::initialize() has run -- and a function-local static would then cache
+    // 0 forever and leave the hook permanently uninstallable. Latch only a successful resolution.
+    static uintptr_t s_fn = 0;
+    if (s_fn != 0) {
+        return s_fn;
+    }
+    // CPlayerCamera_ApplyLookDelta prologue, gameclient 0x100E03D0. Wildcards cover the absolute
+    // g_UiSystemState operand and three relative displacements; UNIQUE in .text as of this mapping.
+    //     sub esp,38h / push ebx / push esi / mov esi,ecx / mov eax,[esi+4] / push edi / push eax
+    //     mov ecx, g_UiSystemState / call <pred> / test al,al / jz <far> / mov ecx,[esi+4]
+    //     mov edx,[ecx+110h] / xor ebx,ebx
+    s_fn = Modules::get().scan_game_client(
+        "83 EC 38 53 56 8B F1 8B 46 04 57 50 B9 ? ? ? ? E8 ? ? ? ? 84 C0 0F 84 ? ? ? ? 8B 4E 04 "
+        "8B 91 10 01 00 00 33 DB",
+        "CPlayerCamera::ApplyLookDelta");
+    return s_fn;
+}
+
 std::optional<float> PlayerMgr::zoom_fraction(unsigned index, double now) {
     const auto st = aim_state_raw(index);
     if (!st.has_value()) {

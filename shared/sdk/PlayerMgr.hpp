@@ -675,6 +675,24 @@ public:
     // object cannot be resolved or the state is not one of the four.
     static std::optional<float> zoom_fraction(unsigned index, double now);
 
+    // ---- THE VIEW WRITER, FOR HOOKING ----------------------------------------------------------
+    //
+    // CPlayerCamera_ApplyLookDelta in gameclient.dll: adds a look delta to the camera's rotation and clamps
+    // the resulting pitch. This is THE interception point for a head-tracked view, and the reason is measured
+    // rather than assumed -- writing the camera object's rotation or the holder's outer operand is RECLAIMED
+    // within one frame (probe_camera_object_rotation / probe_outer_operand both return Reclaimed on a running
+    // game), so a consumer cannot steer the view by writing a field. It has to own the writer.
+    //
+    // ABI, verified in the disassembly rather than taken from the decompiler:
+    //     __thiscall, `this` in ecx (mov esi, ecx at +5)
+    //     THREE 4-byte stack arguments -- both exits are `retn 0Ch`
+    // So an x86 detour is `__fastcall(this, edx_dummy, a2, a3, a4)`: fastcall is callee-cleans and emits the
+    // matching `retn 0Ch`. Getting the arity wrong here corrupts esp at every call, so it is pinned by the
+    // return instruction, not by the prototype Hex-Rays guessed.
+    //
+    // 0 until gameclient.dll is resolved; the caller may retry (RETRYABLE, per AGENT.MD rule 5).
+    static uintptr_t apply_look_delta_fn();
+
     struct AimTrackingLimits {
         std::optional<float> normal_degrees;
         std::optional<float> zoomed_degrees;

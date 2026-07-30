@@ -26,6 +26,7 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Delegates.hpp"
 #include "sdk/Modules.hpp"
+#include "mods/ViewHook.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
 #include "sdk/Engine.hpp"
@@ -4668,7 +4669,17 @@ std::string build_shader_params_json(bool include_write_probes) {
                              app_v != sdk::PlayerMgr::PoseAgreement::Differ);
             // THE CENSUS, so "never Differs" cannot pass vacuously on a permanent Torn. 16 samples is enough to
             // see both outcomes on a running engine without stalling the IPC thread.
+            // BRACKETED BY THE VIEW-WRITE COUNTER. The pose and the camera object only agree in a SETTLED
+            // state: while ApplyLookDelta is running the pose leads and the object follows within the frame, so
+            // sampling during look input finds them stably different -- neither a race nor a wrong offset.
+            //
+            // The hook's own call count is the exact signal for "the view is being written right now", which is
+            // far better than the clamp timer that was standing in for it.
+            const uint64_t vw_before = ViewHook::get().observed().calls;
             const auto cen = sdk::PlayerMgr::agreement_census(0, 0, 16);
+            const uint64_t vw_after = ViewHook::get().observed().calls;
+            json_append_double(out, "pmgr_view_writes_during",
+                               static_cast<double>(vw_after - vw_before), 0);
             json_append_double(out, "pmgr_agree_equal", static_cast<double>(cen.equal), 0);
             json_append_double(out, "pmgr_agree_differ", static_cast<double>(cen.differ), 0);
             json_append_double(out, "pmgr_agree_torn", static_cast<double>(cen.torn), 0);
@@ -5356,6 +5367,13 @@ std::string build_shader_params_json(bool include_write_probes) {
         const auto ae = sdk::PlayerMgr::aim_object_is_embedded(0);
         json_append_bool(out, "so_camera_embedded", ce.value_or(false));
         json_append_bool(out, "so_physics_embedded", pe2.value_or(false));
+        // THE OBSERVED OFFSET, because the embedding is NOT invariant for this one. It measured player+0x3020
+        // in one session and does not match in another, while the vtable check still identifies it as the
+        // physics holder -- so the pointer is right and the LOCATION varies. Reported rather than asserted.
+        if (const auto pp2 = sdk::PlayerMgr::slot(0); pp2.has_value() && subs->physics_holder != 0) {
+            const auto delta = subs->physics_holder > *pp2 ? subs->physics_holder - *pp2 : 0;
+            json_append_double(out, "so_physics_offset", static_cast<double>(delta), 0);
+        }
         json_append_bool(out, "so_aim_determinable", ae.has_value());
         json_append_bool(out, "so_aim_embedded", ae.value_or(true));
         // AND IT STILL FOLLOWS THE +4 OWNER CONVENTION despite not being embedded -- which is what says it
@@ -5679,7 +5697,11 @@ std::string build_shader_params_json(bool include_write_probes) {
     // report is how often 16 samples find them equal. A VR override reading both must take them from the same
     // phase, or take one consistently.
     {
+        const uint64_t eo_vw_before = ViewHook::get().observed().calls;
         const auto eo_cen = sdk::PlayerMgr::agreement_census(0, 1, 16);
+        const uint64_t eo_vw_after = ViewHook::get().observed().calls;
+        json_append_double(out, "eo_view_writes_during",
+                           static_cast<double>(eo_vw_after - eo_vw_before), 0);
         json_append_double(out, "eo_pose_equal", static_cast<double>(eo_cen.equal), 0);
         json_append_double(out, "eo_pose_differ", static_cast<double>(eo_cen.differ), 0);
         json_append_double(out, "eo_pose_torn", static_cast<double>(eo_cen.torn), 0);
@@ -5940,6 +5962,31 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "cv_absent_refused",
                      !sdk::Engine::find_cached_var("NoSuchCachedVariable").has_value() &&
                          !sdk::Engine::find_cached_var("").has_value());
+
+    // ---- THE VIEW HOOK ------------------------------------------------------------------------
+    //
+    // Data only, per AGENT.MD rule 2: the pass/fail judgement lives host-side. What matters here is that the
+    // CALL COUNT is exposed, because "the hook is installed" is a static shape and never sufficient -- the
+    // suite polls this twice and requires it to ADVANCE (TESTING.MD rule 3).
+    {
+        const auto vh = ViewHook::get().observed();
+        json_append_bool(out, "vh_installed", vh.installed);
+        json_append_double(out, "vh_target", static_cast<double>(vh.target), 0);
+        json_append_double(out, "vh_calls", static_cast<double>(vh.calls), 0);
+        json_append_double(out, "vh_last_this", static_cast<double>(vh.last_this), 0);
+        json_append_double(out, "vh_last_a3", static_cast<double>(vh.last_a3), 6);
+        // THE TARGET MUST LIE INSIDE gameclient.dll. A pattern that matched in the wrong module, or a
+        // resolution that drifted, shows up here rather than as a mystery crash -- and the host cross-checks it
+        // against its OWN Toolhelp32 view of the module, which this cannot fake.
+        const auto* gc = sdk::Modules::get().game_client();
+        json_append_bool(out, "vh_target_in_gameclient",
+                         gc != nullptr && gc->base != 0 && vh.target >= gc->base &&
+                             vh.target < gc->base + gc->size);
+        json_append_double(out, "vh_target_offset",
+                           static_cast<double>((gc != nullptr && gc->base != 0 && vh.target >= gc->base)
+                                                   ? vh.target - gc->base : 0),
+                           0);
+    }
 
     // ---- MUTATION PROBES, OPT-IN ONLY -----------------------------------------------------
     // These WRITE engine state and restore it, and a player reported seeing the camera snap away for a single
@@ -9171,6 +9218,10 @@ bool Framework::initialize() {
         LOGX("[framework] CClientShell::Update anchor missing -- frame hook NOT installed");
     }
 
+    // MODS ARE REGISTERED BEFORE THE FAN-OUT, and after the frame hook so a mod's on_initialize can rely on
+    // SDK resolution having happened. ViewHook is the first: it owns CPlayerCamera_ApplyLookDelta, which is the
+    // only way to steer the view (writing the rotation fields is reclaimed within a frame -- measured).
+    Mods::get().add(&ViewHook::get());
     Mods::get().on_initialize();
 
     cmdsrv::Handlers handlers;
