@@ -177,7 +177,27 @@ public:
     // > samples is a property of three samples. The table was there to be enumerated both times.
     static constexpr uintptr_t kSubsystemTableFirst = 228;
     static constexpr uintptr_t kSubsystemTableLast = 320;
-    static constexpr uintptr_t kControllerEmbeddedOffset = 0xE88;
+    // THE THREE EMBEDDED SUB-OBJECTS, and an earlier mis-attribution corrected.
+    //
+    // A previous pass carried a single `kControllerEmbeddedOffset = 0xE88` and asserted that the controller sat
+    // there while the camera and physics holder were separate allocations "far outside the player's extent".
+    // Live memory says the opposite in both halves. With player = 0x1C636F60:
+    //
+    //     *(player + 236) controller = player + 0x2760
+    //     *(player + 252) camera     = player + 0xE88     <- 0xE88 is the CAMERA's offset, not the controller's
+    //     *(player + 260) physics    = player + 0x3020
+    //     *(player + 256) aim/zoom   = a separate allocation, nowhere near the player
+    //
+    // So all THREE are embedded members and the fourth pointer is the one that is not. The old claim also used a
+    // 0x10000 window to decide "outside", which both embedded members fall inside anyway.
+    //
+    // NO IDA EVIDENCE EXISTS for the old constant: neither 0xE88 nor 0x2760 appears as an immediate anywhere in
+    // gameclient.dll's .text, so it was never derived from the constructor. These three are LIVE-MEASURED from
+    // one player instance, and the identity is what carries the weight -- an exact address match that no
+    // unrelated pointer satisfies. A different player class would move them and this check would say so.
+    static constexpr uintptr_t kControllerEmbedOffset = 0x2760;
+    static constexpr uintptr_t kCameraEmbedOffset = 0xE88;
+    static constexpr uintptr_t kPhysicsEmbedOffset = 0x3020;
     static constexpr uintptr_t kOwnerBackPointer = 0x04;
     static constexpr uintptr_t kControllerVtable = 0x1D87CC;   // gameclient-relative
     static constexpr uintptr_t kPhysicsHolderVtable = 0x1D582C;
@@ -584,7 +604,7 @@ public:
     static std::optional<bool> camera_state_is_chase(unsigned index);
 
     struct CameraSubObjects {
-        uintptr_t controller{};      // player + 236, embedded at player + 0xE88
+        uintptr_t controller{};      // player + 236, embedded at player + 0x2760
         uintptr_t player_camera{};   // player + 252
         uintptr_t physics_holder{};  // player + 260
     };
@@ -596,9 +616,17 @@ public:
     // general validity test. nullopt when the player or any sub-object pointer cannot be read.
     static std::optional<bool> sub_objects_own_player(unsigned index);
 
-    // Is the controller exactly the embedded member it should be -- *(player + 236) == player + 0xE88? An exact
-    // identity, so it discriminates far better than a class check.
+    // Is each sub-object exactly the embedded member it should be -- an exact address identity, which
+    // discriminates far better than a class check. The aim object is expected NOT to be embedded; it is included
+    // so that "embedded" is a distinction the data supports rather than a label every pointer would satisfy.
     static std::optional<bool> controller_is_embedded(unsigned index);
+    static std::optional<bool> camera_is_embedded(unsigned index);
+    static std::optional<bool> physics_holder_is_embedded(unsigned index);
+    static std::optional<bool> aim_object_is_embedded(unsigned index);
+
+    // The aim/zoom controller's address -- *(player + 256). Separate allocation, so its lifetime is not the
+    // player's; a consumer holding it across a level change must re-resolve.
+    static std::optional<uintptr_t> aim_object(unsigned index);
 
     // Do the controller and physics holder carry the vtables their constructors install? The same one-load guard as
     // holder_is_player_camera, for the other two.
@@ -1322,6 +1350,24 @@ public:
     // the two above: the cached triple is read, then the engine object is looked up and read, and a frame in
     // between moves one of them.
     static PoseAgreement cached_position_agreement(unsigned index);
+
+    // HOW OFTEN DOES A READ TEAR? A consumer reading the view pose every frame needs a retry policy, and the
+    // only honest basis for one is a measurement: on a running engine some fraction of double reads straddle an
+    // update, and on a frozen one none do.
+    //
+    // It also keeps the checks built on the verdicts from going VACUOUS. "Never Differs" is satisfied by a Torn
+    // result, so a suite that only asserted that would pass forever without the comparison ever happening --
+    // the same trap as a name-consistency check over names that never repeat. Assert `equal > 0` beside it.
+    struct AgreementCensus {
+        unsigned equal{};
+        unsigned differ{};
+        unsigned torn{};
+        unsigned unreadable{};
+    };
+
+    // Samples one of the three agreement accessors `samples` times. `which`: 0 camera rotation, 1 applied pose,
+    // 2 cached position.
+    static AgreementCensus agreement_census(unsigned index, unsigned which, unsigned samples);
 
     // The older bool forms, kept because callers exist. std::nullopt now means unreadable OR torn -- use the
     // agreement accessors above when the difference matters, which in a running game it does.

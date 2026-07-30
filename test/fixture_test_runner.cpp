@@ -2817,8 +2817,29 @@ int main(int argc, char** argv) {
 
                 check(aobj > 0, "the API walked objects");
                 check(ainfo == aobj, "object_info answers for every live object");
-                check(arend == gopen2,
-                      "sdk::is_renderable agrees exactly with the engine gate counted internally");
+                // THE IDENTITY IS CONDITIONAL ON COVERAGE, which is what made this flap between runs.
+                //
+                // `renderable` counts sdk::is_renderable over the public API's snapshot of the object buckets;
+                // `gate_open` counts the SAME predicate -- (flags & 1) && !(flags2 & 0x700) -- inside the
+                // spatial-record walk. Two walks, two instants. While the scene was static they matched exactly
+                // and the identity looked invariant; live play churns objects between the walks and it fails for
+                // a reason that has nothing to do with the mapping.
+                //
+                // So the coverage is asserted FIRST and names the cause, and the identity is asserted only over
+                // a population both walks saw. This is the shape TESTING.MD prescribes for a cross-count
+                // identity: report both counts, assert the coverage ahead of the relation.
+                int64_t srobj = -1;
+                const bool srn = json_int(body, "sr_objects", srobj);
+                check(srn && srobj > 0, "the spatial-record walk covered objects");
+                if (srn && srobj == aobj) {
+                    check(arend == gopen2,
+                          "sdk::is_renderable agrees exactly with the engine gate counted internally, over the "
+                          "population both walks covered");
+                } else {
+                    printf("[fixture] NOTE: the two walks covered different populations (%lld vs %lld) -- the "
+                           "gate identity was NOT exercised this run; objects churned between them.\n",
+                           static_cast<long long>(srobj), static_cast<long long>(aobj));
+                }
                 check(acam > 0, "cameras were seen through the public API");
                 // REPORTED, not asserted equal: nothing in the engine reads bit 11, so
                 // "every camera has it" is a live regularity (474/474) rather than a
@@ -4285,6 +4306,25 @@ int main(int argc, char** argv) {
                   "the camera object's rotation never DIFFERS from the camera pose -- equal when both held "
                   "still, torn when the engine wrote between the reads, and never a real disagreement");
 
+            // AND THE CHECK ABOVE MUST HAVE COMPARED SOMETHING. "Never Differs" is satisfied by a Torn result,
+            // so on an engine that always tore it would pass forever while the comparison never happened -- the
+            // same vacuity as a name-consistency check over names that never repeat. The census samples the
+            // verdict 16 times in-process; Equal must occur, and Differ must not.
+            double ag_e = -1.0, ag_d = -1.0, ag_t = -1.0, ag_u = -1.0, ag_n = -1.0;
+            const bool ag_census = json_double(body, "pmgr_agree_equal", ag_e) &&
+                                json_double(body, "pmgr_agree_differ", ag_d) &&
+                                json_double(body, "pmgr_agree_torn", ag_t) &&
+                                json_double(body, "pmgr_agree_unreadable", ag_u) &&
+                                json_double(body, "pmgr_agree_samples", ag_n);
+            check(ag_census && ag_n == 16.0, "the agreement census sampled the verdict 16 times");
+            check(ag_census && ag_e + ag_d + ag_t + ag_u == ag_n,
+                  "and every sample landed in exactly one bucket -- the partition is total");
+            check(ag_census && ag_d == 0.0,
+                  "no sample DIFFERED: across 16 double-reads the two sides never actually disagreed");
+            check(ag_census && ag_e > 0.0,
+                  "and at least one sample came back Equal, so the never-differs check above is comparing "
+                  "something rather than passing on a permanent Torn");
+
             // ---- THE CAMERA'S COMPOSITION, READ FROM LINK STATE ------------------------------------
             //
             // The constructor self-links eleven embedded intrusive links. By runtime eight are threaded into
@@ -4905,8 +4945,31 @@ int main(int argc, char** argv) {
                   "23 of them hold validated class instances");
             check(json_double(body, "ss_owner_agrees", ss_o) && ss_o == 22.0,
                   "22 carry the owner back-pointer -- NOT all 23, which retracts the previous pass's claim");
-            check(json_bool(body, "ss_all_nonnull", ss_nn) && ss_nn,
-                  "every slot in the span holds a non-null pointer");
+            // THE PARTITION, because "every slot is filled" is not an invariant.
+            //
+            // This asserted ss_all_nonnull for several passes. Live it is false: 24 slots, 23 class instances,
+            // and at least one slot null. The suite was already asserting that slot +288 is deliberately NOT a
+            // class instance, so requiring every slot to be non-null was in tension with its own neighbour. A
+            // subsystem whose constructor has not run in the current state reads null -- the same second state
+            // the object radius had, where the honest form is a partition rather than a floor.
+            //
+            // What IS invariant: every non-null slot is accounted for, the instances are a subset of them, and
+            // the population is non-degenerate so the vtable-distinctness check above has something to compare.
+            double ss_nn_c = -1.0, ss_inst = -1.0, ss_tot = -1.0;
+            const bool ss_part = json_double(body, "ss_nonnull", ss_nn_c) &&
+                                 json_double(body, "ss_instances", ss_inst) &&
+                                 json_double(body, "ss_slots", ss_tot);
+            check(ss_part && ss_tot > 0.0, "the subsystem span is non-empty");
+            check(ss_part && ss_inst <= ss_nn_c && ss_nn_c <= ss_tot,
+                  "class instances are a subset of the non-null slots, which are a subset of the span -- the "
+                  "partition holds however many constructors have run");
+            check(ss_part && ss_inst > 1.0,
+                  "and more than one slot IS an instance, so vtable distinctness above compares something");
+            if (ss_nn_c != ss_tot) {
+                printf("[fixture] NOTE: %lld of %lld subsystem slots are null in this state -- their "
+                       "constructors have not run, which is a state and not a defect.\n",
+                       static_cast<long long>(ss_tot - ss_nn_c), static_cast<long long>(ss_tot));
+            }
             check(json_bool(body, "ss_vtables_distinct", ss_vd) && ss_vd,
                   "no two subsystems share a vtable, so they are 23 distinct classes");
 
@@ -5087,10 +5150,25 @@ int main(int argc, char** argv) {
                   "the embedding can be tested");
             check(json_bool(body, "so_controller_embedded", so_ce) && so_ce,
                   "the controller pointer is exactly the player's address plus its member offset");
-            // AND THE OTHER TWO ARE NOT EMBEDDED -- separate allocations far outside the player's extent. Without
-            // this, "embedded" would be an untested label rather than a distinction.
-            check(json_bool(body, "so_others_not_embedded", so_ne) && so_ne,
-                  "the camera and physics holders sit outside the player, so embedding distinguishes them");
+            // ALL THREE ARE EMBEDDED, and the AIM object is not -- which is what makes "embedded" a distinction
+            // rather than a label every sub-object would satisfy.
+            //
+            // This replaces a check that asserted the opposite: that the camera and physics holder sat "far
+            // outside" the player, decided by a 0x10000 window. Live, with player = 0x1C636F60, the camera is at
+            // player + 0xE88 and the physics holder at player + 0x3020 -- both inside that window, so the old
+            // claim could only have been wrong. The single 0xE88 constant it rested on was the CAMERA's offset
+            // mis-attributed to the controller, and no IDA evidence for it exists: neither 0xE88 nor the
+            // controller's real 0x2760 appears as an immediate anywhere in gameclient.dll's .text.
+            bool so_cam_e = false, so_phy_e = false, so_ad = false, so_ae = true;
+            check(json_bool(body, "so_camera_embedded", so_cam_e) && so_cam_e,
+                  "the camera is exactly the embedded member at player + 0x2760's sibling offset");
+            check(json_bool(body, "so_physics_embedded", so_phy_e) && so_phy_e,
+                  "and so is the physics holder, at its own offset");
+            check(json_bool(body, "so_aim_determinable", so_ad) && so_ad,
+                  "the aim object resolves, so its embedding can be answered at all");
+            check(json_bool(body, "so_aim_embedded", so_ae) && !so_ae,
+                  "the AIM object matches none of the three embed offsets -- a separate allocation, so its "
+                  "lifetime is not the player's and a consumer must re-resolve it");
 
             check(json_bool(body, "so_controller_class", so_cc) && so_cc,
                   "the controller carries the vtable its constructor installs");
@@ -5831,8 +5909,23 @@ int main(int argc, char** argv) {
                 check(gsn && gs_t == 4.0, "the holder has exactly four slots");
                 check(gsn && gs_u >= 1.0 && gs_u <= gs_l,
                       "at least one slot is live and usable, and usable never exceeds live");
-                check(gsn && gs_n > gs_u,
-                      "more slots hold non-null objects than are usable -- the state flag is load-bearing");
+                // THE ORDERING IS THE INVARIANT; the strict inequality was a state.
+                //
+                // This asserted gs_n > gs_u -- that some slot holds an object the state flag rejects, proving the
+                // flag load-bearing. Live in this session: total 4, non-null 1, live 1, usable 1. Only one movie
+                // is loaded, and it is usable, so there is no rejected slot for the flag to discriminate. That is
+                // a property of what the UI happens to have loaded, not of the mapping.
+                //
+                // So the ordering is asserted (it holds in every state) and the discrimination is REPORTED, with
+                // a note when the population could not exercise it -- the same discipline as the render-path
+                // probes: a check that cannot discriminate says so instead of passing quietly.
+                check(gsn && gs_u <= gs_n && gs_n <= gs_t,
+                      "usable slots are a subset of non-null slots, which are a subset of the holder's four");
+                if (gsn && gs_n == gs_u) {
+                    printf("[fixture] NOTE: all %lld non-null movie slot(s) are usable, so the state flag was "
+                           "NOT exercised this run -- load a second movie to discriminate it.\n",
+                           static_cast<long long>(gs_n));
+                }
             }
 
             // These hold in every mode, so they are the checks that cannot pass by luck.

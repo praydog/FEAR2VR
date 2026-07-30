@@ -2290,11 +2290,16 @@ std::string build_objects_json() {
                  "\"volume_gated\":%zu,\"unexplained\":%zu,\"entries\":%zu,"
                  "\"count_matches_walk\":%zu,\"entry_record_ok\":%zu,\"hit_links_ok\":%zu,"
                  "\"entry_sector_aabb_ok\":%zu,\"entry_sector_planes_ok\":%zu,"
-                 "\"gate_open\":%zu,\"records_with_entries\":%zu,\"gated_violations\":%zu}",
+                 "\"gate_open\":%zu,\"records_with_entries\":%zu,\"gated_violations\":%zu,"
+                 // THE POPULATION THIS WALK COVERED, under a name no other block uses. gate_open is compared
+                 // host-side against the public API's renderable count, and the two are the SAME predicate over
+                 // DIFFERENT walks -- so the comparison only means anything when both covered the same objects.
+                 // Without this the identity silently degrades into a race whenever the scene churns.
+                 "\"sr_objects\":%zu}",
                  sr->objects, sr->backpointer_ok, sr->volume_matched, sr->volume_gated,
                  sr->unexplained, sr->entries, sr->count_matches_walk, sr->entry_record_ok,
                  sr->hit_links_ok, sr->entry_sector_aabb_ok, sr->entry_sector_planes_ok,
-                 sr->gate_open, sr->records_with_entries, sr->gated_violations);
+                 sr->gate_open, sr->records_with_entries, sr->gated_violations, sr->objects);
         out += sb;
     } else {
         out += "null";
@@ -4661,6 +4666,15 @@ std::string build_shader_params_json(bool include_write_probes) {
                              rot_v != sdk::PlayerMgr::PoseAgreement::Differ);
             json_append_bool(out, "pmgr_applied_never_differs",
                              app_v != sdk::PlayerMgr::PoseAgreement::Differ);
+            // THE CENSUS, so "never Differs" cannot pass vacuously on a permanent Torn. 16 samples is enough to
+            // see both outcomes on a running engine without stalling the IPC thread.
+            const auto cen = sdk::PlayerMgr::agreement_census(0, 0, 16);
+            json_append_double(out, "pmgr_agree_equal", static_cast<double>(cen.equal), 0);
+            json_append_double(out, "pmgr_agree_differ", static_cast<double>(cen.differ), 0);
+            json_append_double(out, "pmgr_agree_torn", static_cast<double>(cen.torn), 0);
+            json_append_double(out, "pmgr_agree_unreadable", static_cast<double>(cen.unreadable), 0);
+            json_append_double(out, "pmgr_agree_samples",
+                               static_cast<double>(cen.equal + cen.differ + cen.torn + cen.unreadable), 0);
         }
         if (const auto eye = sdk::PlayerMgr::eye_offset(0)) {
             json_append_double(out, "pmgr_eye_offset_y", (*eye)[1], 3);
@@ -5058,14 +5072,21 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "ss_slots", static_cast<double>(slots.size()), 0);
         json_append_double(out, "ss_instances", static_cast<double>(n.value_or(0)), 0);
         json_append_bool(out, "ss_vtables_distinct", dist.value_or(false));
-        // EVERY SLOT HOLDS A NON-NULL POINTER, including the two that are not class instances.
+        // THE PARTITION, not "every slot is filled". A previous pass asserted every slot held a non-null
+        // pointer; live it does not, and the suite already asserts that slot +288 is deliberately NOT a class
+        // instance -- so the two claims were in tension from the start. A subsystem whose constructor has not
+        // run in this state reads null, which is the same "its writer never ran" second state that the object
+        // radius turned out to have. So the counts are reported and the partition is what gets asserted.
         bool all_nonnull = !slots.empty();
+        size_t nonnull = 0;
         // THE TWO KNOWN EXCEPTIONS, asserted as exceptions rather than tolerated silently.
         bool k288_not_instance = false, k312_is_instance = false, k312_owner_differs = false;
         size_t owner_agrees = 0;
         for (const auto& e : slots) {
             if (e.object == 0) {
                 all_nonnull = false;
+            } else {
+                ++nonnull;
             }
             if (e.is_class_instance && e.owner_is_player) {
                 ++owner_agrees;
@@ -5079,6 +5100,7 @@ std::string build_shader_params_json(bool include_write_probes) {
             }
         }
         json_append_bool(out, "ss_all_nonnull", all_nonnull);
+        json_append_double(out, "ss_nonnull", static_cast<double>(nonnull), 0);
         json_append_double(out, "ss_owner_agrees", static_cast<double>(owner_agrees), 0);
         json_append_bool(out, "ss_288_not_instance", k288_not_instance);
         json_append_bool(out, "ss_312_is_instance", k312_is_instance);
@@ -5299,16 +5321,17 @@ std::string build_shader_params_json(bool include_write_probes) {
                          subs->controller != subs->player_camera &&
                              subs->player_camera != subs->physics_holder &&
                              subs->controller != subs->physics_holder);
-        // ONLY THE CONTROLLER IS EMBEDDED. The other two must sit far outside the player's own extent, which is
-        // what distinguishes an embedded member from a separate allocation.
-        if (const auto pp = sdk::PlayerMgr::slot(0); pp.has_value()) {
-            // `far` is a reserved word in MSVC (the legacy 16-bit pointer qualifier), hence the name.
-            const auto outside = [&](uintptr_t o) {
-                return o > *pp + 0x10000 || o + 0x10000 < *pp;
-            };
-            json_append_bool(out, "so_others_not_embedded",
-                             outside(subs->player_camera) && outside(subs->physics_holder));
-        }
+        // ALL THREE ARE EMBEDDED, each at its own offset, and the AIM object is the one that is not. The
+        // previous version of this had it backwards -- it asserted the camera and physics holder sat "far
+        // outside" the player using a 0x10000 window that both of them fall inside. Exact identities now, and
+        // the negative case is what makes "embedded" a distinction rather than a label everything satisfies.
+        const auto ce = sdk::PlayerMgr::camera_is_embedded(0);
+        const auto pe2 = sdk::PlayerMgr::physics_holder_is_embedded(0);
+        const auto ae = sdk::PlayerMgr::aim_object_is_embedded(0);
+        json_append_bool(out, "so_camera_embedded", ce.value_or(false));
+        json_append_bool(out, "so_physics_embedded", pe2.value_or(false));
+        json_append_bool(out, "so_aim_determinable", ae.has_value());
+        json_append_bool(out, "so_aim_embedded", ae.value_or(true));
     }
     // THE SHARED CONVENTION: all three name the player as owner at +4.
     json_append_bool(out, "so_own_determinable", own.has_value());
