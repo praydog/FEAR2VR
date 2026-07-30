@@ -8278,6 +8278,70 @@ int main(int argc, char** argv) {
                 check(rej_stereo == rej_after,
                       "and no transform was rejected while doing it");
 
+                // ---- ONE PASS PER FRAME IS NOT SAFE TO ASSUME --------------------------------
+                //
+                // Measured: the renderer issues TWO perspective passes per frame, and they are identical in
+                // every argument -- same FOV, same camera, same {0,0,1,1} rect. Only the bound TARGET differs
+                // (640x360 against 2560x1440), which is why sdk::SceneCamera::current_target_size() exists and
+                // why a stereo path cannot classify a pass from its arguments.
+                double n_last = -1.0, n_max = -1.0, tw = -1.0, th = -1.0;
+                std::string cb2;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    cb2 = http::body_of(resp);
+                }
+                const bool census = json_double(cb2, "cp_passes_last_frame", n_last) &&
+                                    json_double(cb2, "cp_max_passes_frame", n_max) &&
+                                    json_double(cb2, "cp_target_w", tw) &&
+                                    json_double(cb2, "cp_target_h", th);
+                check(census && n_last >= 1.0,
+                      "the per-frame pass census reports at least one pass, delimited by the engine's own "
+                      "frame boundary rather than by timing");
+                check(census && n_max >= 2.0,
+                      "and a frame has carried MORE THAN ONE perspective pass -- the assumption a stereo path "
+                      "must not make");
+                check(census && tw > 0.0 && th > 0.0,
+                      "the bound render target's size reads, which is the only thing distinguishing those "
+                      "passes from each other");
+
+                // BOTH POPULATIONS PRESENT. A filter that skipped everything, or nothing, would satisfy a
+                // one-sided check; this asserts the partition is real -- some passes are the main view and
+                // some are not.
+                double skipped = -1.0;
+                json_double(cb2, "cp_skipped_aux", skipped);
+                check(skipped > 0.0,
+                      "auxiliary passes were identified and left alone -- so the main-view filter is "
+                      "discriminating rather than passing everything through");
+
+                // ---- EVERY DISPLACED PASS GETS A SECOND EYE, AND ONLY THOSE -------------------
+                //
+                // An identity rather than a count: over one window, the number of passes we displaced must
+                // equal the number of second eyes drawn. A filter that disagreed with itself -- displacing a
+                // pass but not completing its pair, or completing a pair for a pass it never displaced --
+                // would render one eye from the wrong viewpoint, which is worse than rendering none.
+                double ov0 = -1.0, se0 = -1.0;
+                json_double(cb2, "cp_overridden", ov0);
+                json_double(cb2, "cp_second_eye_draws", se0);
+                http::get(port, "/stereo/eye?both=1&half_ipd=1&split=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                double ov1 = -1.0, se1 = -1.0;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    const std::string b5 = http::body_of(resp);
+                    json_double(b5, "cp_overridden", ov1);
+                    json_double(b5, "cp_second_eye_draws", se1);
+                }
+                // AT MOST ONE PASS IN FLIGHT, and that is a structural bound rather than a tolerance. The
+                // two counters are incremented at DIFFERENT points of the same frame -- `overridden` in the
+                // setup detour, `second_eye_draws` in the draw detour -- so a sample taken between them sees
+                // exactly one pass set up and not yet drawn. It cannot see two: the setup for the next pass
+                // cannot run until this one's draw has returned.
+                //
+                // Measured: the exact form failed on one run of two, at a difference of one, which is the
+                // pipeline depth and not an error in the pairing.
+                const double paired_diff = (ov1 - ov0) - (se1 - se0);
+                check(ov1 > ov0 && paired_diff >= -1.0 && paired_diff <= 1.0,
+                      "over one window, every displaced pass drew exactly one second eye, to within the single "
+                      "pass that can be between its setup and its draw when the sample is taken");
+
                 // OFF AGAIN, unconditionally. Leaving the view displaced would be the suite mutating the
                 // fixture for every check that follows -- and for the player.
                 http::get(port, "/stereo/eye?eye=off", resp);

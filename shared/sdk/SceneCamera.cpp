@@ -17,6 +17,8 @@ constexpr uintptr_t kRecordOffset = 0x32E790;
 
 // g_SceneRenderer itself: the record is at +8, and the object's first dword is the state.
 constexpr uintptr_t kStateOffset = 0x32E788;
+// The bound render target's dimensions, from SceneRenderer_BeginRenderTarget's own stores at this[93]/this[94].
+constexpr uintptr_t kTargetSizeOffset = 0x174;
 
 // Field offsets within the record, all from sub_610BA1's and sub_610DA2's own accesses.
 constexpr size_t kMode = 0x00;
@@ -934,6 +936,20 @@ std::optional<std::array<int32_t, 4>> SceneCamera::predicted_viewport_pixels(
         out[i] = static_cast<int32_t>(scaled);
     }
     return out;
+}
+
+std::optional<std::array<int32_t, 2>> SceneCamera::current_target_size() {
+    const auto at = exe_at(kStateOffset);
+    if (at == 0) {
+        return std::nullopt;
+    }
+    // this[93] and this[94] in SceneRenderer_BeginRenderTarget, i.e. +0x174 and +0x178 from the state dword.
+    const auto w = mem::read<int32_t>(at + kTargetSizeOffset);
+    const auto h = mem::read<int32_t>(at + kTargetSizeOffset + 4);
+    if (!w.has_value() || !h.has_value()) {
+        return std::nullopt;
+    }
+    return std::array<int32_t, 2>{*w, *h};
 }
 
 std::optional<uint32_t> SceneCamera::state() {

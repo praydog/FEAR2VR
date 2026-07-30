@@ -529,6 +529,22 @@ public:
     // unexpected value is information rather than something to hide.
     static std::optional<uint32_t> state();
 
+    // THE RENDER TARGET CURRENTLY BOUND, in pixels -- g_SceneRenderer+0x174, written by
+    // SceneRenderer_BeginRenderTarget and the very dimensions LTRenderer_NormalizedRectToPixels multiplies a
+    // fractional viewport by.
+    //
+    // WHY A CONSUMER NEEDS IT. The renderer issues more than one perspective pass per frame, and they are NOT
+    // distinguishable by their arguments: measured live, both passes of a frame carry the same FOV, the same
+    // camera and the same {0,0,1,1} rect. What differs is the TARGET they are drawn into -- one at 640x360 and
+    // one at 2560x1440. So "is this the main view" is a question about the bound target, answerable here and
+    // nowhere in the pass arguments.
+    //
+    // Readable at pass-setup time, which is what makes it usable as a filter: a stereo path must decide
+    // whether to displace the camera BEFORE forwarding the call.
+    //
+    // nullopt when the exe is not mapped or the read faulted; a zero pair before any target has been bound.
+    static std::optional<std::array<int32_t, 2>> current_target_size();
+
     enum class RendererSlot {
         BeginFrame,            // 8,  takes the frame time; state 1 -> 2, and publishes k_fTime
         BeginRenderTarget,     // 11, state 2 -> 3; the target's dimensions become the viewport scale

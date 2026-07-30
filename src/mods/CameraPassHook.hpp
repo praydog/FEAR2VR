@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "../Mod.hpp"
 
@@ -70,6 +71,20 @@ public:
     // picks a number and looks. Reporting it back in observed() is what makes that iteration possible.
     void set_eye(Eye eye, float half_ipd, bool split_viewport);
 
+    // ONLY DISPLACE THE MAIN VIEW, which is on by default and is a correctness setting rather than a
+    // preference.
+    //
+    // The renderer issues two perspective passes per frame and they are indistinguishable by their arguments
+    // -- same FOV, same camera, same {0,0,1,1} rect. Only the bound TARGET differs: 640x360 for one and
+    // 2560x1440 for the other. Displacing the quarter-resolution pass moves whatever it feeds (it is drawn
+    // from the same viewpoint every frame, so it is a screen-space input rather than a view) and gains
+    // nothing.
+    //
+    // A pass counts as the main view when its target matches the swap chain's back buffer. Turn this off to
+    // displace every pass, which is worth having as a switch precisely because the classification is a claim
+    // about this build.
+    void set_main_view_only(bool on);
+
     // ---- BOTH EYES IN ONE FRAME ------------------------------------------------------
     //
     // set_eye() renders ONE eye. This renders two, by repeating the pass group inside the target the engine
@@ -98,12 +113,46 @@ public:
     // asking for more silently gets that -- predicted_half_view_plane() will say so.
     void set_fov_override(float fov_x, float fov_y);
 
+    // ---- WHAT THE PASSES IN A FRAME ACTUALLY ARE -------------------------------------
+    //
+    // The renderer issues MORE THAN ONE perspective pass per frame -- measured at roughly 390 setups per
+    // second against ~300 presented frames. A stereo path that displaces every one of them is displacing
+    // things that are not the world view, so "which pass is the main view" has to be answerable before an eye
+    // offset can be applied selectively.
+    //
+    // The census is delimited by the frame boundary (RenderHook's present callback), so a "frame" here is
+    // exactly the engine's own, not a guess based on timing.
+    struct PassInfo {
+        std::array<float, 2> fov{};
+        std::array<float, 4> rect{};      // the NORMALISED rect the engine asked for
+        std::array<int32_t, 4> viewport{};// the PIXEL viewport it derived
+        std::array<float, 3> camera_position{};
+        float depth_min{};
+        float depth_max{};
+    };
+
+    static constexpr size_t kMaxPassesPerFrame = 8;
+
+    // The passes of the last COMPLETED frame, in issue order. Empty until a frame has closed.
+    //
+    // Last completed rather than in-progress on purpose: a caller reading mid-frame would see a partial list
+    // and could not tell that from a frame that genuinely had fewer passes.
+    std::vector<PassInfo> passes_last_frame() const;
+
+    // How many passes that frame had, and the largest seen since injection -- the two numbers that say
+    // whether "one pass per frame" is ever safe to assume. It is not.
+    uint32_t passes_in_last_frame() const;
+    uint32_t max_passes_in_a_frame() const;
+
     struct Observed {
         bool hooked{};
         uintptr_t target{};
         uint64_t passes{};          // setup calls seen
         uint64_t overridden{};      // calls whose camera we replaced
         uint64_t rejected{};        // calls where the offset could not be applied (bad pose)
+        uint64_t skipped_aux{};     // passes left alone because their target is not the back buffer
+        bool main_view_only{};
+        std::array<int32_t, 2> target_size{};  // the target bound when the last pass was set up
 
         // The ARGUMENTS the engine passed, captured in the detour. In-phase with the frame they configure,
         // unlike anything read from the record afterwards.

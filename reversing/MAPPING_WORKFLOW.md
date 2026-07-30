@@ -4456,3 +4456,34 @@ The lesson is the one this file keeps writing down in new forms: **a consumer-vi
 not a measurement.** Two contradictory conclusions came out of two screenshots of the same working feature,
 and the disagreement was resolved by exposing the number the engine itself computed.
 
+## Two perspective passes per frame, and they are indistinguishable by their arguments
+
+The open question from the stereo work -- "which passes deserve an eye" -- has a measurement. A per-frame
+census delimited by the engine's own frame boundary (RenderHook's present callback, not a timer):
+
+    pass 0: fov (97.1, 65.0) deg   viewport [0..640   x 0..360]    depth 4.3..100000   cam (2134, 2376, -7842)
+    pass 1: fov (97.1, 65.0) deg   viewport [0..2560  x 0..1440]   depth 4.3..100000   cam (2134, 2376, -7842)
+
+Identical FOV, identical camera, identical `{0,0,1,1}` rect. **Nothing in the arguments separates them.** The
+640x360 pass is exactly quarter resolution in each axis -- a screen-space input drawn from the same viewpoint,
+not a second view.
+
+**What separates them is the bound RENDER TARGET**, and prior work had already mapped where that lives:
+`SceneRenderer_BeginRenderTarget` stores the dimensions at `g_SceneRenderer+0x174` (this[93]/this[94]), and
+those are the numbers `LTRenderer_NormalizedRectToPixels` multiplies a fractional rect by. So
+`SceneCamera::current_target_size()` reads them, and a pass is the main view when its target matches the swap
+chain's back buffer.
+
+Readable AT SETUP TIME, which is what makes it usable: a stereo path has to decide before forwarding the call.
+
+Live with the filter on: 730 passes, 365 skipped as auxiliary -- exactly half, i.e. one per frame -- and every
+displaced pass paired with exactly one second-eye draw, zero rejections.
+
+### The pairing check needed a structural bound, not a tolerance
+
+`overridden` is incremented in the setup detour and `second_eye_draws` in the draw detour, so a sample taken
+between them sees one pass set up and not yet drawn. It cannot see two: the next setup cannot run until this
+draw returns. The exact identity failed on one run of two, by exactly one. The bound is the pipeline depth and
+is asserted as such, with the reason written next to it -- widening it further would be the fudge this project
+prohibits.
+

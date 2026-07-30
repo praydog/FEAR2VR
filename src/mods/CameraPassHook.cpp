@@ -4,9 +4,11 @@
 #include <cinttypes>
 #include <cstring>
 
+#include "sdk/Render.hpp"
 #include "sdk/SceneCamera.hpp"
 
 #include "Hooks.hpp"
+#include "RenderHook.hpp"
 #include "Log.hpp"
 
 namespace {
@@ -23,6 +25,9 @@ std::atomic<float> g_fov_x{0.0f};
 std::atomic<float> g_fov_y{0.0f};
 std::atomic<uintptr_t> g_target{0};
 std::atomic<bool> g_stereo{false};
+std::atomic<bool> g_main_only{true};
+std::atomic<uint64_t> g_skipped_aux{0};
+std::atomic<int32_t> g_target_size[2]{};
 std::atomic<uint64_t> g_second_draws{0};
 std::atomic<uint64_t> g_draw_calls{0};
 std::atomic<uintptr_t> g_draw_target{0};
@@ -45,6 +50,9 @@ struct PristineSetup {
 };
 PristineSetup g_pristine{};
 std::atomic<bool> g_pristine_valid{false};
+// Whether the setup we kept was the MAIN VIEW. The second eye is only drawn for that one -- replaying a
+// quarter-resolution auxiliary pass would draw a second copy of something that is not a view.
+std::atomic<bool> g_pristine_main{false};
 
 // Last arguments seen, published for diagnostics. Plain floats behind an atomic sequence would be tidier, but
 // these are read for reporting rather than for control, and a torn pair here misleads nobody.
@@ -62,6 +70,57 @@ std::atomic<float> g_depth_max{0.0f};
 // This is the observable that settles whether a substituted rect actually took effect. Without it the only
 // evidence was a screenshot, and a dark corridor looks a lot like a clipped viewport.
 std::atomic<int32_t> g_vp[4]{};
+
+// ---- THE PER-FRAME CENSUS ----------------------------------------------------------------------------
+//
+// Written by the setup detour and rotated by the present callback, both on the render thread, so the only
+// synchronisation needed is against a reader on the IPC thread: `published_count` is released last and
+// acquired first, and the buffers are double-buffered so a reader never walks the list being filled.
+CameraPassHook::PassInfo g_frame_passes[2][CameraPassHook::kMaxPassesPerFrame]{};
+std::atomic<uint32_t> g_frame_slot{0};       // which buffer the CURRENT frame is filling
+uint32_t g_filling_count = 0;                 // render-thread only
+std::atomic<uint32_t> g_published_count{0};
+std::atomic<uint32_t> g_published_slot{0};
+std::atomic<uint32_t> g_max_passes{0};
+
+// Appends this pass to the frame being censused. Render thread only.
+void record_pass(const regenny::LTNodeTransform* camera, const float* fov, const float* rect,
+                 float depth_min, float depth_max) {
+    if (g_filling_count >= CameraPassHook::kMaxPassesPerFrame) {
+        return;  // a frame with more passes than this is itself the finding; the count still rises
+    }
+    auto& p = g_frame_passes[g_frame_slot.load(std::memory_order_relaxed)][g_filling_count];
+    p = {};
+    if (fov != nullptr) {
+        p.fov = {fov[0], fov[1]};
+    }
+    if (rect != nullptr) {
+        p.rect = {rect[0], rect[1], rect[2], rect[3]};
+    }
+    if (camera != nullptr) {
+        p.camera_position = {camera->position.x, camera->position.y, camera->position.z};
+    }
+    p.depth_min = depth_min;
+    p.depth_max = depth_max;
+    for (size_t i = 0; i < 4; ++i) {
+        p.viewport[i] = g_vp[i].load(std::memory_order_relaxed);
+    }
+    ++g_filling_count;
+}
+
+// Closes the census at the frame boundary and swaps buffers. Registered as a RenderHook present callback, so
+// "a frame" is the engine's own rather than a timing guess.
+void close_frame_census() {
+    const uint32_t n = g_filling_count;
+    if (n > g_max_passes.load(std::memory_order_relaxed)) {
+        g_max_passes.store(n, std::memory_order_relaxed);
+    }
+    const uint32_t slot = g_frame_slot.load(std::memory_order_relaxed);
+    g_published_slot.store(slot, std::memory_order_relaxed);
+    g_published_count.store(n, std::memory_order_release);
+    g_frame_slot.store(slot ^ 1u, std::memory_order_relaxed);
+    g_filling_count = 0;
+}
 
 // Reads the pixel viewport the engine just derived from the rect it was handed.
 void capture_viewport() {
@@ -104,6 +163,18 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     g_depth_min.store(depth_min, std::memory_order_relaxed);
     g_depth_max.store(depth_max, std::memory_order_relaxed);
 
+    // WHICH TARGET IS BOUND, read before deciding anything. This is the only thing that distinguishes the
+    // main view from the quarter-resolution auxiliary pass -- their arguments are identical.
+    bool is_main_view = true;
+    if (const auto ts = sdk::SceneCamera::current_target_size()) {
+        g_target_size[0].store((*ts)[0], std::memory_order_relaxed);
+        g_target_size[1].store((*ts)[1], std::memory_order_relaxed);
+        if (const auto pp = sdk::Render::present_params()) {
+            is_main_view = (*ts)[0] == static_cast<int32_t>(pp->BackBufferWidth) &&
+                           (*ts)[1] == static_cast<int32_t>(pp->BackBufferHeight);
+        }
+    }
+
     // THE PRISTINE COPY for a second eye, taken before any override touches it.
     if (camera != nullptr && fov != nullptr && rect != nullptr) {
         g_pristine.camera = *camera;
@@ -112,6 +183,7 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
         memcpy(g_pristine.rect, rect, sizeof(g_pristine.rect));
         g_pristine.depth_min = depth_min;
         g_pristine.depth_max = depth_max;
+        g_pristine_main.store(is_main_view, std::memory_order_relaxed);
         g_pristine_valid.store(true, std::memory_order_release);
     }
 
@@ -126,9 +198,15 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     if (g_stereo.load(std::memory_order_relaxed)) {
         eye = CameraPassHook::Eye::Left;
     }
+    if (!is_main_view && g_main_only.load(std::memory_order_relaxed)) {
+        g_skipped_aux.fetch_add(1, std::memory_order_relaxed);
+        eye = CameraPassHook::Eye::Off;
+    }
+
     if (eye == CameraPassHook::Eye::Off || camera == nullptr) {
         const char r = original(camera, fov, rect, depth_min, depth_max);
         capture_viewport();
+        record_pass(camera, fov, rect, depth_min, depth_max);
         return r;
     }
 
@@ -174,6 +252,7 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     g_overridden.fetch_add(1, std::memory_order_relaxed);
     const char r = original(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     capture_viewport();
+    record_pass(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     return r;
 }
 
@@ -219,6 +298,10 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
     if (!g_stereo.load(std::memory_order_relaxed) ||
         !g_pristine_valid.load(std::memory_order_acquire)) {
         return first;
+    }
+    if (g_main_only.load(std::memory_order_relaxed) &&
+        !g_pristine_main.load(std::memory_order_relaxed)) {
+        return first;  // the pass just drawn was the auxiliary one; it gets no second eye
     }
 
     auto* setup_hook = Hooks::get().find(kHookName);
@@ -278,6 +361,12 @@ std::optional<std::string> CameraPassHook::on_initialize() {
 
     // DrawScene and EndPass, which together with the setup make a second eye possible. A missing one is not
     // fatal -- single-eye override still works -- so this degrades rather than failing initialize().
+    // The frame boundary delimits the census. RenderHook already owns that hook, so this uses its extension
+    // point rather than installing a second one on the same function.
+    if (!RenderHook::get().add_present_callback(&close_frame_census)) {
+        LOGX("[camerapass] could not register the frame-boundary callback -- census unavailable");
+    }
+
     const uintptr_t draw = sdk::SceneCamera::renderer_fn(sdk::SceneCamera::RendererSlot::DrawScene);
     const uintptr_t endp = sdk::SceneCamera::renderer_fn(sdk::SceneCamera::RendererSlot::EndPass);
     g_draw_target.store(draw, std::memory_order_relaxed);
@@ -330,9 +419,32 @@ bool CameraPassHook::replay_setup(const regenny::LTNodeTransform& camera, const 
     return hook->original<SetupFn>()(&camera, fov, rect, depth_min, depth_max) != 0;
 }
 
+void CameraPassHook::set_main_view_only(bool on) {
+    g_main_only.store(on, std::memory_order_relaxed);
+    LOGX("[camerapass] main-view-only %s", on ? "ON" : "OFF");
+}
+
 void CameraPassHook::set_fov_override(float fov_x, float fov_y) {
     g_fov_x.store(fov_x, std::memory_order_relaxed);
     g_fov_y.store(fov_y, std::memory_order_relaxed);
+}
+
+std::vector<CameraPassHook::PassInfo> CameraPassHook::passes_last_frame() const {
+    std::vector<PassInfo> out;
+    const uint32_t n = g_published_count.load(std::memory_order_acquire);
+    const uint32_t slot = g_published_slot.load(std::memory_order_relaxed);
+    for (uint32_t i = 0; i < n && i < kMaxPassesPerFrame; ++i) {
+        out.push_back(g_frame_passes[slot][i]);
+    }
+    return out;
+}
+
+uint32_t CameraPassHook::passes_in_last_frame() const {
+    return g_published_count.load(std::memory_order_acquire);
+}
+
+uint32_t CameraPassHook::max_passes_in_a_frame() const {
+    return g_max_passes.load(std::memory_order_relaxed);
 }
 
 CameraPassHook::Observed CameraPassHook::observed() const {
@@ -362,6 +474,10 @@ CameraPassHook::Observed CameraPassHook::observed() const {
     out.split_viewport = g_split.load(std::memory_order_relaxed);
     out.fov_override = {g_fov_x.load(std::memory_order_relaxed), g_fov_y.load(std::memory_order_relaxed)};
     out.stereo = g_stereo.load(std::memory_order_acquire);
+    out.main_view_only = g_main_only.load(std::memory_order_relaxed);
+    out.skipped_aux = g_skipped_aux.load(std::memory_order_relaxed);
+    out.target_size = {g_target_size[0].load(std::memory_order_relaxed),
+                       g_target_size[1].load(std::memory_order_relaxed)};
     out.second_eye_draws = g_second_draws.load(std::memory_order_relaxed);
     out.draw_calls = g_draw_calls.load(std::memory_order_relaxed);
     return out;

@@ -3335,6 +3335,21 @@ void json_append_bool(std::string& out, const char* key, bool value) {
     out += ',';
 }
 
+// A value that is ALREADY valid JSON -- an array or object composed elsewhere -- spliced in verbatim rather
+// than escaped as a string. The JsonFields class has raw() for the same reason; this is its counterpart for
+// the older append-style builders.
+void json_append_raw(std::string& out, const char* key, const char* json) {
+    // TRAILING comma, matching json_append_bool/double/string above. A leading-comma version of this shipped
+    // briefly and produced a payload that parsed fine for 39 kB and then did not -- the builders around it
+    // all emit their own trailing separator, so one function disagreeing corrupts the document at whatever
+    // offset it happens to sit.
+    out += '"';
+    out += key;
+    out += "\":";
+    out += json;
+    out += ',';
+}
+
 void json_append_string(std::string& out, const char* key, const char* value) {
     // Trailing-comma convention, matching json_append_bool/double above.
     out += '"';
@@ -6158,6 +6173,38 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_double(out, "cp_overridden", static_cast<double>(cp.overridden), 0);
                 json_append_double(out, "cp_rejected", static_cast<double>(cp.rejected), 0);
                 json_append_bool(out, "cp_stereo", cp.stereo);
+                json_append_bool(out, "cp_main_view_only", cp.main_view_only);
+                json_append_double(out, "cp_skipped_aux", static_cast<double>(cp.skipped_aux), 0);
+                json_append_double(out, "cp_target_w", static_cast<double>(cp.target_size[0]), 0);
+                json_append_double(out, "cp_target_h", static_cast<double>(cp.target_size[1]), 0);
+                // THE PER-FRAME CENSUS. "One pass per frame" is not safe to assume, and this is the
+                // evidence either way -- delimited by the engine's own frame boundary.
+                json_append_double(out, "cp_passes_last_frame",
+                                   static_cast<double>(CameraPassHook::get().passes_in_last_frame()), 0);
+                json_append_double(out, "cp_max_passes_frame",
+                                   static_cast<double>(CameraPassHook::get().max_passes_in_a_frame()), 0);
+                {
+                    std::string arr = "[";
+                    size_t n = 0;
+                    for (const auto& p : CameraPassHook::get().passes_last_frame()) {
+                        if (n++ != 0) { arr += ','; }
+                        std::string one;
+                        {
+                            JsonFields jf(one);
+                            jf.f("fov_x", p.fov[0], 6).f("fov_y", p.fov[1], 6)
+                              .f("rect_l", p.rect[0], 4).f("rect_r", p.rect[2], 4)
+                              .i("vp_l", p.viewport[0]).i("vp_r", p.viewport[2])
+                              .i("vp_t", p.viewport[1]).i("vp_b", p.viewport[3])
+                              .f("depth_min", p.depth_min, 3).f("depth_max", p.depth_max, 1)
+                              .f("cam_x", p.camera_position[0], 2)
+                              .f("cam_y", p.camera_position[1], 2)
+                              .f("cam_z", p.camera_position[2], 2);
+                        }
+                        arr += one;
+                    }
+                    arr += ']';
+                    json_append_raw(out, "cp_frame_passes", arr.c_str());
+                }
                 json_append_double(out, "cp_vp_l", static_cast<double>(cp.viewport[0]), 0);
                 json_append_double(out, "cp_vp_t", static_cast<double>(cp.viewport[1]), 0);
                 json_append_double(out, "cp_vp_r", static_cast<double>(cp.viewport[2]), 0);
