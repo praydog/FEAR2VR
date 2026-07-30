@@ -1462,4 +1462,49 @@ std::optional<bool> PlayerMgr::pitch_clamp_record_within_active(unsigned index) 
     return rec->after <= bounds->first && rec->after >= bounds->second;
 }
 
+
+std::optional<PlayerMgr::TimerState> PlayerMgr::pitch_recovery_timer(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return std::nullopt;
+    }
+    const auto base = subs->player_camera + kCameraPitchRecoveryTimer;
+    const auto start = mem::read<double>(base);
+    const auto duration = mem::read<double>(base + 8);
+    const auto use_cached = mem::read<uint8_t>(base + 0x18);
+    const auto active = mem::read<uint8_t>(base + 0x19);
+    if (!start.has_value() || !duration.has_value() || !use_cached.has_value() || !active.has_value()) {
+        return std::nullopt;
+    }
+    TimerState out;
+    out.start = *start;
+    out.duration = *duration;
+    out.use_cached = *use_cached != 0;
+    out.active = *active != 0;
+    return out;
+}
+
+PlayerMgr::AimTrackingLimits PlayerMgr::aim_tracking_limits() {
+    AimTrackingLimits out;
+    if (const auto v = Engine::find_cached_var("CameraAimTrackingYMax"); v.has_value()) {
+        out.normal_degrees = Engine::read_cached(*v);
+    }
+    if (const auto v = Engine::find_cached_var("CameraAimTrackingYMaxZoomed"); v.has_value()) {
+        out.zoomed_degrees = Engine::read_cached(*v);
+    }
+    return out;
+}
+
+std::optional<bool> PlayerMgr::aim_tracking_flag(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value() || subs->player_camera == 0) {
+        return std::nullopt;
+    }
+    const auto b = mem::read<uint8_t>(subs->player_camera + kCameraAimTrackingFlag);
+    if (!b.has_value()) {
+        return std::nullopt;
+    }
+    return *b != 0;
+}
+
 }  // namespace sdk

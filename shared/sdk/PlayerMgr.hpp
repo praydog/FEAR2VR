@@ -466,6 +466,57 @@ public:
     // the record survives a stance change, the bounds do not.
     static std::optional<bool> pitch_clamp_record_within_active(unsigned index);
 
+    // ---- THE RECOVERY TIMER, WHICH IS WHAT MAKES THE RECORD MEAN SOMETHING ----------------------
+    //
+    // CPlayerCamera_ClampPitch RECORDS a violation at +756/+760; CPlayerCamera_ApplyLookDelta CONSUMES it:
+    //
+    //     if (GameTimer_IsElapsed(camera + 768))  pitch = Math_Clamp(pitch, -bound, +bound)   hard clamp
+    //     else if (pitch out of range)            pitch = lerp(+756, +760, remaining / duration)
+    //     else                                    reset the timer and its flags
+    //
+    // So the pair is not a log -- it is the endpoints of an interpolation, and the timer at +768 is its clock.
+    // That is why the record survives across frames, and why reading it without the timer tells a consumer
+    // nothing about what the camera is doing now.
+    //
+    // A VR MOD THAT DEFEATS THE CLAMP MUST ACCOUNT FOR BOTH PATHS: with the timer elapsed the pitch is clamped
+    // hard, and while it runs the pitch is dragged from `before` to `after` regardless of input.
+    static constexpr uintptr_t kCameraPitchRecoveryTimer = 768;
+
+    struct TimerState {
+        double start{};
+        double duration{};
+        bool active{};
+        bool use_cached{};
+
+        // Reproduces GameTimer_IsElapsed's own reading: an inactive timer counts as elapsed.
+        bool elapsed(double now) const { return !active || (now - start) >= duration; }
+    };
+
+    // The pitch-recovery timer's state. nullopt when the camera cannot be resolved.
+    static std::optional<TimerState> pitch_recovery_timer(unsigned index);
+
+    // ---- THE SECOND PITCH LIMIT, WHICH IS NOT THE CLAMP ----------------------------------------
+    //
+    // ApplyLookDelta tests the new pitch against a console variable as well as the clamp record:
+    // CameraAimTrackingYMax normally, or CameraAimTrackingYMaxZoomed when a state field says otherwise.
+    // Exceeding it clears a byte at camera+1005 and calls into the physics holder.
+    //
+    // WHICH VARIABLE APPLIES DEPENDS ON *(owner + 256) + 224 == 3, and what that field means is NOT established
+    // -- "zoomed" is the obvious reading given the variable names and nothing more.
+    static constexpr uintptr_t kCameraAimTrackingFlag = 1005;
+
+    struct AimTrackingLimits {
+        std::optional<float> normal_degrees;
+        std::optional<float> zoomed_degrees;
+    };
+
+    // Both aim-tracking limits, read from their cached console variables. Either may be absent when its cache
+    // slot is unset.
+    static AimTrackingLimits aim_tracking_limits();
+
+    // The byte ApplyLookDelta clears when the limit is exceeded.
+    static std::optional<bool> aim_tracking_flag(unsigned index);
+
     // Does the state machine currently select the Chase clamp? The only mapping established so far, exposed as a
     // question rather than as a full state decode.
     static std::optional<bool> camera_state_is_chase(unsigned index);

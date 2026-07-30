@@ -4901,6 +4901,39 @@ std::string build_shader_params_json() {
             }
             json_append_bool(out, "pitch_within_determinable", within.has_value());
             json_append_bool(out, "pitch_within_active", within.value_or(false));
+            // ---- THE RECOVERY TIMER AND THE SECOND PITCH LIMIT ----
+            const auto tmr = sdk::PlayerMgr::pitch_recovery_timer(0);
+            json_append_bool(out, "pitch_timer_readable", tmr.has_value());
+            if (tmr.has_value()) {
+                json_append_bool(out, "pitch_timer_active", tmr->active);
+                json_append_double(out, "pitch_timer_duration", tmr->duration, 4);
+                json_append_bool(out, "pitch_timer_use_cached", tmr->use_cached);
+                // AN INACTIVE TIMER COUNTS AS ELAPSED, which is the accessor's own reading and the reason the
+                // hard-clamp branch is the default rather than the exception.
+                json_append_bool(out, "pitch_timer_inactive_is_elapsed", tmr->elapsed(0.0) || tmr->active);
+                json_append_bool(out, "pitch_timer_duration_finite",
+                                 tmr->duration >= 0.0 && tmr->duration < 3600.0);
+            }
+            const auto aim = sdk::PlayerMgr::aim_tracking_limits();
+            const auto aflag = sdk::PlayerMgr::aim_tracking_flag(0);
+            json_append_bool(out, "aim_normal_present", aim.normal_degrees.has_value());
+            json_append_bool(out, "aim_zoomed_present", aim.zoomed_degrees.has_value());
+            if (aim.normal_degrees.has_value()) {
+                json_append_double(out, "aim_normal", static_cast<double>(*aim.normal_degrees), 3);
+            }
+            if (aim.zoomed_degrees.has_value()) {
+                json_append_double(out, "aim_zoomed", static_cast<double>(*aim.zoomed_degrees), 3);
+            }
+            // THE TWO LIMITS MUST DIFFER, or selecting between them would be pointless -- and if they do not,
+            // the "zoomed" reading of the selector field loses its only supporting evidence.
+            if (aim.normal_degrees.has_value() && aim.zoomed_degrees.has_value()) {
+                json_append_bool(out, "aim_limits_differ", *aim.normal_degrees != *aim.zoomed_degrees);
+            }
+            json_append_bool(out, "aim_flag_readable", aflag.has_value());
+            json_append_bool(out, "aim_range_refused",
+                             !sdk::PlayerMgr::pitch_recovery_timer(9).has_value() &&
+                                 !sdk::PlayerMgr::aim_tracking_flag(9).has_value());
+
             json_append_bool(out, "pitch_range_refused",
                              !sdk::PlayerMgr::camera_pitch_clamp_record(9).has_value() &&
                                  !sdk::PlayerMgr::pitch_clamp_record_within_active(9).has_value());

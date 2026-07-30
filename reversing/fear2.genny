@@ -5984,6 +5984,28 @@ class LTInputDeviceMouse 0x30 {
 // SIZE IS A LOWER BOUND from the constructor, which touches offsets up to 6341.
 namespace regenny {
 
+// 0x20-byte STOPWATCH used all over gameclient -- 29 callers on GameTimer_IsElapsed and 25 on
+// GameTimer_Remaining. NOT related to the exe's CLTTimer/CLTTimerClient/CLTTimerServer interface
+// vtables mapped elsewhere in this file; those are engine interfaces, this is a small game-side
+// struct.
+//
+// The layout is pinned from two directions: the two accessor functions read these fields, and
+// CPlayerCamera_ApplyLookDelta RESETS exactly duration, cached_now, use_cached and active when it
+// clears the timer -- four of the six fields, at these offsets.
+//
+//   GameTimer_IsElapsed:  !active -> true; else (now - start) >= duration
+//   GameTimer_Remaining:  running ? duration + start - now : 0.0
+//   now = use_cached ? cached_now : the live client clock (via ILTClient slot 6)
+class GameTimer 0x20 {
+    double start        @0x00   // CONFIRMED the reference instant both accessors subtract from
+    double duration     @0x08   // CONFIRMED compared against (now - start), and the divisor ApplyLookDelta uses
+    double cached_now   @0x10   // CONFIRMED used as `now` when use_cached is set, instead of the live clock
+    uint8_t use_cached  @0x18   // CONFIRMED selects cached_now over the live clock
+    uint8_t active      @0x19   // CONFIRMED when clear, IsElapsed returns true and Remaining returns 0
+    // +0x1C..0x1F: the object the live clock is read through. Not typed here -- only that it is what
+    // gets passed when use_cached is clear.
+}
+
 class CPlayerCamera 0x18C6 {
     void* vtable                     @0x000 [[code]]   // g_vtbl_CPlayerCamera, gameclient +0x1D5B94
     void* owner                      @0x004             // the game-side player object; this is player[63] read back
@@ -6864,3 +6886,46 @@ class CPlayerCamera 0x18C6 {
 // Exposed as sdk::PlayerMgr::camera_pitch_clamp_record / pitch_clamp_record_within_active.
 //
 // 1432 checks, 0 failures.
+
+// ---- THE CLAMP'S OTHER CONSUMER, AND WHAT +756/+760 ARE ACTUALLY FOR ----------------------------
+//
+// GetActiveCameraClamp had TWO callers; last pass read the 188-byte one, which only RECORDS. The 803-byte
+// sibling, CPlayerCamera_ApplyLookDelta, is the one that changes the view -- and it explains the record:
+//
+//     euler = Quaternion_ToEuler(input, order 17);  euler[1] += delta[0]     (pitch, same component)
+//     GetActiveCameraClamp(this, &bounds)
+//     if (GameTimer_IsElapsed(this + 768))   pitch = Math_Clamp(pitch, -bound, +bound)
+//     else if (pitch out of range)           pitch = lerp(this+756, this+760, remaining / duration)
+//     else                                   reset the timer and its flags
+//
+// SO +756/+760 ARE NOT A LOG, THEY ARE THE ENDPOINTS OF AN INTERPOLATION, and the timer at +768 is its clock.
+// ClampPitch records a violation and its correction; this function drags the pitch from one to the other over
+// the timer's duration. Reading the record without the timer says nothing about the current frame -- which is a
+// correction to how the previous pass presented it.
+//
+// A VR MOD MUST DEFEAT BOTH PATHS: with the timer elapsed the pitch is clamped hard, and while it runs the pitch
+// is pulled towards `after` regardless of input. And note an INACTIVE timer counts as ELAPSED, so the hard clamp
+// is the default rather than the exception.
+//
+// GameTimer IS A NEW STRUCT, and a shared one: 29 callers on GameTimer_IsElapsed, 25 on GameTimer_Remaining. It
+// is NOT the exe's CLTTimer/CLTTimerClient/CLTTimerServer interface family mapped elsewhere in this file -- those
+// are engine interfaces with 22-entry vtables, this is a 32-byte game-side stopwatch. Its layout is pinned from
+// two directions: the accessors read these fields, and ApplyLookDelta RESETS exactly duration, cached_now,
+// use_cached and active -- four of them, at these offsets. See class GameTimer above.
+//
+// A SECOND PITCH LIMIT LIVES IN THE SAME FUNCTION and is not the clamp at all:
+//     CameraAimTrackingYMax        70 degrees live
+//     CameraAimTrackingYMaxZoomed  65 degrees live
+// selected by *(owner + 256) + 224 == 3. THE TWO DIFFER, and the zoomed one is tighter -- which is the ONLY
+// evidence that the selector means zoom, so that reading stays unestablished. Exceeding the limit clears the byte
+// at camera+1005 and calls into the physics holder.
+//
+// > A CROSS-CHECK WORTH KEEPING: the record is all zeros AND the timer is inactive with a zero duration. Two
+// > independent fields saying the clamp has never engaged this session, which is what makes the previous pass's
+// > vacuous range check safe to keep rather than misleading.
+//
+// Named in IDA: CPlayerCamera_ApplyLookDelta, Math_Clamp (value, min, max -- 19 callers),
+// GameTimer_IsElapsed, GameTimer_Remaining.
+// Exposed as sdk::PlayerMgr::pitch_recovery_timer / aim_tracking_limits / aim_tracking_flag.
+//
+// 1444 checks, 0 failures.

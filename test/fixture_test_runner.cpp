@@ -4741,6 +4741,53 @@ int main(int argc, char** argv) {
             check(json_bool(body, "pitch_range_refused", pi_rr) && pi_rr,
                   "an out-of-range slot yields neither the record nor the comparison");
 
+            // ---- THE RECOVERY TIMER, WHICH IS WHAT MAKES THE RECORD MEAN SOMETHING ---------------
+            //
+            // CPlayerCamera_ApplyLookDelta is the OTHER consumer of the clamp, and the one that changes the view.
+            // It reveals that +756/+760 are not a log but the ENDPOINTS OF AN INTERPOLATION:
+            //   timer elapsed  -> pitch = Math_Clamp(pitch, -bound, +bound)
+            //   timer running  -> pitch = lerp(+756, +760, remaining / duration)
+            // So reading the record without the timer tells a consumer nothing about the current frame.
+            bool ti_r = false, ti_a = false, ti_ie = false, ti_df = false, ti_uc = false;
+            double ti_d = -1.0;
+            check(json_bool(body, "pitch_timer_readable", ti_r) && ti_r,
+                  "the pitch-recovery timer at camera+768 reads as a GameTimer");
+            check(json_double(body, "pitch_timer_duration", ti_d) && ti_d >= 0.0,
+                  "its duration is non-negative");
+            check(json_bool(body, "pitch_timer_duration_finite", ti_df) && ti_df,
+                  "and within an hour, so the offsets are doubles and not something reinterpreted");
+            check(json_bool(body, "pitch_timer_inactive_is_elapsed", ti_ie) && ti_ie,
+                  "an INACTIVE timer counts as elapsed, which is the accessor's own reading -- so the hard-clamp "
+                  "branch is the default rather than the exception");
+            // THE CROSS-CHECK: two independent fields agree on the same state. The record is all zeros and the
+            // timer is inactive with a zero duration -- the clamp has never engaged, said twice.
+            check(json_has(body, "\"pitch_timer_active\":false") && pi_ne,
+                  "the timer is inactive AND the record is zero -- two independent fields agreeing that the clamp "
+                  "has never engaged this session");
+
+            // ---- A SECOND PITCH LIMIT, WHICH IS NOT THE CLAMP ----
+            //
+            // ApplyLookDelta also tests the new pitch against a console variable, choosing between two by a state
+            // field. Exceeding it clears a byte at camera+1005.
+            bool ai_n = false, ai_z = false, ai_d = false, ai_f = false, ai_rr = false;
+            double ai_nv = -1.0, ai_zv = -1.0;
+            check(json_bool(body, "aim_normal_present", ai_n) && ai_n,
+                  "CameraAimTrackingYMax resolves through the cached-variable scan");
+            check(json_bool(body, "aim_zoomed_present", ai_z) && ai_z, "and so does its Zoomed counterpart");
+            check(json_double(body, "aim_normal", ai_nv) && ai_nv > 0.0 && ai_nv < 180.0,
+                  "the normal limit is a plausible angle in degrees");
+            check(json_double(body, "aim_zoomed", ai_zv) && ai_zv > 0.0 && ai_zv < 180.0,
+                  "and so is the zoomed one");
+            // WITHOUT THIS, the selector field's "zoomed" reading would have no supporting evidence at all: two
+            // identical limits would make choosing between them pointless.
+            check(json_bool(body, "aim_limits_differ", ai_d) && ai_d && ai_zv < ai_nv,
+                  "they DIFFER, and the zoomed limit is the tighter one -- which is the only evidence the "
+                  "selector field means zoom, and is why the reading stays marked as unestablished");
+            check(json_bool(body, "aim_flag_readable", ai_f) && ai_f,
+                  "the byte the limit check clears is readable");
+            check(json_bool(body, "aim_range_refused", ai_rr) && ai_rr,
+                  "an out-of-range slot yields neither the timer nor the flag");
+
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
             // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one
