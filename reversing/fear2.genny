@@ -5173,3 +5173,43 @@ class LTInputDeviceMouse 0x30 {
 // the total, which counting each category alone cannot show.
 //
 // 1052 checks, 0 failures.
+
+// ---- THE FLASH GLOBALS ARE CALLABLE SETTERS, AND A TYPE RULE THAT DIED TWICE --------------------
+//
+// The 172 _global.g_* entries in the panel binding tables are the game's Flash variables, and EACH ENTRY'S
+// HANDLER IS THE SETTER: call it with (GFx*, value) and it builds the GFx Value and invokes the interface slot
+// itself. 169 are now named UI_SetGlobal_<Variable> in gameclient.dll.
+//
+// TWO INDEPENDENT READ PATHS AGREE ON THE POPULATION. Walking the live tables in the running game and parsing
+// the initialiser functions statically in IDA both yield 623 entries and 172 globals -- the static parse also
+// recovers each entry's index, so the 12-byte stride is confirmed by arithmetic rather than assumed.
+//
+// WHAT THE KIND BYTE DOES SAY, over all 172: it maps ONE-TO-ONE onto the Hungarian prefix, hence onto the C++
+// argument shape a caller must build.
+//
+//     kind 12 -> g_f  (10)     kind 17 -> g_af (4)      slot 9  = GFx SetVariable      (12..16, 108 vars)
+//     kind 13 -> g_s  (3)      kind 18 -> g_as (12)     slot 11 = GFx SetVariableArray (17..21,  64 vars)
+//     kind 14 -> g_s  (9)      kind 19 -> g_as (13)
+//     kind 15 -> g_n  (54)     kind 20 -> g_an (30)
+//     kind 16 -> g_b  (32)     kind 21 -> g_ab (4)
+//
+// The map is a FUNCTION BUT NOT A BIJECTION: strings hold kinds 13 and 14, string arrays 18 and 19. What
+// separates each pair is UNEXPLAINED and deliberately not invented.
+//
+// WHAT THE KIND DOES NOT SAY IS THE GFx TYPE, and this is the third time this project has been taught the same
+// lesson by the same mechanism. Reading one kind-13 handler against one kind-14 handler showed type 4 against
+// type 5 -- narrow versus wide string, clean and wrong. THE NEXT SAMPLE IN KIND 13 READ TYPE 5. Over the whole
+// population kind 13 is 4,4,5 while kind 14 is uniformly 5; kind 18 is 3,4 while 19 is uniformly 4. And the
+// array setters do not even share the scalar enumeration -- they pass the constant as a leading ARGUMENT rather
+// than a Value field, where a float array reads 2 and an int array reads 0.
+//
+// > A pair of handlers produced a rule that survived exactly one more sample. What killed it was cheap: the
+// > populations are 12 and 26, small enough to read entirely, and reading them entirely took one query.
+//
+// SO THE API HANDS BACK A HANDLER, NOT A TYPE. The type is knowable only from the setter's own code, and the
+// consumer never needs it: the handler encodes both its type and its slot. Exposed as sdk::Events::
+// global_variables / find_global / gfx_slot_for_kind / prefix_for_kind, and the suite asserts 172/172 prefix
+// agreement with an upper-case guard (so "g_a" cannot satisfy "g_an"), 172/172 callable handlers, the 108/64
+// scalar-array partition, and that kinds 13/14 and 18/19 collide on purpose.
+//
+// 1063 checks, 0 failures.

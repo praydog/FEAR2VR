@@ -4547,6 +4547,57 @@ std::string build_shader_params_json() {
     json_append_double(out, "bt_role_flash_to_game", static_cast<double>(bt_role_f2g), 0);
     json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
     json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
+
+    // THE FLASH GLOBALS, resolved to their setters. The rule under test is that the kind byte predicts the
+    // variable's C++ argument shape over the WHOLE population: every name's Hungarian prefix must equal the one
+    // its kind denotes. A previous claim that the kind also predicts the GFx TYPE is NOT asserted -- it is false,
+    // and the counters below record the mismatch that killed it rather than hiding it.
+    const auto globals = sdk::Events::global_variables();
+    size_t gv_prefix_ok = 0, gv_scalar = 0, gv_array = 0, gv_handler_ok = 0, gv_slot_ok = 0;
+    for (const auto& v : globals) {
+        const char* pre = sdk::Events::prefix_for_kind(v.kind);
+        if (pre != nullptr) {
+            // The name is "_global.<prefix><Rest>"; the prefix must match AND the next character must be upper
+            // case, or "g_a" would satisfy "g_an" and the check would pass on a shorter prefix.
+            const std::string want = std::string("_global.") + pre;
+            if (v.name.rfind(want, 0) == 0 && v.name.size() > want.size() &&
+                v.name[want.size()] >= 'A' && v.name[want.size()] <= 'Z') {
+                ++gv_prefix_ok;
+            }
+        }
+        if (v.is_array) { ++gv_array; } else { ++gv_scalar; }
+        if (v.handler != 0) { ++gv_handler_ok; }
+        if (v.gfx_slot == (v.is_array ? 11u : 9u)) { ++gv_slot_ok; }
+    }
+    json_append_double(out, "gv_total", static_cast<double>(globals.size()), 0);
+    json_append_double(out, "gv_prefix_ok", static_cast<double>(gv_prefix_ok), 0);
+    json_append_double(out, "gv_scalar", static_cast<double>(gv_scalar), 0);
+    json_append_double(out, "gv_array", static_cast<double>(gv_array), 0);
+    json_append_double(out, "gv_handler_ok", static_cast<double>(gv_handler_ok), 0);
+    json_append_double(out, "gv_slot_ok", static_cast<double>(gv_slot_ok), 0);
+    json_append_double(out, "gv_slot_scalar", static_cast<double>(sdk::Events::gfx_slot_for_kind(15)), 0);
+    json_append_double(out, "gv_slot_array", static_cast<double>(sdk::Events::gfx_slot_for_kind(20)), 0);
+    // Outside the observed kind range there is no slot and no prefix -- refused rather than guessed.
+    json_append_bool(out, "gv_unknown_kind_refused",
+                     sdk::Events::gfx_slot_for_kind(11) == 0 && sdk::Events::gfx_slot_for_kind(22) == 0 &&
+                         sdk::Events::prefix_for_kind(11) == nullptr &&
+                         sdk::Events::prefix_for_kind(22) == nullptr);
+    // A named lookup must resolve to a callable setter, and a nonexistent one must not resolve at all.
+    const auto host_id = sdk::Events::find_global("_global.g_nMonolithMultiplayerHostID");
+    json_append_bool(out, "gv_lookup_resolves",
+                     host_id.has_value() && host_id->handler != 0 && host_id->gfx_slot == 9 &&
+                         !host_id->is_array && host_id->kind == 15);
+    json_append_bool(out, "gv_absent_refused",
+                     !sdk::Events::find_global("_global.g_nNoSuchVariableAtAll").has_value() &&
+                         !sdk::Events::find_global("g_nMonolithMultiplayerHostID").has_value());
+    // The two string kinds are the honest residue: both denote g_s, so the mapping is a function but not
+    // injective. A consumer must not invert it.
+    json_append_bool(out, "gv_prefix_not_injective",
+                     sdk::Events::prefix_for_kind(13) != nullptr && sdk::Events::prefix_for_kind(14) != nullptr &&
+                         std::string_view{sdk::Events::prefix_for_kind(13)} ==
+                             std::string_view{sdk::Events::prefix_for_kind(14)} &&
+                         std::string_view{sdk::Events::prefix_for_kind(18)} ==
+                             std::string_view{sdk::Events::prefix_for_kind(19)});
     // ControlPanel's table is small enough to state exactly: 7 entries then a null name.
     json_append_double(out, "bt_controlpanel",
                        static_cast<double>(sdk::Events::panel_bindings("ControlPanel").size()), 0);

@@ -259,6 +259,53 @@ public:
     // vector above cannot.
     static bool panel_table_initialised(std::string_view panel);
 
+    // ---- FLASH GLOBALS, RESOLVED TO THEIR SETTERS ------------------------------------------------
+    //
+    // The 172 _global.g_* bindings are the game's Flash variables, and each entry's handler IS the setter. That
+    // matters more than it sounds: a consumer wanting to write one does NOT need to know the variable's GFx type
+    // or which interface slot to call, because the handler already encodes both.
+    //
+    //     auto v = sdk::Events::find_global("_global.g_nMonolithMultiplayerHostID");
+    //     if (v) {
+    //         using Setter = int(__stdcall*)(void* gfx, int value);
+        //         reinterpret_cast<Setter>(sdk::Modules::get().game_client()->base + v->handler)(gfx, 42);
+    //     }
+    //
+    // DO NOT DERIVE THE GFx TYPE FROM THE KIND OR THE NAME. Measured over all 172: kind 13 carries a narrow
+    // string (type 4) twice and a wide one (type 5) once, so the kind does not determine the type. The array
+    // setters' leading constant does not even share the scalar enumeration -- a float array reads 2 while an int
+    // array reads 0. Two passes on this project each derived a type rule from a pair of samples and each was
+    // wrong; the handler is the only thing that knows.
+    //
+    // WHAT THE KIND DOES TELL YOU, exactly and over the whole population, is the C++ argument shape: it maps
+    // one-to-one onto the Hungarian prefix, so it says whether to pass an int, a float, a bool, a string, or an
+    // index plus element. That is what a caller needs in order to build the call at all.
+    struct GlobalVariable {
+        std::string name;
+        uint8_t kind{};       // 12..21, straight from the binding table
+        uint32_t gfx_slot{};  // 9 scalar / 11 array -- the slot the handler uses internally
+        bool is_array{};
+        uintptr_t handler{};  // gameclient-relative; THIS is what to call
+    };
+
+    // Every Flash global the UI registers, read live. Empty when gameclient is absent or no panel has
+    // initialised yet.
+    static std::vector<GlobalVariable> global_variables();
+
+    // Resolves one by exact name, including the leading "_global.".
+    static std::optional<GlobalVariable> find_global(std::string_view name);
+
+    // The GFx interface slot a kind's handler uses: 9 (SetVariable) for scalar kinds 12..16, 11
+    // (SetVariableArray) for array kinds 17..21, and 0 outside the observed range rather than a guess. Consumers
+    // hooking the GFx interface use this to know which slot a given variable travels through.
+    static uint32_t gfx_slot_for_kind(uint8_t kind);
+
+    // The Hungarian prefix a kind denotes, or nullptr outside the observed range. This is a census over all 172
+    // entries: it IS a function, every kind has exactly one prefix. It is NOT injective -- strings occupy kinds
+    // 13 and 14, string arrays 18 and 19 -- and what separates each pair is unexplained and deliberately not
+    // invented here (it is not the GFx type; see above).
+    static const char* prefix_for_kind(uint8_t kind);
+
     static const std::vector<UiPanel>& ui_panels();
     static std::optional<UiPanel> find_panel(std::string_view name);
 

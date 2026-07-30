@@ -4509,6 +4509,51 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE FLASH GLOBALS, RESOLVED TO CALLABLE SETTERS -----------------------------------
+            //
+            // Each _global.* binding's handler IS the setter, so a consumer never needs the variable's GFx type:
+            // it calls the handler. What it DOES need is the C++ argument shape, and the claim under test is that
+            // the kind byte gives it -- every name's Hungarian prefix equals the one its kind denotes, over all
+            // 172 rather than a sample.
+            //
+            // NOT asserted: that the kind predicts the GFx TYPE. That reading came from one pair of handlers and
+            // is false -- kind 13 carries a narrow string twice and a wide one once. The type lives in the
+            // handler alone, which is exactly why the API hands back a handler instead of a type.
+            double gv_t = -1.0, gv_p = -1.0, gv_s = -1.0, gv_a = -1.0, gv_h = -1.0, gv_sl = -1.0;
+            const bool gvn = json_double(body, "gv_total", gv_t) &&
+                             json_double(body, "gv_prefix_ok", gv_p) &&
+                             json_double(body, "gv_scalar", gv_s) &&
+                             json_double(body, "gv_array", gv_a) &&
+                             json_double(body, "gv_handler_ok", gv_h) &&
+                             json_double(body, "gv_slot_ok", gv_sl);
+            check(gvn && gv_t > 100.0, "the UI registers a hundred-plus Flash globals");
+            check(gvn && gv_p == gv_t,
+                  "every global's Hungarian prefix matches the one its kind byte denotes");
+            check(gvn && gv_h == gv_t,
+                  "every global resolves to a callable setter -- the handler is the deliverable");
+            check(gvn && gv_sl == gv_t,
+                  "every global's slot agrees with whether it is an array");
+            check(gvn && gv_s + gv_a == gv_t && gv_s > 0.0 && gv_a > 0.0,
+                  "scalars and arrays partition the globals, both populated");
+
+            double gv_ss = -1.0, gv_sa = -1.0;
+            check(json_double(body, "gv_slot_scalar", gv_ss) && gv_ss == 9.0,
+                  "a scalar kind routes through GFx slot 9");
+            check(json_double(body, "gv_slot_array", gv_sa) && gv_sa == 11.0,
+                  "an array kind routes through GFx slot 11");
+
+            bool gv_unk = false, gv_res = false, gv_abs = false, gv_inj = false;
+            check(json_bool(body, "gv_unknown_kind_refused", gv_unk) && gv_unk,
+                  "a kind outside the observed range yields no slot and no prefix rather than a guess");
+            check(json_bool(body, "gv_lookup_resolves", gv_res) && gv_res,
+                  "a named global resolves to a scalar setter on slot 9 with its kind intact");
+            // The prefix must be part of the name, not merely present: "g_nHostID" without the "_global." prefix
+            // is not a key this table holds, and accepting it would let a caller build a call to nothing.
+            check(json_bool(body, "gv_absent_refused", gv_abs) && gv_abs,
+                  "an unknown name and a name missing its _global. prefix are both refused");
+            check(json_bool(body, "gv_prefix_not_injective", gv_inj) && gv_inj,
+                  "kinds 13/14 and 18/19 denote the same prefix -- the map is a function, not a bijection");
+
             // ---- THE GFx SLOT MAP AND THE HUNGARIAN-PREFIX RULE ------------------------------------
             //
             // Three slots of the GFx object are identified, each by a distinct population of call sites rather

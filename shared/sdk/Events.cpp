@@ -424,4 +424,68 @@ size_t Events::verified_count() {
     return n;
 }
 
+uint32_t Events::gfx_slot_for_kind(uint8_t kind) {
+    if (kind >= 12 && kind <= 16) {
+        return 9; // GFx SetVariable
+    }
+    if (kind >= 17 && kind <= 21) {
+        return 11; // GFx SetVariableArray
+    }
+    return 0;
+}
+
+const char* Events::prefix_for_kind(uint8_t kind) {
+    switch (kind) {
+    case 12: return "g_f";
+    case 13: return "g_s";  // 13 and 14 both hold strings; the split is not the GFx type
+    case 14: return "g_s";
+    case 15: return "g_n";
+    case 16: return "g_b";
+    case 17: return "g_af";
+    case 18: return "g_as"; // as with 13/14, 18 and 19 both hold string arrays
+    case 19: return "g_as";
+    case 20: return "g_an";
+    case 21: return "g_ab";
+    default: return nullptr;
+    }
+}
+
+std::vector<Events::GlobalVariable> Events::global_variables() {
+    std::vector<GlobalVariable> out;
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return out;
+    }
+    for (const auto& panel : ui_panels()) {
+        for (const auto& b : panel_bindings(panel.name)) {
+            // Role AND prefix must agree. The role comes from the kind byte and the prefix from the name, so
+            // requiring both refuses an entry whose kind says "variable" while its name says otherwise instead
+            // of reporting a setter that would be called with the wrong argument shape.
+            if (b.role != BindingRole::GlobalSetter || b.handler == 0) {
+                continue;
+            }
+            if (b.name.rfind("_global.", 0) != 0) {
+                continue;
+            }
+            GlobalVariable v;
+            v.name = b.name;
+            v.kind = b.kind;
+            v.gfx_slot = gfx_slot_for_kind(b.kind);
+            v.is_array = v.gfx_slot == 11;
+            v.handler = b.handler;
+            out.push_back(std::move(v));
+        }
+    }
+    return out;
+}
+
+std::optional<Events::GlobalVariable> Events::find_global(std::string_view name) {
+    for (auto& v : global_variables()) {
+        if (v.name == name) {
+            return v;
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace sdk
