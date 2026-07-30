@@ -147,6 +147,10 @@ using InputFn = std::function<std::string(const std::string& request_target)>;
 // invoked on the game thread. This is the crash-recovery path (relaunch, inject, ask the game to reload)
 // as well as the general "trigger engine behaviour we have not reversed" lever.
 using ConsoleFn = std::function<std::string(const std::string& request_target)>;
+
+// STEREO -- /stereo/eye. MUTATES the rendered view: it displaces the camera along its own right vector at the
+// perspective pass setup, which is what a per-eye view is.
+using StereoFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -168,6 +172,7 @@ struct Handlers {
     WatchFn watch{};                 // optional; /watch/* 404s without it -- writes thread debug registers
     InputFn input{};                 // optional; /input/* 404s without it -- MUTATES engine key state
     ConsoleFn console{};             // optional; /console/* 404s without it -- MUTATES via command handlers
+    StereoFn stereo{};               // optional; /stereo/* 404s without it -- MUTATES the rendered view
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

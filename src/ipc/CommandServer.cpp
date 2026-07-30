@@ -138,6 +138,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/stereo/", 0) == 0) {
+        if (!g_handlers.stereo) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no stereo handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.stereo(path));
+        return;
+    }
+
     if (path.rfind("/console/", 0) == 0) {
         if (!g_handlers.console) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no console handler registered\"}");

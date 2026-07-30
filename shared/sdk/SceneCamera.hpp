@@ -420,6 +420,31 @@ public:
     static regenny::LTNodeTransform make_camera_transform(float x, float y, float z,
                                                          const regenny::LTRotation& rotation);
 
+    // ---- MOVING A CAMERA ALONG ITS OWN AXES, WHICH IS WHAT AN EYE OFFSET IS ----------
+    //
+    // A stereo pair is the same pose displaced left and right ALONG THE VIEW'S OWN right vector, and a
+    // head-tracked translation is the same operation on all three axes. Doing it in world space is wrong the
+    // moment the player turns, which is every frame, so this exists to stop each caller re-deriving the basis.
+    //
+    // The basis comes from the pose's own matrix: LTTransform_ToMatrix3x4 puts right, up and forward in
+    // COLUMNS 0, 1 and 2 (matching matrix_from_basis_columns), with the position in column 3. Rotation is
+    // untouched -- displacing an eye must not turn it, or the two views converge.
+    //
+    // nullopt when the rotation is not usable as one (the same validity rule transform_to_matrix applies) or
+    // any offset is non-finite, because a NaN here would silently propagate into the view matrix.
+    static std::optional<regenny::LTNodeTransform> offset_transform_local(
+        const regenny::LTNodeTransform& transform, float right, float up, float forward);
+
+    // The pose's basis vectors, for a consumer doing its own composition -- right, up, forward as columns
+    // 0, 1, 2. Handed out because "which column is right" is exactly the detail that makes an eye offset go
+    // sideways, and it should be answered once here rather than guessed at each call site.
+    struct Basis {
+        std::array<float, 3> right{};
+        std::array<float, 3> up{};
+        std::array<float, 3> forward{};
+    };
+    static std::optional<Basis> basis_of(const regenny::LTNodeTransform& transform);
+
     // A 3x4 widened to 4x4 with the implicit (0,0,0,1) row. The engine stores its view matrices and
     // shears as 3x4 but composes into 4x4, so a consumer doing its own composition needs this.
     static std::array<float, 16> promote_affine(const regenny::LTMatrix3x4& affine);

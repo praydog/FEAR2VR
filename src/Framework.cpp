@@ -26,6 +26,7 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Delegates.hpp"
 #include "sdk/Modules.hpp"
+#include "mods/CameraPassHook.hpp"
 #include "mods/ConsoleRunner.hpp"
 #include "mods/FocusKeeper.hpp"
 #include "mods/RenderHook.hpp"
@@ -6144,6 +6145,34 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_bool(out, "si_poll_hooked", sdk::Input::poll_fn() != 0);
             }
             {
+                const auto cp = CameraPassHook::get().observed();
+                json_append_bool(out, "cp_hooked", cp.hooked);
+                json_append_double(out, "cp_passes", static_cast<double>(cp.passes), 0);
+                json_append_double(out, "cp_overridden", static_cast<double>(cp.overridden), 0);
+                json_append_double(out, "cp_rejected", static_cast<double>(cp.rejected), 0);
+                json_append_double(out, "cp_eye", static_cast<double>(static_cast<int>(cp.eye)), 0);
+                json_append_double(out, "cp_half_ipd", cp.half_ipd, 4);
+                json_append_bool(out, "cp_split_viewport", cp.split_viewport);
+                json_append_double(out, "cp_fov_x", cp.fov[0], 6);
+                json_append_double(out, "cp_fov_y", cp.fov[1], 6);
+                json_append_double(out, "cp_rect_l", cp.rect[0], 4);
+                json_append_double(out, "cp_rect_t", cp.rect[1], 4);
+                json_append_double(out, "cp_rect_r", cp.rect[2], 4);
+                json_append_double(out, "cp_rect_b", cp.rect[3], 4);
+                json_append_double(out, "cp_depth_min", cp.depth_min, 4);
+                json_append_double(out, "cp_depth_max", cp.depth_max, 4);
+                json_append_double(out, "cp_cam_x", cp.camera_position[0], 3);
+                json_append_double(out, "cp_cam_y", cp.camera_position[1], 3);
+                json_append_double(out, "cp_cam_z", cp.camera_position[2], 3);
+                // THE CROSS-CHECK THAT MATTERS: the FOV we captured as an ARGUMENT, pushed through the
+                // engine's own clamp-and-tan, must equal the half view-plane the record ends up holding.
+                // Two independent routes -- an intercepted call and a mapped field -- to one pair.
+                if (const auto pred = sdk::SceneCamera::predicted_half_view_plane(cp.fov[0], cp.fov[1])) {
+                    json_append_double(out, "cp_pred_half_x", (*pred)[0], 6);
+                    json_append_double(out, "cp_pred_half_y", (*pred)[1], 6);
+                }
+            }
+            {
                 const auto rh = RenderHook::get().stats();
                 json_append_bool(out, "rh_hooked", rh.hooked);
                 json_append_double(out, "rh_frames", static_cast<double>(rh.frames), 0);
@@ -8665,6 +8694,23 @@ std::string webapi_query_string(const WebApiQuery& q, const char* key) {
     return it != q.end() ? it->second : std::string{};
 }
 
+// A FRACTIONAL query parameter. webapi_query_int truncates, which is wrong for every value this project
+// actually wants from a caller now -- an eye separation, a field of view in radians, a viewport fraction.
+double webapi_query_double(const WebApiQuery& q, const char* key, double fallback) {
+    const auto it = q.find(key);
+    if (it == q.end() || it->second.empty()) {
+        return fallback;
+    }
+    char* end = nullptr;
+    const double v = strtod(it->second.c_str(), &end);
+    // Unparsable is the fallback, not zero: "fov_x=abc" meaning "no override" is friendlier than it meaning
+    // "a field of view of zero", which the engine would clamp into something visible and confusing.
+    if (end == it->second.c_str()) {
+        return fallback;
+    }
+    return v;
+}
+
 long long webapi_query_int(const WebApiQuery& q, const char* key, long long fallback) {
     const auto it = q.find(key);
     if (it == q.end() || it->second.empty()) {
@@ -9704,6 +9750,9 @@ bool Framework::initialize() {
     // whole mechanism depends on -- see SyntheticInput.hpp.
     Mods::get().add(&SyntheticInput::get());
     Mods::get().add(&RenderHook::get());
+    // The perspective pass -- the stereo intervention point. Independent of RenderHook: that one brackets the
+    // frame, this one configures the view inside it.
+    Mods::get().add(&CameraPassHook::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -9721,6 +9770,35 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.stereo = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const std::string eye_s = webapi_query_string(q, "eye");
+        auto eye = CameraPassHook::Eye::Off;
+        if (eye_s == "left") {
+            eye = CameraPassHook::Eye::Left;
+        } else if (eye_s == "right") {
+            eye = CameraPassHook::Eye::Right;
+        }
+        const auto ipd = static_cast<float>(webapi_query_double(q, "half_ipd", 0.0));
+        const bool split = webapi_query_int(q, "split", 0) != 0;
+        CameraPassHook::get().set_eye(eye, ipd, split);
+        CameraPassHook::get().set_fov_override(
+            static_cast<float>(webapi_query_double(q, "fov_x", 0.0)),
+            static_cast<float>(webapi_query_double(q, "fov_y", 0.0)));
+        const auto o = CameraPassHook::get().observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", o.hooked).hex("target", o.target)
+              .i("eye", static_cast<int>(o.eye)).f("half_ipd", o.half_ipd, 4)
+              .b("split_viewport", o.split_viewport)
+              .u("passes", static_cast<size_t>(o.passes))
+              .u("overridden", static_cast<size_t>(o.overridden))
+              .u("rejected", static_cast<size_t>(o.rejected));
+        }
+        return out;
+    };
+
     handlers.console = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         const size_t qpos = request_target.find('?');

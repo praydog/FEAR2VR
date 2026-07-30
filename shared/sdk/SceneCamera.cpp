@@ -536,6 +536,39 @@ std::optional<std::array<float, 16>> SceneCamera::make_affine_projection(float h
     };
 }
 
+std::optional<SceneCamera::Basis> SceneCamera::basis_of(const regenny::LTNodeTransform& transform) {
+    const auto m = transform_to_matrix(transform);
+    if (!m.has_value()) {
+        return std::nullopt;
+    }
+    // Row-major 3x4: rows are m[0..3], m[4..7], m[8..11], so a COLUMN is a stride-4 read.
+    Basis out{};
+    out.right = {m->m[0], m->m[4], m->m[8]};
+    out.up = {m->m[1], m->m[5], m->m[9]};
+    out.forward = {m->m[2], m->m[6], m->m[10]};
+    return out;
+}
+
+std::optional<regenny::LTNodeTransform> SceneCamera::offset_transform_local(
+    const regenny::LTNodeTransform& transform, float right, float up, float forward) {
+    if (!std::isfinite(right) || !std::isfinite(up) || !std::isfinite(forward)) {
+        return std::nullopt;
+    }
+    const auto basis = basis_of(transform);
+    if (!basis.has_value()) {
+        return std::nullopt;
+    }
+    regenny::LTNodeTransform out = transform;  // rotation copied unchanged -- an eye moves, it does not turn
+    out.position.x += basis->right[0] * right + basis->up[0] * up + basis->forward[0] * forward;
+    out.position.y += basis->right[1] * right + basis->up[1] * up + basis->forward[1] * forward;
+    out.position.z += basis->right[2] * right + basis->up[2] * up + basis->forward[2] * forward;
+    if (!std::isfinite(out.position.x) || !std::isfinite(out.position.y) ||
+        !std::isfinite(out.position.z)) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 std::optional<regenny::LTMatrix3x4> SceneCamera::transform_to_matrix(
     const regenny::LTNodeTransform& transform) {
     const auto rotation = rotation_matrix(transform.rotation);

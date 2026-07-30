@@ -4325,3 +4325,41 @@ followed by a full suite run against that session: 1532 checks, 3 reds, and the 
 loop needs no human at any step, which is the whole point -- an unattended session that crashes now recovers
 itself instead of stalling until somebody clicks a menu.
 
+## Stereo is reachable through one hook, because the pass entry takes angles and a fractional rect
+
+`CLTRenderer_SetupPassPerspective` (slot 15, 0x0060B520) was already mapped as "where to hook". Hooking it
+confirms why that note was right, and how little maths stereo actually needs here:
+
+    __stdcall(const LTNodeTransform* camera, const float fov[2], const float rect[4], float dmin, float dmax)
+
+It is `__stdcall`, NOT `__thiscall`, despite being a vtable slot: the wrapper loads `ecx` with g_SceneRenderer
+itself and never reads an incoming `this`.
+
+**The FOV argument predicts the record exactly.** Captured in the detour and pushed through the engine's own
+clamp-and-tan (`predicted_half_view_plane`), it reproduces the mapped record field to the reported precision:
+
+    intercepted arg -> predicted half view-plane : x=1.132569  y=0.637070
+    record's mapped field                        : x=1.1326    y=0.6371
+
+An intercepted call and a struct offset are independent routes to one pair, which is what makes both
+trustworthy. Live FOV is 97.1 deg x by 65.0 deg y, viewport {0,0,1,1}, depth 4.3 .. 100000.
+
+**Both stereo primitives work, and were verified on screen:**
+
+* an eye offset -- `SceneCamera::offset_transform_local` displaces the pose along its OWN right vector (columns
+  0/1/2 of the pose matrix are right/up/forward), rotation untouched. 18516 overrides, 0 rejected. At 100 world
+  units the world visibly moves while screen-space HUD does not.
+* a fractional viewport -- halving the rect renders the world into the right half of the target, which IS
+  side-by-side's right eye, with no matrix work at all.
+
+**~390 passes/second, i.e. more than one perspective pass per frame.** A stereo path cannot assume "one pass =
+one eye"; which passes to displace is a filter that still needs establishing.
+
+**What is NOT reachable here, stated so nobody plans around it:** the projection centre offset is hardcoded
+(0,0) by this entry, so the asymmetric frustum a real HMD wants needs the record field written after setup.
+Symmetric per-eye FOV plus a sub-rect is reachable; an off-centre frustum is not.
+
+**Still missing for actual stereo:** rendering BOTH eyes needs the setup/draw/end group driven twice inside one
+target. The engine already demonstrates the shape -- Renderer_MakeCubicEnvMap does it six times per cube map --
+so the anchors exist; driving them is the next step and is not done.
+

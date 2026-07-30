@@ -8091,6 +8091,117 @@ int main(int argc, char** argv) {
             check(!json_has(body, "\"armed\":true"), "and no slot remains armed afterwards");
         }
 
+        // ---- THE PERSPECTIVE PASS: THE STEREO INTERVENTION POINT ----------------------------
+        //
+        // CLTRenderer slot 15 takes the camera transform, the FOV as ANGLES and a FRACTIONAL viewport, and
+        // forwards all three into the view matrix together. These assert the consumer surface -- the hook's
+        // observations and sdk::SceneCamera's maths -- rather than any address.
+        {
+            std::string pb;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                pb = http::body_of(resp);
+            }
+            bool cp_hooked = false;
+            check(json_bool(pb, "cp_hooked", cp_hooked) && cp_hooked,
+                  "the perspective pass setup is hooked -- the point where a per-eye view is substituted");
+
+            if (cp_hooked) {
+                double p1 = -1.0;
+                json_double(pb, "cp_passes", p1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                std::string pb2;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    pb2 = http::body_of(resp);
+                }
+                double p2 = -1.0;
+                json_double(pb2, "cp_passes", p2);
+                check(p2 > p1, "perspective passes arrive through the hook");
+
+                // THE CROSS-VALIDATION, and the strongest check available here: the FOV captured as an
+                // ARGUMENT in the detour, pushed through the engine's own clamp-and-tan
+                // (SceneCamera::predicted_half_view_plane), must equal the half view-plane the mapped record
+                // holds. An intercepted call and a struct offset are independent routes; a wrong offset or a
+                // wrong formula cannot agree by luck.
+                double pred_x = -1.0, pred_y = -1.0, rec_w = -1.0, rec_h = -1.0;
+                const bool have = json_double(pb2, "cp_pred_half_x", pred_x) &&
+                                  json_double(pb2, "cp_pred_half_y", pred_y) &&
+                                  json_double(pb2, "hvp_half_w", rec_w) &&
+                                  json_double(pb2, "hvp_half_h", rec_h);
+                check(have, "both the predicted and the recorded half view-plane are reported");
+                if (have) {
+                    // Tolerance reflects the REPORTED precision (the record fields are emitted at 4 decimals),
+                    // not a fudge factor -- the two are computed from the same clamp and tangent.
+                    check(pred_x > rec_w - 1e-3 && pred_x < rec_w + 1e-3 &&
+                              pred_y > rec_h - 1e-3 && pred_y < rec_h + 1e-3,
+                          "the FOV intercepted as an argument predicts the record's half view-plane exactly -- "
+                          "an intercepted call and a mapped field agreeing is what makes both trustworthy");
+                }
+
+                // The FOV must be a plausible ANGLE, which is the property that makes per-eye FOV a float
+                // rather than a matrix rebuild. A pointer read as a float, or radians confused with degrees,
+                // fails here.
+                double fov_x = -1.0, fov_y = -1.0;
+                if (json_double(pb2, "cp_fov_x", fov_x) && json_double(pb2, "cp_fov_y", fov_y)) {
+                    check(fov_x > 0.0 && fov_x < 3.1241394 && fov_y > 0.0 && fov_y < fov_x,
+                          "the captured FOV is a radian pair inside the engine's own 179-degree ceiling, with "
+                          "the vertical narrower than the horizontal");
+                }
+
+                // The viewport is fractional, which is what makes side-by-side free.
+                double rl = -1.0, rt = -1.0, rr = -1.0, rb = -1.0;
+                if (json_double(pb2, "cp_rect_l", rl) && json_double(pb2, "cp_rect_t", rt) &&
+                    json_double(pb2, "cp_rect_r", rr) && json_double(pb2, "cp_rect_b", rb)) {
+                    check(rl >= 0.0 && rt >= 0.0 && rr <= 1.0 && rb <= 1.0 && rr > rl && rb > rt,
+                          "the viewport rect is normalised and ordered -- the property a split relies on");
+                }
+
+                double depth_min = -1.0, depth_max = -1.0;
+                if (json_double(pb2, "cp_depth_min", depth_min) &&
+                    json_double(pb2, "cp_depth_max", depth_max)) {
+                    check(depth_min > 0.0 && depth_max > depth_min,
+                          "the depth range is ordered and has a positive near plane");
+                }
+
+                // ---- THE OVERRIDE ITSELF -----------------------------------------------------
+                //
+                // MUTATES the rendered view, so it is armed briefly and switched off in the same block. The
+                // check is that the offset APPLIES and is never REJECTED: a rejection means
+                // SceneCamera::offset_transform_local refused the live pose, which would mean the transform
+                // we are reading is not the shape the mapping claims.
+                double rej_before = -1.0;
+                json_double(pb2, "cp_rejected", rej_before);
+                if (http::get(port, "/stereo/eye?eye=right&half_ipd=2&split=0", resp)) {
+                    check(json_has(http::body_of(resp), "\"ok\":true"), "an eye offset is accepted");
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                std::string pb3;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    pb3 = http::body_of(resp);
+                }
+                double ov = -1.0, rej_after = -1.0;
+                json_double(pb3, "cp_overridden", ov);
+                json_double(pb3, "cp_rejected", rej_after);
+                check(ov > 0.0,
+                      "the eye offset was APPLIED to real passes -- displacing the camera along its own right "
+                      "vector, which is what a stereo eye is");
+                check(rej_after == rej_before,
+                      "and no pass was rejected: every live camera transform was usable as a pose, so the "
+                      "mapped layout holds against what the renderer actually passes");
+
+                // OFF AGAIN, unconditionally. Leaving the view displaced would be the suite mutating the
+                // fixture for every check that follows -- and for the player.
+                http::get(port, "/stereo/eye?eye=off", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::string pb4;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    pb4 = http::body_of(resp);
+                }
+                double eye_now = -1.0;
+                check(json_double(pb4, "cp_eye", eye_now) && eye_now == 0.0,
+                      "and the override releases, so the suite leaves the view as it found it");
+            }
+        }
+
         // ---- THE FRAME BOUNDARY, WHICH IS WHERE A STEREO PATH ATTACHES ----------------------
         //
         // Found with an execute watchpoint on d3d9's Present (no player input needed), then read in IDA. These
