@@ -5999,6 +5999,17 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_ov_max_drift_deg", static_cast<double>(vh.override_max_drift_deg), 4);
         json_append_double(out, "vh_ov_drift_frames", static_cast<double>(vh.override_drift_frames), 0);
         json_append_double(out, "vh_ov_inflight", static_cast<double>(vh.override_inflight), 0);
+        json_append_double(out, "vh_ov_applied_writes", static_cast<double>(vh.override_applied_writes), 0);
+        // THE RENDER CHAIN'S OWN ADDRESSES, so a data breakpoint can find the writer that actually feeds the
+        // renderer. Scanning for the offset is what failed here before: 67 functions share it.
+        if (const auto pp = sdk::PlayerMgr::player(0); pp.has_value()) {
+            json_append_double(out, "vh_addr_holder", static_cast<double>(pp->holder), 0);
+            json_append_double(out, "vh_addr_camera_object", static_cast<double>(pp->camera_object), 0);
+        }
+        json_append_double(out, "vh_ov_applied_drift_deg",
+                           static_cast<double>(vh.override_applied_drift_deg), 4);
+        json_append_double(out, "vh_ov_object_drift_deg",
+                           static_cast<double>(vh.override_object_drift_deg), 4);
         // THE REFUSAL PATH, checkable without touching the view. write_view_rotation must reject a non-unit
         // quaternion, because read_pose treats non-unit as proof of a wrong offset -- a writer that could
         // manufacture that state would be able to fake a mapping error into existence.

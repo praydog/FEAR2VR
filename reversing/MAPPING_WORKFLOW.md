@@ -3927,3 +3927,36 @@ store is a losing race with the frame; replacing the value in flight is not a ra
 It also explains the earlier reading that the applied pose at +244 "lands but does not survive". Same shape,
 one level down.
 
+## The view chain is not linear, and "zero drift" at one field proves nothing about the rendered view
+
+A player still saw the view rubber-band while the instrument reported **0.00 degrees** of drift. Both were
+right: the instrument measured the field being written, and the renderer reads something else. Measuring every
+stage against what the override intended settled it.
+
+```
+                          override at +324 only     also writing +244
++324 source (we write)         0.0000 deg              0.0000 deg
++244 applied (derived)        58.8223 deg              8.5281 deg
+camera object (RENDERED)      58.8223 deg            109.4697 deg
+```
+
+Two readings, two conclusions:
+
+1. **With only +324 owned**, the applied pose and the camera object were 58.82 degrees away from our intent and
+   agreed with EACH OTHER. So the render chain is not fed from +324, whatever writing +324 does to movement.
+2. **Once +244 was written too**, +244 came mostly to heel (8.53) and the camera object got WORSE (109.47) --
+   the two stopped agreeing. So the camera object is not a copy of +244 either; it is computed independently
+   from a shared upstream, and forcing +244 only desynchronised them.
+
+That is consistent with the write probe, which found the camera object's rotation RECLAIMED within one frame:
+something rewrites it every frame, and that writer is what feeds the renderer.
+
+**The methodological point, which cost several wrong conclusions here:** an override's instrument must measure
+the stage the CONSUMER reads, not the stage the override writes. Every number I trusted was measured at the
+write site, so each new field I captured reported a triumphant zero while the player kept seeing the same
+artefact. The player's perception was the only signal tracking the truth, three times in a row.
+
+Next step is a data breakpoint on the camera object's rotation, `object + 0x20`. Note that object lives in the
+engine's pool rather than gameclient, so its writer may be in FEAR2.exe -- a different IDB from everything in
+this chain so far.
+

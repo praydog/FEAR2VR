@@ -64,6 +64,11 @@ std::atomic<uint32_t> g_ov_max_drift_bits{0};
 std::atomic<uint64_t> g_ov_drift_frames{0};
 // Frames where we replaced the quaternion IN FLIGHT rather than writing the field after the fact.
 std::atomic<uint64_t> g_ov_inflight{0};
+// Worst deviation of each DERIVED stage from what the override intends -- where the render path re-enters.
+std::atomic<uint32_t> g_ov_applied_drift_bits{0};
+std::atomic<uint32_t> g_ov_object_drift_bits{0};
+// Times the applied pose was replaced right after ApplyLookDelta wrote it -- the render chain's entry point.
+std::atomic<uint64_t> g_ov_applied_writes{0};
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
@@ -80,6 +85,28 @@ std::atomic<uintptr_t> g_pose_target{0};
 //
 // So every writer we own is followed by a re-assert. `decrement` is only true for the per-frame call, or the
 // countdown would burn down at the rate of look input instead of the rate of frames.
+// Worst angular distance between two quaternions, accumulated into a max. Sign-insensitive, since q and -q
+// are the same rotation and a naive comparison would report 180 degrees for an identical pose.
+void track_drift(std::atomic<uint32_t>& slot, const std::array<float, 4>& a, const std::array<float, 4>& b) {
+    float dot = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) {
+        dot += a[i] * b[i];
+    }
+    dot = dot < 0.0f ? -dot : dot;
+    if (dot > 1.0f) {
+        dot = 1.0f;
+    }
+    const float deg = 2.0f * std::acos(dot) * 57.29577951f;
+    const uint32_t prev = slot.load(std::memory_order_relaxed);
+    float prev_f = 0.0f;
+    std::memcpy(&prev_f, &prev, sizeof(prev_f));
+    if (deg > prev_f) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &deg, sizeof(bits));
+        slot.store(bits, std::memory_order_relaxed);
+    }
+}
+
 // The absolute rotation the override wants this frame: yaw offset composed onto the captured baseline.
 // False when no baseline has been captured yet.
 bool override_rotation(std::array<float, 4>& out) {
@@ -226,11 +253,26 @@ int __fastcall apply_look_delta_detour(uintptr_t self, uintptr_t /*edx*/, float*
     // stack value. That is the rubber-band, and it is why correcting after both hooks still left a 3.24 degree
     // worst-case excursion. Writing THROUGH a2 puts our rotation into the value the caller is about to store,
     // so the engine propagates it instead of fighting it.
-    if (a2 != nullptr && g_ov_frames.load(std::memory_order_relaxed) > 0) {
+    if (g_ov_frames.load(std::memory_order_relaxed) > 0) {
         std::array<float, 4> out{};
         if (override_rotation(out)) {
-            std::memcpy(a2, out.data(), sizeof(out));
-            g_ov_inflight.fetch_add(1, std::memory_order_relaxed);
+            if (a2 != nullptr) {
+                std::memcpy(a2, out.data(), sizeof(out));
+                g_ov_inflight.fetch_add(1, std::memory_order_relaxed);
+            }
+            // AND THE APPLIED POSE, which is what the RENDERER follows.
+            //
+            // Owning +324 completely was not enough: with it pinned to 0.00 degrees of drift, the applied pose
+            // at +244 and the camera object BOTH sat 58.82 degrees away and the player still saw the view
+            // rubber-band. The two derived stages agreed with each other and not with us, so the render chain
+            // is +244 -> camera object -> renderer and it is NOT fed from +324.
+            //
+            // ApplyLookDelta writes +244 itself, from the delta-applied rotation, before returning. So the
+            // moment to replace it is HERE -- immediately after its writer -- and not after UpdateViewPose,
+            // where an earlier attempt was simply overwritten by this function on the next call.
+            if (sdk::PlayerMgr::write_applied_rotation(0, out)) {
+                g_ov_applied_writes.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     return r;
@@ -296,6 +338,32 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
     // AFTER the original: replace the pose it just computed. Upstream of the camera object, which is the whole
     // point -- writing the object directly is reclaimed within a frame. This call owns the frame countdown.
     apply_override(true);
+
+    // HOW FAR DOWNSTREAM DOES THE OVERRIDE ACTUALLY REACH?
+    //
+    // Zero drift at +324 only proves we win at the field we write. A player still saw the rendered view
+    // rubber-band, which means whatever the renderer consumes is NOT that field -- so each derived stage is
+    // measured against the rotation the override intends, at the end of the frame's view update.
+    //
+    //     +324  the field we write
+    //     +244  the applied pose, derived
+    //     camera object LTObject.rotation, derived again
+    //
+    // Whichever stage diverges is where input re-enters, and that is the one a VR override has to reach.
+    if (g_ov_frames.load(std::memory_order_relaxed) > 0) {
+        std::array<float, 4> want{};
+        if (override_rotation(want)) {
+            if (const auto ap = sdk::PlayerMgr::applied_rotation(0)) {
+                track_drift(g_ov_applied_drift_bits, want, *ap);
+            }
+            if (const auto p = sdk::PlayerMgr::player(0); p.has_value() && p->camera_object != 0) {
+                std::array<float, 4> obj{};
+                if (sdk::mem::copy(obj.data(), p->camera_object + 0x20, sizeof(obj))) {
+                    track_drift(g_ov_object_drift_bits, want, obj);
+                }
+            }
+        }
+    }
 
     return result;
 }
@@ -370,6 +438,11 @@ ViewHook::Observed ViewHook::observed() const {
     std::memcpy(&out.override_max_drift_deg, &db, sizeof(out.override_max_drift_deg));
     out.override_drift_frames = g_ov_drift_frames.load(std::memory_order_relaxed);
     out.override_inflight = g_ov_inflight.load(std::memory_order_relaxed);
+    out.override_applied_writes = g_ov_applied_writes.load(std::memory_order_relaxed);
+    uint32_t ab = g_ov_applied_drift_bits.load(std::memory_order_relaxed);
+    std::memcpy(&out.override_applied_drift_deg, &ab, sizeof(out.override_applied_drift_deg));
+    uint32_t ob = g_ov_object_drift_bits.load(std::memory_order_relaxed);
+    std::memcpy(&out.override_object_drift_deg, &ob, sizeof(out.override_object_drift_deg));
     return out;
 }
 
@@ -389,6 +462,9 @@ void ViewHook::arm_override(float yaw_deg, uint32_t frames, bool write_source) {
     g_ov_max_drift_bits.store(0, std::memory_order_relaxed);
     g_ov_drift_frames.store(0, std::memory_order_relaxed);
     g_ov_inflight.store(0, std::memory_order_relaxed);
+    g_ov_applied_drift_bits.store(0, std::memory_order_relaxed);
+    g_ov_object_drift_bits.store(0, std::memory_order_relaxed);
+    g_ov_applied_writes.store(0, std::memory_order_relaxed);
     g_ov_pending.store(false, std::memory_order_relaxed);
     g_ov_frames.store(bounded, std::memory_order_relaxed);
     LOGX("[viewhook] override armed: %.2f deg yaw for %u frames", yaw_deg, bounded);

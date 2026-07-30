@@ -104,6 +104,11 @@ public:
         // Times the quaternion was replaced IN FLIGHT through ApplyLookDelta's argument, which is the form that
         // does not fight the caller's write-back.
         uint64_t override_inflight{};
+        // How far each DERIVED stage ends up from what the override intends. Zero drift at the field we write
+        // says nothing about the rendered view, which a player can still see rubber-band.
+        float override_applied_drift_deg{};   // +244, the applied pose
+        float override_object_drift_deg{};    // the camera object's LTObject.rotation
+        uint64_t override_applied_writes{};   // replacements of +244, the render chain's entry point
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
