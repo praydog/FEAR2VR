@@ -6929,3 +6929,64 @@ class CPlayerCamera 0x18C6 {
 // Exposed as sdk::PlayerMgr::pitch_recovery_timer / aim_tracking_limits / aim_tracking_flag.
 //
 // 1444 checks, 0 failures.
+
+// ---- THE CAMERA'S EULER MATH IS KEN SHOEMAKE'S, AND THE ROUND TRIP IS NOW CLOSED ----------------
+//
+// Done while two subagents held the build and the injected DLL, so this pass is IDA-only -- no workspace code,
+// no rebuild, no fixture run. The findings are static reads, which is why they are recorded here rather than
+// asserted in the suite.
+//
+// CPlayerCamera's rotation handling is Ken Shoemake's Euler code from GRAPHICS GEMS IV, and the identification
+// is byte-exact rather than a resemblance:
+//
+//     Eul_FromHMatrix  (was Matrix_ToEuler)  the repeated/non-repeated branch pair, the odd-parity negation of
+//                                            all three angles, the [0]<->[2] swap for a rotating frame, and the
+//                                            ORDER stored into the 4th output component -- all verbatim
+//     EulGetOrd                              decodes the order into (i, j, k, h, parity, repeated, frame)
+//     EulSafe = {0,1,2,0}                    matches the published table byte-for-byte
+//     EulNext = {1,2,0,1}                    likewise
+//
+// SO THE ORDER ENCODING IS ord = (i<<3) | (parity<<2) | (repeated<<1) | frame, and any axis order can be
+// COMPOSED rather than discovered. Order 17, the one the camera uses, decodes to frame=1, repeated=0, parity=0,
+// i=EulSafe[2]=2 -- Shoemake's EulOrdZYXr.
+//
+// A TRAP WORTH RECORDING: byte_101E0DB9 is NOT a third table. Shoemake writes EulNext[i+1-n] and the compiler
+// folded the +1 into the base address, so IDA shows a second symbol one byte inside EulNext. Mapping it as its
+// own table would be wrong -- the same shape as this file's other "two symbols, one structure" cases.
+//
+// THE CONSTRUCTION DIRECTION IS ASYMMETRIC, AND THE ASYMMETRY IS PROVEN: Quaternion_FromEuler (0x10001430, 32
+// callers) never calls EulGetOrd -- which has exactly ONE caller -- and hardcodes its axis order in a sin/cos
+// expansion, then converts through Quat_FromMatrix. Extraction is order-parameterised; construction is not.
+//
+// > I first recorded that as "a consumer must verify rather than assume the two orders agree". They do agree, and
+// > verifying took one decompile. Column 2 of the matrix Quaternion_FromEuler builds is
+// >     (cos a1 * sin a2,  -sin a1,  cos a1 * cos a2)
+// > which is the yaw/pitch FORWARD VECTOR of a left-handed Y-up system. Only a1=pitch, a2=yaw satisfies it, and
+// > a3 appears solely mixed with the other two, i.e. roll. So the signature is
+// >     Quaternion_FromEuler(pitch, yaw, roll)
+//
+// WHICH PINS ALL THREE COMPONENTS OF ORDER 17, not just the one already known. CPlayerCamera_ApplyLookDelta
+// extracts with order 17 and feeds the result straight back as (euler[1], euler[0], euler[2]), so:
+//
+//     order 17:   [0] = YAW      [1] = PITCH      [2] = ROLL      [3] = the order itself
+//
+// [1] = pitch was already established from SmoothPitchTime in CPlayerCamera_ClampPitch. The other two follow from
+// that call site plus the matrix, and the game round-trips the camera through both functions every frame -- so it
+// depends on the agreement itself.
+//
+// FOR A VR CONSUMER THIS IS THE WHOLE ROTATION INTERFACE: build with Quaternion_FromEuler(pitch, yaw, roll),
+// read back with order 17 expecting (yaw, pitch, roll).
+//
+// ALSO NAMED: Quat_FromMatrix (matrix -> quaternion, trace-based with a largest-diagonal fallback -- note its
+// threshold is -0.999, not the usual 0.0, so the fast path covers nearly every rotation), Math_Clamp already
+// named, and LTVector_Equals (exact component equality, no tolerance; ApplyLookDelta uses it against a zeroed
+// triple as an is-zero test, where exactness is correct because a denormal delta is still a delta).
+//
+// TWO LEADS LEFT DELIBERATELY UNNAMED, with their evidence recorded on the functions:
+//   * 0x1008BA70 returns *(owner + 2324) != 1, and ApplyLookDelta BAILS OUT -- passing its input quaternion
+//     straight through -- when it is false. So state 1 at owner+2324 disables the look path entirely. Useful
+//     without a name for the state.
+//   * five wrappers at 0x100D31D0..0x100D3250 pass the constant id 2 into a family at 0x1018E3F0/0x420/0x530/
+//     0x560/0xAF0 that indexes 72-byte slots and reads a quaternion from a slot sub-pointer. The camera's
+//     aim-tracking path uses id 2, but the region also serves FX and interface code ('FXName', 'Lifetime',
+//     'Icon Size' are referenced nearby), so the family is SHARED and naming it after the camera would be wrong.
