@@ -6009,6 +6009,8 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_spr_calls", static_cast<double>(vh.spr_calls), 0);
         json_append_double(out, "vh_spr_camera", static_cast<double>(vh.spr_camera), 0);
         json_append_double(out, "vh_spr_overridden", static_cast<double>(vh.spr_overridden), 0);
+        json_append_double(out, "vh_ov_body_drift_deg",
+                           static_cast<double>(vh.override_body_drift_deg), 4);
         // THE RENDER CHAIN'S OWN ADDRESSES, so a data breakpoint can find the writer that actually feeds the
         // renderer. Scanning for the offset is what failed here before: 67 functions share it.
         if (const auto pp = sdk::PlayerMgr::player(0); pp.has_value()) {

@@ -94,6 +94,11 @@ std::atomic<uint64_t> g_spr_calls{0};
 std::atomic<uint64_t> g_spr_camera{0};
 std::atomic<uint64_t> g_spr_overridden{0};
 std::atomic<bool> g_spr_installed{false};
+// The player BODY's rotation against its own baseline: large while the camera is locked means the two are
+// genuinely decoupled.
+std::atomic<uint32_t> g_ov_body_drift_bits{0};
+std::atomic<uint32_t> g_ov_body_base[4]{};
+std::atomic<bool> g_ov_body_base_set{false};
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
@@ -392,10 +397,40 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
             if (const auto ap = sdk::PlayerMgr::applied_rotation(0)) {
                 track_drift(g_ov_applied_drift_bits, want, *ap);
             }
-            if (const auto p = sdk::PlayerMgr::player(0); p.has_value() && p->camera_object != 0) {
-                std::array<float, 4> obj{};
-                if (sdk::mem::copy(obj.data(), p->camera_object + 0x20, sizeof(obj))) {
-                    track_drift(g_ov_object_drift_bits, want, obj);
+            if (const auto p = sdk::PlayerMgr::player(0); p.has_value()) {
+                if (p->camera_object != 0) {
+                    std::array<float, 4> obj{};
+                    if (sdk::mem::copy(obj.data(), p->camera_object + 0x20, sizeof(obj))) {
+                        track_drift(g_ov_object_drift_bits, want, obj);
+                    }
+                }
+                // THE PLAYER'S BODY, which is the field I should have been measuring all along.
+                //
+                // Every instrument here was camera-side, so a render-only lock reported the aim pose frozen and
+                // I concluded the body was frozen too. A player then rotated their character through a full 360
+                // while the view stayed stuck. The aim pose at +244 is the CAMERA's pose -- of course it follows
+                // the camera -- and the body has its own rotation on the player object.
+                //
+                // Measured against the body's OWN baseline, so a large number here while the camera reads zero
+                // is decoupling working rather than an error.
+                if (p->object != 0) {
+                    std::array<float, 4> body{};
+                    if (sdk::mem::copy(body.data(), p->object + 0x20, sizeof(body))) {
+                        if (!g_ov_body_base_set.load(std::memory_order_relaxed)) {
+                            for (size_t i = 0; i < body.size(); ++i) {
+                                uint32_t bits = 0;
+                                std::memcpy(&bits, &body[i], sizeof(bits));
+                                g_ov_body_base[i].store(bits, std::memory_order_relaxed);
+                            }
+                            g_ov_body_base_set.store(true, std::memory_order_relaxed);
+                        }
+                        std::array<float, 4> bb{};
+                        for (size_t i = 0; i < bb.size(); ++i) {
+                            const uint32_t bits = g_ov_body_base[i].load(std::memory_order_relaxed);
+                            std::memcpy(&bb[i], &bits, sizeof(bb[i]));
+                        }
+                        track_drift(g_ov_body_drift_bits, bb, body);
+                    }
                 }
             }
         }
@@ -568,6 +603,8 @@ ViewHook::Observed ViewHook::observed() const {
     out.spr_camera = g_spr_camera.load(std::memory_order_relaxed);
     out.spr_overridden = g_spr_overridden.load(std::memory_order_relaxed);
     out.spr_installed = g_spr_installed.load(std::memory_order_relaxed);
+    const uint32_t bd = g_ov_body_drift_bits.load(std::memory_order_relaxed);
+    std::memcpy(&out.override_body_drift_deg, &bd, sizeof(out.override_body_drift_deg));
     uint32_t ab = g_ov_applied_drift_bits.load(std::memory_order_relaxed);
     std::memcpy(&out.override_applied_drift_deg, &ab, sizeof(out.override_applied_drift_deg));
     uint32_t ob = g_ov_object_drift_bits.load(std::memory_order_relaxed);
@@ -593,6 +630,8 @@ void ViewHook::arm_override(float yaw_deg, uint32_t frames, unsigned mode) {
     g_ov_inflight.store(0, std::memory_order_relaxed);
     g_ov_applied_drift_bits.store(0, std::memory_order_relaxed);
     g_ov_object_drift_bits.store(0, std::memory_order_relaxed);
+    g_ov_body_drift_bits.store(0, std::memory_order_relaxed);
+    g_ov_body_base_set.store(false, std::memory_order_relaxed);
     g_ov_applied_writes.store(0, std::memory_order_relaxed);
     g_ov_pending.store(false, std::memory_order_relaxed);
     g_ov_frames.store(bounded, std::memory_order_relaxed);

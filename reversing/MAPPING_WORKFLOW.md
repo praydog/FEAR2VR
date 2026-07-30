@@ -4039,8 +4039,31 @@ Owning SetPosRot therefore gives authority over the view AND everything derived 
 head-tracked view wants: a player reported the weapon still following the mouse while bullets did not deviate,
 and the viewmodel jittered only because a partial override of `+244` was fighting its source.
 
-**So aim/view decoupling is NOT free after all.** It needs the split to happen upstream of the camera object --
-letting the engine's own aim continue into `+244` and the weapon, while the camera object receives the head
-pose. The upstream writer of the camera object is the next thing to find, and the method is established: hook a
-candidate, count calls on the camera object, and believe only the count.
+**RETRACTED, one measurement later: aim/view decoupling IS free.** The paragraph above concluded the opposite
+from a render-only lock in which the aim pose read 0.28 degrees alongside the frozen camera. That was the wrong
+field: `+244` is the CAMERA's pose, so it follows the camera by construction. The player's BODY has its own
+rotation on the player object, and it was never instrumented -- every drift figure in this file was camera-side,
+which is precisely why the conclusion came out backwards.
+
+A player rotated their character through a full 360 while the view stayed stuck, and the added instrument agrees:
+
+```
+camera object (view)    :   0.0 deg    locked
++244 applied (cam pose) :   0.0 deg    follows the camera
+PLAYER BODY             : 180.0 deg    turned freely (180 is this metric's ceiling)
+```
+
+So overriding the camera object at SetPosRot gives a head-tracked view while the body, aim and weapon stay under
+player control -- which is exactly the split a VR mod wants, available with one hook and no further reversing.
+
+### The lesson, stated plainly because it cost five wrong conclusions
+
+**An instrument can only ever confirm conclusions about the thing it measures.** Every drift figure here was
+read off a camera-side field, so each new override reported success at the field it wrote and the player kept
+seeing something else: blur when the field was derived-but-consumed, a spin when it fed movement, rubber-banding
+when a caller committed the value afterwards, a frozen aim that was really the camera's own pose, and finally a
+body turning 360 degrees that no number in the endpoint could see.
+
+Five times the player's perception was right and the instrumentation was pointing somewhere else. When a
+consumer-visible symptom disagrees with a green measurement, the measurement is aimed at the wrong stage.
 

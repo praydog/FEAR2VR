@@ -124,6 +124,9 @@ public:
         uint64_t spr_camera{};
         uint64_t spr_overridden{};
         bool spr_installed{};
+        // The player BODY's rotation, against its own baseline. Every other drift figure here is camera-side,
+        // which is how a render-only lock got reported as freezing the body when it does not.
+        float override_body_drift_deg{};
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
