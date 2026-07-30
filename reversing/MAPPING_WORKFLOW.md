@@ -4421,3 +4421,38 @@ already prescribes for `renderable`/`linked`.
 Both were found by running the suite against a genuinely in-world session rather than a menu, which is the
 argument for `tools/resume_game.py` existing.
 
+## Both eyes render, and the viewport split had to be MEASURED because screenshots lied twice
+
+The pass group repeated inside the render target the engine already opened:
+
+    DrawScene(left)  ->  EndPass  ->  SetupPassPerspective(right)  ->  DrawScene(right)
+
+and the engine's own EndPass closes the second pass, so the state machine ends where it began
+(4 -> 3 -> 4 -> 3). That is the sequence `Renderer_MakeCubicEnvMap` performs six times per cube map, which is
+where the shape came from. Both replay calls go down the TRAMPOLINES: through our own detours the transform
+would be displaced twice and the draw detour would recurse.
+
+Live: 2730 second-eye draws against 2730 setups, zero rejected, renderer stable.
+
+**The second eye must come from the PRISTINE setup, not from eye A.** Deriving right from an already-displaced
+left separates the views by two IPDs and puts the centre in the wrong place, so the detour keeps a clean copy
+of the engine's own arguments before overriding anything.
+
+### Two wrong readings from screenshots, settled by one number
+
+I reported "the world renders only in the right half" from a screenshot, then later "the split is not taking
+effect" from another. Both were readings of a dark corridor. The viewport the engine DERIVES settles it, read
+inside the detour right after the setup call so it is in phase with the pass it describes:
+
+    eye=off              [0    0 2560 1440]   w=2560
+    eye=left  + split    [0    0 1280 1440]   w=1280
+    eye=right + split    [1280 0 2560 1440]   w=1280
+
+Complementary halves, exactly as intended, and the whole time. A read from the IPC thread cannot answer this:
+it lands on whichever pass ran last, which is the full-screen ORTHO HUD pass (`sc_mode 2`, `sc_perspective
+false`, identity pose) -- that pass is also what draws over the seam and makes side-by-side look continuous.
+
+The lesson is the one this file keeps writing down in new forms: **a consumer-visible symptom judged by eye is
+not a measurement.** Two contradictory conclusions came out of two screenshots of the same working feature,
+and the disagreement was resolved by exposing the number the engine itself computed.
+

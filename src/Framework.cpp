@@ -6157,6 +6157,14 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_double(out, "cp_passes", static_cast<double>(cp.passes), 0);
                 json_append_double(out, "cp_overridden", static_cast<double>(cp.overridden), 0);
                 json_append_double(out, "cp_rejected", static_cast<double>(cp.rejected), 0);
+                json_append_bool(out, "cp_stereo", cp.stereo);
+                json_append_double(out, "cp_vp_l", static_cast<double>(cp.viewport[0]), 0);
+                json_append_double(out, "cp_vp_t", static_cast<double>(cp.viewport[1]), 0);
+                json_append_double(out, "cp_vp_r", static_cast<double>(cp.viewport[2]), 0);
+                json_append_double(out, "cp_vp_b", static_cast<double>(cp.viewport[3]), 0);
+                json_append_double(out, "cp_draw_calls", static_cast<double>(cp.draw_calls), 0);
+                json_append_double(out, "cp_second_eye_draws",
+                                   static_cast<double>(cp.second_eye_draws), 0);
                 json_append_double(out, "cp_eye", static_cast<double>(static_cast<int>(cp.eye)), 0);
                 json_append_double(out, "cp_half_ipd", cp.half_ipd, 4);
                 json_append_bool(out, "cp_split_viewport", cp.split_viewport);
@@ -9788,7 +9796,13 @@ bool Framework::initialize() {
         }
         const auto ipd = static_cast<float>(webapi_query_double(q, "half_ipd", 0.0));
         const bool split = webapi_query_int(q, "split", 0) != 0;
-        CameraPassHook::get().set_eye(eye, ipd, split);
+        // `both=1` renders BOTH eyes per frame; otherwise `eye=` selects a single one.
+        if (webapi_query_int(q, "both", 0) != 0) {
+            CameraPassHook::get().set_stereo(true, ipd, split);
+        } else {
+            CameraPassHook::get().set_stereo(false, ipd, split);
+            CameraPassHook::get().set_eye(eye, ipd, split);
+        }
         CameraPassHook::get().set_fov_override(
             static_cast<float>(webapi_query_double(q, "fov_x", 0.0)),
             static_cast<float>(webapi_query_double(q, "fov_y", 0.0)));
@@ -9801,7 +9815,10 @@ bool Framework::initialize() {
               .b("split_viewport", o.split_viewport)
               .u("passes", static_cast<size_t>(o.passes))
               .u("overridden", static_cast<size_t>(o.overridden))
-              .u("rejected", static_cast<size_t>(o.rejected));
+              .u("rejected", static_cast<size_t>(o.rejected))
+              .b("stereo", o.stereo)
+              .u("draw_calls", static_cast<size_t>(o.draw_calls))
+              .u("second_eye_draws", static_cast<size_t>(o.second_eye_draws));
         }
         return out;
     };

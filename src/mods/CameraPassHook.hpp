@@ -8,6 +8,8 @@
 
 #include "../Mod.hpp"
 
+#include "sdk/regenny/regenny/LTNodeTransform.hpp"
+
 // THE PERSPECTIVE PASS, HOOKED -- where a stereo view is substituted.
 //
 // `CLTRenderer_SetupPassPerspective` (vtable slot 15, FEAR2.exe 0x0060B520) is the one call that decides what
@@ -68,6 +70,29 @@ public:
     // picks a number and looks. Reporting it back in observed() is what makes that iteration possible.
     void set_eye(Eye eye, float half_ipd, bool split_viewport);
 
+    // ---- BOTH EYES IN ONE FRAME ------------------------------------------------------
+    //
+    // set_eye() renders ONE eye. This renders two, by repeating the pass group inside the target the engine
+    // already opened -- which is the sequence the engine itself performs six times per cube map:
+    //
+    //     DrawScene(left)  ->  EndPass  ->  SetupPassPerspective(right)  ->  DrawScene(right)
+    //
+    // and the engine's own EndPass then closes the second pass, so the renderer's state machine ends where it
+    // started (4 -> 3 -> 4 -> 3). Nothing about the frame or the render target is touched.
+    //
+    // COSTS A SECOND FULL SCENE DRAW, which is what stereo costs. Off by default for that reason as well as
+    // the visual one.
+    void set_stereo(bool on, float half_ipd, bool split_viewport);
+
+    // Drives a pass setup WITHOUT passing through this mod's own override -- straight down the trampoline.
+    // Public because rendering a second view means calling the engine's setup again from outside the engine,
+    // and a caller doing that must not have its transform silently displaced a second time.
+    //
+    // GAME THREAD ONLY, and only between a BeginRenderTarget and its EndRenderTarget: it moves the renderer's
+    // state machine. Returns false when the hook is not installed.
+    bool replay_setup(const regenny::LTNodeTransform& camera, const float fov[2], const float rect[4],
+                      float depth_min, float depth_max);
+
     // Override the field of view the pass is set up with, in RADIANS, or a non-positive value to leave the
     // game's own value alone. Clamped by the engine to 179 degrees (SceneCamera::kMaxFovRadians), so a caller
     // asking for more silently gets that -- predicted_half_view_plane() will say so.
@@ -89,7 +114,14 @@ public:
         float depth_min{};
         float depth_max{};
 
+        // The PIXEL viewport the engine derived, read in-phase right after the setup call. A rect that was
+        // substituted but had no effect shows up here as a full-screen viewport.
+        std::array<int32_t, 4> viewport{};
+
         Eye eye{Eye::Off};
+        bool stereo{};              // both eyes per frame
+        uint64_t second_eye_draws{};// scenes drawn for the second eye
+        uint64_t draw_calls{};      // DrawScene calls seen
         float half_ipd{};
         bool split_viewport{};
         std::array<float, 2> fov_override{};

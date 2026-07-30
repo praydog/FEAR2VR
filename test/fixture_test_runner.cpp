@@ -8205,6 +8205,79 @@ int main(int argc, char** argv) {
                       "and no pass was rejected: every live camera transform was usable as a pose, so the "
                       "mapped layout holds against what the renderer actually passes");
 
+                // ---- THE VIEWPORT SPLIT, MEASURED RATHER THAN EYEBALLED ----------------------
+                //
+                // This is the half of side-by-side that needs no matrix work, and it is asserted against the
+                // PIXEL viewport the engine derives -- read inside the detour immediately after the setup
+                // call, so it is in phase with the pass it describes. A read from here would land on whichever
+                // pass ran last, which is the full-screen ortho HUD pass.
+                //
+                // It exists because a screenshot could not settle it: a dark corridor looks a great deal like
+                // a clipped viewport, and it was read wrong in both directions before this number existed.
+                double full_l = -1.0, full_r = -1.0;
+                http::get(port, "/stereo/eye?eye=off", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                std::string vb;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    vb = http::body_of(resp);
+                }
+                const bool have_full = json_double(vb, "cp_vp_l", full_l) &&
+                                       json_double(vb, "cp_vp_r", full_r);
+                check(have_full && full_r > full_l, "the unsplit pass reports a non-degenerate viewport");
+
+                if (have_full) {
+                    double ll = -1.0, lr = -1.0, rl = -1.0, rr2 = -1.0;
+                    http::get(port, "/stereo/eye?eye=left&half_ipd=1&split=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        const std::string b2 = http::body_of(resp);
+                        json_double(b2, "cp_vp_l", ll);
+                        json_double(b2, "cp_vp_r", lr);
+                    }
+                    http::get(port, "/stereo/eye?eye=right&half_ipd=1&split=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        const std::string b3 = http::body_of(resp);
+                        json_double(b3, "cp_vp_l", rl);
+                        json_double(b3, "cp_vp_r", rr2);
+                    }
+                    const double mid = full_l + (full_r - full_l) * 0.5;
+                    // Rounded to whole pixels by the engine (+0.5 then truncate), so allow one pixel rather
+                    // than inventing a wider window.
+                    check(ll == full_l && lr > mid - 1.5 && lr < mid + 1.5,
+                          "a left-eye split yields the LEFT half of the target in pixels");
+                    check(rr2 == full_r && rl > mid - 1.5 && rl < mid + 1.5,
+                          "a right-eye split yields the RIGHT half -- the two are complementary, which is what "
+                          "side-by-side means");
+                    printf("[fixture] viewport: full [%lld..%lld], left [%lld..%lld], right [%lld..%lld]\n",
+                           static_cast<long long>(full_l), static_cast<long long>(full_r),
+                           static_cast<long long>(ll), static_cast<long long>(lr),
+                           static_cast<long long>(rl), static_cast<long long>(rr2));
+                }
+
+                // ---- BOTH EYES IN ONE FRAME --------------------------------------------------
+                //
+                // The pass group repeated inside the target the engine opened. Asserted by the second-eye draw
+                // counter advancing, with the renderer surviving -- a state machine left unbalanced here would
+                // take the frame down, not merely look wrong.
+                double sec_before = -1.0;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    json_double(http::body_of(resp), "cp_second_eye_draws", sec_before);
+                }
+                http::get(port, "/stereo/eye?both=1&half_ipd=1&split=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                double sec_after = -1.0, rej_stereo = -1.0;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    const std::string b4 = http::body_of(resp);
+                    json_double(b4, "cp_second_eye_draws", sec_after);
+                    json_double(b4, "cp_rejected", rej_stereo);
+                }
+                check(sec_after > sec_before,
+                      "a SECOND eye is drawn per frame -- the pass group repeated inside the engine's own "
+                      "render target, which is the sequence Renderer_MakeCubicEnvMap performs six times");
+                check(rej_stereo == rej_after,
+                      "and no transform was rejected while doing it");
+
                 // OFF AGAIN, unconditionally. Leaving the view displaced would be the suite mutating the
                 // fixture for every check that follows -- and for the player.
                 http::get(port, "/stereo/eye?eye=off", resp);
