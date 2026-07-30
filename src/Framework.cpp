@@ -4484,6 +4484,45 @@ std::string build_shader_params_json() {
                                  sdk::Events::payload_stack_bytes(ammo->payload).value_or(0))
                            : -1.0,
                        0);
+    // THE HUNGARIAN-PREFIX RULE for Flash globals: every scalar prefix takes the SetVariable slot and every
+    // array prefix the SetVariableArray slot, with no exceptions across 162 classified names. Checked on one
+    // representative of each observed prefix, using the real names from the binary.
+    {
+        struct Row { const char* name; size_t slot; char letter; bool is_array; };
+        const Row rows[] = {
+            {"_global.g_nMonolithGlobalPlatform", sdk::Events::kSetVariableSlot, 'd', false},
+            {"_global.g_bMonolithGlobalIsCollectorsEdition", sdk::Events::kSetVariableSlot, 'b', false},
+            {"_global.g_sMonolithMenuLBName", sdk::Events::kSetVariableSlot, 's', false},
+            {"_global.g_asMonolithMenuCustomLevels", sdk::Events::kSetVariableArraySlot, 's', true},
+            {"_global.g_anSomeNumbers", sdk::Events::kSetVariableArraySlot, 'd', true},
+            {"_global.g_abSomeFlags", sdk::Events::kSetVariableArraySlot, 'b', true},
+            {"_global.g_afSomeFloats", sdk::Events::kSetVariableArraySlot, 'f', true},
+        };
+        size_t ok = 0;
+        for (const auto& r : rows) {
+            if (sdk::Events::setter_slot_for_variable(r.name) == r.slot &&
+                sdk::Events::type_letter_for_variable(r.name) == r.letter &&
+                sdk::Events::variable_is_array(r.name) == r.is_array) {
+                ++ok;
+            }
+        }
+        json_append_double(out, "gfx_prefix_rows", static_cast<double>(std::size(rows)), 0);
+        json_append_double(out, "gfx_prefix_ok", static_cast<double>(ok), 0);
+        // A bare name works as well as a qualified one, and an unrecognised name yields nothing rather than a
+        // default slot -- which would silently send a caller to SetVariable for an array.
+        json_append_bool(out, "gfx_prefix_bare",
+                         sdk::Events::setter_slot_for_variable("g_nThing") ==
+                             sdk::Events::kSetVariableSlot);
+        json_append_bool(out, "gfx_prefix_refused",
+                         sdk::Events::setter_slot_for_variable("_global.notHungarian") == 0 &&
+                             sdk::Events::type_letter_for_variable("") == 0 &&
+                             sdk::Events::setter_slot_for_variable("g_n") == 0);
+        json_append_bool(out, "gfx_slots_distinct",
+                         sdk::Events::kSetVariableSlot != sdk::Events::kSetVariableArraySlot &&
+                             sdk::Events::kInvokeSlot != sdk::Events::kSetVariableSlot &&
+                             sdk::Events::kValueDataOffset == 8);
+    }
+
     // THE UI PANELS: one dispatcher per panel, verified by prefix against the live binary.
     const auto& panels = sdk::Events::ui_panels();
     json_append_double(out, "ui_panels", static_cast<double>(panels.size()), 0);

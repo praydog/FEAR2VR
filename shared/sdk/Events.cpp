@@ -185,6 +185,81 @@ std::string Events::as_method_name(std::string_view path, std::string_view event
     return out;
 }
 
+namespace {
+
+// The Hungarian body of a global's name, i.e. what follows "_global.g_" or a bare "g_".
+std::string_view hungarian_body(std::string_view variable) {
+    constexpr std::string_view kQualified = "_global.g_";
+    constexpr std::string_view kBare = "g_";
+    if (variable.size() > kQualified.size() && variable.compare(0, kQualified.size(), kQualified) == 0) {
+        return variable.substr(kQualified.size());
+    }
+    if (variable.size() > kBare.size() && variable.compare(0, kBare.size(), kBare) == 0) {
+        return variable.substr(kBare.size());
+    }
+    return {};
+}
+
+// A prefix counts only when the next character is upper case, so "nMonolith" matches 'n' and a name that
+// merely starts with the letter does not.
+bool prefix_matches(std::string_view body, std::string_view prefix) {
+    return body.size() > prefix.size() && body.compare(0, prefix.size(), prefix) == 0 &&
+           body[prefix.size()] >= 'A' && body[prefix.size()] <= 'Z';
+}
+
+}  // namespace
+
+bool Events::variable_is_array(std::string_view variable) {
+    const auto body = hungarian_body(variable);
+    // Two-letter array prefixes are tested first: "as" would otherwise match the scalar 'a' reading.
+    for (const auto p : {"as", "an", "ab", "af"}) {
+        if (prefix_matches(body, p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+char Events::type_letter_for_variable(std::string_view variable) {
+    const auto body = hungarian_body(variable);
+    if (body.empty()) {
+        return 0;
+    }
+    // Arrays first, for the same reason.
+    if (prefix_matches(body, "an")) {
+        return 'd';
+    }
+    if (prefix_matches(body, "as")) {
+        return 's';
+    }
+    if (prefix_matches(body, "ab")) {
+        return 'b';
+    }
+    if (prefix_matches(body, "af")) {
+        return 'f';
+    }
+    if (prefix_matches(body, "n")) {
+        return 'd';
+    }
+    if (prefix_matches(body, "b")) {
+        return 'b';
+    }
+    if (prefix_matches(body, "s")) {
+        return 's';
+    }
+    if (prefix_matches(body, "f")) {
+        return 'f';
+    }
+    return 0;
+}
+
+size_t Events::setter_slot_for_variable(std::string_view variable) {
+    if (type_letter_for_variable(variable) == 0) {
+        return 0;
+    }
+    return variable_is_array(variable) ? kSetVariableArraySlot : kSetVariableSlot;
+}
+
 const std::vector<Events::UiPanel>& Events::ui_panels() {
     static const std::vector<UiPanel> s_panels = {
         {"Multiplayer", 59, 0x13380},     {"Player", 34, 0x26C40},

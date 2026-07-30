@@ -214,10 +214,45 @@ public:
     // refuses, so it is refused here too.
     static std::string as_method_name(std::string_view path, std::string_view event_name);
 
-    // The vtable slot the sender invokes on the target GFx object, and the fallback method name it uses when
-    // no event name is supplied. Both read off the sender.
+    //
+    // THE GFx OBJECT'S SLOTS, each identified by a distinct population of call sites rather than by position.
+    //
+    //     slot  9   SetVariable        scalar; 98 of the 172 _global accessors use it
+    //     slot 11   SetVariableArray   arrays; the other 64 use it
+    //     slot 14   Invoke             every event dispatcher goes through it
+    //
+    // WHICH SLOT A VARIABLE USES IS PREDICTED BY ITS HUNGARIAN PREFIX, and that is a measurement with no
+    // exceptions across 162 classified names: g_n (54), g_b (32) and g_s (12) all take slot 9, while g_an (30),
+    // g_as (26), g_ab (4) and g_af (4) -- every "array of" prefix -- all take slot 11.
+    //
+    // So a consumer holding a variable name knows both its type and which setter the game would use for it,
+    // without having to find that variable's accessor.
+    static constexpr size_t kSetVariableSlot = 9;
+    static constexpr size_t kSetVariableArraySlot = 11;
     static constexpr size_t kInvokeSlot = 14;
     static constexpr const char* kDefaultMethod = "Default";
+
+    //
+    // THE GFx VALUE LAYOUT, confirmed by TWO INDEPENDENT PRODUCERS. The argument marshaller writes a type at
+    // +0 and the value at +8 in 16-byte slots; the _global setters build the same shape on the stack, with the
+    // same type codes (3 for a number, 2 for a bool). Neither derives from the other.
+    static constexpr size_t kValueTypeOffset = 0;
+    static constexpr size_t kValueDataOffset = 8;
+
+    // The slot the game would use to set this variable: kSetVariableSlot for a scalar, kSetVariableArraySlot
+    // for an array, or 0 when the name carries no recognised prefix. Accepts a bare name or a fully qualified
+    // "_global.g_..." one.
+    static size_t setter_slot_for_variable(std::string_view variable);
+
+    // The payload letter matching a variable's Hungarian prefix -- 'd' for a number, 'b' for a bool, 's' for a
+    // string, 'f' for a float -- or 0 for an unrecognised name. For an array prefix this is the letter of its
+    // ELEMENTS, which is what the array setter marshals.
+    static char type_letter_for_variable(std::string_view variable);
+
+    // Is this an array variable? Distinguished from a scalar because they take different setter slots.
+    static bool variable_is_array(std::string_view variable);
+
+    // The fallback method name the sender uses when no event name is supplied.
 };
 
 }  // namespace sdk

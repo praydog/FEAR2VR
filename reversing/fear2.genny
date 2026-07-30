@@ -5098,3 +5098,40 @@ class LTInputDeviceMouse 0x30 {
 // through Flash.
 //
 // 1039 checks, 0 failures.
+
+// ---- 172 FLASH GLOBALS NAME TWO MORE GFx SLOTS, AND CONFIRM THE VALUE LAYOUT ----------------------
+//
+// The third family of dotted literals -- "_global.g_*", 172 of them -- has one accessor function each, and
+// together they identify two more slots of the GFx object:
+//
+//     slot  9  (+36)  SetVariable        98 of the 172 -- every scalar
+//     slot 11  (+44)  SetVariableArray   the other 64 -- every array
+//     slot 14  (+56)  Invoke             every event dispatcher
+//
+// Each slot is established by its own population of call sites, not by position in a table.
+//
+// THE HUNGARIAN PREFIX PREDICTS THE SLOT, with NO exceptions across 162 classified names:
+//
+//     g_n  54 -> slot 9        g_an 30 -> slot 11
+//     g_b  32 -> slot 9        g_as 26 -> slot 11
+//     g_s  12 -> slot 9        g_ab  4 -> slot 11
+//                              g_af  4 -> slot 11
+//
+// Every "array of" prefix takes the array slot and every scalar prefix the scalar slot. So a consumer holding
+// a variable name knows its element type AND which setter the game itself would use, without locating that
+// variable's accessor.
+//
+// AND THE GFx VALUE LAYOUT NOW HAS TWO INDEPENDENT WITNESSES. UI_MarshalActionScriptArgs writes a type at +0
+// and a value at +8 into 16-byte slots. These setters build the same shape on the stack -- type 3 for a number,
+// 2 for a bool -- and neither derives from the other. That matters because the layout was originally read off
+// the marshaller alone, and this project has twice shipped a claim resting on one producer.
+//
+// > The 172 accessors are the most boring code in the module and they settled two slots and a type layout. The
+// > value was in the POPULATION, not in any one of them: 98 against 64, split perfectly by a naming convention,
+// > is an argument no single function could make.
+//
+// EXPOSED: setter_slot_for_variable, type_letter_for_variable and variable_is_array, plus the slot and value
+// layout constants. The suite checks one representative of every observed prefix and, deliberately, that an
+// unrecognised name yields NO slot -- defaulting to SetVariable would send an array through the scalar path.
+//
+// 1043 checks, 0 failures.

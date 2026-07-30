@@ -4457,6 +4457,29 @@ int main(int argc, char** argv) {
                       json_double(body, "ev_ammo_bytes", ev_bytes) && ev_bytes == 12.0,
                   "a three-argument payload measures three arguments and twelve stack bytes");
 
+            // ---- THE GFx SLOT MAP AND THE HUNGARIAN-PREFIX RULE ------------------------------------
+            //
+            // Three slots of the GFx object are identified, each by a distinct population of call sites rather
+            // than by position: 9 SetVariable (98 of the 172 _global accessors), 11 SetVariableArray (the other
+            // 64), and 14 Invoke (every event dispatcher). Which slot a variable takes is predicted by its
+            // Hungarian prefix, with NO exceptions across 162 classified names.
+            //
+            // Checked on one representative of every observed prefix. The refusal case matters as much: an
+            // unrecognised name must yield nothing rather than a default, because defaulting to SetVariable
+            // would silently send an array through the scalar slot.
+            double gp_rows = -1.0, gp_ok = -1.0;
+            const bool gpn = json_double(body, "gfx_prefix_rows", gp_rows) &&
+                             json_double(body, "gfx_prefix_ok", gp_ok);
+            check(gpn && gp_rows >= 7.0 && gp_ok == gp_rows,
+                  "every Hungarian prefix maps to the slot, letter and arrayness the binary uses");
+            bool gp_bare = false, gp_ref = false, gp_slots = false;
+            check(json_bool(body, "gfx_prefix_bare", gp_bare) && gp_bare,
+                  "a bare g_ name resolves the same as a fully qualified one");
+            check(json_bool(body, "gfx_prefix_refused", gp_ref) && gp_ref,
+                  "a name with no recognised prefix yields no slot rather than a default");
+            check(json_bool(body, "gfx_slots_distinct", gp_slots) && gp_slots,
+                  "the three GFx slots are distinct and the value payload sits at +8");
+
             // ---- THE UI PANELS ---------------------------------------------------------------------
             //
             // Every panel's method literals are referenced from ONE function, which is what makes the grouping
