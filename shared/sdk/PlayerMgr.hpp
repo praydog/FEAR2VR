@@ -1339,10 +1339,30 @@ public:
         // camera. Turning the head 45 degrees moves the view by 45 and leaves the body where it
         // was, which is why `body_to_view_angle` exists as its own number rather than being
         // assumed equal to `angle`.
+        //
+        // WHICH OBJECT: PlayerMgr's player, NOT the one CClientShell::local_player returns. The two
+        // are different allocations and they behave differently -- see `shell_forward` below, which
+        // exists because assuming they agree produced a wrong conclusion once already.
         std::array<float, 3> body_forward{};
         float body_to_view_angle{};  // radians between body_forward and view_forward
         float body_to_aim_angle{};   // radians between body_forward and aim_forward
         bool body_readable{};        // false when the player object's transform could not be read
+
+        // ---- AND THE OTHER PLAYER OBJECT, WHICH IS THE ONE THE VIEWMODEL RIDES --------
+        //
+        // `CClientShell::local_player`'s object. Its skeleton is what `attached_socket` and the hand
+        // sockets resolve through, so THIS is the transform the first-person arms and the weapon
+        // actually hang off -- and unlike `body_forward` it DOES track the view: the engine rewrites
+        // its rotation through LTObject_SetRotation every time the view changes.
+        //
+        // The pair is reported side by side deliberately. "Does the body follow the head" has two
+        // different true answers depending on which object is meant, and reading the wrong one is
+        // how a session concludes the weapon is decoupled while it is visibly swinging.
+        std::array<float, 3> shell_forward{};
+        float shell_to_view_angle{};  // radians between shell_forward and view_forward
+        float shell_to_aim_angle{};   // radians between shell_forward and aim_forward
+        bool shell_readable{};
+        bool shell_is_body{};         // are the two player objects the same allocation after all?
     };
 
     // nullopt when the player, the holder or the camera object cannot be read.

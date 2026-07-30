@@ -777,6 +777,20 @@ std::optional<PlayerMgr::AimViewDivergence> PlayerMgr::aim_vs_view(unsigned inde
             out.body_readable = true;
         }
     }
+
+    // The OTHER player object -- the shell's -- read through the same instant.
+    if (const auto shell = CClientShell::local_player(0); shell.has_value() && shell->object != nullptr) {
+        if (const auto info = object_info(shell->object)) {
+            const auto sf = forward_of(info->rotation);
+            out.shell_forward = {sf.x, sf.y, sf.z};
+            out.shell_to_view_angle = angle_between(sf, view);
+            out.shell_to_aim_angle = angle_between(sf, aim);
+            out.shell_readable = true;
+            if (const auto p = player(index); p.has_value()) {
+                out.shell_is_body = reinterpret_cast<uintptr_t>(shell->object) == p->object;
+            }
+        }
+    }
     return out;
 }
 

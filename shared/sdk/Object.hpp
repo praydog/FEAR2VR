@@ -419,6 +419,30 @@ regenny::LTVector rotate_vector(const regenny::LTRotation& q, const regenny::LTV
 // mean, and because spelling the axis out at every call site is how one of them ends up with +X.
 regenny::LTVector forward_of(const regenny::LTRotation& q);
 
+// ---- MOVING AN OBJECT THROUGH THE ENGINE'S OWN SETTER --------------------------------------
+//
+// `LTObject_SetRotation` is SLOT 4 of the object's vtable (verified in vtbl_LTObject_OT_NORMAL at
+// 0x672360 and vtbl_OT_PARTICLESYSTEM at 0x670FD8, both holding 0x420290). Resolving it from the
+// OBJECT rather than from a catalogue or a scan means the object names its own setter -- there is
+// no address to hardcode and nothing to keep in step with a rebuild.
+//
+// WHY A CONSUMER WANTS THE ENTRY and not just the call: this is the function the first-person
+// viewmodel's rotation arrives through, so a mod that wants to change where the arms point hooks
+// it. Handing out the entry point is the difference between "the SDK can move an object" and "a
+// mod can own who moves it".
+//
+// 0 when the object or its vtable cannot be read, or when slot 4 does not land inside FEAR2.exe --
+// which is the check that stops a mis-typed object handing back a wild pointer to hook.
+uintptr_t object_rotation_setter(const regenny::LTObject* obj);
+
+// Set an object's rotation by calling that setter. `__thiscall`, one argument, no return worth
+// reading. False when the entry could not be resolved.
+//
+// THREAD AFFINITY: the engine's own. Call it from the game thread (a frame hook or a detour), not
+// from the IPC thread -- moving an object while the renderer is composing it is a race the engine
+// does nothing to protect you from.
+bool set_object_rotation(const regenny::LTObject* obj, const regenny::LTRotation& rot);
+
 // The world model's cached local->world transform, and the inverse the engine keeps
 // beside it. Same type gate as world_to_brush: WorldModel or Camera only, since the
 // fields live past LTObject's end.

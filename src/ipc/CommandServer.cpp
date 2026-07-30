@@ -156,6 +156,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/vr/viewmodel", 0) == 0) {
+        if (!g_handlers.viewmodel) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no viewmodel handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.viewmodel(path));
+        return;
+    }
+
     if (path.rfind("/vr/bone", 0) == 0) {
         if (!g_handlers.bone) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no bone handler registered\"}");

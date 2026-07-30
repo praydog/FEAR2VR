@@ -33,6 +33,7 @@
 #include "mods/WeaponAgreement.hpp"
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
+#include "mods/ViewmodelDecouple.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -5706,6 +5707,12 @@ std::string build_shader_params_json(bool include_write_probes) {
                        avd.has_value() ? avd->body_to_view_angle * 57.2957795 : -1.0, 4);
     json_append_double(out, "avd_body_aim_deg",
                        avd.has_value() ? avd->body_to_aim_angle * 57.2957795 : -1.0, 4);
+    json_append_bool(out, "avd_shell_readable", avd.has_value() && avd->shell_readable);
+    json_append_bool(out, "avd_shell_is_body", avd.has_value() && avd->shell_is_body);
+    json_append_double(out, "avd_shell_view_deg",
+                       avd.has_value() ? avd->shell_to_view_angle * 57.2957795 : -1.0, 4);
+    json_append_double(out, "avd_shell_aim_deg",
+                       avd.has_value() ? avd->shell_to_aim_angle * 57.2957795 : -1.0, 4);
     json_append_bool(out, "aim_roll_readable", aim_roll.has_value());
     json_append_double(out, "aim_roll_deg", aim_roll.value_or(0.0f) * 57.2957795, 5);
     json_append_bool(out, "cro_composed_matches", cro_ok.has_value() && *cro_ok);
@@ -9925,6 +9932,8 @@ bool Framework::initialize() {
     Mods::get().add(&HudPassHook::get());
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
+    // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
+    Mods::get().add(&ViewmodelDecouple::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -10050,6 +10059,26 @@ bool Framework::initialize() {
             JsonFields jf(out);
             jf.b("ok", node_total > 0).u("node_count", node_total).u("socket_count", socket_total)
               .raw("nodes", nodes).raw("sockets", sockets);
+        }
+        return out;
+    };
+
+    handlers.viewmodel = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& vm = ViewmodelDecouple::get();
+        if (q.find("on") != q.end()) {
+            vm.set_enabled(webapi_query_int(q, "on", 0) != 0);
+        }
+        const auto o = vm.observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", o.hooked).hex("target", o.target).b("enabled", o.enabled)
+              .b("object_resolved", o.object_resolved)
+              .u("calls", static_cast<size_t>(o.calls))
+              .u("matched", static_cast<size_t>(o.matched))
+              .u("corrected", static_cast<size_t>(o.corrected))
+              .f("last_correction_deg", o.last_correction * 57.2957795, 4);
         }
         return out;
     };

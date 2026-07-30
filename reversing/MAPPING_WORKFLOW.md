@@ -4966,3 +4966,58 @@ green.
 Every gate added this session now goes through `check_gated`, which tallies and prints the reason.
 The count is stable at 1606 across three runs, and that stability is itself the evidence the gates
 are reporting.
+
+## The weapon no longer follows your head
+
+Last pass ended with a finding and an address: the first-person rig hangs off the SHELL player
+object, whose rotation the engine rewrites to the VIEW whenever the view changes, so composing a
+head pose swung the gun. This pass owns that writer.
+
+### Correcting the earlier write-up first
+
+The previous entry said "neither the aim nor the body follows the head". That was measured on
+`PlayerMgr`'s player object and is true of it -- and it is misleading about the thing that matters,
+because the object carrying the arms is the OTHER one. Measured side by side:
+
+```
+head yaw | view-vs-aim | pmgr-body-vs-aim | SHELL-vs-aim | SHELL-vs-view
+   +0    |    0.000    |      90.000      |    0.708     |    0.708
+  +25    |   25.000    |      90.000      |   24.803     |    0.194
+  +45    |   45.000    |      90.000      |   44.646     |    0.355
+```
+
+The shell object sits within a degree of the CAMERA at every head yaw. `aim_vs_view` now reports
+both objects side by side, with `shell_is_body` saying outright whether they are the same
+allocation (they are not), because reading the wrong one produces a confident wrong answer.
+
+### The intervention point
+
+Not `LTObject_SetRotation`. Slot 4 dispatches per object type, and the player is a MODEL, so the
+live entry is `OT_MODEL_SetRotation` (0x428E1C) -- which calls the base setter and then a gated
+fixup at `this+304`. Hooking the base would have caught every OT_NORMAL in the level and missed
+that branch.
+
+`ViewmodelDecouple` resolves the entry from the OBJECT'S OWN VTABLE (slot 4) rather than from an
+address or a scan: the object names its own setter, `object_rotation_setter` refuses anything that
+does not land inside the exe, and there is nothing to keep in step with a rebuild.
+
+The correction is one multiplication. The camera is `outer * inner`, the rig is being set to that
+product, so removing the head pose is `conj(outer) * incoming`. With nothing composed, `outer` is
+identity and the mod is inert by construction rather than by a switch.
+
+```
+45 degree head yaw   rig-vs-aim   rig-vs-view   muzzle travel
+uncorrected             44.646        0.355         59.08
+corrected                0.355       45.354          0.48
+```
+
+### The test bug this produced, which is a property worth knowing
+
+The first version of the fixture check measured "corrected" as identical to "uncorrected". The
+correction was fine; the test set `yaw=45` when the head was ALREADY at 45. **The engine elides the
+rotation write when the view does not change** -- the same elision the watch counts showed (zero
+hits while the view is still) -- so the setter never ran and there was nothing to correct.
+
+Any test of this mechanism has to RELEASE the pose, set the state under test, and only then apply
+the pose. The check now does, and reports both numbers so a future regression is legible rather
+than a bare boolean.

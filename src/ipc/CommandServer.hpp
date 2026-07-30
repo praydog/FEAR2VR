@@ -164,6 +164,11 @@ using HudFn = std::function<std::string(const std::string& request_target)>;
 // engine's own animation evaluation, so anything socketed to that bone moves with it.
 using BoneFn = std::function<std::string(const std::string& request_target)>;
 
+// VIEWMODEL DECOUPLING -- /vr/viewmodel. MUTATES where the first-person rig points: it removes the
+// composed head pose from the rotation the engine gives that object, so looking around stops
+// swinging the weapon.
+using ViewmodelFn = std::function<std::string(const std::string& request_target)>;
+
 // THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
 // pick from when it wants to drive "the right hand" rather than "node 37".
 using SkeletonFn = std::function<std::string(const std::string& request_target)>;
@@ -197,6 +202,7 @@ struct Handlers {
     HeadFn head{};                   // optional; /vr/head 404s without it -- MUTATES the view orientation
     HudFn hud{};                     // optional; /vr/hud 404s without it -- MUTATES where the HUD lands
     BoneFn bone{};                   // optional; /vr/bone 404s without it -- MUTATES the skeleton
+    ViewmodelFn viewmodel{};         // optional; /vr/viewmodel 404s without it -- MUTATES the rig
     SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
     PieceFn piece{};                 // optional; /sdk/piece 404s without it -- MUTATES visibility
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it

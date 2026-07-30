@@ -8537,6 +8537,82 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- HEAD-LOOK MUST NOT SWING THE WEAPON --------------------------------------------
+        //
+        // Composing a head pose into the camera turns the view without turning the aim, which the
+        // block below asserts. It is not sufficient: the first-person rig hangs off an object whose
+        // rotation the engine rewrites to the VIEW every time the view changes, so the weapon
+        // followed anyway -- 59 units of muzzle travel for a 45 degree glance.
+        //
+        // `ViewmodelDecouple` owns that setter (the object's own vtable slot 4) and removes the
+        // composed pose from what the engine asked for. The assertion is a COMPARISON between the
+        // two states rather than a bare threshold: with the correction off the rig tracks the view,
+        // with it on the rig tracks the aim, and the same head pose drives both.
+        {
+            std::string vm;
+            if (http::get(port, "/vr/viewmodel", resp)) {
+                vm = http::body_of(resp);
+            }
+            bool vm_hooked = false;
+            const bool vm_live = json_bool(vm, "ok", vm_hooked) && vm_hooked;
+            check_gated(vm_live, "viewmodel setter unhooked", g_skipped_world, true,
+                        "the rig's rotation setter is owned, so head-look can be taken out of it");
+            if (vm_live) {
+                // shell-to-aim with a head pose applied, measured with the correction off and on.
+                // THE SETTER ONLY FIRES WHEN THE VIEW CHANGES -- the engine elides the write
+                // otherwise, which is visible in the watch counts (zero hits while the view is
+                // still). So each measurement must RELEASE the head first, put the correction in
+                // the state under test, and only then apply the pose. A first version of this set
+                // the same yaw twice and measured the correction as having done nothing, because
+                // the second call changed no view and the setter never ran.
+                auto shell_to_aim = [&](int on, int yaw, double* out_v) {
+                    char url[96];
+                    http::get(port, "/vr/head?clear=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                    snprintf(url, sizeof(url), "/vr/viewmodel?on=%d", on);
+                    http::get(port, url, resp);
+                    snprintf(url, sizeof(url), "/vr/head?yaw=%d", yaw);
+                    http::get(port, url, resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                    if (!http::get(port, "/sdk/shader-params", resp)) {
+                        return false;
+                    }
+                    return json_double(http::body_of(resp), "avd_shell_aim_deg", *out_v);
+                };
+                double off45 = -1.0, on45 = -1.0;
+                const bool got = shell_to_aim(0, 45, &off45) && shell_to_aim(1, 45, &on45);
+                check(got, "the rig's facing is readable with the correction both off and on");
+                if (got) {
+                    printf("[fixture] viewmodel vs aim at 45 deg head yaw: uncorrected %.3f, "
+                           "corrected %.3f\n", off45, on45);
+                    // UNCORRECTED it follows the view, so it sits a head-yaw away from the aim.
+                    check(off45 > 30.0,
+                          "without the correction the rig follows the VIEW, so a 45 degree head yaw "
+                          "puts it far off the aim -- this is the defect being fixed, asserted so it "
+                          "cannot silently stop being true");
+                    // CORRECTED it follows the aim again, with the same head pose applied.
+                    check(on45 < 5.0,
+                          "with the correction the rig follows the AIM through the same head pose, so "
+                          "looking around no longer swings the weapon");
+                    check(off45 - on45 > 25.0,
+                          "and the difference between the two states is the head pose itself, which is "
+                          "what makes this a comparison rather than a threshold");
+                }
+                // OFF AND RELEASED, unconditionally -- the suite must not leave the player's arms
+                // pointing somewhere the game did not put them.
+                http::get(port, "/vr/viewmodel?on=0", resp);
+                http::get(port, "/vr/head?clear=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                std::string vb2;
+                if (http::get(port, "/vr/viewmodel", resp)) {
+                    vb2 = http::body_of(resp);
+                }
+                bool still_on = true;
+                check(json_bool(vb2, "enabled", still_on) && !still_on,
+                      "and the correction releases, so the suite leaves the rig as it found it");
+            }
+        }
+
         // ---- WHERE YOU LOOK, WHERE THE GUN POINTS, AND WHICH WAY THE BODY FACES -------------
         //
         // A head-tracked view creates a problem it must then be held to: the camera turns and the

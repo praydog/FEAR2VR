@@ -522,6 +522,46 @@ bool is_finite_f(float v) {
 
 }  // namespace
 
+// Slot 4 of the object vtable. Named here rather than inline so the two functions below cannot
+// drift apart, and so the number appears exactly once.
+namespace {
+constexpr size_t kSlotSetRotation = 4;
+}
+
+uintptr_t object_rotation_setter(const regenny::LTObject* obj) {
+    if (obj == nullptr) {
+        return 0;
+    }
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || exe->size == 0) {
+        return 0;
+    }
+    const auto vt = mem::read_ptr(reinterpret_cast<uintptr_t>(obj));
+    if (!vt.has_value() || *vt == 0) {
+        return 0;
+    }
+    const auto entry = mem::read_ptr(*vt + kSlotSetRotation * sizeof(uintptr_t));
+    if (!entry.has_value()) {
+        return 0;
+    }
+    // Inside the exe or nothing. A wrong object type, or a freed one, yields a plausible-looking
+    // dword here, and returning it would hand a caller a wild pointer to call or hook.
+    if (*entry < exe->base || *entry >= exe->base + exe->size) {
+        return 0;
+    }
+    return *entry;
+}
+
+bool set_object_rotation(const regenny::LTObject* obj, const regenny::LTRotation& rot) {
+    const auto fn = object_rotation_setter(obj);
+    if (fn == 0) {
+        return false;
+    }
+    using SetRotFn = void(__thiscall*)(const regenny::LTObject*, const regenny::LTRotation*);
+    reinterpret_cast<SetRotFn>(fn)(obj, &rot);
+    return true;
+}
+
 regenny::LTVector rotate_vector(const regenny::LTRotation& q, const regenny::LTVector& v) {
     // t = 2 * cross(q.xyz, v);  out = v + q.w * t + cross(q.xyz, t)
     const float tx = 2.0f * (q.y * v.z - q.z * v.y);
