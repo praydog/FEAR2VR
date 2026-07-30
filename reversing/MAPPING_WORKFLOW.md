@@ -3539,3 +3539,31 @@ binary, and `unregistered_table_commands()` names the entries whose registrar ha
 A related trap worth keeping separate: a code address can be a valid *anything*. This is the same class of error
 as the section test below, where "points into the module" admitted function pointers as vtables. In both cases the
 predicate was about a *value* when the question was about a *role*.
+
+## A truncated grep is not a check
+
+Two passes ago the rule was added: *grep the SDK for the concept before adding a class for it.* This pass followed
+it and still rediscovered a mapped function, because the grep was
+
+```
+grep -nE "919|hash" reversing/fear2.genny | head -8
+```
+
+The matches that mattered were on **lines 371 and 2806**, past the cut. Both said plainly that `String_HashI` was
+already mapped and already confirmed -- on 191 of 191 skeleton node names and 42 of 42 animation names. The first
+eight matches were all in one unrelated structure's comments, which read like "no, this isn't mapped", and the
+pipeline turned a complete answer into a misleading sample.
+
+So the check has a second half: **when grepping to establish ABSENCE, never truncate.** Count first
+(`grep -c`), and if the count exceeds what you are willing to read, narrow the *pattern*, not the output. A
+`head` on a presence/absence query answers a different question than the one asked.
+
+The same pass also mis-set an IDA instance and did not notice: `select_instance` reported success while the
+active IDB stayed unchanged, and a `py_eval` then ran against the wrong module and reported the symbol
+"absent" -- which would have looked like confirmation of the very thing being checked. `server_health` names the
+active IDB and is the only thing that settles it. Port numbers are not stable across a session either; they had
+been reassigned since the earlier switch in the same session.
+
+**Both failures share a shape:** a tool answered a narrower question than the one asked, and the narrow answer
+happened to agree with the hypothesis. When a check CONFIRMS what you already believe, that is the moment to ask
+what it actually measured.

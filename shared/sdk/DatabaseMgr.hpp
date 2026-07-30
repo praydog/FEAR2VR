@@ -94,31 +94,42 @@ public:
     static std::string category_name(const regenny::DatabaseMgrCategory* category);
     static std::string record_name(const regenny::DatabaseMgrRecord* record);
 
-    // ---- THE NAME HASH, READ OFF THE CODE THAT COMPUTES IT --------------------------------------
+    // ---- String_HashI, AND THE TWO DATABASE FIELDS IT PRODUCES ----------------------------------
     //
-    // FOUND SIDEWAYS. CMoveMgr_Init appeared to contain two loops over 71 items, recorded as an open question.
-    // They are neither loops over items nor 71 of anything: 71 is 0x47, the character 'G', and both strings
-    // whose hash is being taken -- "GunLead" and "GamePad" -- begin with it. The construct is an INLINED STRING
-    // HASH, and the result goes straight to the database interface as a lookup key, which is why those two
-    // names allocate no console variable.
+    // THE FUNCTION WAS ALREADY MAPPED, and this header's first version claimed to have found it. It is
+    // String_HashI, established by earlier passes in the EXE at 0x004051C0 and confirmed there on two
+    // independent name populations -- 191 of 191 skeleton node names and 42 of 42 animation names.
     //
-    //     hash = 0;  for each char c:  hash = kFoldTable[c] + 919 * hash;
+    //     hash = 0;  for each char c:  hash = g_HashCharTable[c] + 919 * hash;
     //
-    // THE TABLE IS A CASE-FOLDING ALPHABET MAP at gameclient +0x1C9810, not a permutation: 'A'..'Z' and
-    // 'a'..'z' both map to 1..26, digits to 27..36, '_' to 38, '/' to 52, '\\' to 42, '.' to 55. So the hash is
-    // CASE-INSENSITIVE, which is checkable rather than asserted -- hash("GunLead") == hash("gunlead") and
-    // hash("GamePad") == hash("GAMEPAD"), both verified.
+    // GAMECLIENT CARRIES ITS OWN COPY at 0x1002F4F0 with its own table at +0x1C9810, and the tables are
+    // BYTE-IDENTICAL to the exe's (both sum to 2766, same fold values). Same maths, different shape: the exe's
+    // is __cdecl returning the value, this one is __thiscall writing through a pointer. Two implementations of
+    // one algorithm, one per module -- which is why the gameclient IDB had no String_HashI to find.
     //
-    // WHY A CONSUMER WANTS IT: every database lookup by name goes through this. Precomputing a hash lets a mod
-    // find a category or record without walking strings, and more immediately it lets this SDK CHECK the fields
-    // fear2.genny has been carrying as "plausible name hash, not otherwise confirmed" for several passes.
+    // The table is a CASE-FOLDING alphabet map, not a permutation: 'A'..'Z' and 'a'..'z' both map to 1..26,
+    // digits to 27..36, '_' to 38, '/' to 52, '\\' to 42, '.' to 55. Hence a case-insensitive hash, checked
+    // rather than assumed: hash("GunLead") == hash("gunlead").
+    //
+    // WHAT IS ACTUALLY NEW HERE is the population, not the function. fear2.genny carried
+    // DatabaseMgrCategory+0x10 and DatabaseMgrRecord+0x14 as "plausible name hash, not otherwise confirmed" for
+    // several passes, because nothing had connected them to a known hash. They agree with String_HashI(name) for
+    // 359 of 359 categories and 28652 of 28652 records, none skipped -- a third and fourth name population for
+    // the same function, and 29011 samples more than the first two combined.
+    //
+    // The route to it was an open item: CMoveMgr_Init appeared to contain two loops over 71 items. 71 is 0x47,
+    // the character 'G', and both strings being hashed inline -- "GunLead" and "GamePad" -- begin with it. They
+    // are DATABASE ATTRIBUTE names, which is why they allocate no console variable.
+    //
+    // WHY A CONSUMER WANTS IT: every database lookup by name goes through this, so a precomputed hash finds a
+    // category or record without walking strings.
     static constexpr uint32_t kHashMultiplier = 919;
-    static constexpr uintptr_t kFoldTableOffset = 0x1C9810;  // gameclient-relative
+    static constexpr uintptr_t kFoldTableOffset = 0x1C9810;  // gameclient's g_HashCharTable
 
     // Runtime address of the fold table, 0 when gameclient is not mapped.
     static uintptr_t fold_table();
 
-    // The engine's hash of a name. nullopt when the fold table cannot be read -- it is module data, so this is
+    // String_HashI over a name. nullopt when the fold table cannot be read -- it is module data, so this is
     // a real possibility rather than a formality. Case-insensitive by construction, not by lowercasing first.
     static std::optional<uint32_t> hash_name(std::string_view name);
 

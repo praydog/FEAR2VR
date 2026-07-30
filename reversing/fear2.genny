@@ -107,14 +107,14 @@ class HashEntry 0x8 {
 // snapshot) -- unk_08 in particular showed a consistent ~0x28-byte stride
 // across consecutive records in the same category, plausible attribute-
 // descriptor array. unk_14 is a small unique-per-record 32-bit value,
-// plausible name hash (same pattern as DatabaseMgrCategory.unk_10).
+// and +0x14 is CONFIRMED as String_HashI(name) -- 28652/28652 records live.
 class DatabaseMgrRecord 0x18 {
     strptr name             @0x00   // CONFIRMED live: readable ASCII in 4/4 samples
     uint32_t unk_04         @0x04   // unverified; observed 3-5, plausible attribute count
     void* unk_08            @0x08   // unverified; plausible attribute-descriptor array (~0x28-byte stride observed)
     void* unk_0C            @0x0C   // unverified
     void* owner_category    @0x10   // CONFIRMED live: == owning DatabaseMgrCategory address in 4/4 samples; see comment above for why this isn't typed DatabaseMgrCategory*
-    uint32_t unk_14         @0x14   // unverified; small unique-per-record value, plausible name hash
+    uint32_t name_hash      @0x14   // CONFIRMED == String_HashI(name) for 28652/28652 records live, 0 skipped
 }
 
 // 0x14-byte record: one entry of DatabaseMgrSubRecord.categories[]. This is
@@ -138,15 +138,15 @@ class DatabaseMgrRecord 0x18 {
 // (num_records=83, sampled 3 records) -- every element decodes with a
 // readable name and owner backpointer (see DatabaseMgrRecord above).
 //
-// unk_10: unverified. Small (non-pointer-range) 32-bit values, unique per
-// category in every sample -- consistent with a precomputed name hash, not
-// otherwise confirmed.
+// name_hash: CONFIRMED == String_HashI(name) for 359 of 359 categories live,
+// none skipped. Carried as "plausible name hash" for several passes only
+// because nothing had connected it to the already-mapped hash function.
 class DatabaseMgrCategory 0x14 {
     strptr name                @0x00   // CONFIRMED live: readable ASCII in 359/359 samples
     void* owner_database        @0x04   // CONFIRMED live: == owning DatabaseMgrSubRecord address in 359/359 samples; see comment above for why this isn't typed DatabaseMgrSubRecord*
     uint32_t num_records       @0x08   // CONFIRMED: matches IDatabaseMgr_GetRecordByIndex's bounds check exactly
     DatabaseMgrRecord* records @0x0C   // CONFIRMED: matches IDatabaseMgr_GetRecordByIndex's array base exactly
-    uint32_t unk_10             @0x10   // unverified; small unique-per-category values, plausible name hash
+    uint32_t name_hash          @0x10   // CONFIRMED == String_HashI(name) for 359/359 categories live, 0 skipped
 }
 
 // 0x1C-byte record. CONFIRMED IDENTICAL SHAPE observed independently at TWO
@@ -6406,3 +6406,44 @@ class CPlayerCamera 0x18C6 {
 // spectator_speed_mul_cache / spectator_speed_mul_is_default.
 //
 // 1326 checks, 0 failures.
+
+// ---- TWO DATABASE FIELDS STOP BEING "PLAUSIBLE" -- AND A REDISCOVERY, RECORDED ------------------
+//
+// The previous pass left one open item: two loops over 71 items in CMoveMgr_Init that allocated no console
+// variable. They are neither loops over items nor 71 of anything. 71 is 0x47, the character 'G', and both
+// strings being processed -- "GunLead" and "GamePad" -- begin with it. The construct is an INLINED STRING HASH
+// whose result goes to the database interface as a lookup key, so those two names are DATABASE ATTRIBUTES rather
+// than console variables. That is why they allocate no LTConVar, and the open item is closed.
+//
+// BUT THE HASH WAS ALREADY MAPPED, AND THIS PASS FIRST CLAIMED TO HAVE FOUND IT. It is String_HashI, established
+// by earlier passes in the EXE at 0x004051C0 and confirmed there on 191 of 191 skeleton node names and 42 of 42
+// animation names. Both facts are recorded IN THIS FILE, at the LTModelSocket name_hash and the animation-table
+// name_hash. The check that missed them was `grep -nE "919|hash" reversing/fear2.genny | head -8` -- the matches
+// were on lines 371 and 2806, past the cut. A truncated grep is not a check; see MAPPING_WORKFLOW.MD.
+//
+// WHAT IS GENUINELY NEW, once the credit is straight:
+//
+//   * GAMECLIENT HAS ITS OWN COPY at 0x1002F4F0 with its own table at +0x1C9810, and the tables are
+//     BYTE-IDENTICAL to the exe's (both sum 2766, same fold values). Same maths, different shape -- the exe's is
+//     __cdecl returning the value, gameclient's is __thiscall writing through a pointer. Two implementations,
+//     one per module, which is why the gameclient IDB had no String_HashI to find.
+//
+//   * THE DATABASE STRUCTURES USE IT. DatabaseMgrCategory+0x10 and DatabaseMgrRecord+0x14 were carried here as
+//     "plausible name hash, not otherwise confirmed" because nothing had connected them to a known function:
+//
+//         categories    359 of 359 agree      0 skipped
+//         records     28652 of 28652 agree    0 skipped
+//
+//     29011 samples, zero disagreements -- a third and fourth name population for one hash, and more samples
+//     than the first two combined. Both fields are renamed name_hash and marked CONFIRMED.
+//
+// THE FUNCTION'S PROPERTIES ARE ASSERTED, NOT JUST ITS OUTPUT: case-insensitivity alone would be satisfied by a
+// constant function, so the suite also asserts different names hash differently and the empty name hashes to
+// zero, matching the accumulator's initial value.
+//
+// Named in IDA: gameclient's copies as String_HashI and g_HashCharTable -- deliberately the EXE'S NAMES, so the
+// two connect for the next reader instead of looking like separate discoveries. CMoveMgr_Init's open item marked
+// RESOLVED. Exposed as sdk::DatabaseMgr::hash_name / fold_table / category_hash_matches / record_hash_matches /
+// category_hash_agreement / record_hash_agreement.
+//
+// 1336 checks, 0 failures.
