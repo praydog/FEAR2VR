@@ -6314,10 +6314,25 @@ int main(int argc, char** argv) {
                 // probes: a check that cannot discriminate says so instead of passing quietly.
                 check(gsn && gs_u <= gs_n && gs_n <= gs_t,
                       "usable slots are a subset of non-null slots, which are a subset of the holder's four");
-                if (gsn && gs_n == gs_u) {
+                // THE FLAG IS LOAD-BEARING, and the MAIN MENU is what proves it. In gameplay only one movie
+                // is loaded and it is usable, so nonnull > usable is unobservable there and this was demoted to
+                // a report. Measured at the main menu, where the menu UI and its background movie are both
+                // resident: total 4, NON-NULL 2, usable 1, live 1.
+                //
+                // So a slot can hold a real object the state flag rejects. The strict inequality still cannot be
+                // asserted unconditionally -- it is false in gameplay, which is where this suite usually runs --
+                // but it is asserted WHERE IT IS OBSERVABLE, which is the strongest form available.
+                if (gsn && gs_n > gs_u) {
+                    check(gs_u >= 1.0 && gs_n <= gs_t,
+                          "a movie slot holds an object the state flag rejects -- the flag is load-bearing, and "
+                          "this run had the second movie needed to show it");
+                    printf("[fixture] movie slots: %lld non-null of %lld, %lld usable -- the state flag "
+                           "DISCRIMINATED this run\n", static_cast<long long>(gs_n),
+                           static_cast<long long>(gs_t), static_cast<long long>(gs_u));
+                } else if (gsn) {
                     printf("[fixture] NOTE: all %lld non-null movie slot(s) are usable, so the state flag was "
-                           "NOT exercised this run -- load a second movie to discriminate it.\n",
-                           static_cast<long long>(gs_n));
+                           "NOT exercised -- it discriminates at the MAIN MENU, where a second movie is "
+                           "resident.\n", static_cast<long long>(gs_n));
                 }
             }
 

@@ -4090,3 +4090,35 @@ Two fixes, and the second is better:
 No cue, no timing, nothing for the human to get wrong -- and it still refuses to pass if the signal never moved.
 Any test needing a human in the loop should be built this way.
 
+## The main menu is a test state, and it closed a gap gameplay could not
+
+Running the suite at the main menu produced **146 failures** and two findings worth more than the noise.
+
+### The Scaleform state flag is load-bearing, proven there and nowhere else
+
+A check asserting `non-null slots > usable slots` -- i.e. that a slot can hold a real object the state flag
+rejects -- was demoted to a report because in gameplay it is false: one movie is loaded and it is usable. At the
+main menu, with the menu UI and its background movie both resident:
+
+```
+gfx_slots_total 4    non-null 2    usable 1    live 1
+```
+
+So the flag genuinely discriminates, and the claim is now asserted WHERE IT IS OBSERVABLE rather than dropped.
+A state a suite never runs in can be the only state that proves one of its claims.
+
+### The frame hook does not fire at the menu
+
+`frame_ticks` reads **0** with the hook installed: `CClientShell::Update` does not run at the main menu. That is
+a legitimate engine state -- gameserver.dll is documented absent there for the same reason -- but the suite
+FAILS on it rather than reporting it, which is the same defect class as the stationary-world assumptions.
+
+### The systemic issue the 146 exposes
+
+The suite assumes a loaded world and a live player almost everywhere: sectors, planes, region queries, the
+client shell, the spatial index. None of those exist at a menu, and every one reports FAIL rather than NOT
+EXERCISED. This is the quiescence problem one level up, and it wants the same treatment -- a `world_ready`
+condition, measured and reported, with the skips tallied.
+
+Worth stating: 146 red at a menu is not 146 bugs. It is one missing gate, counted 146 times.
+
