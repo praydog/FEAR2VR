@@ -9310,10 +9310,12 @@ bool Framework::initialize() {
         const double yaw = static_cast<double>(yaw_i);
         const long long frames = webapi_query_int(q, "frames", 600);
         // target=source writes +324 (the candidate upstream field); anything else writes +244.
+        // target=render owns ONLY the camera (recommended -- see ViewHook's note on the three systems),
+        // target=source writes +324, anything else writes +244.
         const auto tgt = webapi_query_string(q, "target");
-        const bool write_source = tgt == "source";
+        const unsigned mode = tgt == "render" ? 2u : (tgt == "source" ? 1u : 0u);
         ViewHook::get().arm_override(static_cast<float>(yaw),
-                                     static_cast<uint32_t>(frames < 0 ? 0 : frames), write_source);
+                                     static_cast<uint32_t>(frames < 0 ? 0 : frames), mode);
         const auto vh = ViewHook::get().observed();
         std::string out;
         {
@@ -9322,7 +9324,8 @@ bool Framework::initialize() {
             jf.f("yaw_deg", yaw, 3);
             jf.u("frames", static_cast<size_t>(vh.override_frames_left));
             jf.b("pose_hook_installed", vh.pose_installed);
-            jf.s("target", write_source ? "source(+324)" : "applied(+244)");
+            jf.s("target", mode == 2 ? "render(camera only)"
+                                     : (mode == 1 ? "source(+324)" : "applied(+244)"));
         }
         return out;
     };

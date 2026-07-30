@@ -129,9 +129,12 @@ public:
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
     // itself when the count runs out, because the engine recomputes the pose every frame -- there is nothing to
     // restore and no way for a crash mid-experiment to leave the camera stuck.
-    // `write_source` picks the field: false writes the APPLIED pose at +244 (derived -- lands, blurs the
-    // view, does not survive the frame), true writes the VIEW rotation at +324 (the source candidate).
-    void arm_override(float yaw_deg, uint32_t frames, bool write_source);
+    // `mode` picks what the override owns:
+    //   0  the APPLIED pose at +244 -- lands, blurs the view, recomputed every frame
+    //   1  the VIEW rotation at +324 -- persists and steers MOVEMENT, but the renderer ignores it
+    //   2  RENDER ONLY -- the camera object via SetPosRot, leaving aim and the viewmodel to the player.
+    //      This is the head-tracking shape; the others are kept because each identified what it does not do.
+    void arm_override(float yaw_deg, uint32_t frames, unsigned mode);
 
     Observed observed() const;
 

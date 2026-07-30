@@ -4005,3 +4005,42 @@ Step 4 is the one that decides, and it is a runtime measurement. A consumer hook
 must count how often it fires on the object it cares about before believing it is the right one -- 50,475 calls
 with zero on the target looks identical, from the disassembly, to the function that works.
 
+## The aim pose is DOWNSTREAM of the camera object, which reverses the chain I had assumed
+
+A render-only override -- owning the camera object through SetPosRot and touching no aim field at all -- was
+expected to freeze the view while the player's mouse ran the aim away. Measured over ten seconds of continuous
+mouse movement:
+
+```
+camera SetPosRot overrides   : 2262
+applied-pose writes          : 0        (nothing of ours touched the aim)
+in-flight writes             : 0
+
+camera object (RENDERED) : 0.2825 deg
++244 applied (the AIM)   : 0.2825 deg   <- identical, not divergent
+```
+
+The aim pose tracked the frozen camera exactly. So `holder+244` is DERIVED FROM the camera object, not a
+sibling of it and not its source.
+
+That retroactively explains the earlier reading that looked so strange: forcing `+244` while `+324` was pinned
+made the RENDERED rotation worse, 58.82 -> 109.47 degrees. Writing a derived field desynchronises it from its
+own source and helps nothing -- the same lesson as the camera-object write probe, one level along.
+
+### The chain as it actually stands
+
+```
+    ??? -> camera object (+0x20, via LTObject_SetPosRot)  ->  +244 applied pose  ->  viewmodel
+                                                          ->  bullets / aim
+    holder+324 ------------------------------------------->  movement direction (separate)
+```
+
+Owning SetPosRot therefore gives authority over the view AND everything derived from it, which is more than a
+head-tracked view wants: a player reported the weapon still following the mouse while bullets did not deviate,
+and the viewmodel jittered only because a partial override of `+244` was fighting its source.
+
+**So aim/view decoupling is NOT free after all.** It needs the split to happen upstream of the camera object --
+letting the engine's own aim continue into `+244` and the weapon, while the camera object receives the head
+pose. The upstream writer of the camera object is the next thing to find, and the method is established: hook a
+candidate, count calls on the camera object, and believe only the count.
+

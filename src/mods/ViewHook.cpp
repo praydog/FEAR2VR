@@ -56,7 +56,18 @@ std::atomic<uint64_t> g_ov_carried{0};
 std::atomic<uint64_t> g_ov_rejected{0};
 // Did the pose we wrote still stand at the next frame? Separates "recomputed" from "not propagated".
 std::atomic<uint64_t> g_ov_pose_held{0};
-// 0 = the APPLIED pose at +244 (derived), 1 = the VIEW rotation at +324 (the source candidate).
+// 0 = the APPLIED pose at +244 (derived), 1 = the VIEW rotation at +324, 2 = RENDER ONLY.
+//
+// Mode 2 is the one a VR mod wants, and a player's report is what identified it. With the camera frozen through
+// SetPosRot AND the aim fields overridden, the view was perfectly still and BULLETS DID NOT DEVIATE -- but the
+// viewmodel jittered, because +244 was only partially won (1.14 degrees of residual) and the weapon follows it.
+//
+// Leaving the aim fields alone entirely separates the three systems:
+//     camera / view  -> the camera object, written once a frame by SetPosRot   OWNED
+//     bullets / aim  -> follow the view                                        follow the override
+//     viewmodel      -> the aim rotation at +244                               left to the player
+// which is head-tracking with the weapon still on the controller, i.e. exactly the decoupling that was listed
+// as the next open question.
 std::atomic<uint32_t> g_ov_target{0};
 // The rotation the engine held when the override was armed. The offset is applied to THIS, never to the live
 // value, or a persisting write feeds its own output back and accumulates.
@@ -152,8 +163,9 @@ void apply_override(bool decrement) {
     if (decrement) {
         g_ov_frames.store(frames - 1, std::memory_order_relaxed);
     }
-    const bool write_source = g_ov_target.load(std::memory_order_relaxed) != 0;
-    const auto cur = write_source ? sdk::PlayerMgr::view_rotation(0) : sdk::PlayerMgr::applied_rotation(0);
+    const uint32_t mode = g_ov_target.load(std::memory_order_relaxed);
+    // RENDER ONLY: the baseline still has to be captured, but no aim field is touched.
+    const auto cur = mode == 1 ? sdk::PlayerMgr::view_rotation(0) : sdk::PlayerMgr::applied_rotation(0);
     if (!cur.has_value()) {
         return;
     }
@@ -211,8 +223,17 @@ void apply_override(bool decrement) {
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
         a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
         a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
-    const bool wrote = write_source ? sdk::PlayerMgr::write_view_rotation(0, out)
-                                    : sdk::PlayerMgr::write_applied_rotation(0, out);
+    if (mode == 2) {
+        // Nothing to write here; the camera is owned in the SetPosRot detour and the aim is the player's.
+        for (size_t i = 0; i < out.size(); ++i) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &out[i], sizeof(bits));
+            g_ov_last[i].store(bits, std::memory_order_relaxed);
+        }
+        return;
+    }
+    const bool wrote = mode == 1 ? sdk::PlayerMgr::write_view_rotation(0, out)
+                                 : sdk::PlayerMgr::write_applied_rotation(0, out);
     if (wrote) {
         g_ov_applied.fetch_add(1, std::memory_order_relaxed);
         for (size_t i = 0; i < out.size(); ++i) {
@@ -267,7 +288,8 @@ int __fastcall apply_look_delta_detour(uintptr_t self, uintptr_t /*edx*/, float*
     // stack value. That is the rubber-band, and it is why correcting after both hooks still left a 3.24 degree
     // worst-case excursion. Writing THROUGH a2 puts our rotation into the value the caller is about to store,
     // so the engine propagates it instead of fighting it.
-    if (g_ov_frames.load(std::memory_order_relaxed) > 0) {
+    if (g_ov_frames.load(std::memory_order_relaxed) > 0 &&
+        g_ov_target.load(std::memory_order_relaxed) != 2u) {
         std::array<float, 4> out{};
         if (override_rotation(out)) {
             if (a2 != nullptr) {
@@ -553,8 +575,8 @@ ViewHook::Observed ViewHook::observed() const {
     return out;
 }
 
-void ViewHook::arm_override(float yaw_deg, uint32_t frames, bool write_source) {
-    g_ov_target.store(write_source ? 1u : 0u, std::memory_order_relaxed);
+void ViewHook::arm_override(float yaw_deg, uint32_t frames, unsigned mode) {
+    g_ov_target.store(mode, std::memory_order_relaxed);
     // Clamped so a typo cannot hold the view for minutes. At ~300 calls/second, 3000 frames is about ten
     // seconds, which is far more than any go/no-go needs.
     const uint32_t bounded = frames > 3000u ? 3000u : frames;
