@@ -717,3 +717,29 @@ renderer was fine.
   visible. If that one is invisible too, the observation is broken, not the code.
 - Prefer an observable the engine computes: a stationary world point projected through the scene camera moves
   when the view turns, and it can be asserted. A screenshot cannot.
+
+## A failure value that means three things is unactionable
+
+The world-tree check asserted on a `nullopt`, and the assertion text said so plainly: `null == faulted or no
+exe range`. When a level made it fire, the message could not distinguish a mapping fault from an unmapped
+image range from a non-terminating list. It sat unexplained because nothing about it pointed anywhere.
+
+Splitting the causes apart was one bool and one index, and it named the culprit immediately: list 0,
+object 18, deterministically, after 13 objects had already agreed with the engine's own root address.
+
+- A diagnostic that collapses distinct failures into one sentinel is not a diagnostic. If the assertion text
+  needs the word "or", the report is missing a field.
+- Make a partial result survive. The walk discarded 2065 correct observations because the 18th object
+  faulted; guarded per item, it reports what it found AND what it stepped over.
+- Then assert both: the invariant, and that the run was complete enough for the invariant to mean anything.
+  `object_faults == 0` is the second half of `every linked object reached the root`.
+
+## Readiness is what the checks need, not what the loader reports
+
+`resume_game.py` exited 0 on `ws_world_ready` while the engine clock was paused on the load screen's "press
+to continue". A suite run against that state fails scattered frame-dependent checks -- head tracking, in-phase
+samplers, the pass census -- and every one of them looks like a code regression.
+
+A fixture is ready when TIME IS PASSING, not when a flag says the world exists. Any state predicate a harness
+exports has to be the one the tests actually depend on, or it will manufacture false failures faster than it
+saves setup time.
