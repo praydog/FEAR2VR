@@ -5969,3 +5969,90 @@ class LTInputDeviceMouse 0x30 {
 // Exposed as sdk::PlayerMgr::camera_height_smoothing / set_camera_smoothing_enabled.
 //
 // 1218 checks, 0 failures.
+
+// ---- CPlayerCamera: THE GAME-SIDE CAMERA CLASS, AND THE "POSE HOLDER" IDENTIFIED -----------------
+//
+// Twelve passes of this file call the object at `player + 252` the "pose holder" and map fields on it. IT IS
+// CPlayerCamera -- the class the FIRST camera pass mapped from the other end, by its vtable, constructor and eight
+// delegate sinks. Verified live by vtable identity: *(holder) == g_vtbl_CPlayerCamera (gameclient +0x1D5B94)
+// exactly, its secondary vtables at +0x10 and +0x24 are the 0x1D5B58 / 0x1D5B04 that pass recorded, and all eight
+// 20-byte sink nodes are threaded rather than self-linked -- which is precisely what that pass predicted would
+// happen at runtime after the constructor self-links them.
+//
+// So `sdk::PlayerMgr::camera_delegates()` (reading sinks at +16..156) and `camera_fov()` / `viewport_rect()` /
+// `camera_height_smoothing()` have been reading ONE object all along, and the class is the connection.
+//
+// SIZE IS A LOWER BOUND from the constructor, which touches offsets up to 6341.
+namespace regenny {
+
+class CPlayerCamera 0x18C6 {
+    void* vtable                     @0x000 [[code]]   // g_vtbl_CPlayerCamera, gameclient +0x1D5B94
+    void* owner                      @0x004             // the game-side player object; this is player[63] read back
+    void* vtable_secondary_10        @0x010 [[code]]   // gameclient +0x1D5B58, an embedded sink's own vtable
+    void* vtable_secondary_24        @0x024 [[code]]   // gameclient +0x1D5B04
+    LTObject* camera_object          @0x0BC             // +188. The ENGINE object the view is built from. Its transform equals applied_position/applied_rotation below, and PlayerCamera_ComposeAndPushPose / _UpdateViewPose / _SnapPoseToModel all push to it with ILTClient slot 24. PlayerCamera_TranslateCameraObject offsets it in place for platform carry.
+    int32_t viewport_rect            @0x0C4             // +196. EIGHT int32 at +196..224. Camera_ComputeFovPair divides (b+d-f-h) by (a+c-e-g) over them for its aspect, falling back to 16:9 when the denominator is zero. Live only two are non-zero and the expression yields 5120 x 1440 = 32:9 -- which is the display, not an engine quirk.
+    LTVector applied_position        @0x0E8             // +232. The pose the engine CARRIES: bit-equal to camera_object's LTObject position. Note the direction of that equality is NOT established -- with the render path frozen it is a last-synced snapshot, and mutation probes on a static scene cannot tell which side is upstream.
+    LTRotation applied_rotation      @0x0F4             // +244. Same, for the rotation.
+    float fov_x                      @0x124             // +292. HORIZONTAL FOV in radians, from Camera_ComputeFovPair: clamp(2*atan(tan(fov_y/2)*aspect)*scale, 0, 3.1066861). Live 2.31011 = 132.36 deg.
+    float fov_y                      @0x128             // +296. VERTICAL FOV in radians = FovY console variable * pi/180, clamped the same way. Live 1.134464 = exactly 65.0000 deg. The whole derivation is verified by sdk::PlayerMgr::fov_derivation_holds.
+    LTVector position                @0x12C             // +300. Written by PlayerCamera_UpdateViewPose from PlayerCamera_ComputeBasePoseFromSocket, and copied to smoothed_position below.
+    LTVector cinematic_position      @0x138             // +312. PlayerCamera_UpdateCinematicCamera fills it with GetObjectPos(camera_object) on the frame it takes over.
+    LTRotation rotation              @0x144             // +324. The INNER operand of the final rotation product: LTRotation_Multiply(attachment_rotation, this).
+    uint8_t use_smoothed_x           @0x218             // +536. Three per-axis selectors read by PlayerCamera_UpdateViewPose to choose between two position sources; live all three are 1.
+    uint8_t use_smoothed_y           @0x219             // +537
+    uint8_t use_smoothed_z           @0x21A             // +538
+    LTVector smoothed_position       @0x21C             // +540. A copy of `position`, written by both PlayerCamera_UpdateViewPose and PlayerCamera_UpdateAttachedRotation.
+    LTRotation attachment_rotation   @0x228             // +552. The OUTER operand of the rotation product, and PlayerCamera_UpdateAttachedRotation is its SOLE writer: an attached object's rotation when a cinematic or mount holds the camera, IDENTITY otherwise. Live it is identity, which is why the composed product equals `rotation` alone and why live data cannot establish the multiply ORDER.
+    LTRotation base_rotation         @0x238             // +568. The rotation Camera_ComputeBasePoseFromSocket produced, before composition.
+    LTModelObject* model_object      @0x258             // +600. The client-only player model -- AND the object handed to ILTPhysics, reached the other way as *(*(player+260)+320). Unregistered: no engine handle, so handle-taking ILT* APIs cannot reach it. The socket named "Camera" on THIS asset is where the base pose comes from.
+    void* alternate_source           @0x268             // +616. The source Camera_ComputeBasePoseFromSocket uses instead of model_object when a gate passes and the owner's state is 2, 3 or 4.
+    uint32_t state                   @0x2B0             // +688. The nine-state machine at 0x100E1BE0 writes it; state 5 forces the base pose onto model_object, and PlayerCamera_UpdateCinematicCamera passes it as that machine's mode argument.
+    void* collision_proxy            @0x2C4             // +708. PlayerCamera_ApplyCollisionAndLeash moves this with ILTPhysics slot 12 and reads it back; when absent the whole clamp is skipped.
+    uint32_t anim_source             @0x2CC             // +716. Refreshed from *(*(player+260)+1536) by both the cinematic exit path and PlayerCamera_ComposeAndPushPose.
+    uint8_t clamp_flag               @0x2D0             // +720. Selects PlayerCamera_UpdateAttachedRotation's Euler clamp branch.
+    uint8_t has_previous_height      @0x2EC             // +748. Set once camera height smoothing has a previous sample.
+    float previous_height            @0x2F0             // +752. The smoothed height, SHARED WITH PlayerCamera_TranslateCameraObject, which adds the platform-carry vertical delta into it so the smoother does not read being carried as the player moving.
+    float smoothing_delta            @0x3E4             // +996. What the last height lerp moved. Zero when smoothing did not run.
+    float carry_accumulator          @0x3E8             // +1000. The other field PlayerCamera_TranslateCameraObject accumulates the carry delta into.
+    uint8_t aim_collision_latched    @0x3ED             // +1005. Latched by PlayerCamera_ApplyCollisionAndLeash when aim tracking hits geometry.
+    uint8_t cinematic_active         @0x3EE             // +1006. PlayerCamera_UpdateCinematicCamera owns it: set while a scripted view drives the camera, cleared on exit. A VR consumer must not fight the pose while this is set.
+    LTVector aim_collision_position  @0x3F0             // +1008. Cached when the latch above is set.
+    float saved_near_z               @0x18C0            // +6336. The NearZ console variable parked on entering a cinematic and restored on exit.
+}
+
+}
+
+// ---- THE HOLDER WAS CPlayerCamera ALL ALONG, AND NOW IT IS A STRUCT -----------------------------
+//
+// Twelve passes mapped fields on "the pose holder" at player+252 without ever asking what CLASS it is. The first
+// camera pass, long before any of them, had mapped CPlayerCamera from the other end -- vtable, constructor, eight
+// 20-byte delegate sinks -- and recorded that the constructor touches offsets up to 6341 and self-links all eight
+// sinks. Those are the same object.
+//
+// VERIFIED BY VTABLE IDENTITY, three ways at once:
+//     *(holder)        == g_vtbl_CPlayerCamera         gameclient +0x1D5B94, exact
+//     *(holder + 0x10) == 0x101D5B58                   the secondary vtables that pass recorded
+//     *(holder + 0x24) == 0x101D5B04
+//     all eight sinks THREADED, not self-linked        exactly what it predicted for runtime
+//
+// The clincher was already in the record: that pass wrote "the class is at least 6342 bytes" from its constructor,
+// and this one found saved_near_z at +6336. A field four bytes inside a bound derived independently, twelve passes
+// apart.
+//
+// > Nothing was wrong; the two halves simply never met. The lesson is narrower than usual and worth it: when a
+// > pointer's FIELDS are being mapped, establishing its CLASS is one load, and this project spent twelve passes
+// > not spending it.
+//
+// SO CPlayerCamera IS NOW A STRUCT in this file -- 30 fields, every one carrying the function that established it.
+// It is the first game-side (gameclient.dll) class here; the other 57 are engine structures.
+//
+// AND THE CLASS CHECK IS A CONSUMER GUARD, not a formality. Around thirty offsets are read off that pointer, and a
+// wrong pointer yields PLAUSIBLE NUMBERS rather than a fault -- reading the physics holder with pose offsets
+// returned position (0,0,0) with a zero-norm quaternion, which looks like data. holder_is_player_camera() is one
+// load and fails closed. The suite asserts the NEGATIVE CONTROL too: the physics holder on the adjacent player
+// field must NOT match, or the check would pass for any pointer.
+//
+// Named in IDA: g_vtbl_CPlayerCamera_Sink10 and _Sink24 beside the primary.
+//
+// 1222 checks, 0 failures.

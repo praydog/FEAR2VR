@@ -109,6 +109,26 @@ public:
     // generations existing, but WHICH member is which is NOT pinned here -- the names below describe what was
     // measured (one matches the engine object, one does not) rather than asserting the reference's mapping.
     //
+    // ---- THE HOLDER IS CPlayerCamera, AND THAT IS CHECKABLE ---------------------------------
+    //
+    // Everything this class calls "the holder" is a CPlayerCamera instance -- the game-side camera class an early
+    // pass mapped from the other end, by its vtable, constructor and eight delegate sinks. The identification is
+    // vtable identity, verified live: *(holder) is gameclient + 0x1D5B94 exactly, the secondary vtables at +0x10
+    // and +0x24 are the ones that pass recorded, and all eight sink nodes are threaded rather than self-linked --
+    // which is what it predicted would happen at runtime after the constructor self-links them.
+    //
+    // WHY A CONSUMER WANTS THE CHECK: this class reads about thirty offsets off that pointer, and a wrong pointer
+    // produces plausible numbers rather than a fault -- exactly what happened when the physics holder was read with
+    // pose offsets and returned a position of (0,0,0) with a zero-norm quaternion. Checking the class first is one
+    // load and it fails closed.
+    //
+    // See the CPlayerCamera struct in reversing/fear2.genny for the full field map.
+    static constexpr uintptr_t kPlayerCameraVtable = 0x1D5B94;  // gameclient-relative
+
+    // Does this player's holder carry CPlayerCamera's vtable? nullopt when the player or the pointer cannot be
+    // read; false means the pointer is not what every other accessor here assumes.
+    static std::optional<bool> holder_is_player_camera(unsigned index);
+
     // Player-object and holder layout.
     static constexpr uintptr_t kHolder = 252;
     static constexpr uintptr_t kCameraObject = 188;

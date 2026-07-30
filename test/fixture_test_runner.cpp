@@ -4509,6 +4509,26 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE HOLDER'S CLASS IS CPlayerCamera, AND THE CHECK CAN FAIL -----------------------
+            //
+            // Everything called "the holder" here is a CPlayerCamera instance -- the class an early pass mapped from
+            // the other end, by vtable, constructor and eight delegate sinks. Confirming that is one load, and it is
+            // worth doing because roughly thirty offsets are read off this pointer and a WRONG pointer yields
+            // plausible numbers rather than a fault: reading the physics holder with pose offsets returned a
+            // position of (0,0,0) and a zero-norm quaternion, which looks like data.
+            bool hc_d = false, hc_is = false, hc_diff = false, hc_rr = false;
+            check(json_bool(body, "hc_determinable", hc_d) && hc_d,
+                  "the holder's class is answerable");
+            check(json_bool(body, "hc_is_player_camera", hc_is) && hc_is,
+                  "the holder carries CPlayerCamera's vtable");
+            // THE NEGATIVE CONTROL is what makes this a test. The other holder hangs off the adjacent player field
+            // and is a different class, so the same comparison applied there must say no -- otherwise the check
+            // would pass for any pointer at all.
+            check(json_bool(body, "hc_physics_holder_differs", hc_diff) && hc_diff,
+                  "the physics holder does NOT carry that vtable, so the check discriminates");
+            check(json_bool(body, "hc_range_refused", hc_rr) && hc_rr,
+                  "an out-of-range slot yields no class answer");
+
             // ---- CAMERA HEIGHT SMOOTHING, INERT TWICE OVER ------------------------------------------
             //
             // The view pose lerps its height toward the new value instead of snapping, which is the kind of lag

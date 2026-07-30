@@ -982,4 +982,21 @@ bool PlayerMgr::set_camera_smoothing_enabled(bool enabled) {
     return Engine::write_cached(*gate, enabled ? 1.0f : 0.0f);
 }
 
+
+std::optional<bool> PlayerMgr::holder_is_player_camera(unsigned index) {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return std::nullopt;
+    }
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto vt = mem::read_ptr(p->holder);
+    if (!vt.has_value()) {
+        return std::nullopt;
+    }
+    return *vt == gc->base + kPlayerCameraVtable;
+}
+
 }  // namespace sdk

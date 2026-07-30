@@ -4610,6 +4610,23 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE HOLDER'S CLASS. Thirty-odd offsets are read off this pointer, so confirming its class first is the guard
+    // that would have caught reading the physics holder with pose offsets.
+    const auto hic = sdk::PlayerMgr::holder_is_player_camera(0);
+    json_append_bool(out, "hc_determinable", hic.has_value());
+    json_append_bool(out, "hc_is_player_camera", hic.has_value() && *hic);
+    // AND IT MUST BE ABLE TO FAIL: the OTHER holder on the adjacent player field is a different class, so the same
+    // check applied there must say no. That is what makes this a test rather than a tautology.
+    if (const auto pp = sdk::PlayerMgr::slot(0); pp.has_value()) {
+        const auto* gcm = sdk::Modules::get().game_client();
+        const auto phys = sdk::mem::read_ptr(*pp + sdk::PlayerMgr::kEngineHolderField).value_or(0);
+        const auto phys_vt = phys != 0 ? sdk::mem::read_ptr(phys).value_or(0) : 0;
+        json_append_bool(out, "hc_physics_holder_differs",
+                         gcm != nullptr && phys_vt != 0 &&
+                             phys_vt != gcm->base + sdk::PlayerMgr::kPlayerCameraVtable);
+    }
+    json_append_bool(out, "hc_range_refused", !sdk::PlayerMgr::holder_is_player_camera(9).has_value());
+
     // CAMERA HEIGHT SMOOTHING. The interesting result is that it is inert twice over, so the obvious VR advice
     // ("disable smoothing") would be wasted effort -- which is only visible by checking the gate AND the speeds
     // against the clamp the producer applies.
