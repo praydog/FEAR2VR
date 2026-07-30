@@ -3890,3 +3890,40 @@ experiment safe.
 **Still open:** the write also steers movement direction, so a VR mod that decouples aim from view has to
 separate them -- that is the next question, not a solved one.
 
+## The view override is clean once it writes THROUGH the argument, not the field
+
+A player fighting the view lock said it "rubber banded back" rather than holding still. The number agreed:
+correcting the field after both hooks we owned still left a **3.24 degree worst-case excursion**, on 221 of
+4421 corrections.
+
+A data breakpoint on the live rotation address found the writer in one shot. An instruction scan for stores
+into `+144h` had returned **67 functions across unrelated classes** -- the offset-collision false positive this
+file already warns about -- so scanning was never going to answer it.
+
+```
+CPlayerCamera_ApplyLookToRotation  (gameclient 0x100E0830)
+    fld [esi+144h] .. fld [esi+150h]     ; the quaternion at +324, copied to the STACK
+    call CPlayerCamera_ApplyLookDelta    ; which modifies that stack copy in place
+    fld [esp+..] / fstp [esi+144h]       ; and THIS function writes the result back
+```
+
+So `ApplyLookDelta` never touches the field at all: it transforms a stack copy and its caller commits it.
+Writing the field from inside the ApplyLookDelta detour is therefore overwritten microseconds later by the
+four stores below the call. That is the entire rubber-band.
+
+Writing through the POINTER ARGUMENT puts our rotation into the value the caller is about to store:
+
+```
+                          worst drift    corrections drifting
+field write, both hooks      3.2442 deg     221 / 4421
+in-flight through a2         0.0000 deg       0 / 2420   (2475 look events fought it)
+```
+
+**The pattern generalises past this function.** When a routine takes a pointer to a value and its caller
+commits the result, the interception point is the ARGUMENT, not the destination -- and the tell is exactly what
+was seen here: the write lands, is visibly consumed, and is undone at a fixed point every frame. Fighting the
+store is a losing race with the frame; replacing the value in flight is not a race at all.
+
+It also explains the earlier reading that the applied pose at +244 "lands but does not survive". Same shape,
+one level down.
+

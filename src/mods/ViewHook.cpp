@@ -62,6 +62,8 @@ std::atomic<bool> g_ov_have_base{false};
 // The worst drift seen between our corrections, in degrees, and how many corrections found any.
 std::atomic<uint32_t> g_ov_max_drift_bits{0};
 std::atomic<uint64_t> g_ov_drift_frames{0};
+// Frames where we replaced the quaternion IN FLIGHT rather than writing the field after the fact.
+std::atomic<uint64_t> g_ov_inflight{0};
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
@@ -78,6 +80,29 @@ std::atomic<uintptr_t> g_pose_target{0};
 //
 // So every writer we own is followed by a re-assert. `decrement` is only true for the per-frame call, or the
 // countdown would burn down at the rate of look input instead of the rate of frames.
+// The absolute rotation the override wants this frame: yaw offset composed onto the captured baseline.
+// False when no baseline has been captured yet.
+bool override_rotation(std::array<float, 4>& out) {
+    if (!g_ov_have_base.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    float yaw = 0.0f;
+    const uint32_t yb = g_ov_yaw_bits.load(std::memory_order_relaxed);
+    std::memcpy(&yaw, &yb, sizeof(yaw));
+    std::array<float, 4> b{};
+    for (size_t i = 0; i < b.size(); ++i) {
+        const uint32_t bits = g_ov_base[i].load(std::memory_order_relaxed);
+        std::memcpy(&b[i], &bits, sizeof(b[i]));
+    }
+    const float half = yaw * 0.5f * 0.01745329252f;
+    const std::array<float, 4> a{0.0f, std::sin(half), 0.0f, std::cos(half)};
+    out = {a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+           a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+           a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+           a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+    return true;
+}
+
 void apply_override(bool decrement) {
     const uint32_t frames = g_ov_frames.load(std::memory_order_relaxed);
     if (frames == 0) {
@@ -187,9 +212,27 @@ int __fastcall apply_look_delta_detour(uintptr_t self, uintptr_t /*edx*/, float*
     }
     const int r = hook->original<int(__fastcall*)(uintptr_t, uintptr_t, float*, float, float*)>()(
         self, 0, a2, a3, a4);
-    // RE-ASSERT after the look delta lands. Without this the override corrects only once per frame while this
-    // runs ~2.5x per frame, which is exactly what "it rubber-banded back" describes.
-    apply_override(false);
+
+    // OVERRIDE THE QUATERNION IN FLIGHT, which is why a2 matters.
+    //
+    // A data breakpoint on the live field found the writer: this function's CALLER copies the rotation to the
+    // stack, passes a pointer to it here, and stores the result back into +144h..+150h itself --
+    //
+    //     fld [esi+144h] .. fld [esi+150h]      ; quaternion -> stack
+    //     call CPlayerCamera_ApplyLookDelta     ; modifies the stack copy
+    //     fld [esp+..] / fstp [esi+144h]        ; ... and writes it back
+    //
+    // So writing the FIELD from in here is pointless: the caller overwrites it microseconds later with the
+    // stack value. That is the rubber-band, and it is why correcting after both hooks still left a 3.24 degree
+    // worst-case excursion. Writing THROUGH a2 puts our rotation into the value the caller is about to store,
+    // so the engine propagates it instead of fighting it.
+    if (a2 != nullptr && g_ov_frames.load(std::memory_order_relaxed) > 0) {
+        std::array<float, 4> out{};
+        if (override_rotation(out)) {
+            std::memcpy(a2, out.data(), sizeof(out));
+            g_ov_inflight.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     return r;
 }
 
@@ -326,6 +369,7 @@ ViewHook::Observed ViewHook::observed() const {
     const uint32_t db = g_ov_max_drift_bits.load(std::memory_order_relaxed);
     std::memcpy(&out.override_max_drift_deg, &db, sizeof(out.override_max_drift_deg));
     out.override_drift_frames = g_ov_drift_frames.load(std::memory_order_relaxed);
+    out.override_inflight = g_ov_inflight.load(std::memory_order_relaxed);
     return out;
 }
 
@@ -344,6 +388,7 @@ void ViewHook::arm_override(float yaw_deg, uint32_t frames, bool write_source) {
     g_ov_have_base.store(false, std::memory_order_relaxed);
     g_ov_max_drift_bits.store(0, std::memory_order_relaxed);
     g_ov_drift_frames.store(0, std::memory_order_relaxed);
+    g_ov_inflight.store(0, std::memory_order_relaxed);
     g_ov_pending.store(false, std::memory_order_relaxed);
     g_ov_frames.store(bounded, std::memory_order_relaxed);
     LOGX("[viewhook] override armed: %.2f deg yaw for %u frames", yaw_deg, bounded);

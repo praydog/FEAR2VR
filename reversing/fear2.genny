@@ -7024,6 +7024,12 @@ class CPlayerCamera 0x18C6 {
 // spread unoverridden. An earlier run that showed the yaw pinned while nobody was looking around proved
 // nothing and was retracted.
 //
+// WRITE THROUGH THE ARGUMENT, NOT THE FIELD. CPlayerCamera_ApplyLookToRotation (0x100E0830) copies this
+// quaternion to the stack, passes a pointer to ApplyLookDelta, and stores the result back itself. So a field
+// write from inside that detour is overwritten by the four stores below the call -- measured as a 3.24 degree
+// rubber-band. Replacing the value through the pointer argument instead: 0.00 degrees of drift across 2475
+// live look events.
+//
 // A write must be ABSOLUTE, from a baseline captured once. Composing an offset onto the live value feeds the
 // write's own output back the next frame -- at ~300 fps a 40-degree offset became a runaway spin, which is
 // itself proof the engine derives the view from this field.

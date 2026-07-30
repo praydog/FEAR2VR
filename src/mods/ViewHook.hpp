@@ -101,6 +101,9 @@ public:
         // sampler reads a still value no matter how hard the two writers fight.
         float override_max_drift_deg{};
         uint64_t override_drift_frames{};
+        // Times the quaternion was replaced IN FLIGHT through ApplyLookDelta's argument, which is the form that
+        // does not fight the caller's write-back.
+        uint64_t override_inflight{};
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by

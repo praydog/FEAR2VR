@@ -5998,6 +5998,7 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "vh_ov_pose_held", static_cast<double>(vh.override_pose_held), 0);
         json_append_double(out, "vh_ov_max_drift_deg", static_cast<double>(vh.override_max_drift_deg), 4);
         json_append_double(out, "vh_ov_drift_frames", static_cast<double>(vh.override_drift_frames), 0);
+        json_append_double(out, "vh_ov_inflight", static_cast<double>(vh.override_inflight), 0);
         // THE REFUSAL PATH, checkable without touching the view. write_view_rotation must reject a non-unit
         // quaternion, because read_pose treats non-unit as proof of a wrong offset -- a writer that could
         // manufacture that state would be able to fake a mapping error into existence.
