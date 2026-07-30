@@ -6856,6 +6856,39 @@ int main(int argc, char** argv) {
                   category_count > 0 && category_count < 100000,
                   "record_a_category_count() result in a plausible range (0,100000)");
             check(json_has(body, "\"categories\":["), "categories array present");
+
+            // ---- THE "PLAUSIBLE NAME HASH" IS THE NAME HASH ------------------------------------
+            //
+            // fear2.genny carried DatabaseMgrCategory+0x10 and DatabaseMgrRecord+0x14 as "plausible name hash,
+            // not otherwise confirmed" for several passes, because the hash FUNCTION was unknown. It turned up
+            // sideways: CMoveMgr_Init appeared to hold two loops over 71 items, and 71 is 0x47 = 'G', the first
+            // character of the two names being hashed inline. With the function known the claim is testable over
+            // the whole population rather than argued from value shape.
+            int64_t cat_cmp = -1, cat_agree = -1, cat_skip = -1, rec_cmp = -1, rec_agree = -1;
+            check(json_int(body, "cat_hash_compared", cat_cmp) && cat_cmp > 300,
+                  "every category was compared, not a sample");
+            check(json_int(body, "cat_hash_agreeing", cat_agree) && cat_agree == cat_cmp,
+                  "and each one's stored value equals the hash of its own name");
+            check(json_int(body, "cat_hash_skipped", cat_skip) && cat_skip == 0,
+                  "none skipped, so the agreement is over the full population");
+            check(json_int(body, "rec_hash_compared", rec_cmp) && rec_cmp > 20000,
+                  "every record in every category was compared too -- tens of thousands");
+            check(json_int(body, "rec_hash_agreeing", rec_agree) && rec_agree == rec_cmp,
+                  "and all of them agree, which is what turns 'plausible' into established");
+            check(json_has(body, "\"cat_hash_unanimous\":true") &&
+                      json_has(body, "\"rec_hash_unanimous\":true"),
+                  "both structures report unanimous agreement");
+
+            // THE FUNCTION'S OWN PROPERTIES, including the ones that make it discriminating.
+            check(json_has(body, "\"hash_gunlead\":3083600172"),
+                  "hash(\"GunLead\") is exactly the value computed independently from the static fold table");
+            check(json_has(body, "\"hash_case_insensitive\":true"),
+                  "hash is case-insensitive by construction -- the fold table maps both cases to 1..26");
+            // WITHOUT THIS the case-insensitivity check would pass on a constant function.
+            check(json_has(body, "\"hash_distinct\":true"),
+                  "yet different names hash differently, so it is not collapsing everything");
+            check(json_has(body, "\"hash_empty_is_zero\":true"),
+                  "the empty name hashes to zero, matching the loop's initial accumulator");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

@@ -171,4 +171,109 @@ std::string DatabaseMgr::record_name(const regenny::DatabaseMgrRecord* record) {
     return n >= 0 ? std::string(buf, static_cast<size_t>(n)) : std::string();
 }
 
+
+uintptr_t DatabaseMgr::fold_table() {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return 0;
+    }
+    return gc->base + kFoldTableOffset;
+}
+
+std::optional<uint32_t> DatabaseMgr::hash_name(std::string_view name) {
+    const auto table = fold_table();
+    if (table == 0) {
+        return std::nullopt;
+    }
+    uint32_t hash = 0;
+    for (const char ch : name) {
+        const auto folded = mem::read<uint8_t>(table + static_cast<uint8_t>(ch));
+        if (!folded.has_value()) {
+            return std::nullopt;
+        }
+        hash = static_cast<uint32_t>(*folded) + kHashMultiplier * hash;
+    }
+    return hash;
+}
+
+std::optional<bool> DatabaseMgr::category_hash_matches(const regenny::DatabaseMgrCategory* category) {
+    if (category == nullptr) {
+        return std::nullopt;
+    }
+    const auto name = category_name(category);
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    const auto want = hash_name(name);
+    if (!want.has_value()) {
+        return std::nullopt;
+    }
+    const auto got = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(category) + 0x10);
+    if (!got.has_value()) {
+        return std::nullopt;
+    }
+    return *got == *want;
+}
+
+std::optional<bool> DatabaseMgr::record_hash_matches(const regenny::DatabaseMgrRecord* record) {
+    if (record == nullptr) {
+        return std::nullopt;
+    }
+    const auto name = record_name(record);
+    if (name.empty()) {
+        return std::nullopt;
+    }
+    const auto want = hash_name(name);
+    if (!want.has_value()) {
+        return std::nullopt;
+    }
+    const auto got = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(record) + 0x14);
+    if (!got.has_value()) {
+        return std::nullopt;
+    }
+    return *got == *want;
+}
+
+DatabaseMgr::HashAgreement DatabaseMgr::category_hash_agreement(
+    const regenny::DatabaseMgrSubRecord* database) {
+    HashAgreement out;
+    const auto n = category_count(database);
+    for (size_t i = 0; i < n; ++i) {
+        const auto* cat = category(database, i);
+        const auto ok = category_hash_matches(cat);
+        if (!ok.has_value()) {
+            ++out.skipped;
+            continue;
+        }
+        ++out.compared;
+        if (*ok) {
+            ++out.agreeing;
+        }
+    }
+    return out;
+}
+
+DatabaseMgr::HashAgreement DatabaseMgr::record_hash_agreement(
+    const regenny::DatabaseMgrSubRecord* database) {
+    HashAgreement out;
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        for (size_t j = 0; j < nrec; ++j) {
+            const auto* rec = record(cat, j);
+            const auto ok = record_hash_matches(rec);
+            if (!ok.has_value()) {
+                ++out.skipped;
+                continue;
+            }
+            ++out.compared;
+            if (*ok) {
+                ++out.agreeing;
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace sdk

@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint> // generated regenny headers use uint32_t/etc. without including it themselves -- must precede them
+#include <optional>
 #include <string>
+#include <string_view>
 
 // Primitives shim MUST precede any generated header using strptr/wstrptr
 // (fear2.genny prelude aliases with no C++ definition of their own).
@@ -91,6 +93,57 @@ public:
     // guard, not just the resulting char* walk.
     static std::string category_name(const regenny::DatabaseMgrCategory* category);
     static std::string record_name(const regenny::DatabaseMgrRecord* record);
+
+    // ---- THE NAME HASH, READ OFF THE CODE THAT COMPUTES IT --------------------------------------
+    //
+    // FOUND SIDEWAYS. CMoveMgr_Init appeared to contain two loops over 71 items, recorded as an open question.
+    // They are neither loops over items nor 71 of anything: 71 is 0x47, the character 'G', and both strings
+    // whose hash is being taken -- "GunLead" and "GamePad" -- begin with it. The construct is an INLINED STRING
+    // HASH, and the result goes straight to the database interface as a lookup key, which is why those two
+    // names allocate no console variable.
+    //
+    //     hash = 0;  for each char c:  hash = kFoldTable[c] + 919 * hash;
+    //
+    // THE TABLE IS A CASE-FOLDING ALPHABET MAP at gameclient +0x1C9810, not a permutation: 'A'..'Z' and
+    // 'a'..'z' both map to 1..26, digits to 27..36, '_' to 38, '/' to 52, '\\' to 42, '.' to 55. So the hash is
+    // CASE-INSENSITIVE, which is checkable rather than asserted -- hash("GunLead") == hash("gunlead") and
+    // hash("GamePad") == hash("GAMEPAD"), both verified.
+    //
+    // WHY A CONSUMER WANTS IT: every database lookup by name goes through this. Precomputing a hash lets a mod
+    // find a category or record without walking strings, and more immediately it lets this SDK CHECK the fields
+    // fear2.genny has been carrying as "plausible name hash, not otherwise confirmed" for several passes.
+    static constexpr uint32_t kHashMultiplier = 919;
+    static constexpr uintptr_t kFoldTableOffset = 0x1C9810;  // gameclient-relative
+
+    // Runtime address of the fold table, 0 when gameclient is not mapped.
+    static uintptr_t fold_table();
+
+    // The engine's hash of a name. nullopt when the fold table cannot be read -- it is module data, so this is
+    // a real possibility rather than a formality. Case-insensitive by construction, not by lowercasing first.
+    static std::optional<uint32_t> hash_name(std::string_view name);
+
+    // Does this category's stored value at +0x10 equal the hash of its own name? The question fear2.genny left
+    // open. nullopt when either side cannot be read.
+    static std::optional<bool> category_hash_matches(const regenny::DatabaseMgrCategory* category);
+
+    // Same for a record's +0x14.
+    static std::optional<bool> record_hash_matches(const regenny::DatabaseMgrRecord* record);
+
+    struct HashAgreement {
+        size_t compared{};   // how many had both a readable name and a readable value
+        size_t agreeing{};   // how many matched
+        size_t skipped{};    // unreadable either side
+
+        // The only honest verdict: agreement across a population, not a single sample.
+        bool unanimous() const { return compared > 0 && agreeing == compared; }
+    };
+
+    // Walk every category of a database and compare each stored value against the hash of its name. This is the
+    // measurement that turns "plausible" into established, or refutes it.
+    static HashAgreement category_hash_agreement(const regenny::DatabaseMgrSubRecord* database);
+
+    // The same over every record of every category.
+    static HashAgreement record_hash_agreement(const regenny::DatabaseMgrSubRecord* database);
 
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];

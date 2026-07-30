@@ -7147,6 +7147,36 @@ std::string build_database_json() {
             entry0_json += ",\"categories\":";
             entry0_json += build_category_list_json(e->record_a, 0, 5);
 
+            // ---- IS THE "PLAUSIBLE NAME HASH" ACTUALLY THE NAME HASH? ----
+            //
+            // fear2.genny has carried DatabaseMgrCategory+0x10 and DatabaseMgrRecord+0x14 as "plausible name
+            // hash, not otherwise confirmed" for several passes. The hash function is now known -- read out of
+            // CMoveMgr_Init, which computes it inline -- so the claim is testable across the whole population.
+            {
+                const auto cat_agree = sdk::DatabaseMgr::category_hash_agreement(e->record_a);
+                const auto rec_agree = sdk::DatabaseMgr::record_hash_agreement(e->record_a);
+                entry0_json += ",\"cat_hash_compared\":" + std::to_string(cat_agree.compared);
+                entry0_json += ",\"cat_hash_agreeing\":" + std::to_string(cat_agree.agreeing);
+                entry0_json += ",\"cat_hash_skipped\":" + std::to_string(cat_agree.skipped);
+                entry0_json += ",\"cat_hash_unanimous\":" + std::string(cat_agree.unanimous() ? "true" : "false");
+                entry0_json += ",\"rec_hash_compared\":" + std::to_string(rec_agree.compared);
+                entry0_json += ",\"rec_hash_agreeing\":" + std::to_string(rec_agree.agreeing);
+                entry0_json += ",\"rec_hash_unanimous\":" + std::string(rec_agree.unanimous() ? "true" : "false");
+                // THE FUNCTION ITSELF, checked on inputs whose answer is known from the disassembly and on the
+                // case-insensitivity the fold table implies.
+                const auto h_gun = sdk::DatabaseMgr::hash_name("GunLead");
+                const auto h_gun_lc = sdk::DatabaseMgr::hash_name("gunlead");
+                const auto h_pad = sdk::DatabaseMgr::hash_name("GamePad");
+                entry0_json += ",\"hash_gunlead\":" + std::to_string(h_gun.value_or(0));
+                entry0_json += ",\"hash_case_insensitive\":" +
+                               std::string((h_gun.has_value() && h_gun == h_gun_lc) ? "true" : "false");
+                entry0_json += ",\"hash_distinct\":" +
+                               std::string((h_gun.has_value() && h_pad.has_value() && h_gun != h_pad) ? "true"
+                                                                                                      : "false");
+                entry0_json += ",\"hash_empty_is_zero\":" +
+                               std::string((sdk::DatabaseMgr::hash_name("") == 0u) ? "true" : "false");
+            }
+
             // First category with any records at all, walked linearly (no
             // hardcoded index assumption -- which category has records can
             // differ per loaded .gamedb).
