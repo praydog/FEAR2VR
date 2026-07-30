@@ -6056,3 +6056,45 @@ class CPlayerCamera 0x18C6 {
 // Named in IDA: g_vtbl_CPlayerCamera_Sink10 and _Sink24 beside the primary.
 //
 // 1222 checks, 0 failures.
+
+// ---- THE SAME ONE-LOAD CHECK, APPLIED TO THE OTHER THREE OBJECTS --------------------------------
+//
+// Last pass's lesson was "establishing a pointer's class costs one load, and this project spent twelve passes not
+// spending it". Three other objects here are mapped by offset and had never had it spent. Spending it:
+//
+//     player + 236  movement controller     vtable gameclient +0x1D87CC, 4 slots
+//                                           ctor PlayerMovementController_ctor    >= 2220 bytes
+//     player + 252  CPlayerCamera           vtable +0x1D5B94                      >= 6342 bytes
+//     player + 260  physics holder          vtable +0x1D582C, 4 slots
+//                                           ctor PlayerCameraPhysicsHolder_ctor   >= 1949 bytes
+//
+// ALL THREE ARE CONSTRUCTED BY ONE FUNCTION -- CPlayerCameraOwner_ctor, already named -- so the object this project
+// calls "the player" is that class, and the three are its parts. Sizes come from each ctor's highest touched offset,
+// the technique that first sized CPlayerCamera.
+//
+// AND THE +4 OWNER BACK-POINTER IS A CONVENTION, NOT A QUIRK. It was established for the controller several passes
+// ago and used only there. All three carry it, pointing at the player -- so it is a uniform validity test for any of
+// them, and the suite now checks all three at once.
+//
+// THE CONTROLLER IS AN EMBEDDED MEMBER, which the other two are not:
+//
+//     *(player + 236) == player + 0xE88     exactly
+//     the camera and physics holders sit over a megabyte away in the heap
+//
+// That is an EXACT STRUCTURAL IDENTITY, strictly stronger than a vtable comparison -- a vtable can be shared, an
+// address cannot. So controller_is_embedded() is the check to prefer for that object, and the suite asserts the
+// contrast: the other two must NOT satisfy it, or "embedded" would be a label rather than a distinction.
+//
+// > The player object itself has NO code vtable: its first dword is 0x094C3B98, a heap address, which an early pass
+// > had already noted. So the one-load check does not apply to it, and saying so is part of applying the lesson
+// > honestly rather than everywhere.
+//
+// One more measured fact worth keeping: the player's first 0x400 bytes hold 43 pointers to objects carrying
+// gameclient vtables. It is a container of subsystems, and these three are the camera-related ones.
+//
+// Named in IDA: PlayerMovementController_ctor/_dtor, PlayerCameraPhysicsHolder_ctor/_dtor,
+// g_vtbl_PlayerMovementController, g_vtbl_PlayerCameraPhysicsHolder. Exposed as
+// sdk::PlayerMgr::camera_sub_objects / sub_objects_own_player / controller_is_embedded /
+// controller_class_matches / physics_holder_class_matches.
+//
+// 1234 checks, 0 failures.

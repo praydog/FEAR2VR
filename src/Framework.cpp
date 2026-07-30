@@ -4610,6 +4610,53 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE PLAYER'S THREE CAMERA SUB-OBJECTS. Generalising last pass's lesson: establish each pointer's class before
+    // reading offsets off it, and prefer an exact structural identity where one exists.
+    const auto subs = sdk::PlayerMgr::camera_sub_objects(0);
+    const auto own = sdk::PlayerMgr::sub_objects_own_player(0);
+    const auto emb = sdk::PlayerMgr::controller_is_embedded(0);
+    const auto cvm = sdk::PlayerMgr::controller_class_matches(0);
+    const auto pvm = sdk::PlayerMgr::physics_holder_class_matches(0);
+    json_append_bool(out, "so_resolved", subs.has_value());
+    if (subs.has_value()) {
+        json_append_bool(out, "so_all_present",
+                         subs->controller != 0 && subs->player_camera != 0 && subs->physics_holder != 0);
+        json_append_bool(out, "so_all_distinct",
+                         subs->controller != subs->player_camera &&
+                             subs->player_camera != subs->physics_holder &&
+                             subs->controller != subs->physics_holder);
+        // ONLY THE CONTROLLER IS EMBEDDED. The other two must sit far outside the player's own extent, which is
+        // what distinguishes an embedded member from a separate allocation.
+        if (const auto pp = sdk::PlayerMgr::slot(0); pp.has_value()) {
+            // `far` is a reserved word in MSVC (the legacy 16-bit pointer qualifier), hence the name.
+            const auto outside = [&](uintptr_t o) {
+                return o > *pp + 0x10000 || o + 0x10000 < *pp;
+            };
+            json_append_bool(out, "so_others_not_embedded",
+                             outside(subs->player_camera) && outside(subs->physics_holder));
+        }
+    }
+    // THE SHARED CONVENTION: all three name the player as owner at +4.
+    json_append_bool(out, "so_own_determinable", own.has_value());
+    json_append_bool(out, "so_all_own_player", own.has_value() && *own);
+    // THE EXACT IDENTITY, which no unrelated pointer satisfies.
+    json_append_bool(out, "so_embedded_determinable", emb.has_value());
+    json_append_bool(out, "so_controller_embedded", emb.has_value() && *emb);
+    // AND THE CLASS GUARDS FOR THE OTHER TWO.
+    json_append_bool(out, "so_controller_class", cvm.has_value() && *cvm);
+    json_append_bool(out, "so_physics_class", pvm.has_value() && *pvm);
+    // THE GUARDS MUST DISCRIMINATE: the controller's vtable is not the physics holder's, so cross-applying the
+    // constants has to fail. Without this the two checks could both be passing on one shared vtable.
+    json_append_bool(out, "so_vtables_differ",
+                     sdk::PlayerMgr::kControllerVtable != sdk::PlayerMgr::kPhysicsHolderVtable &&
+                         sdk::PlayerMgr::kControllerVtable != sdk::PlayerMgr::kPlayerCameraVtable &&
+                         sdk::PlayerMgr::kPhysicsHolderVtable != sdk::PlayerMgr::kPlayerCameraVtable);
+    json_append_bool(out, "so_range_refused",
+                     !sdk::PlayerMgr::camera_sub_objects(9).has_value() &&
+                         !sdk::PlayerMgr::sub_objects_own_player(9).has_value() &&
+                         !sdk::PlayerMgr::controller_is_embedded(9).has_value() &&
+                         !sdk::PlayerMgr::controller_class_matches(9).has_value());
+
     // THE HOLDER'S CLASS. Thirty-odd offsets are read off this pointer, so confirming its class first is the guard
     // that would have caught reading the physics holder with pose offsets.
     const auto hic = sdk::PlayerMgr::holder_is_player_camera(0);

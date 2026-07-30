@@ -4509,6 +4509,46 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE PLAYER'S THREE CAMERA SUB-OBJECTS ----------------------------------------------
+            //
+            // Generalising the previous pass's lesson -- establish a pointer's class before reading offsets off it.
+            // All three sub-objects this class hands out offsets into are constructed by one function, the
+            // constructor of the object it calls "the player", and all three carry the owner back-pointer at +4.
+            // That convention was verified for the controller several passes ago and treated as its quirk; it is
+            // shared, which makes it a uniform validity test.
+            bool so_r = false, so_p = false, so_d = false, so_ne = false, so_od = false, so_op = false,
+                 so_ed = false, so_ce = false, so_cc = false, so_pc = false, so_vd = false, so_rr = false;
+            check(json_bool(body, "so_resolved", so_r) && so_r, "all three sub-object pointers read");
+            check(json_bool(body, "so_all_present", so_p) && so_p, "none of the three is null");
+            check(json_bool(body, "so_all_distinct", so_d) && so_d,
+                  "they are three different objects, not one aliased three ways");
+            check(json_bool(body, "so_own_determinable", so_od) && so_od,
+                  "the owner back-pointers are all readable");
+            check(json_bool(body, "so_all_own_player", so_op) && so_op,
+                  "every sub-object names the player as its owner at +4");
+
+            // THE CONTROLLER IS AN EMBEDDED MEMBER, which is an EXACT identity rather than a class comparison: the
+            // pointer at +236 equals the player's own address plus 0xE88. No unrelated pointer satisfies that.
+            check(json_bool(body, "so_embedded_determinable", so_ed) && so_ed,
+                  "the embedding can be tested");
+            check(json_bool(body, "so_controller_embedded", so_ce) && so_ce,
+                  "the controller pointer is exactly the player's address plus its member offset");
+            // AND THE OTHER TWO ARE NOT EMBEDDED -- separate allocations far outside the player's extent. Without
+            // this, "embedded" would be an untested label rather than a distinction.
+            check(json_bool(body, "so_others_not_embedded", so_ne) && so_ne,
+                  "the camera and physics holders sit outside the player, so embedding distinguishes them");
+
+            check(json_bool(body, "so_controller_class", so_cc) && so_cc,
+                  "the controller carries the vtable its constructor installs");
+            check(json_bool(body, "so_physics_class", so_pc) && so_pc,
+                  "the physics holder carries the vtable its constructor installs");
+            // THE THREE GUARDS MUST DISCRIMINATE FROM EACH OTHER. If any two classes shared a vtable the checks
+            // would pass while proving nothing about which object is which.
+            check(json_bool(body, "so_vtables_differ", so_vd) && so_vd,
+                  "the three vtable constants are distinct, so each guard identifies one class");
+            check(json_bool(body, "so_range_refused", so_rr) && so_rr,
+                  "an out-of-range slot yields none of the four answers");
+
             // ---- THE HOLDER'S CLASS IS CPlayerCamera, AND THE CHECK CAN FAIL -----------------------
             //
             // Everything called "the holder" here is a CPlayerCamera instance -- the class an early pass mapped from

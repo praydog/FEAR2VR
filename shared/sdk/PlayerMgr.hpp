@@ -109,6 +109,55 @@ public:
     // generations existing, but WHICH member is which is NOT pinned here -- the names below describe what was
     // measured (one matches the engine object, one does not) rather than asserting the reference's mapping.
     //
+    // ---- THE PLAYER'S THREE CAMERA SUB-OBJECTS, AND ONE CONVENTION ACROSS ALL OF THEM -------
+    //
+    // Last pass learned that establishing a pointer's CLASS costs one load, after twelve passes of mapping fields
+    // without doing it. Applying that to the other three objects this class hands out offsets into:
+    //
+    //     +236  movement controller   4-slot vtable at gameclient +0x1D87CC, ctor 0x1010B390 (dtor 0x1010D610)
+    //     +252  CPlayerCamera         4-slot vtable at gameclient +0x1D5B94
+    //     +260  physics holder        4-slot vtable at gameclient +0x1D582C, ctor 0x100DBDA0 (dtor 0x100DB390)
+    //
+    // ALL THREE ARE CONSTRUCTED BY ONE FUNCTION, CPlayerCameraOwner_ctor -- which is the constructor of the object
+    // this class calls "the player". So the player object is that class, and the three are its parts.
+    //
+    // AND ALL THREE CARRY owner AT +4, pointing back at the player. That was verified for the controller several
+    // passes ago and treated as a controller quirk; it is a convention shared by all three, which makes it a
+    // uniform validity test for any of them.
+    //
+    // THE CONTROLLER IS EMBEDDED, the other two are not. *(player + 236) equals player + 0xE88 exactly, so the
+    // pointer is the address of a member rather than a separate allocation -- while the pose and physics holders sit
+    // over a megabyte away in the heap. That gives the controller a STRONGER check than a vtable comparison: an
+    // exact structural identity that no unrelated pointer satisfies.
+    //
+    // Class sizes, from the constructors' highest touched offsets: the controller is at least 2220 bytes and the
+    // physics holder at least 1949. (CPlayerCamera is at least 6342, established earlier the same way.)
+    static constexpr uintptr_t kControllerEmbeddedOffset = 0xE88;
+    static constexpr uintptr_t kOwnerBackPointer = 0x04;
+    static constexpr uintptr_t kControllerVtable = 0x1D87CC;   // gameclient-relative
+    static constexpr uintptr_t kPhysicsHolderVtable = 0x1D582C;
+
+    struct CameraSubObjects {
+        uintptr_t controller{};      // player + 236, embedded at player + 0xE88
+        uintptr_t player_camera{};   // player + 252
+        uintptr_t physics_holder{};  // player + 260
+    };
+
+    static std::optional<CameraSubObjects> camera_sub_objects(unsigned index);
+
+    // Does every one of the three name the player as its owner at +4? The convention above, as one test. nullopt
+    // when the player or any sub-object pointer cannot be read.
+    static std::optional<bool> sub_objects_own_player(unsigned index);
+
+    // Is the controller exactly the embedded member it should be -- *(player + 236) == player + 0xE88? An exact
+    // identity, so it discriminates far better than a class check.
+    static std::optional<bool> controller_is_embedded(unsigned index);
+
+    // Do the controller and physics holder carry the vtables their constructors install? The same one-load guard as
+    // holder_is_player_camera, for the other two.
+    static std::optional<bool> controller_class_matches(unsigned index);
+    static std::optional<bool> physics_holder_class_matches(unsigned index);
+
     // ---- THE HOLDER IS CPlayerCamera, AND THAT IS CHECKABLE ---------------------------------
     //
     // Everything this class calls "the holder" is a CPlayerCamera instance -- the game-side camera class an early

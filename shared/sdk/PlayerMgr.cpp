@@ -999,4 +999,85 @@ std::optional<bool> PlayerMgr::holder_is_player_camera(unsigned index) {
     return *vt == gc->base + kPlayerCameraVtable;
 }
 
+
+std::optional<PlayerMgr::CameraSubObjects> PlayerMgr::camera_sub_objects(unsigned index) {
+    const auto p = slot(index);
+    if (!p.has_value() || *p == 0) {
+        return std::nullopt;
+    }
+    const auto ctrl = mem::read_ptr(*p + kControllerField);
+    const auto cam = mem::read_ptr(*p + kHolder);
+    const auto phys = mem::read_ptr(*p + kEngineHolderField);
+    if (!ctrl.has_value() || !cam.has_value() || !phys.has_value()) {
+        return std::nullopt;
+    }
+    CameraSubObjects out;
+    out.controller = *ctrl;
+    out.player_camera = *cam;
+    out.physics_holder = *phys;
+    return out;
+}
+
+std::optional<bool> PlayerMgr::sub_objects_own_player(unsigned index) {
+    const auto p = slot(index);
+    const auto subs = camera_sub_objects(index);
+    if (!p.has_value() || !subs.has_value()) {
+        return std::nullopt;
+    }
+    for (const auto obj : {subs->controller, subs->player_camera, subs->physics_holder}) {
+        if (obj == 0) {
+            return std::nullopt;
+        }
+        const auto owner = mem::read_ptr(obj + kOwnerBackPointer);
+        if (!owner.has_value()) {
+            return std::nullopt;
+        }
+        if (*owner != *p) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<bool> PlayerMgr::controller_is_embedded(unsigned index) {
+    const auto p = slot(index);
+    const auto subs = camera_sub_objects(index);
+    if (!p.has_value() || !subs.has_value() || subs->controller == 0) {
+        return std::nullopt;
+    }
+    return subs->controller == *p + kControllerEmbeddedOffset;
+}
+
+namespace {
+
+std::optional<bool> vtable_is(uintptr_t object, uintptr_t module_relative) {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0 || object == 0) {
+        return std::nullopt;
+    }
+    const auto vt = mem::read_ptr(object);
+    if (!vt.has_value()) {
+        return std::nullopt;
+    }
+    return *vt == gc->base + module_relative;
+}
+
+}  // namespace
+
+std::optional<bool> PlayerMgr::controller_class_matches(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value()) {
+        return std::nullopt;
+    }
+    return vtable_is(subs->controller, kControllerVtable);
+}
+
+std::optional<bool> PlayerMgr::physics_holder_class_matches(unsigned index) {
+    const auto subs = camera_sub_objects(index);
+    if (!subs.has_value()) {
+        return std::nullopt;
+    }
+    return vtable_is(subs->physics_holder, kPhysicsHolderVtable);
+}
+
 }  // namespace sdk
