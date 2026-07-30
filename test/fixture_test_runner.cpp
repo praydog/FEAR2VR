@@ -5521,34 +5521,25 @@ int main(int argc, char** argv) {
             check(json_bool(body, "so_all_own_player", so_op) && so_op,
                   "every sub-object names the player as its owner at +4");
 
-            // THE CONTROLLER IS AN EMBEDDED MEMBER, which is an EXACT identity rather than a class comparison: the
-            // pointer at +236 equals the player's own address plus 0xE88. No unrelated pointer satisfies that.
-            check(json_bool(body, "so_embedded_determinable", so_ed) && so_ed,
-                  "the embedding can be tested");
-            check(json_bool(body, "so_controller_embedded", so_ce) && so_ce,
-                  "the controller pointer is exactly the player's address plus its member offset");
-            // ALL THREE ARE EMBEDDED, and the AIM object is not -- which is what makes "embedded" a distinction
-            // rather than a label every sub-object would satisfy.
+            // WHERE THE SUB-OBJECTS SIT IS NOT INVARIANT, and the retraction is the finding.
             //
-            // This replaces a check that asserted the opposite: that the camera and physics holder sat "far
-            // outside" the player, decided by a 0x10000 window. Live, with player = 0x1C636F60, the camera is at
-            // player + 0xE88 and the physics holder at player + 0x3020 -- both inside that window, so the old
-            // claim could only have been wrong. The single 0xE88 constant it rested on was the CAMERA's offset
-            // mis-attributed to the controller, and no IDA evidence for it exists: neither 0xE88 nor the
-            // controller's real 0x2760 appears as an immediate anywhere in gameclient.dll's .text.
-            bool so_cam_e = false, so_phy_e = false, so_ad = false, so_ae = true;
-            check(json_bool(body, "so_camera_embedded", so_cam_e) && so_cam_e,
-                  "the camera is exactly the embedded member at player + 0x2760's sibling offset");
-            // THE PHYSICS HOLDER'S EMBEDDING IS NOT INVARIANT. It measured player+0x3020 in one session and
-            // does not match in another, while so_physics_class still identifies it by vtable -- so the pointer
-            // is correct and its LOCATION varies between player instances. Two things are asserted instead: it
-            // is the right class, and it names this player as owner. The offset is reported.
-            json_bool(body, "so_physics_embedded", so_phy_e);
-            double so_phy_off = -1.0;
-            if (json_double(body, "so_physics_offset", so_phy_off)) {
-                printf("[fixture] physics holder sits at player+0x%llX (embedded: %s)\n",
-                       static_cast<unsigned long long>(so_phy_off), so_phy_e ? "yes" : "no");
-            }
+            // This block used to assert three exact identities -- controller at player+0x2760, camera at
+            // +0xE88, physics at +0x3020 -- live-measured from ONE instance with no IDA evidence behind them.
+            // A later session read ALL FOUR sub-objects BELOW the player address, so none of them can be a
+            // member of it, while every owner back-pointer and vtable still identified them correctly.
+            //
+            // So the offsets are REPORTED and the identity checks above (class by vtable, owner at +4,
+            // distinctness) carry the weight. Those hold in every session measured; the offsets do not.
+            double off_c = -1.0, off_cam = -1.0, off_phy = -1.0;
+            json_double(body, "so_off_controller", off_c);
+            json_double(body, "so_off_camera", off_cam);
+            json_double(body, "so_off_physics", off_phy);
+            printf("[fixture] sub-object offsets from player: controller %+lld, camera %+lld, physics %+lld "
+                   "(0 = below the player, i.e. not a member)\n",
+                   static_cast<long long>(off_c), static_cast<long long>(off_cam),
+                   static_cast<long long>(off_phy));
+
+            bool so_ad = false;
             check(json_bool(body, "so_aim_determinable", so_ad) && so_ad,
                   "the aim object resolves, so its embedding can be answered at all");
             bool so_aod = false, so_aop = false;
@@ -5557,9 +5548,6 @@ int main(int argc, char** argv) {
             check(json_bool(body, "so_aim_owns_player", so_aop) && so_aop,
                   "and it names THIS player at +4 -- the same convention the three embedded sub-objects follow, "
                   "so a separate allocation is still provably this player's");
-            check(json_bool(body, "so_aim_embedded", so_ae) && !so_ae,
-                  "the AIM object matches none of the three embed offsets -- a separate allocation, so its "
-                  "lifetime is not the player's and a consumer must re-resolve it");
 
             check(json_bool(body, "so_controller_class", so_cc) && so_cc,
                   "the controller carries the vtable its constructor installs");

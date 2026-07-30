@@ -5399,7 +5399,6 @@ std::string build_shader_params_json(bool include_write_probes) {
     // reading offsets off it, and prefer an exact structural identity where one exists.
     const auto subs = sdk::PlayerMgr::camera_sub_objects(0);
     const auto own = sdk::PlayerMgr::sub_objects_own_player(0);
-    const auto emb = sdk::PlayerMgr::controller_is_embedded(0);
     const auto cvm = sdk::PlayerMgr::controller_class_matches(0);
     const auto pvm = sdk::PlayerMgr::physics_holder_class_matches(0);
     json_append_bool(out, "so_resolved", subs.has_value());
@@ -5414,11 +5413,7 @@ std::string build_shader_params_json(bool include_write_probes) {
         // previous version of this had it backwards -- it asserted the camera and physics holder sat "far
         // outside" the player using a 0x10000 window that both of them fall inside. Exact identities now, and
         // the negative case is what makes "embedded" a distinction rather than a label everything satisfies.
-        const auto ce = sdk::PlayerMgr::camera_is_embedded(0);
-        const auto pe2 = sdk::PlayerMgr::physics_holder_is_embedded(0);
-        const auto ae = sdk::PlayerMgr::aim_object_is_embedded(0);
-        json_append_bool(out, "so_camera_embedded", ce.value_or(false));
-        json_append_bool(out, "so_physics_embedded", pe2.value_or(false));
+
         // THE OBSERVED OFFSET, because the embedding is NOT invariant for this one. It measured player+0x3020
         // in one session and does not match in another, while the vtable check still identifies it as the
         // physics holder -- so the pointer is right and the LOCATION varies. Reported rather than asserted.
@@ -5426,8 +5421,21 @@ std::string build_shader_params_json(bool include_write_probes) {
             const auto delta = subs->physics_holder > *pp2 ? subs->physics_holder - *pp2 : 0;
             json_append_double(out, "so_physics_offset", static_cast<double>(delta), 0);
         }
-        json_append_bool(out, "so_aim_determinable", ae.has_value());
-        json_append_bool(out, "so_aim_embedded", ae.value_or(true));
+        // ALL THREE OFFSETS, MEASURED. The constants they used to be compared against came from one player
+        // instance; reporting the live numbers is what lets the next session see whether they moved.
+        if (const auto offs = sdk::PlayerMgr::sub_object_offsets(0)) {
+            json_append_double(out, "so_off_controller",
+                               static_cast<double>(offs->controller.value_or(0)), 0);
+            json_append_double(out, "so_off_camera",
+                               static_cast<double>(offs->player_camera.value_or(0)), 0);
+            json_append_double(out, "so_off_physics",
+                               static_cast<double>(offs->physics_holder.value_or(0)), 0);
+            json_append_double(out, "so_off_aim", static_cast<double>(offs->aim.value_or(0)), 0);
+            json_append_bool(out, "so_off_controller_above", offs->controller.has_value());
+            json_append_bool(out, "so_off_camera_above", offs->player_camera.has_value());
+            json_append_bool(out, "so_off_physics_above", offs->physics_holder.has_value());
+        }
+        json_append_bool(out, "so_aim_determinable", sdk::PlayerMgr::aim_object(0).has_value());
         // AND IT STILL FOLLOWS THE +4 OWNER CONVENTION despite not being embedded -- which is what says it
         // belongs to this player rather than being some other object the slot happens to hold.
         const auto ao = sdk::PlayerMgr::aim_object_owns_player(0);
@@ -5438,8 +5446,7 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "so_own_determinable", own.has_value());
     json_append_bool(out, "so_all_own_player", own.has_value() && *own);
     // THE EXACT IDENTITY, which no unrelated pointer satisfies.
-    json_append_bool(out, "so_embedded_determinable", emb.has_value());
-    json_append_bool(out, "so_controller_embedded", emb.has_value() && *emb);
+
     // AND THE CLASS GUARDS FOR THE OTHER TWO.
     json_append_bool(out, "so_controller_class", cvm.has_value() && *cvm);
     json_append_bool(out, "so_physics_class", pvm.has_value() && *pvm);
@@ -5452,7 +5459,7 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "so_range_refused",
                      !sdk::PlayerMgr::camera_sub_objects(9).has_value() &&
                          !sdk::PlayerMgr::sub_objects_own_player(9).has_value() &&
-                         !sdk::PlayerMgr::controller_is_embedded(9).has_value() &&
+                         !sdk::PlayerMgr::sub_object_offsets(9).has_value() &&
                          !sdk::PlayerMgr::controller_class_matches(9).has_value());
 
     // THE HOLDER'S CLASS. Thirty-odd offsets are read off this pointer, so confirming its class first is the guard

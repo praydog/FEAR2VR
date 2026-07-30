@@ -1230,31 +1230,26 @@ std::optional<bool> PlayerMgr::sub_objects_own_player(unsigned index) {
     return true;
 }
 
-std::optional<bool> PlayerMgr::controller_is_embedded(unsigned index) {
+std::optional<PlayerMgr::SubObjectOffsets> PlayerMgr::sub_object_offsets(unsigned index) {
     const auto p = slot(index);
     const auto subs = camera_sub_objects(index);
-    if (!p.has_value() || !subs.has_value() || subs->controller == 0) {
+    if (!p.has_value() || !subs.has_value()) {
         return std::nullopt;
     }
-    return subs->controller == *p + kControllerEmbedOffset;
-}
-
-std::optional<bool> PlayerMgr::camera_is_embedded(unsigned index) {
-    const auto p = slot(index);
-    const auto subs = camera_sub_objects(index);
-    if (!p.has_value() || !subs.has_value() || subs->player_camera == 0) {
-        return std::nullopt;
+    const auto delta = [&](uintptr_t obj) -> std::optional<uintptr_t> {
+        if (obj == 0 || obj <= *p) {
+            return std::nullopt;  // not above the player: a separate allocation, not an embedded member
+        }
+        return obj - *p;
+    };
+    SubObjectOffsets out{};
+    out.controller = delta(subs->controller);
+    out.player_camera = delta(subs->player_camera);
+    out.physics_holder = delta(subs->physics_holder);
+    if (const auto a = aim_object(index)) {
+        out.aim = delta(*a);
     }
-    return subs->player_camera == *p + kCameraEmbedOffset;
-}
-
-std::optional<bool> PlayerMgr::physics_holder_is_embedded(unsigned index) {
-    const auto p = slot(index);
-    const auto subs = camera_sub_objects(index);
-    if (!p.has_value() || !subs.has_value() || subs->physics_holder == 0) {
-        return std::nullopt;
-    }
-    return subs->physics_holder == *p + kPhysicsEmbedOffset;
+    return out;
 }
 
 std::optional<uintptr_t> PlayerMgr::aim_object(unsigned index) {
@@ -1334,18 +1329,6 @@ std::optional<bool> PlayerMgr::aim_object_owns_player(unsigned index) {
         return std::nullopt;
     }
     return static_cast<uintptr_t>(*owner) == *p;
-}
-
-std::optional<bool> PlayerMgr::aim_object_is_embedded(unsigned index) {
-    const auto p = slot(index);
-    const auto a = aim_object(index);
-    if (!p.has_value() || !a.has_value()) {
-        return std::nullopt;
-    }
-    // THE THREE KNOWN EMBED OFFSETS, checked exactly rather than through a distance window: "embedded" means it
-    // IS one of the player's members, and the aim object matching none of them is the finding.
-    return *a == *p + kControllerEmbedOffset || *a == *p + kCameraEmbedOffset ||
-           *a == *p + kPhysicsEmbedOffset;
 }
 
 namespace {

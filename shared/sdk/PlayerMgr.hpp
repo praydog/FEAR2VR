@@ -195,9 +195,6 @@ public:
     // gameclient.dll's .text, so it was never derived from the constructor. These three are LIVE-MEASURED from
     // one player instance, and the identity is what carries the weight -- an exact address match that no
     // unrelated pointer satisfies. A different player class would move them and this check would say so.
-    static constexpr uintptr_t kControllerEmbedOffset = 0x2760;
-    static constexpr uintptr_t kCameraEmbedOffset = 0xE88;
-    static constexpr uintptr_t kPhysicsEmbedOffset = 0x3020;
     static constexpr uintptr_t kOwnerBackPointer = 0x04;
     static constexpr uintptr_t kControllerVtable = 0x1D87CC;   // gameclient-relative
     static constexpr uintptr_t kPhysicsHolderVtable = 0x1D582C;
@@ -791,10 +788,31 @@ public:
     // Is each sub-object exactly the embedded member it should be -- an exact address identity, which
     // discriminates far better than a class check. The aim object is expected NOT to be embedded; it is included
     // so that "embedded" is a distinction the data supports rather than a label every pointer would satisfy.
-    static std::optional<bool> controller_is_embedded(unsigned index);
-    static std::optional<bool> camera_is_embedded(unsigned index);
-    static std::optional<bool> physics_holder_is_embedded(unsigned index);
-    static std::optional<bool> aim_object_is_embedded(unsigned index);
+    // WHERE THE SUB-OBJECTS ACTUALLY SIT, measured rather than compared against a constant.
+    //
+    // RETRACTION: "EMBEDDED" WAS NEVER A PROPERTY OF THIS CLASS.
+    //
+    // An earlier pass recorded the three sub-objects as members embedded at player+0x2760, +0xE88 and +0x3020,
+    // live-measured from one instance with no IDA evidence -- neither constant appears as an immediate in
+    // gameclient.dll's .text. A later session settled it: ALL FOUR sub-objects sit BELOW the player address,
+    // so not one of them can be a member of it, while every owner back-pointer and vtable still identified
+    // them correctly. They are separate allocations whose position relative to the player is arbitrary.
+    //
+    // The constants and the four *_is_embedded predicates are gone rather than loosened. What identifies a
+    // sub-object is its class vtable and its owner back-pointer at +4, both of which hold in every session
+    // measured; where it happens to sit does not, and is reported here instead of asserted.
+    //
+    // A consumer that wants to know where a sub-object lives must therefore ASK, not assume. Each offset is
+    // the byte distance from the player, or nullopt for a pointer that is not above the player at all (the
+    // aim object is a separate allocation and legitimately answers nullopt).
+    struct SubObjectOffsets {
+        std::optional<uintptr_t> controller;
+        std::optional<uintptr_t> player_camera;
+        std::optional<uintptr_t> physics_holder;
+        std::optional<uintptr_t> aim;
+    };
+    static std::optional<SubObjectOffsets> sub_object_offsets(unsigned index);
+
 
     // The aim/zoom controller's address -- *(player + 256). Separate allocation, so its lifetime is not the
     // player's; a consumer holding it across a level change must re-resolve.

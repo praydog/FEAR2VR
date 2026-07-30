@@ -4363,3 +4363,30 @@ Symmetric per-eye FOV plus a sub-rect is reachable; an off-centre frustum is not
 target. The engine already demonstrates the shape -- Renderer_MakeCubicEnvMap does it six times per cube map --
 so the anchors exist; driving them is the next step and is not done.
 
+## Retraction: the player's sub-objects were never "embedded"
+
+Recorded here and in `PlayerMgr.hpp` as members at `player+0x2760` (controller), `+0xE88` (camera) and
+`+0x3020` (physics holder), with the header noting they were live-measured from ONE instance and that neither
+constant appears as an immediate anywhere in gameclient.dll's `.text`. Two fixture checks asserted the exact
+identities.
+
+A later session read all four sub-objects **BELOW** the player address:
+
+    so_off_controller_above  False
+    so_off_camera_above      False
+    so_off_physics_above     False
+    so_all_own_player        True     <- still correct
+    so_controller_class      True     <- still correct
+    so_physics_class         True
+
+Nothing below a base address can be a member of it, so the three offsets described a heap layout, not a class.
+The constants and the four `*_is_embedded` predicates are DELETED rather than loosened -- a looser version
+would have kept asserting a property that does not exist.
+
+What survives is what was independently true all along and passes in every session measured: each sub-object
+is identified by its **class vtable** and by its **owner back-pointer at +4**. `PlayerMgr::sub_object_offsets`
+now reports the live distances instead, so the next session can see them move rather than fail on them.
+
+The tell, in hindsight, is in the header's own words: "live-measured from one player instance" plus "no IDA
+evidence exists". That is the description of a coincidence, and it was written down as a constant.
+
