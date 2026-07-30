@@ -1,4 +1,8 @@
 #include "ShaderParams.hpp"
+#include <algorithm>
+#include <vector>
+#include <thread>
+#include <chrono>
 
 #include <cmath>
 #include <unordered_set>
@@ -356,6 +360,30 @@ std::optional<bool> ShaderParams::frame_time_matches_engine_clock(float toleranc
         diff = kShaderTimeModulus - diff;
     }
     return diff <= tolerance;
+}
+
+
+std::optional<unsigned> ShaderParams::frames_advanced(unsigned samples, unsigned interval_ms) {
+    if (samples == 0) {
+        return std::nullopt;
+    }
+    std::vector<float> seen;
+    seen.reserve(samples);
+    for (unsigned i = 0; i < samples; ++i) {
+        const auto t = frame_time();
+        if (!t.has_value()) {
+            return std::nullopt;  // no signal at all is different from a frozen one
+        }
+        // Compared exactly: BeginFrame publishes a single float per frame, so any change is a new frame and a
+        // tolerance would only hide slow ones.
+        if (std::find(seen.begin(), seen.end(), *t) == seen.end()) {
+            seen.push_back(*t);
+        }
+        if (i + 1 < samples) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        }
+    }
+    return static_cast<unsigned>(seen.size());
 }
 
 }  // namespace sdk

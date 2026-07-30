@@ -255,6 +255,19 @@ public:
     // unavailable. False is meaningful: it means one of the two mappings is wrong, not that the game is
     // paused -- both freeze together when the engine stops, and a frozen pair still AGREES.
     static std::optional<bool> frame_time_matches_engine_clock(float tolerance = 0.05f);
+
+    // HOW MANY DISTINCT FRAMES WENT BY, sampled over a real interval. This is frame_time() turned into the answer
+    // a caller actually needs: "did the render path advance while I was doing something".
+    //
+    // WHY IT IS WORTH A FUNCTION. Any experiment that writes engine state and watches what happens to it is
+    // meaningless unless frames were rendered in between -- a value survives untouched simply because nothing ran.
+    // This project drew two contradictory conclusions from exactly that mistake before a control measurement
+    // showed the experiment could not discriminate, so the guard belongs in the SDK rather than in each caller's
+    // discipline.
+    //
+    // Returns the count of DISTINCT frame_time values observed, so 0 or 1 means the render path did not advance.
+    // nullopt when frame_time() is unavailable at all.
+    static std::optional<unsigned> frames_advanced(unsigned samples = 8, unsigned interval_ms = 16);
 };
 
 }  // namespace sdk

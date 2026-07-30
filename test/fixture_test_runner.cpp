@@ -4581,6 +4581,40 @@ int main(int argc, char** argv) {
                                 json_bool(body, "cro_probe_view_followed", op_f) &&
                                 json_bool(body, "cro_inner_probe_view_followed", ip_f);
             check(probes && pr1 && pr2 && pr3, "all three mutation probes ran and restored");
+
+            // ---- THE PROBE GUARD: A VERDICT, NOT A COUNT -------------------------------------------
+            //
+            // A survival count invites the wrong reading, and this project produced two contradictory conclusions
+            // from one before a control measurement showed the experiment could not discriminate. The probes now
+            // sample the render-path clock inside their own window and return Inconclusive when no frame was
+            // rendered, whatever the value did.
+            //
+            // 0 = Inconclusive, 1 = Reclaimed, 2 = Held.
+            double vd_o = -1.0, vd_c = -1.0, fr_o = -1.0, fr_c = -1.0, fa_n = -1.0;
+            bool fa_ok = false;
+            const bool guard = json_double(body, "cro_probe_verdict", vd_o) &&
+                               json_double(body, "cro_object_probe_verdict", vd_c) &&
+                               json_double(body, "cro_probe_frames", fr_o) &&
+                               json_double(body, "cro_object_probe_frames", fr_c) &&
+                               json_bool(body, "fa_available", fa_ok) &&
+                               json_double(body, "fa_distinct_frames", fa_n);
+            check(guard && fa_ok, "the render-path liveness signal is readable");
+            check(guard && fa_n >= 1.0, "at least one frame value is observable");
+            // THE EXACT RELATIONSHIP, valid in every state: Inconclusive if and only if the render path did not
+            // advance. This is what makes the verdicts self-upgrading -- the moment frames are rendered they start
+            // carrying information, with no change here.
+            check(guard && ((fr_o <= 1.0) == (vd_o == 0.0)),
+                  "the operand probe reports Inconclusive exactly when no frame was rendered");
+            check(guard && ((fr_c <= 1.0) == (vd_c == 0.0)),
+                  "the camera-object probe reports Inconclusive exactly when no frame was rendered");
+            // TWO INDEPENDENT SAMPLINGS of the same signal must agree about whether it is advancing: the probes
+            // sample it inside their loops, frames_advanced() on its own.
+            check(guard && ((fa_n <= 1.0) == (fr_c <= 1.0)),
+                  "the probe's own frame observation agrees with the standalone liveness reading");
+            // AND THE POINT OF THE WHOLE GUARD: with the path frozen, a value surviving every sample must NOT be
+            // reported as Held. That is the misreading the verdict exists to prevent.
+            check(guard && !(fr_o <= 1.0 && vd_o == 2.0),
+                  "a value that merely survived a frozen window is never reported as Held");
             const bool pipeline_idle = probes && cp_n > 0.0 && cp_s == cp_n;
             // THE CONDITIONAL, exact in both directions.
             check(probes && (pipeline_idle ? (!op_f && !ip_f) : true),

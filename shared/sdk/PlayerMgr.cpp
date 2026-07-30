@@ -1,5 +1,7 @@
 #include "PlayerMgr.hpp"
 
+#include <algorithm>
+#include <vector>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -10,6 +12,7 @@
 #include "Modules.hpp"
 #include "CClientShell.hpp"
 #include "Object.hpp"
+#include "ShaderParams.hpp"
 
 namespace sdk {
 
@@ -613,8 +616,14 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_holder_quaternion(u
 
     OuterOperandProbe out;
     out.samples = samples;
+    std::vector<float> frames;
     for (unsigned i = 0; i < samples; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // The render-path clock is sampled INSIDE the loop, so the verdict covers the same window as the writes.
+        if (const auto t = ShaderParams::frame_time();
+            t.has_value() && std::find(frames.begin(), frames.end(), *t) == frames.end()) {
+            frames.push_back(*t);
+        }
         std::array<float, 4> now{};
         if (!mem::copy(now.data(), at, sizeof(now))) {
             break;
@@ -641,6 +650,12 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_holder_quaternion(u
         }
     }
     mem::write<std::array<float, 4>>(at, saved);
+    out.frames_observed = static_cast<unsigned>(frames.size());
+    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES. With the render path frozen nothing could have
+    // overwritten it, so the verdict is Inconclusive however long it lasted.
+    out.verdict = out.frames_observed <= 1  ? ProbeVerdict::Inconclusive
+                  : out.survived == samples ? ProbeVerdict::Held
+                                            : ProbeVerdict::Reclaimed;
     return out;
 }
 
@@ -664,8 +679,14 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_camera_object_rotat
     }
     OuterOperandProbe out;
     out.samples = samples;
+    std::vector<float> frames;
     for (unsigned i = 0; i < samples; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // The render-path clock is sampled INSIDE the loop, so the verdict covers the same window as the writes.
+        if (const auto t = ShaderParams::frame_time();
+            t.has_value() && std::find(frames.begin(), frames.end(), *t) == frames.end()) {
+            frames.push_back(*t);
+        }
         std::array<float, 4> now{};
         if (!mem::copy(now.data(), at, sizeof(now))) {
             break;
@@ -677,6 +698,12 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_camera_object_rotat
     }
     out.followed = out.survived == samples;
     mem::write<std::array<float, 4>>(at, saved);
+    out.frames_observed = static_cast<unsigned>(frames.size());
+    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES. With the render path frozen nothing could have
+    // overwritten it, so the verdict is Inconclusive however long it lasted.
+    out.verdict = out.frames_observed <= 1  ? ProbeVerdict::Inconclusive
+                  : out.survived == samples ? ProbeVerdict::Held
+                                            : ProbeVerdict::Reclaimed;
     return out;
 }
 

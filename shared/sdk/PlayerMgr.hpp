@@ -345,9 +345,15 @@ public:
     // same holds for the inner operand; AND a value written directly to the camera object's own rotation also
     // survives untouched.
     //
-    // ALL THREE SURVIVING MEANS THE PIPELINE IS QUIESCENT, not that any field is unread. With nothing moving, the
-    // camera pose is not being recomputed or pushed at all, so a write cannot propagate and its failure to
-    // propagate proves nothing about the field. These probes only discriminate on a MOVING camera.
+    // ALL THREE SURVIVING MEANS THE RENDER PATH IS NOT RUNNING, not that any field is unread. And that state was
+    // ALREADY DOCUMENTED before these probes were written: sdk::ShaderParams::frame_time is the engine's own
+    // render-path liveness signal, and its header records the measured disagreement -- the main loop pumping at
+    // ~170/s while the engine clock and k_fTime are frozen. Writing these probes without consulting it was the
+    // actual mistake; the surprising survival was a rediscovery of a known state.
+    //
+    // SO THE PROBES NOW CARRY THE GUARD THEMSELVES. Each samples frame_time inside its own window and returns
+    // ProbeVerdict::Inconclusive when no frame was rendered, whatever the written value did. A survival count is
+    // never handed back as evidence on its own.
     //
     // THAT ALSO VOIDS ANY CAUSAL READING of the equalities this class documents. The applied pose equals the
     // camera object's transform and the composed product equals its rotation, but with the pipeline idle those
@@ -357,10 +363,25 @@ public:
     //
     // IT WRITES ENGINE STATE briefly and restores it, so it is a verification tool rather than something to call
     // from a shipping mod.
+    // A PROBE'S RESULT IS A VERDICT, NOT A COUNT, because a raw survival count invites the wrong reading. This
+    // project produced two contradictory conclusions from one such count before a control measurement showed the
+    // experiment could not discriminate at all.
+    enum class ProbeVerdict {
+        // The render path did not advance during the window, so nothing could have overwritten or consumed the
+        // written value. Says NOTHING about the field. This is the verdict on an unfocused or paused game.
+        Inconclusive,
+        // Something overwrote the value while frames were being rendered: live code writes this field.
+        Reclaimed,
+        // The value survived across rendered frames: nothing writes this field in the observed state.
+        Held,
+    };
+
     struct OuterOperandProbe {
-        unsigned samples{};   // how many samples were taken
-        unsigned survived{};  // how many still held the written value
-        bool followed{};      // the camera object's rotation matched probe * inner
+        unsigned samples{};          // how many samples were taken
+        unsigned survived{};         // how many still held the written value
+        bool followed{};             // the camera object's rotation matched probe * inner
+        unsigned frames_observed{};  // DISTINCT frame_time values seen; 0 or 1 means the render path was frozen
+        ProbeVerdict verdict{ProbeVerdict::Inconclusive};
     };
 
     // nullopt when the operand cannot be read or the write faulted.

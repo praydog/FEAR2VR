@@ -4972,6 +4972,10 @@ std::string build_shader_params_json() {
     json_append_double(out, "cro_probe_survived", static_cast<double>(cro_pr.has_value() ? cro_pr->survived : 9999), 0);
     json_append_double(out, "cro_probe_samples", static_cast<double>(cro_pr.has_value() ? cro_pr->samples : 0), 0);
     json_append_bool(out, "cro_probe_view_followed", cro_pr.has_value() && cro_pr->followed);
+    json_append_double(out, "cro_probe_frames",
+                       static_cast<double>(cro_pr.has_value() ? cro_pr->frames_observed : 0), 0);
+    json_append_double(out, "cro_probe_verdict",
+                       static_cast<double>(cro_pr.has_value() ? static_cast<int>(cro_pr->verdict) : -1), 0);
     // THE INNER OPERAND, probed the same way. It is what the camera object's rotation currently equals, so if any
     // holder field steers the view in this state it should be this one. `false` for expect_composed means the
     // camera rotation is compared against the written value directly, since the outer operand is identity.
@@ -4987,6 +4991,15 @@ std::string build_shader_params_json() {
                        static_cast<double>(cro_pc.has_value() ? cro_pc->survived : 9999), 0);
     json_append_double(out, "cro_object_probe_samples",
                        static_cast<double>(cro_pc.has_value() ? cro_pc->samples : 0), 0);
+    json_append_double(out, "cro_object_probe_frames",
+                       static_cast<double>(cro_pc.has_value() ? cro_pc->frames_observed : 0), 0);
+    json_append_double(out, "cro_object_probe_verdict",
+                       static_cast<double>(cro_pc.has_value() ? static_cast<int>(cro_pc->verdict) : -1), 0);
+    // The render-path liveness signal on its own, so the verdicts above can be corroborated independently of the
+    // probes that consumed it.
+    const auto fa = sdk::ShaderParams::frames_advanced();
+    json_append_bool(out, "fa_available", fa.has_value());
+    json_append_double(out, "fa_distinct_frames", static_cast<double>(fa.value_or(9999)), 0);
     // After the probe the operand must be back to a unit quaternion -- the restore has to leave it usable.
     if (const auto after = sdk::PlayerMgr::camera_rotation_operands(0); after.has_value()) {
         const auto n = std::sqrt(after->outer[0] * after->outer[0] + after->outer[1] * after->outer[1] +

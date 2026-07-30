@@ -5739,3 +5739,41 @@ class LTInputDeviceMouse 0x30 {
 // probes now run last, after every read-only measurement.
 //
 // 1174 checks, 0 failures.
+
+// ---- THE PROBES NOW KNOW WHEN THEY CANNOT ANSWER, AND THE STATE WAS ALREADY ON RECORD ------------
+//
+// Last pass ran three mutation probes on the camera rotation chain, watched all three values survive untouched,
+// and concluded "the pose pipeline is quiescent". That conclusion was right and the reasoning was careless: THE
+// STATE WAS ALREADY DOCUMENTED IN THIS FILE. An earlier pass had measured four clocks with a level loaded --
+//
+//     shell_real_time   ADVANCES   a wall clock
+//     shell_game_time   frozen
+//     engine_time_ms    frozen     simulation is not advancing
+//     k_fTime           frozen     no frame has been rendered
+//
+// -- and written, in the same words I ended up rediscovering: "what is gated off is the SIMULATION and the
+// RENDERING", with the warning "a mod whose hook is firing must not conclude the game is simulating". I wrote
+// three probes into exactly that trap without consulting the signal built to detect it.
+//
+// > The correction is not another note. sdk::ShaderParams::frame_time already existed as the render-path liveness
+// > signal; what was missing is that the EXPERIMENT never asked it. A guard that lives in prose gets skipped by
+// > the next person, who is often me.
+//
+// SO THE GUARD IS NOW IN THE CODE. Each probe samples frame_time INSIDE its own window, counts distinct values,
+// and returns a VERDICT rather than a count:
+//
+//     Inconclusive   the render path did not advance -- says nothing about the field, whatever survived
+//     Reclaimed      overwritten while frames were rendering -- live code writes it
+//     Held           survived across rendered frames -- nothing writes it in the observed state
+//
+// Live, all three probes report Inconclusive with 1 distinct frame value across 12 samples, corroborated by a
+// standalone ShaderParams::frames_advanced() reading of 1. The suite asserts the EXACT relationship -- verdict is
+// Inconclusive if and only if frames_observed <= 1 -- so the verdicts start carrying information the moment the
+// game renders, with no change to the tests. It also asserts the specific misreading is impossible: a value that
+// merely survived a frozen window is never reported as Held.
+//
+// ALSO ADDED: sdk::ShaderParams::frames_advanced(samples, interval) -- frame_time turned into the answer a caller
+// needs ("did the render path advance while I did that"), because any experiment that writes engine state and
+// watches it is meaningless without it.
+//
+// 1180 checks, 0 failures.
