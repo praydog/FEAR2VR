@@ -7387,6 +7387,91 @@ std::string build_database_json() {
                         json_escape_append(entry0_json, dump);
                     }
 
+                    // ---- RECOVERING ATTRIBUTE NAMES FROM MODULE STRINGS ----
+                    {
+                        const auto& idx = sdk::DatabaseMgr::build_name_index();
+                        entry0_json += ",\"nameidx_strings\":" + std::to_string(idx.strings_scanned);
+                        entry0_json += ",\"nameidx_hashes\":" + std::to_string(idx.distinct_hashes);
+                        entry0_json += ",\"nameidx_ready\":" + std::string(idx.ready() ? "true" : "false");
+                        // THE ROUND TRIP: a name the code definitely contains must resolve to itself.
+                        const auto wh = sdk::DatabaseMgr::hash_name("WaterAffectsSpeed");
+                        const auto back = wh.has_value() ? sdk::DatabaseMgr::name_for_hash(*wh)
+                                                         : std::nullopt;
+                        entry0_json += ",\"nameidx_roundtrip\":" +
+                                       std::string((back.has_value() && *back == "WaterAffectsSpeed")
+                                                       ? "true" : "false");
+                        entry0_json += ",\"nameidx_roundtrip_got\":";
+                        json_escape_append(entry0_json, back.value_or("<none>"));
+                        entry0_json += ",\"nameidx_wh\":" + std::to_string(wh.value_or(0));
+                        // Is the literal present in the module at all? Ask the index for a few known-present
+                        // names to separate "scan missed it" from "hash resolved to a different string".
+                        std::string probes;
+                        for (const char* nm : {"WaterAffectsSpeed", "GunLead", "GamePad", "YawClamp",
+                                               "PlayerGravity"}) {
+                            const auto hh = sdk::DatabaseMgr::hash_name(nm);
+                            const auto got = hh.has_value() ? sdk::DatabaseMgr::name_for_hash(*hh)
+                                                            : std::nullopt;
+                            if (!probes.empty()) {
+                                probes += ";";
+                            }
+                            probes += std::string(nm) + "->" + got.value_or("<none>");
+                        }
+                        entry0_json += ",\"nameidx_probes\":";
+                        json_escape_append(entry0_json, probes);
+                        // A HASH NO STRING PRODUCES must not resolve, or the index would "name" anything.
+                        entry0_json += ",\"nameidx_absent_refused\":" +
+                                       std::string(!sdk::DatabaseMgr::name_for_hash(0xDEADBEEFu).has_value()
+                                                       ? "true" : "false");
+                        const auto cov = sdk::DatabaseMgr::name_coverage(e->record_a, 4000);
+                        entry0_json += ",\"nameidx_distinct_attrs\":" +
+                                       std::to_string(cov.distinct_attribute_hashes);
+                        entry0_json += ",\"nameidx_resolved\":" + std::to_string(cov.resolved);
+                        // AND A NAMED EXAMPLE, so the capability is demonstrated and not just counted.
+                        std::string named;
+                        {
+                            auto* shared = sdk::DatabaseMgr::find_category(e->record_a, "Client/Shared");
+                            if (shared != nullptr && sdk::DatabaseMgr::record_count(shared) > 0) {
+                                auto* rec = sdk::DatabaseMgr::record(shared, 0);
+                                const auto na = sdk::DatabaseMgr::attribute_count(rec);
+                                size_t shown = 0;
+                                for (size_t k = 0; k < na && shown < 6; ++k) {
+                                    const auto a = sdk::DatabaseMgr::attribute_at(rec, k);
+                                    if (!a.has_value()) {
+                                        continue;
+                                    }
+                                    const auto nm = sdk::DatabaseMgr::attribute_name(*a);
+                                    if (!nm.has_value()) {
+                                        continue;
+                                    }
+                                    if (!named.empty()) {
+                                        named += ",";
+                                    }
+                                    named += *nm + ":t" + std::to_string(a->type);
+                                    ++shown;
+                                }
+                            }
+                        }
+                        entry0_json += ",\"nameidx_example\":";
+                        json_escape_append(entry0_json, named);
+                    }
+
+                    // ---- ARE 7 AND 8 FLOATS? ----
+                    {
+                        std::string st;
+                        for (uint8_t t : {sdk::DatabaseMgr::kType8Bytes, sdk::DatabaseMgr::kType12Bytes,
+                                          sdk::DatabaseMgr::kType16Bytes}) {
+                            const auto smp = sdk::DatabaseMgr::sample_struct_type(e->record_a, t, 200);
+                            if (!st.empty()) {
+                                st += ";";
+                            }
+                            st += "t" + std::to_string(t) + "=" + std::to_string(smp.sampled) + "/" +
+                                  std::to_string(smp.all_float_like) + "/" + std::to_string(smp.all_small_int) +
+                                  "/" + std::to_string(smp.any_denormal);
+                        }
+                        entry0_json += ",\"attr_struct_samples\":";
+                        json_escape_append(entry0_json, st);
+                    }
+
                     // THE CROSS-ROUTE CHECK. These names come from gameclient's CMoveMgr_Init, which reads them
                     // as DATABASE attributes. Their hashes must appear as descriptors somewhere in the database
                     // -- names from one module's code, structures from another's data.

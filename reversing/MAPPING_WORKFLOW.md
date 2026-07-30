@@ -3567,3 +3567,27 @@ been reassigned since the earlier switch in the same session.
 **Both failures share a shape:** a tool answered a narrower question than the one asked, and the narrow answer
 happened to agree with the hypothesis. When a check CONFIRMS what you already believe, that is the moment to ask
 what it actually measured.
+
+## Printable bytes are not a string
+
+Attribute descriptors store only a name hash, so recovering names meant hashing every printable byte run in
+gameclient's data sections and indexing by hash. It worked for `GunLead`, `GamePad`, `YawClamp` and
+`PlayerGravity` -- and failed for `WaterAffectsSpeed`, which the code demonstrably contains.
+
+The literal sits at `.rdata` `0x101D8624`, and the four bytes before it are `00 00 8C 43` -- the float `280.0f`.
+Its exponent byte is `0x43`, which is `'C'`. The scan glued it on and hashed **`"CWaterAffectsSpeed"`**, so the
+real name was never indexed.
+
+Requiring a NUL before the run would reject the glued form and lose the real name with it, so the fix indexes the
+run **and its first three suffixes** -- enough to absorb one glued dword's printable bytes. Coverage went from
+473/629 distinct attribute hashes to 484/629, and the map grew from 6,517 entries to 25,054: a deliberate trade of
+precision for reach, recorded as such.
+
+This is the third instance of one shape in this project:
+
+- "points into the module" is not "is a vtable" -- function pointers pass;
+- `get_strlit_contents` is not a type test -- it read a handler's code bytes as the string `"Q"`;
+- a printable run is not a string -- adjacent numeric data contributes characters.
+
+**Each time the predicate tested a VALUE's appearance when the question was about its ROLE.** The pattern to watch
+for: a test whose passing condition is "these bytes could be X" rather than "this location is used as X".

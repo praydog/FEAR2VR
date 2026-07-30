@@ -6610,3 +6610,43 @@ class CPlayerCamera 0x18C6 {
 // > HEX. Asserting the wrong artefact is as easy as measuring the wrong thing.
 //
 // 1376 checks, 0 failures.
+
+// ---- ATTRIBUTE NAMES RECOVERED, AND THE 12/16-BYTE STRUCTS MEASURED -----------------------------
+//
+// A descriptor holds a name hash and nothing else, so enumerating a record hands a consumer numbers. The names
+// live in the .gamedb, but THE NAMES THE CODE READS BY LITERAL ARE IN THE CODE -- gameclient references
+// attributes as "WaterAffectsSpeed", "GunLead", "YawClamp". Hashing every printable run in its data sections and
+// indexing by hash recovers exactly that subset, which is the subset a mod wants.
+//
+//     7234 runs scanned -> 25054 hash->name entries;  484 of 629 distinct attribute hashes resolve
+//
+// Live a real record now enumerates as named, typed attributes: BreathFX:t9, DebugLineSystemMaterial:t4,
+// DeathSound:t9, CameraSmoothingLeashLength:t2, MultiplayerDeathClientFX:t4, Cheats:t4.
+//
+// A RESOLVED NAME IS A CANDIDATE, NOT A PROOF: it round-trips by construction, but a different name with the
+// same hash would resolve identically. Zero collisions were measured across 28652 record names, so this is
+// unlikely rather than impossible.
+//
+// AND THE FIRST VERSION FAILED ON THE ONE NAME THAT MATTERED MOST. "WaterAffectsSpeed" resolved to nothing while
+// four other literals resolved fine. Its literal at .rdata 0x101D8624 is preceded by the float 280.0f, whose
+// exponent byte is 0x43 = 'C', so the run read "CWaterAffectsSpeed". Printable bytes are not a string. The fix
+// indexes each run AND its first three suffixes -- enough for one glued dword -- trading precision for reach
+// deliberately. See MAPPING_WORKFLOW.MD; this is the THIRD instance of a predicate testing how bytes LOOK when
+// the question was what a location is USED AS.
+//
+// TYPES 7 AND 8 ARE FLOATS, 6 IS UNDECIDED. Size alone says nothing about components, so the EngineVars test was
+// applied -- a dword absurd as an integer and reasonable as a float is a float -- and reported as
+// sampled/float-like/also-plausible-as-small-int/denormal:
+//
+//     t8 = 7/7/0/0      every sample reads as four floats and NONE as small integers. Floats, n=7.
+//     t7 = 200/200/117/0   float-like in all 200, and 83 are NOT plausible small integers, so it discriminates.
+//     t6 = 200/200/190/0   190 satisfy BOTH readings. UNDECIDED, and recorded as such -- a measurement that
+//                          cannot separate two hypotheses is not evidence for either.
+//
+// So type 7 is an LTVector in components as well as size, type 8 an LTVector4 or LTRotation, and type 6 is an
+// 8-byte pair whose components stay unestablished.
+//
+// Exposed as sdk::DatabaseMgr::build_name_index / name_for_hash / attribute_name / name_coverage /
+// sample_struct_type.
+//
+// 1387 checks, 0 failures.

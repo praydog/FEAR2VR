@@ -7036,6 +7036,47 @@ int main(int argc, char** argv) {
             // ASCII would have been asserting the wrong artefact -- which is how this check first failed.
             check(json_has(body, "00 00 00 00 49 44 53 5F"),
                   "the byte probe shows a zero header followed by 'IDS_' -- a localization key, found by looking");
+
+            // ---- RECOVERING ATTRIBUTE NAMES, WHICH DESCRIPTORS DO NOT STORE ---------------------
+            //
+            // A descriptor holds a hash and nothing else, so enumerating a record yields numbers. The names the
+            // GAME reads by literal are in gameclient's data sections, so hashing every printable run there
+            // recovers exactly the subset a mod is likely to want.
+            int64_t nidx_h = -1, nidx_d = -1, nidx_r = -1;
+            check(json_has(body, "\"nameidx_ready\":true"), "the name index built over gameclient's data");
+            check(json_int(body, "nameidx_hashes", nidx_h) && nidx_h > 10000,
+                  "and holds tens of thousands of hash-to-name entries");
+            // THE ROUND TRIP, on a name the code demonstrably contains.
+            check(json_has(body, "\"nameidx_roundtrip\":true"),
+                  "a known literal resolves to itself, so the index is wired to the right hash");
+            check(json_has(body, "WaterAffectsSpeed->WaterAffectsSpeed"),
+                  "and specifically the one that first failed -- its literal is preceded by the float 280.0f "
+                  "whose exponent byte is printable 'C', so a naive run scan hashed \"CWaterAffectsSpeed\"");
+            // WITHOUT THIS the index could be returning something for every input.
+            check(json_has(body, "\"nameidx_absent_refused\":true"),
+                  "a hash no string produces resolves to nothing, so the index discriminates");
+            check(json_int(body, "nameidx_distinct_attrs", nidx_d) && nidx_d > 500,
+                  "hundreds of distinct attribute hashes were sampled");
+            check(json_int(body, "nameidx_resolved", nidx_r) && nidx_r > nidx_d / 2 && nidx_r < nidx_d,
+                  "most but NOT all resolve -- the reach is real and partial, which is the honest measure since "
+                  "the names live in the .gamedb and only the code's own literals are recoverable");
+            check(json_has(body, "CameraSmoothingLeashLength:t2"),
+                  "and a real record enumerates as named, typed attributes rather than as hashes");
+
+            // ---- ARE THE 12- AND 16-BYTE STRUCTS FLOATS? ----
+            //
+            // Size is not evidence about components. The test is EngineVars': a dword absurd as an integer and
+            // reasonable as a float is a float. Reported as sampled/float-like/also-small-int/denormal so a
+            // population satisfying BOTH readings is visible as undecided rather than claimed either way.
+            check(json_has(body, "t8=7/7/0/0"),
+                  "every type-8 sample reads as four floats and NONE as small integers -- floats, on a small "
+                  "population of 7");
+            check(json_has(body, "t7=200/200/117/0"),
+                  "type 7 is float-like in all 200 samples and 83 of them are not plausible small integers, so "
+                  "the float reading discriminates there");
+            check(json_has(body, "t6=200/200/190/0"),
+                  "type 6 satisfies BOTH readings in 190 of 200 -- recorded as undecided, since a measurement "
+                  "that cannot separate two hypotheses is not evidence for either");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

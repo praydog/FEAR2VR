@@ -433,6 +433,70 @@ public:
     static TypeSample sample_type(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
                                   size_t limit = 400);
 
+    // ---- RECOVERING ATTRIBUTE NAMES, WHICH DESCRIPTORS DO NOT STORE -----------------------------
+    //
+    // A descriptor holds a hash and nothing else, so enumerating a record hands a consumer numbers it cannot
+    // display or act on. The names live in the .gamedb file, not in any module.
+    //
+    // BUT THE NAMES THE CODE USES ARE IN THE CODE. gameclient references attributes by string literal --
+    // "WaterAffectsSpeed", "GunLead", "YawClamp" -- and those literals sit in its .rdata. Hashing every printable
+    // string in the loaded module and indexing by hash recovers exactly the subset a mod is likely to want: the
+    // attributes the game itself reads by name.
+    //
+    // This is the same trick an earlier pass used to identify model animation names by intersecting hashes with
+    // strings harvested from the asset's own blob. Here the haystack is a module's data sections instead.
+    //
+    // A RESOLVED NAME IS A CANDIDATE, NOT A PROOF. It round-trips by construction -- hash(name) equals the hash
+    // asked about -- but a DIFFERENT name with the same hash would resolve identically. Collisions measured zero
+    // across 28652 record names, so this is unlikely rather than impossible, and the distinction is the caller's
+    // to respect.
+    struct NameIndex {
+        size_t strings_scanned{};
+        size_t distinct_hashes{};
+
+        // Empty when gameclient is not mapped.
+        bool ready() const { return distinct_hashes != 0; }
+    };
+
+    // Build (or rebuild) the index over gameclient's data sections. Cached: subsequent calls return the built
+    // index without rescanning, since module data does not change.
+    static const NameIndex& build_name_index();
+
+    // A name whose String_HashI equals this hash, or nullopt. See the caveat above.
+    static std::optional<std::string> name_for_hash(uint32_t hash);
+
+    // The attribute's name, when it happens to be one the code mentions.
+    static std::optional<std::string> attribute_name(const Attribute& attribute);
+
+    struct NameCoverage {
+        size_t distinct_attribute_hashes{};
+        size_t resolved{};
+        size_t records_scanned{};
+    };
+
+    // How many of the database's distinct attribute hashes the index can name. This is the honest measure of the
+    // facility's reach, and it belongs in the API rather than a comment because the answer depends on the build.
+    static NameCoverage name_coverage(const regenny::DatabaseMgrSubRecord* database, size_t record_limit = 0);
+
+    // ---- ARE THE 12- AND 16-BYTE STRUCTS FLOATS? ------------------------------------------------
+    //
+    // Types 7 and 8 point at 12 and 16 bytes, which are the sizes of an LTVector and an LTVector4, but size is
+    // not evidence about the components. The test that settles it is the one EngineVars used for its type tags: a
+    // dword that is absurd as an integer and reasonable as a float IS a float.
+    struct StructSample {
+        uint8_t type{};
+        size_t sampled{};
+        size_t all_float_like{};  // every component finite and in a sane magnitude band
+        size_t any_denormal{};    // at least one component denormal -- the trap this project keeps hitting
+        size_t all_small_int{};   // every component would also be a plausible small integer
+    };
+
+    // Sample type 6/7/8 attributes and report how their components read. all_small_int is reported alongside
+    // all_float_like on purpose: if a population satisfies BOTH, the measurement cannot discriminate and saying
+    // so is the result.
+    static StructSample sample_struct_type(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
+                                           size_t limit = 200);
+
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
 };

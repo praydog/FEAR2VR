@@ -1,4 +1,7 @@
 #include "DatabaseMgr.hpp"
+#include <cstring>
+#include <unordered_set>
+#include <unordered_map>
 
 #include <windows.h>
 
@@ -708,6 +711,192 @@ DatabaseMgr::TypeSample DatabaseMgr::sample_type(const regenny::DatabaseMgrSubRe
                     if (header.has_value() && *header == 0 && tail.has_value() && !tail->empty()) {
                         ++out.ascii_at_4;
                     }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+
+namespace {
+
+std::unordered_map<uint32_t, std::string>& name_index_storage() {
+    static std::unordered_map<uint32_t, std::string> s_map;
+    return s_map;
+}
+
+DatabaseMgr::NameIndex& name_index_state() {
+    static DatabaseMgr::NameIndex s_state;
+    return s_state;
+}
+
+}  // namespace
+
+const DatabaseMgr::NameIndex& DatabaseMgr::build_name_index() {
+    auto& state = name_index_state();
+    if (state.distinct_hashes != 0) {
+        return state;  // module data does not change; one scan is enough
+    }
+    auto& map = name_index_storage();
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return state;
+    }
+    // Walk the module's DATA sections only. Code contains printable byte runs that are not strings, and this is
+    // exactly the "points into the module is not enough" lesson applied to a different question.
+    for (uintptr_t addr = gc->base; addr < gc->base + gc->size;) {
+        const auto sec = Modules::section_of(addr);
+        if (!sec.has_value()) {
+            ++addr;
+            continue;
+        }
+        if (sec->kind != Modules::SectionKind::Data) {
+            addr = sec->end;
+            continue;
+        }
+        // Scan this section for NUL-terminated printable runs.
+        std::string current;
+        for (uintptr_t p = sec->start; p < sec->end; ++p) {
+            const auto ch = mem::read<uint8_t>(p);
+            if (!ch.has_value()) {
+                current.clear();
+                continue;
+            }
+            if (*ch >= 0x20 && *ch <= 0x7E) {
+                if (current.size() < 96) {
+                    current.push_back(static_cast<char>(*ch));
+                } else {
+                    current.clear();
+                }
+                continue;
+            }
+            if (*ch == 0 && current.size() >= 3) {
+                // INDEX THE RUN AND ITS FIRST FEW SUFFIXES. A printable run is not necessarily a string: a
+                // float or integer stored just before a literal can contribute printable bytes that get glued
+                // onto its front. "WaterAffectsSpeed" is preceded by the float 280.0f, whose exponent byte is
+                // 0x43 = 'C', so the run reads "CWaterAffectsSpeed" and the real name never appears.
+                //
+                // Requiring a NUL before the run would reject the glued form AND lose the real name with it, so
+                // instead the first few offsets are indexed as well. Three is enough for one glued dword's worth
+                // of printable bytes and keeps the map small; deeper suffixes would trade precision for reach.
+                for (size_t skip = 0; skip <= 3 && current.size() - skip >= 3; ++skip) {
+                    const std::string candidate = current.substr(skip);
+                    const auto hash = hash_name(candidate);
+                    if (hash.has_value()) {
+                        if (skip == 0) {
+                            ++state.strings_scanned;
+                        }
+                        map.emplace(*hash, candidate);
+                    }
+                }
+            }
+            current.clear();
+        }
+        addr = sec->end;
+    }
+    state.distinct_hashes = map.size();
+    return state;
+}
+
+std::optional<std::string> DatabaseMgr::name_for_hash(uint32_t hash) {
+    build_name_index();
+    const auto& map = name_index_storage();
+    const auto it = map.find(hash);
+    if (it == map.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<std::string> DatabaseMgr::attribute_name(const Attribute& attribute) {
+    return name_for_hash(attribute.name_hash);
+}
+
+DatabaseMgr::NameCoverage DatabaseMgr::name_coverage(const regenny::DatabaseMgrSubRecord* database,
+                                                    size_t record_limit) {
+    NameCoverage out;
+    build_name_index();
+    std::unordered_set<uint32_t> seen;
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        for (size_t j = 0; j < nrec; ++j) {
+            if (record_limit != 0 && out.records_scanned >= record_limit) {
+                break;
+            }
+            const auto* rec = record(cat, j);
+            ++out.records_scanned;
+            const auto na = attribute_count(rec);
+            for (size_t k = 0; k < na; ++k) {
+                const auto a = attribute_at(rec, k);
+                if (!a.has_value()) {
+                    continue;
+                }
+                if (!seen.insert(a->name_hash).second) {
+                    continue;
+                }
+                ++out.distinct_attribute_hashes;
+                if (name_for_hash(a->name_hash).has_value()) {
+                    ++out.resolved;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+DatabaseMgr::StructSample DatabaseMgr::sample_struct_type(const regenny::DatabaseMgrSubRecord* database,
+                                                         uint8_t type, size_t limit) {
+    StructSample out;
+    out.type = type;
+    const auto want = struct_dword_count(type);
+    if (want == 0) {
+        return out;
+    }
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat && out.sampled < limit; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        for (size_t j = 0; j < nrec && out.sampled < limit; ++j) {
+            const auto* rec = record(cat, j);
+            const auto na = attribute_count(rec);
+            for (size_t k = 0; k < na && out.sampled < limit; ++k) {
+                const auto a = attribute_at(rec, k);
+                if (!a.has_value() || a->type != type) {
+                    continue;
+                }
+                const auto dwords = attribute_struct(*a, 0);
+                if (dwords.size() != want) {
+                    continue;
+                }
+                ++out.sampled;
+                bool floats = true;
+                bool denorm = false;
+                bool small_int = true;
+                for (const auto d : dwords) {
+                    float f = 0.0f;
+                    std::memcpy(&f, &d, sizeof(f));
+                    const auto mag = f < 0.0f ? -f : f;
+                    if (!(f == f) || (mag != 0.0f && (mag < 1e-30f || mag > 1e12f))) {
+                        floats = false;
+                    }
+                    if (mag != 0.0f && mag < 1e-30f) {
+                        denorm = true;
+                    }
+                    if (d > 100000u) {
+                        small_int = false;
+                    }
+                }
+                if (floats) {
+                    ++out.all_float_like;
+                }
+                if (denorm) {
+                    ++out.any_denormal;
+                }
+                if (small_int) {
+                    ++out.all_small_int;
                 }
             }
         }
