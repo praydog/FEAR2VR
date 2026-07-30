@@ -445,3 +445,19 @@ The `&&` only fires when MSBuild returned 0, and the `||` branch shows why it di
 not. Same reasoning as rule 10's silent-regeneration trap: a build that looks fine
 while producing nothing new is the most expensive failure mode in this project,
 because every downstream signal stays plausible.
+
+## Head tracking
+
+`HeadTracking` composes a head orientation into the camera's ADDITIVE rotation slot -- the engine computes
+`camera = holder[+552] * holder[+324]`, aim on the right, and the left operand is identity until something
+leans or shakes the view. Putting the head pose there means looking around ADDS to aiming instead of seizing
+it, and releasing restores exactly.
+
+Writing the field from outside is reclaimed within a frame, so the mod owns the writer
+(`PlayerCamera_UpdateAttachedRotation`, gameclient +0xDED80, `__thiscall`, `this` IS the holder) and amends
+its result. Drive it with `/vr/head?yaw=&pitch=` or `?x=&y=&z=&w=`, release with `?clear=1`.
+
+**Verify it with the projection probe, never a screenshot.** `/vr/head?px=&py=&pz=` names a world point that
+`CameraPassHook` projects inside the pass detour; a stationary point sliding across the screen is the only
+direct evidence the rendered view turned. Read from any other thread the projection lands on the frame's
+ortho HUD pass and means nothing. Desktop captures in this session were stale while the renderer was fine.

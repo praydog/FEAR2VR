@@ -679,3 +679,41 @@ Rank the options and pick the highest feasible one:
   `utility::scan_relative_references` replaced in one call); a review that lets
   it through again is a review defect. Corollary for tests: a "helper" in the
   fixture runner that duplicates a library primitive is the same violation.
+
+## Two values sampled at different times cannot be held to a tight bound
+
+The suite's strongest check compared the engine's placement of the held weapon against our own composition of
+the hand socket -- two independent producers of one point. It asserted they agree to 0.05, and it failed
+intermittently: 0.000, 0.159, 2.139 across consecutive runs of UNCHANGED code.
+
+**A residual that varies while the code does not is an indictment of the measurement, not the code.** Both
+values were read from the IPC thread with a frame boundary free to land between them, and an idle animation
+moving the arm across it. The check was measuring when the reads happened.
+
+The rule this yields:
+
+- A comparison between two producers MUST be sampled inside one frame -- on the engine's own tick -- or it is
+  not a comparison. `Mod::on_frame` exists for this.
+- When a residual cannot be eliminated, publish the SCALE it must be judged against alongside it (here, the
+  weapon's per-frame travel). A real fault is wrong by units regardless of motion; skew shrinks to zero at
+  rest. An assertion that cannot tell those apart is not testing anything.
+- Gate the tight bound on having observed the quiet condition, and WAIT for it rather than asserting on
+  whatever accumulated since injection. A freshly injected DLL has seen 20 frames, not 2000.
+
+In phase the disagreement is 0.0000 over hundreds of still frames. The composition was exact all along; only
+the test was wrong, and it had been wrong in the direction that looks like rigour.
+
+## A screenshot is an observation, and it can be stale
+
+Three independent in-engine measurements said a head rotation had reached the renderer -- the camera object
+turned, `camera == outer * inner` held, and the pass argument moved 90 deg -> 150 deg for a 60 deg yaw -- while the
+screen appeared unchanged across every capture. The instinct is to believe the picture.
+
+The control settled it: applying a 150-unit eye offset, which had VISIBLY moved the world earlier in the same
+session, also changed nothing on screen while the pass counter kept climbing. The capture was stale; the
+renderer was fine.
+
+- Before trusting a visual observation to contradict instrumentation, re-run a change that is KNOWN to be
+  visible. If that one is invisible too, the observation is broken, not the code.
+- Prefer an observable the engine computes: a stationary world point projected through the scene camera moves
+  when the view turns, and it can be asserted. A screenshot cannot.
