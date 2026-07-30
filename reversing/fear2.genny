@@ -61,11 +61,10 @@ class CAPIHolder 0xC {
 // with a hash-of-string. The trailing byte fields' MEANING is NOT verified --
 // only their raw values are recorded (neutral names on purpose).
 class HashEntry 0x8 {
-    uint32_t hash   @0x00   // stable/repeating values observed -- consistent with hash(name), not otherwise confirmed
-    uint8_t unk_04  @0x04   // observed: 01,02,04,06,07,09 -- meaning unverified
-    uint8_t unk_05  @0x05   // observed constant 0x01 in nearly all samples (rare 0x06/0x12 seen) -- meaning unverified
-    uint8_t unk_06  @0x06   // observed small incrementing-looking values -- meaning unverified
-    uint8_t unk_07  @0x07   // observed constant 0x00 in every sample so far
+    uint32_t name_hash  @0x00   // CONFIRMED String_HashI of the attribute name; the key DatabaseMgr_FindAttributeByHash binary-searches
+    uint8_t type        @0x04   // CONFIRMED the type tag -- ONLY the low 6 bits (decoder masks & 0x3F). Live values 1..9, never 0. 1=bool(packed bit), 2=float, 9=nested-struct ref [INFERENCE]; 3-8 observed, unidentified
+    uint8_t unk_05      @0x05   // CONFIRMED copied verbatim to the decoded value's +6 by DatabaseMgr_DecodeAttributeValue; its MEANING is still unestablished
+    uint16_t value_index @0x06  // CONFIRMED index into the record's value_blob, IN DWORDS -- except for type 1 where it is a BIT index (blob + 4*(i>>5), bit i&0x1F). The genny's earlier "small values then constant 0x00" was this little-endian 16-bit field
 }
 
 // 0x18-byte record: one entry of DatabaseMgrCategory.records[]. This is the
@@ -110,9 +109,9 @@ class HashEntry 0x8 {
 // and +0x14 is CONFIRMED as String_HashI(name) -- 28652/28652 records live.
 class DatabaseMgrRecord 0x18 {
     strptr name             @0x00   // CONFIRMED live: readable ASCII in 4/4 samples
-    uint32_t unk_04         @0x04   // unverified; observed 3-5, plausible attribute count
-    void* unk_08            @0x08   // unverified; plausible attribute-descriptor array (~0x28-byte stride observed)
-    void* unk_0C            @0x0C   // unverified
+    uint32_t num_attributes @0x04   // CONFIRMED the attribute count: DatabaseMgr_FindAttributeByHash uses it as the binary search's bound
+    HashEntry* attributes   @0x08   // CONFIRMED the attribute-descriptor array (8-byte entries), sorted ascending by name_hash -- 28652/28652 records verified live
+    void* value_blob        @0x0C   // CONFIRMED the value storage: DatabaseMgr_DecodeAttributeValue computes blob + 4*value_index (or 4*(index>>5) for a bit)
     void* owner_category    @0x10   // CONFIRMED live: == owning DatabaseMgrCategory address in 4/4 samples; see comment above for why this isn't typed DatabaseMgrCategory*
     uint32_t name_hash      @0x14   // CONFIRMED == String_HashI(name) for 28652/28652 records live, 0 skipped
 }
@@ -6494,3 +6493,63 @@ class CPlayerCamera 0x18C6 {
 // records_sorted_by_hash / hash_collisions / name_is_unique_key / distinct_name_count.
 //
 // 1351 checks, 0 failures.
+
+// ---- THE THIRD LEVEL: ATTRIBUTES, AND FOUR FIELDS THAT STOP BEING GUESSES ------------------------
+//
+// The by-name family had a THREE-name variant -- category, record, attribute -- and following it settles the rest
+// of the record layout from the engine's own code rather than from value shapes.
+//
+//     DatabaseMgr_FindAttributeByHash    base record+0x08   count record+0x04   stride 8   key +0
+//     DatabaseMgr_DecodeAttributeValue   blob record+0x0C, descriptor decoded as below
+//
+// SO THREE "PLAUSIBLE"/"UNVERIFIED" RECORD FIELDS ARE NOW CONFIRMED: +0x04 is the attribute count (it bounds the
+// binary search), +0x08 is the descriptor array, +0x0C is the value blob.
+//
+// AND THE DESCRIPTOR IS THIS FILE'S HashEntry, whose four trailing bytes were ALL "meaning unverified":
+//
+//     +0  uint32  name_hash     String_HashI of the attribute name -- the search key
+//     +4  uint8   type          ONLY the low 6 bits; the decoder masks & 0x3F
+//     +5  uint8   copied verbatim into the decoded value's +6; meaning still unestablished
+//     +6  uint16  value_index   index into value_blob IN DWORDS
+//
+// The genny's own earlier observations line up exactly: "+4 observed 01,02,04,06,07,09" is the type enum,
+// "+6 small incrementing values" and "+7 constant 0x00" are one little-endian 16-bit index whose high byte is
+// zero because records hold few attributes.
+//
+// TYPE 1 IS A PACKED BIT, and this is the part that would silently corrupt a naive reader:
+//
+//     type 1 : value = blob + 4 * (value_index >> 5),  bit = value_index & 0x1F
+//     else   : value = blob + 4 * value_index
+//
+// Booleans are stored 32 to a dword, so reading one as a dword returns up to 31 unrelated neighbours. The SDK's
+// attribute_bit and attribute_dword each REFUSE the other's type for exactly that reason.
+//
+// MEASURED OVER THE WHOLE DATABASE: 28652 records, 306570 attributes, every descriptor array sorted by hash,
+// every attribute decoded without a fault, 58594 of them packed bits. Type tags as a bitmask: 0b1111111110 --
+// values 1..9, never 0.
+//
+// THREE OF THE NINE TYPES ARE PINNED BY EVIDENCE OUTSIDE THIS BINARY:
+//     1  bool/bit    the decoder's own arithmetic AND the reference reading WaterAffectsSpeed with GetBool
+//     2  float       YawClamp and YawBias, both read as floats by CMoveMgr_Init
+//     9  struct ref  [INFERENCE] GunLead and GamePad carry it, and they are the names CMoveMgr hashes to REACH
+//                    a record whose own attributes are YawClamp and YawBias -- which live in _Structures
+// 3,4,5,6,7,8 are observed and deliberately UNNAMED. Guessing a type from a value's shape is the mistake this
+// project has made and corrected twice.
+//
+// THE CROSS-ROUTE CHECK IS THE BEST PART. Five attribute names were taken from gameclient's CODE -- three of
+// them from the inlined String_HashI copies that were an open question two passes ago -- and all five appear as
+// descriptors in gamedatabase's DATA, connected by nothing but the hash:
+//
+//     WaterAffectsSpeed@Client/Shared    GunLead@Client/Shared    GamePad@Client/Shared
+//     YawClamp@_Structures               YawBias@_Structures
+//
+// `Client/Shared` corroborates the reference source, which calls that record hSharedRecord for exactly this
+// attribute. And the VALUE agrees across modules: the database bit reads false, while CMoveMgr's cached copy at
+// its +521 measured 0 in an earlier pass.
+//
+// Named in gamedatabase.dll: DatabaseMgr_FindAttributeByHash, DatabaseMgr_DecodeAttributeValue,
+// IDatabaseMgr_GetAttributeByHash, IDatabaseMgr_GetAttributeByName.
+// Exposed as sdk::DatabaseMgr::attribute_count / attribute_at / find_attribute / has_attribute /
+// attributes_sorted_by_hash / attribute_bit / attribute_dword.
+//
+// 1365 checks, 0 failures.

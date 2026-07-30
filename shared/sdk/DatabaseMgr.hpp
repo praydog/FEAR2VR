@@ -239,6 +239,105 @@ public:
     // records. Equal to record_count for a properly keyed category.
     static size_t distinct_name_count(const regenny::DatabaseMgrCategory* category);
 
+    // ---- A RECORD'S ATTRIBUTES, FROM THE ENGINE'S OWN DECODER ------------------------------------
+    //
+    // The third level of the same design. DatabaseMgr_FindAttributeByHash binary-searches a record's descriptor
+    // array on an attribute-name hash, and DatabaseMgr_DecodeAttributeValue turns a descriptor into a value
+    // location. Between them they settle three fields fear2.genny carried as guesses:
+    //
+    //     record +0x04   uint32   ATTRIBUTE COUNT     (was "plausible attribute count")
+    //     record +0x08   ptr      DESCRIPTOR ARRAY    (was "plausible attribute-descriptor array")
+    //     record +0x0C   ptr      VALUE BLOB          (was "unverified")
+    //
+    // AND THE DESCRIPTOR IS THE genny's HashEntry, whose four trailing bytes were all "meaning unverified":
+    //
+    //     +0  uint32  name_hash    the search key -- String_HashI of the attribute name
+    //     +4  uint8   type         ONLY THE LOW 6 BITS are the type; the decoder masks & 0x3F
+    //     +5  uint8   passed through to the decoded value's +6, meaning still unestablished
+    //     +6  uint16  value_index  index into the value blob, IN DWORDS
+    //
+    // The genny's own observations line up exactly: it recorded +4 taking values 01,02,04,06,07,09 (a small type
+    // enum), +6 "small incrementing-looking values" and +7 "constant 0x00" -- which is a little-endian 16-bit
+    // index whose high byte is zero because records have few attributes.
+    //
+    // TYPE 1 IS A PACKED BIT, which is the part that would silently corrupt a naive reader:
+    //
+    //     type 1 : value = blob + 4 * (value_index >> 5),  bit = value_index & 0x1F
+    //     else   : value = blob + 4 * value_index,         whole dword
+    //
+    // So booleans are stored 32 to a dword and the 16-bit field is a BIT index for them, not a dword index.
+    // Reading a type-1 attribute as a dword yields up to 31 unrelated neighbours' values.
+    static constexpr uintptr_t kRecordAttributeCount = 0x04;
+    static constexpr uintptr_t kRecordAttributeArray = 0x08;
+    static constexpr uintptr_t kRecordValueBlob = 0x0C;
+    static constexpr size_t kAttributeDescriptorSize = 8;
+    static constexpr uint8_t kTypeMask = 0x3F;
+
+    // ---- THE TYPE TAGS, pinned where external evidence exists and left open where it does not ----
+    //
+    // Live, the low 6 bits take values 1..9 and never 0 (measured as a bitmask over all 306570 attributes:
+    // 0b1111111110). Three of the nine are established, each by a route outside this binary:
+    //
+    //   1  BOOL, stored as a PACKED BIT. Two independent routes: the decoder's own >>5 / &0x1F arithmetic, and
+    //      the reference source reading WaterAffectsSpeed with GetBool -- which live carries type 1.
+    //   2  FLOAT. YawClamp and YawBias both carry it, and CMoveMgr_Init reads both as floats.
+    //   9  A NESTED-STRUCTURE REFERENCE. [INFERENCE] GunLead and GamePad carry it, and they are exactly the
+    //      names CMoveMgr_Init hashes in order to REACH a record whose own attributes are YawClamp and YawBias
+    //      -- which live in the _Structures pool. So a type-9 attribute names a sub-record rather than holding a
+    //      value. Inferred from that traversal pattern, not from a decoder that proves it.
+    //
+    // 3, 4, 5, 6, 7 and 8 are OBSERVED BUT UNIDENTIFIED and deliberately unnamed. Guessing "probably int32"
+    // from a value's shape is the mistake this project has made and corrected twice.
+    static constexpr uint8_t kTypeBool = 1;   // packed bit
+    static constexpr uint8_t kTypeFloat = 2;
+    static constexpr uint8_t kTypeStructRef = 9;  // [INFERENCE]
+
+    // Kept as the historical name; kTypeBool is the same value and says why it is special.
+    static constexpr uint8_t kTypeBit = kTypeBool;
+
+    struct Attribute {
+        uintptr_t descriptor{};  // the 8-byte descriptor
+        uint32_t name_hash{};
+        uint8_t type{};          // already masked to the low 6 bits
+        uint8_t raw_type{};      // the unmasked byte, so the high 2 bits are not thrown away
+        uint8_t unk_05{};        // meaning unestablished; surfaced rather than hidden
+        uint16_t value_index{};
+        uintptr_t value{};       // decoded address in the blob
+        uint8_t bit{};           // bit index within *value, only meaningful for a bit type
+
+        bool is_bit() const { return type == kTypeBit; }
+    };
+
+    // How many attributes a record declares.
+    static size_t attribute_count(const regenny::DatabaseMgrRecord* record);
+
+    // One attribute by index, decoded exactly as DatabaseMgr_DecodeAttributeValue does. nullopt when out of
+    // range or a read faults.
+    static std::optional<Attribute> attribute_at(const regenny::DatabaseMgrRecord* record, size_t index);
+
+    // One attribute by NAME, via the same binary search the engine uses. nullopt when absent.
+    //
+    // NOTE THE ASYMMETRY WITH find_record: a descriptor stores only the HASH, never the attribute's name, so
+    // there is nothing to string-compare against and a collision cannot be rejected here the way it can for
+    // categories and records. The hash is all the engine has and all this has.
+    static std::optional<Attribute> find_attribute(const regenny::DatabaseMgrRecord* record,
+                                                   std::string_view name);
+
+    // Does the record have an attribute of this name? The cheap question, without decoding.
+    static bool has_attribute(const regenny::DatabaseMgrRecord* record, std::string_view name);
+
+    // Is the descriptor array sorted ascending by hash, as the binary search requires?
+    static bool attributes_sorted_by_hash(const regenny::DatabaseMgrRecord* record);
+
+    // The attribute's value as a bool, honouring the bit packing. nullopt when the attribute is not a bit type
+    // or the read faults -- deliberately strict, since reading a bit attribute as anything else is the mistake
+    // this exists to prevent.
+    static std::optional<bool> attribute_bit(const Attribute& attribute);
+
+    // The whole dword at the attribute's value address, for the non-bit types. nullopt for a bit attribute,
+    // because the dword there holds up to 32 unrelated booleans.
+    static std::optional<uint32_t> attribute_dword(const Attribute& attribute);
+
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
 };

@@ -478,4 +478,112 @@ bool DatabaseMgr::name_is_unique_key(const regenny::DatabaseMgrCategory* categor
     return distinct_name_count(category_ptr) == n;
 }
 
+
+size_t DatabaseMgr::attribute_count(const regenny::DatabaseMgrRecord* record_ptr) {
+    if (record_ptr == nullptr) {
+        return 0;
+    }
+    const auto n = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(record_ptr) + kRecordAttributeCount);
+    if (!n.has_value() || *n > 4096) {
+        return 0;  // a record with thousands of attributes would be a misread, not data
+    }
+    return *n;
+}
+
+std::optional<DatabaseMgr::Attribute> DatabaseMgr::attribute_at(const regenny::DatabaseMgrRecord* record_ptr,
+                                                               size_t index) {
+    if (record_ptr == nullptr || index >= attribute_count(record_ptr)) {
+        return std::nullopt;
+    }
+    const auto base = reinterpret_cast<uintptr_t>(record_ptr);
+    const auto array = mem::read_ptr(base + kRecordAttributeArray);
+    const auto blob = mem::read_ptr(base + kRecordValueBlob);
+    if (!array.has_value() || *array == 0 || !blob.has_value()) {
+        return std::nullopt;
+    }
+    const auto desc = *array + kAttributeDescriptorSize * index;
+    const auto hash = mem::read<uint32_t>(desc);
+    const auto raw_type = mem::read<uint8_t>(desc + 4);
+    const auto extra = mem::read<uint8_t>(desc + 5);
+    const auto vindex = mem::read<uint16_t>(desc + 6);
+    if (!hash.has_value() || !raw_type.has_value() || !extra.has_value() || !vindex.has_value()) {
+        return std::nullopt;
+    }
+    Attribute out;
+    out.descriptor = desc;
+    out.name_hash = *hash;
+    out.raw_type = *raw_type;
+    out.type = static_cast<uint8_t>(*raw_type & kTypeMask);
+    out.unk_05 = *extra;
+    out.value_index = *vindex;
+    // Exactly DatabaseMgr_DecodeAttributeValue's arithmetic.
+    if (out.type == kTypeBit) {
+        out.value = *blob + 4 * (static_cast<uintptr_t>(out.value_index) >> 5);
+        out.bit = static_cast<uint8_t>(out.value_index & 0x1F);
+    } else {
+        out.value = *blob + 4 * static_cast<uintptr_t>(out.value_index);
+        out.bit = 0;
+    }
+    return out;
+}
+
+std::optional<DatabaseMgr::Attribute> DatabaseMgr::find_attribute(const regenny::DatabaseMgrRecord* record_ptr,
+                                                                 std::string_view name) {
+    const auto want = hash_name(name);
+    if (!want.has_value() || record_ptr == nullptr) {
+        return std::nullopt;
+    }
+    const auto n = attribute_count(record_ptr);
+    const auto array = mem::read_ptr(reinterpret_cast<uintptr_t>(record_ptr) + kRecordAttributeArray);
+    if (n == 0 || !array.has_value() || *array == 0) {
+        return std::nullopt;
+    }
+    const auto hit = binary_search_by_hash(*array, n, kAttributeDescriptorSize, 0, *want);
+    if (!hit.has_value()) {
+        return std::nullopt;
+    }
+    const auto index = (*hit - *array) / kAttributeDescriptorSize;
+    return attribute_at(record_ptr, index);
+}
+
+bool DatabaseMgr::has_attribute(const regenny::DatabaseMgrRecord* record_ptr, std::string_view name) {
+    return find_attribute(record_ptr, name).has_value();
+}
+
+bool DatabaseMgr::attributes_sorted_by_hash(const regenny::DatabaseMgrRecord* record_ptr) {
+    const auto n = attribute_count(record_ptr);
+    uint32_t prev = 0;
+    bool have_prev = false;
+    for (size_t i = 0; i < n; ++i) {
+        const auto a = attribute_at(record_ptr, i);
+        if (!a.has_value()) {
+            return false;
+        }
+        if (have_prev && a->name_hash < prev) {
+            return false;
+        }
+        prev = a->name_hash;
+        have_prev = true;
+    }
+    return true;
+}
+
+std::optional<bool> DatabaseMgr::attribute_bit(const Attribute& attribute) {
+    if (!attribute.is_bit() || attribute.value == 0) {
+        return std::nullopt;
+    }
+    const auto word = mem::read<uint32_t>(attribute.value);
+    if (!word.has_value()) {
+        return std::nullopt;
+    }
+    return ((*word >> attribute.bit) & 1u) != 0;
+}
+
+std::optional<uint32_t> DatabaseMgr::attribute_dword(const Attribute& attribute) {
+    if (attribute.is_bit() || attribute.value == 0) {
+        return std::nullopt;
+    }
+    return mem::read<uint32_t>(attribute.value);
+}
+
 } // namespace sdk

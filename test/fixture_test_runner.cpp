@@ -6937,6 +6937,55 @@ int main(int argc, char** argv) {
                   "across far fewer distinct names -- a pool keyed by TYPE, not by name");
             check(json_has(body, "\"pool_is_structures\":true"),
                   "and that category is _Structures, so find_record there returns an arbitrary instance");
+
+            // ---- ATTRIBUTES: THE THIRD LEVEL, AND THREE FIELDS THAT STOP BEING GUESSES -----------
+            //
+            // DatabaseMgr_FindAttributeByHash binary-searches a record's descriptors on an attribute-name hash
+            // and DatabaseMgr_DecodeAttributeValue turns a descriptor into a value location. Between them they
+            // settle record+0x04 (attribute count), +0x08 (descriptor array) and +0x0C (value blob), all of
+            // which fear2.genny carried as "plausible" or "unverified".
+            int64_t a_recs = -1, a_tot = -1, a_sorted = -1, a_bits = -1, a_dec = -1, a_mask = -1,
+                    a_found = -1, a_ftot = -1;
+            check(json_int(body, "attr_records", a_recs) && a_recs > 20000,
+                  "every record in the database was walked for attributes");
+            check(json_int(body, "attr_total", a_tot) && a_tot > 300000,
+                  "over three hundred thousand attributes were decoded");
+            check(json_int(body, "attr_records_sorted", a_sorted) && a_sorted == a_recs,
+                  "every record's descriptor array is sorted by hash, as its binary search requires");
+            check(json_int(body, "attr_decoded", a_dec) && a_dec == a_tot,
+                  "and every single one decoded -- no faults across the whole database");
+            check(json_int(body, "attr_bits", a_bits) && a_bits > 0 && a_bits < a_tot,
+                  "some but not all are packed bits, so the bit path is exercised and is not the only path");
+            // THE TYPE TAG IS SIX BITS: live values are 1..9 and never 0, which the mask captures exactly.
+            check(json_int(body, "attr_type_mask", a_mask) && a_mask == 1022,
+                  "the observed type tags are exactly 1..9 -- bit 0 clear, nothing above 9");
+
+            // THE CROSS-ROUTE CHECK: names taken from gameclient's CODE, found as descriptors in
+            // gamedatabase's DATA. Two modules, one set of names, connected only by the hash.
+            check(json_int(body, "attr_from_code_found", a_found) &&
+                      json_int(body, "attr_from_code_total", a_ftot) && a_found == a_ftot && a_ftot == 5,
+                  "all five attribute names read out of CMoveMgr_Init exist as descriptors in the database");
+            // AND THE CATEGORY CORROBORATES THE REFERENCE SOURCE, which calls this record hSharedRecord.
+            check(json_has(body, "WaterAffectsSpeed@Client/Shared"),
+                  "WaterAffectsSpeed lives in Client/Shared, matching the reference's hSharedRecord");
+            check(json_has(body, "\"attr_bogus_refused\":true"),
+                  "an attribute name no record defines is refused everywhere, so 'found' discriminates");
+
+            // THE TYPES, pinned by how the GAME reads each one rather than by value shape.
+            check(json_has(body, "WaterAffectsSpeed=1(bit)"),
+                  "WaterAffectsSpeed is type 1 and packed as a bit -- the reference reads it with GetBool");
+            check(json_has(body, "YawClamp=2") && json_has(body, "YawBias=2"),
+                  "YawClamp and YawBias are type 2, and CMoveMgr_Init reads both as floats");
+            check(json_has(body, "GunLead=9") && json_has(body, "GamePad=9"),
+                  "GunLead and GamePad are type 9 -- the names CMoveMgr hashes to reach a _Structures record");
+            // THE READERS MUST BE STRICT: a bit attribute refuses the dword reader and vice versa. Without this
+            // a caller could read 32 packed booleans as one integer and get a plausible number.
+            check(json_has(body, "\"attr_readers_strict\":true"),
+                  "the bit and dword readers each refuse the other's type");
+            // AND THE VALUE AGREES WITH THE OTHER MODULE: CMoveMgr caches this flag at its +521, measured 0 in
+            // an earlier pass, and the database bit reads false. Two modules, one fact.
+            check(json_has(body, "\"attr_water_value\":false"),
+                  "the database says WaterAffectsSpeed is false, matching CMoveMgr's cached 0 from an earlier pass");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

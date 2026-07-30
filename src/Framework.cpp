@@ -7253,6 +7253,156 @@ std::string build_database_json() {
                 entry0_json += ",\"pool_categories\":" + std::to_string(pool_cats);
                 entry0_json += ",\"pool_records\":" + std::to_string(pool_records);
                 entry0_json += ",\"pool_distinct_names\":" + std::to_string(pool_distinct);
+                // ---- ATTRIBUTES: the third level, and a cross-route name check ----
+                {
+                    size_t recs = 0, attrs = 0, sorted_ok = 0, bits = 0, decoded = 0;
+                    uint32_t type_mask = 0;
+                    for (size_t i = 0; i < ncat; ++i) {
+                        auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                        const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                        for (size_t j = 0; j < nrec; ++j) {
+                            auto* rec = sdk::DatabaseMgr::record(cat, j);
+                            if (rec == nullptr) {
+                                continue;
+                            }
+                            ++recs;
+                            if (sdk::DatabaseMgr::attributes_sorted_by_hash(rec)) {
+                                ++sorted_ok;
+                            }
+                            const auto na = sdk::DatabaseMgr::attribute_count(rec);
+                            for (size_t k = 0; k < na; ++k) {
+                                const auto a = sdk::DatabaseMgr::attribute_at(rec, k);
+                                if (!a.has_value()) {
+                                    continue;
+                                }
+                                ++attrs;
+                                if (a->type < 32) {
+                                    type_mask |= (1u << a->type);
+                                }
+                                if (a->is_bit()) {
+                                    ++bits;
+                                    if (sdk::DatabaseMgr::attribute_bit(*a).has_value()) {
+                                        ++decoded;
+                                    }
+                                } else if (sdk::DatabaseMgr::attribute_dword(*a).has_value()) {
+                                    ++decoded;
+                                }
+                            }
+                        }
+                    }
+                    entry0_json += ",\"attr_records\":" + std::to_string(recs);
+                    entry0_json += ",\"attr_total\":" + std::to_string(attrs);
+                    entry0_json += ",\"attr_records_sorted\":" + std::to_string(sorted_ok);
+                    entry0_json += ",\"attr_bits\":" + std::to_string(bits);
+                    entry0_json += ",\"attr_decoded\":" + std::to_string(decoded);
+                    entry0_json += ",\"attr_type_mask\":" + std::to_string(type_mask);
+
+                    // THE CROSS-ROUTE CHECK. These names come from gameclient's CMoveMgr_Init, which reads them
+                    // as DATABASE attributes. Their hashes must appear as descriptors somewhere in the database
+                    // -- names from one module's code, structures from another's data.
+                    const char* kFromCode[] = {"WaterAffectsSpeed", "YawClamp", "YawBias", "GunLead", "GamePad"};
+                    size_t found_from_code = 0;
+                    std::string where;
+                    for (const char* nm : kFromCode) {
+                        bool hit = false;
+                        for (size_t i = 0; i < ncat && !hit; ++i) {
+                            auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                            const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                            for (size_t j = 0; j < nrec && !hit; ++j) {
+                                auto* rec = sdk::DatabaseMgr::record(cat, j);
+                                if (rec != nullptr && sdk::DatabaseMgr::has_attribute(rec, nm)) {
+                                    hit = true;
+                                    if (where.size() < 200) {
+                                        if (!where.empty()) {
+                                            where += ";";
+                                        }
+                                        where += std::string(nm) + "@" + sdk::DatabaseMgr::category_name(cat);
+                                    }
+                                }
+                            }
+                        }
+                        if (hit) {
+                            ++found_from_code;
+                        }
+                    }
+                    entry0_json += ",\"attr_from_code_found\":" + std::to_string(found_from_code);
+                    entry0_json += ",\"attr_from_code_total\":" + std::to_string(std::size(kFromCode));
+                    entry0_json += ",\"attr_from_code_where\":";
+                    json_escape_append(entry0_json, where);
+                    // A NAME NO RECORD DEFINES must be refused, or "found" means nothing.
+                    bool bogus = false;
+                    for (size_t i = 0; i < ncat && !bogus; ++i) {
+                        auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                        const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                        for (size_t j = 0; j < nrec && !bogus; ++j) {
+                            auto* rec = sdk::DatabaseMgr::record(cat, j);
+                            if (rec != nullptr && sdk::DatabaseMgr::has_attribute(rec, "ZzNoSuchAttributeZz")) {
+                                bogus = true;
+                            }
+                        }
+                    }
+                    entry0_json += ",\"attr_bogus_refused\":" + std::string(bogus ? "false" : "true");
+
+                    // THE TYPE TAGS, pinned against how the GAME reads each attribute. The reference source
+                    // reads WaterAffectsSpeed with GetBool and YawClamp/YawBias as floats, so their type tags
+                    // name two members of the enum with external evidence rather than by guessing.
+                    std::string types;
+                    for (const char* nm : kFromCode) {
+                        for (size_t i = 0; i < ncat; ++i) {
+                            auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                            const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                            bool done = false;
+                            for (size_t j = 0; j < nrec && !done; ++j) {
+                                auto* rec = sdk::DatabaseMgr::record(cat, j);
+                                if (rec == nullptr) {
+                                    continue;
+                                }
+                                const auto a = sdk::DatabaseMgr::find_attribute(rec, nm);
+                                if (!a.has_value()) {
+                                    continue;
+                                }
+                                if (!types.empty()) {
+                                    types += ";";
+                                }
+                                types += std::string(nm) + "=" + std::to_string(a->type) +
+                                         (a->is_bit() ? "(bit)" : "");
+                                done = true;
+                            }
+                            if (done) {
+                                break;
+                            }
+                        }
+                    }
+                    entry0_json += ",\"attr_code_types\":";
+                    json_escape_append(entry0_json, types);
+                    // A BIT ATTRIBUTE MUST REFUSE the dword reader and vice versa -- the guard that stops a
+                    // caller reading 32 packed booleans as one integer.
+                    bool strict = true;
+                    {
+                        auto* shared = sdk::DatabaseMgr::find_category(e->record_a, "Client/Shared");
+                        if (shared != nullptr && sdk::DatabaseMgr::record_count(shared) > 0) {
+                            auto* rec = sdk::DatabaseMgr::record(shared, 0);
+                            const auto was = sdk::DatabaseMgr::find_attribute(rec, "WaterAffectsSpeed");
+                            if (was.has_value()) {
+                                if (was->is_bit()) {
+                                    strict = sdk::DatabaseMgr::attribute_bit(*was).has_value() &&
+                                             !sdk::DatabaseMgr::attribute_dword(*was).has_value();
+                                } else {
+                                    strict = !sdk::DatabaseMgr::attribute_bit(*was).has_value() &&
+                                             sdk::DatabaseMgr::attribute_dword(*was).has_value();
+                                }
+                                entry0_json += ",\"attr_water_value\":" +
+                                               std::string(was->is_bit()
+                                                               ? (sdk::DatabaseMgr::attribute_bit(*was).value_or(false)
+                                                                      ? "true" : "false")
+                                                               : std::to_string(
+                                                                     sdk::DatabaseMgr::attribute_dword(*was)
+                                                                         .value_or(0)));
+                            }
+                        }
+                    }
+                    entry0_json += ",\"attr_readers_strict\":" + std::string(strict ? "true" : "false");
+                }
                 {
                     auto* pool = sdk::DatabaseMgr::find_category(e->record_a,
                                                                 sdk::DatabaseMgr::kStructurePoolCategory);
