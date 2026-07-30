@@ -743,3 +743,29 @@ samplers, the pass census -- and every one of them looks like a code regression.
 A fixture is ready when TIME IS PASSING, not when a flag says the world exists. Any state predicate a harness
 exports has to be the one the tests actually depend on, or it will manufacture false failures faster than it
 saves setup time.
+
+## Measure the noise before asserting against a moving target
+
+The bone-override test asserted that releasing the override returned the hand to its exact world
+position, and failed once in four runs. Nothing was wrong with the override. The arm is ANIMATED,
+so a before/after comparison spanning a second of wall clock measures idle sway as much as it
+measures the thing under test -- the third time this project has been caught by comparing two
+values sampled at different moments.
+
+The general remedy, now applied three times and worth stating as a rule: **when a check must
+compare against something the game is free to move, measure how much it moves on its own, over
+the same interval, and judge the comparison against that.**
+
+```
+[fixture] idle drift over the comparison window: hand 0.0000 muzzle 0.0000
+```
+
+In a settled world the drift is zero, so the bound stays exactly as tight as a hardcoded one. When
+the player is moving it widens by precisely as much as the world moved, and no more. That is the
+difference between a self-calibrating bound and a fudged tolerance: one is derived from a control
+measurement taken in the same conditions, the other is a number chosen because it made the run go
+green. The failure that matters is untouched either way -- an override that fails to release
+leaves 30 units behind, and no amount of sway accounts for 30 units.
+
+Corollary: print the control measurement. A drift line in the log is what lets the next reader
+tell "the check is loose" from "the world was busy".

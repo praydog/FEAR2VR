@@ -492,3 +492,32 @@ writes it inside the pass entry. `/vr/hud?x=&y=` translates the HUD exactly; `?c
 
 Both the descriptor and the gate read as unavailable from the IPC thread, because no target is bound between
 frames. Read them in phase or not at all.
+
+## Bones and pieces: putting hands, weapons and a body into VR
+
+`BoneControl` drives a skeleton node through ILTModel's node-control mechanism -- the engine calls
+a registered function during skeleton evaluation and hands it the node's own writable transform.
+Nothing is hooked, and there is no race with the animation system, because the callback runs
+INSIDE the evaluation. Everything socketed to the node follows: displacing the hand bone by 30
+moves the hand socket by 29.99 and the weapon's muzzle by 30.00.
+
+`/vr/bone?socket=RightHand&x=&y=&z=` displaces, `&qx=&qy=&qz=&qw=` rotates, `?detach=1` releases.
+`/sdk/skeleton` lists the 65 nodes and 19 sockets to pick from.
+
+**"RightHand" is a SOCKET, not a node.** Sockets are the art's named attach points and ride nodes;
+there is no node of that name, so a node lookup correctly fails on it. Use
+`attach_to_player_socket`, or `/sdk/skeleton` to see which node a socket rides.
+
+**A registration is a pointer into this DLL that `Hooks::retire()` cannot see.** It only covers
+safetyhook. If a cell is still linked when the image unmaps, the next skeleton evaluation calls
+freed memory. `BoneControl::on_shutdown` unlinks it, and the suite leaves one registered on
+purpose across the uninject -- the same discipline the hardware watch already gets.
+
+`sdk::model_set_piece_hidden` switches a piece's draw off while its geometry, sockets and
+animation carry on, so a weapon on a hidden arm still tracks. `/sdk/piece` lists every piece with
+its live hidden state; `?name=arms&hide=1` sets one, `?unhide_all=1` restores. The player has
+`Phead_Group`, `arms`, `body` and `head_shadow` among its 11.
+
+**The desktop capture is not currently usable as evidence.** It returns a black frame while the
+engine reports a live world and a climbing pass count. Verify through engine state -- the getter,
+the projection probe -- not a screenshot.
