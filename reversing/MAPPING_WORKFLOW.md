@@ -3662,3 +3662,69 @@ Also added `aim_flag_value` to the endpoint. The selector at `+224` was read for
 its value -- so the "zoomed" reading rested entirely on 65 being tighter than 70. Aiming down sights must
 flip it, which is evidence no amount of static reading supplies.
 
+## The player's zoom controller, found by freezing fields while somebody played
+
+The aim-limit selector had stood for several passes as "a byte at camera+1005, meaning zoom is the obvious
+reading and nothing more". It was wrong on every count, and what refuted it was cheap: dump a window of raw
+bytes, have a player perform the action six times, and diff.
+
+```
+pcam_window @ camera+768, 512 bytes : nothing changed at all
+mm_window   @ controller+272        : +296 bit 0x20 toggled 17 times   (crouch, confirmed)
+```
+
+Crouch moved in the same session, so the player was doing the actions. The aim byte simply is not the field.
+The real one, from `CPlayerCamera_ApplyLookDelta` at gameclient 0x100E0474:
+
+```
+mov ecx, [esi+4]              ; owner = *(camera + 4)  -- the player
+mov edx, [ecx+100h]           ; sub   = *(player + 256)
+cmp dword ptr [edx+0E0h], 3   ; a DWORD, not a flag
+jz  -> CameraAimTrackingYMax (70)   ; == 3 takes the NORMAL limit
+    -> CameraAimTrackingYMaxZoomed (65)
+```
+
+### Freezing a field is the cheapest way to learn what it means
+
+Watching a value change tells you when it changes. FREEZING it tells you what depends on it, and the two
+fields here separate only under that test:
+
+| frozen | FOV zoom | weapon animation | recoil |
+|---|---|---|---|
+| state `+0xE0` at 3 | stops | still plays | **hip-heavy** |
+| flag `+0x164` at 0 | stops | still plays | **ADS-light** |
+
+Same visible symptom, opposite meaning. A mod suppressing the FOV zoom for a head-tracked view wants the
+flag; the state is what the aim limit and recoil read. No amount of static reading distinguishes them,
+because both feed the same FOV path.
+
+The four states came out of the same freeze -- `3` hip, `0` entering, `1` full ADS, `2` leaving -- and then
+`PlayerZoom_GetZoomFraction` turned out to switch on that exact field, returning `1.0` for 1, `0.0` by
+default, the timer fraction for 0 and `1 - fraction` for 2. The code only makes sense under the reading the
+freeze produced, so the two are independent evidence for each other.
+
+### A fourth sub-object pointer, and a mis-attribution it exposed
+
+`*(player + 256)` sits between the camera (+252) and the physics holder (+260) and had never been mapped.
+Reading all four revealed the embedding claim was backwards:
+
+```
+*(player + 236) controller = player + 0x2760   embedded
+*(player + 252) camera     = player + 0xE88    embedded   <- the 0xE88 the SDK attributed to the CONTROLLER
+*(player + 256) zoom       = separate allocation
+*(player + 260) physics    = player + 0x3020   embedded
+```
+
+The SDK asserted "only the controller is embedded, at 0xE88" and that the other two sat "far outside" via a
+0x10000 window that both of them fall inside. Neither 0xE88 nor the controller's real 0x2760 appears as an
+immediate anywhere in gameclient's `.text`, so the constant was never read off a constructor to begin with.
+It still follows the `+4` owner convention despite not being embedded, which is what proves the slot holds
+THIS player's object -- verified in ReGenny: `*(0x5FD20A8 + 4) == 0x1C636F60`.
+
+### Observing must not mutate
+
+The camera-rotation write probes ran on every read of `/sdk/shader-params`, so a player saw the view snap
+away for a frame on each poll -- 171 times during one coverage run. They now live on `/sdk/write-probe`.
+The old comment called the write "harmless for the frames it lasts"; harmless and invisible are different
+claims, and only one of them was tested.
+

@@ -628,6 +628,11 @@ public:
     // player's; a consumer holding it across a level change must re-resolve.
     static std::optional<uintptr_t> aim_object(unsigned index);
 
+    // Does the aim object name the player at +4, like the other three sub-objects? The same convention, and a
+    // strong identity: an exact address match that no unrelated pointer satisfies. Verified live in ReGenny
+    // (aim = 0x5FD20A8, *(aim + 4) = 0x1C636F60 = the player).
+    static std::optional<bool> aim_object_owns_player(unsigned index);
+
     // Do the controller and physics holder carry the vtables their constructors install? The same one-load guard as
     // holder_is_player_camera, for the other two.
     static std::optional<bool> controller_class_matches(unsigned index);

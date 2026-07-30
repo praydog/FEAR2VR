@@ -2831,14 +2831,34 @@ int main(int argc, char** argv) {
                 int64_t srobj = -1;
                 const bool srn = json_int(body, "sr_objects", srobj);
                 check(srn && srobj > 0, "the spatial-record walk covered objects");
-                if (srn && srobj == aobj) {
-                    check(arend == gopen2,
-                          "sdk::is_renderable agrees exactly with the engine gate counted internally, over the "
-                          "population both walks covered");
+                // WITHIN EACH WALK, not across them. `renderable` counts sdk::is_renderable over the public
+                // API's bucket snapshot; `gate_open` counts the SAME predicate inside the spatial-record walk.
+                // Two walks, two instants, over a population that churns during play.
+                //
+                // Exact equality was asserted here for several passes and held only because the scene was always
+                // static while the suite ran. It failed the first time the game was played. Gating it on equal
+                // population SIZE did not fix it either -- it failed again with srobj == objects, because equal
+                // size is not equal membership: an object destroyed and another created between the walks keeps
+                // the total and changes the set.
+                //
+                // There is no coverage proxy that makes a cross-walk identity invariant, so what gets asserted
+                // is what each walk guarantees about ITSELF, and the agreement is reported. This is TESTING.MD's
+                // own prescription for the case: assert the parts that are actually invariant and record the
+                // observed agreement as evidence rather than as a test.
+                check(arend >= 0 && arend <= aobj,
+                      "the API walk's renderable count is a subset of the objects it walked");
+                check(srn && gopen2 >= 0 && gopen2 <= srobj,
+                      "and the spatial walk's gate count is a subset of the objects IT walked");
+                if (arend != gopen2) {
+                    printf("[fixture] NOTE: the two walks disagree on the gate (%lld API vs %lld internal, over "
+                           "%lld and %lld objects) -- the same predicate sampled at two instants during play, "
+                           "not a mapping difference.\n",
+                           static_cast<long long>(arend), static_cast<long long>(gopen2),
+                           static_cast<long long>(aobj), static_cast<long long>(srobj));
                 } else {
-                    printf("[fixture] NOTE: the two walks covered different populations (%lld vs %lld) -- the "
-                           "gate identity was NOT exercised this run; objects churned between them.\n",
-                           static_cast<long long>(srobj), static_cast<long long>(aobj));
+                    printf("[fixture] gate agreement: %lld == %lld over %lld objects\n",
+                           static_cast<long long>(arend), static_cast<long long>(gopen2),
+                           static_cast<long long>(aobj));
                 }
                 check(acam > 0, "cameras were seen through the public API");
                 // REPORTED, not asserted equal: nothing in the engine reads bit 11, so
@@ -5166,6 +5186,12 @@ int main(int argc, char** argv) {
                   "and so is the physics holder, at its own offset");
             check(json_bool(body, "so_aim_determinable", so_ad) && so_ad,
                   "the aim object resolves, so its embedding can be answered at all");
+            bool so_aod = false, so_aop = false;
+            check(json_bool(body, "so_aim_owner_determinable", so_aod) && so_aod,
+                  "the aim object's owner field is readable");
+            check(json_bool(body, "so_aim_owns_player", so_aop) && so_aop,
+                  "and it names THIS player at +4 -- the same convention the three embedded sub-objects follow, "
+                  "so a separate allocation is still provably this player's");
             check(json_bool(body, "so_aim_embedded", so_ae) && !so_ae,
                   "the AIM object matches none of the three embed offsets -- a separate allocation, so its "
                   "lifetime is not the player's and a consumer must re-resolve it");

@@ -5332,6 +5332,11 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_bool(out, "so_physics_embedded", pe2.value_or(false));
         json_append_bool(out, "so_aim_determinable", ae.has_value());
         json_append_bool(out, "so_aim_embedded", ae.value_or(true));
+        // AND IT STILL FOLLOWS THE +4 OWNER CONVENTION despite not being embedded -- which is what says it
+        // belongs to this player rather than being some other object the slot happens to hold.
+        const auto ao = sdk::PlayerMgr::aim_object_owns_player(0);
+        json_append_bool(out, "so_aim_owner_determinable", ao.has_value());
+        json_append_bool(out, "so_aim_owns_player", ao.value_or(false));
     }
     // THE SHARED CONVENTION: all three name the player as owner at +4.
     json_append_bool(out, "so_own_determinable", own.has_value());

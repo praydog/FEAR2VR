@@ -6927,9 +6927,15 @@ class CPlayerCamera 0x18C6 {
 // A SECOND PITCH LIMIT LIVES IN THE SAME FUNCTION and is not the clamp at all:
 //     CameraAimTrackingYMax        70 degrees live
 //     CameraAimTrackingYMaxZoomed  65 degrees live
-// selected by *(owner + 256) + 224 == 3. THE TWO DIFFER, and the zoomed one is tighter -- which is the ONLY
-// evidence that the selector means zoom, so that reading stays unestablished. Exceeding the limit clears the byte
-// at camera+1005 and calls into the physics holder.
+// selected by *(player + 256) + 224 == 3. THE SELECTOR IS NOW ESTABLISHED -- see class PlayerZoom below. It is a
+// four-state aim machine, 3 means hip fire and takes the normal limit, and every other value is part of the ADS
+// lifecycle and takes the zoomed one.
+//
+// RETRACTED, from the version of this note that stood here: "exceeding the limit clears the byte at camera+1005",
+// with that byte named as the zoom selector. It is neither the selector nor, as far as any measurement here
+// shows, involved: six live ADS cycles left ALL 512 BYTES around camera+1005 unchanged, while the real field
+// moved through its four values in the same session. The earlier reading rested entirely on 65 being tighter
+// than 70, which is a plausibility argument and not evidence.
 //
 // > A CROSS-CHECK WORTH KEEPING: the record is all zeros AND the timer is inactive with a zero duration. Two
 // > independent fields saying the clamp has never engaged this session, which is what makes the previous pass's
@@ -6937,7 +6943,7 @@ class CPlayerCamera 0x18C6 {
 //
 // Named in IDA: CPlayerCamera_ApplyLookDelta, Math_Clamp (value, min, max -- 19 callers),
 // GameTimer_IsElapsed, GameTimer_Remaining.
-// Exposed as sdk::PlayerMgr::pitch_recovery_timer / aim_tracking_limits / aim_tracking_flag.
+// Exposed as sdk::PlayerMgr::pitch_recovery_timer / aim_tracking_limits / aim_state / uses_zoomed_aim_limit.
 //
 // 1444 checks, 0 failures.
 
@@ -7001,3 +7007,63 @@ class CPlayerCamera 0x18C6 {
 //     0x560/0xAF0 that indexes 72-byte slots and reads a quaternion from a slot sub-pointer. The camera's
 //     aim-tracking path uses id 2, but the region also serves FX and interface code ('FXName', 'Lifetime',
 //     'Icon Size' are referenced nearby), so the family is SHARED and naming it after the camera would be wrong.
+
+// ---- THE PLAYER'S ZOOM / ADS CONTROLLER ---------------------------------------------------------
+//
+// *(player + 256), and the ONE of the player's four sub-object pointers that is NOT an embedded member:
+//
+//     *(player + 236) controller = player + 0x2760   embedded
+//     *(player + 252) camera     = player + 0xE88    embedded
+//     *(player + 256) THIS       = a separate allocation
+//     *(player + 260) physics    = player + 0x3020   embedded
+//
+// So its lifetime is not the player's, and a consumer holding it across a level change must re-resolve.
+//
+// WHY IT MATTERS FOR VR: this object owns the two levers that fight a head-tracked view. Established by
+// FREEZING each field in a live game and watching what changed:
+//
+//     state @0xE0 frozen at 3   -> the FOV stops zooming, the weapon STILL animates into ADS, and recoil
+//                                  stays hip-fire heavy
+//     ads_fov @0x164 frozen at 0 -> the FOV stops zooming and recoil stays ADS-LIGHT
+//
+// Two different levers, not one: the state drives the aim-tracking limit and recoil, the flag drives the FOV.
+// A mod that wants to suppress the zoom without changing weapon handling wants the flag.
+//
+// The four states are not a guess -- PlayerZoom_GetZoomFraction switches on this exact field and returns
+// 1.0 for 1, 0.0 for the default, the timer's fraction for 0 and 1 - fraction for 2, which is only coherent
+// under the reading the live freeze produced.
+//
+// Named in IDA (gameclient): PlayerZoom_GetZoomFraction 0x100CFA70, PlayerZoom_SetState 0x100D0380,
+// PlayerZoom_ForceHip 0x100D0910, PlayerZoom_UpdateTransition 0x100D0A20, PlayerZoom_ZoomOut 0x100D0B40,
+// PlayerZoom_UpdateInput 0x100D1330, PlayerZoom_ComputeDOFBlur 0x100BC7F0.
+// Exposed as sdk::PlayerMgr::aim_state / aim_state_raw / ads_fov_active / uses_zoomed_aim_limit /
+// zoom_fraction / aim_object.
+//
+// SIZE IS A LOWER BOUND: 0x174 is the highest field reached here, not a measured allocation size.
+namespace regenny {
+
+class PlayerZoom 0x174 {
+    void* owner                 @0x004  // CONFIRMED the player -- every accessor reads *(this + 4) for it
+    // Delegate list notified when the zoom is forced back to hip. Observed, not decoded.
+    char delegates[0x18]        @0x020
+    char unmapped_dc[0x4]       @0x0DC  // a byte at 0xDC gates PlayerZoom_UpdateInput; contents not decoded
+    // CONFIRMED the aim state machine. 3 hip, 0 entering ADS, 1 full ADS, 2 leaving ADS -- each value
+    // observed live by freezing the field, and each consistent with GetZoomFraction's switch.
+    // ApplyLookDelta compares it against 3 to pick the aim-tracking limit.
+    uint32_t state              @0x0E0
+    GameTimer transition_timer  @0x0E8  // CONFIRMED UpdateTransition commits when GameTimer_IsElapsed(this+232)
+    double unmapped_f0          @0x0F0  // reset to 0.0 alongside the timer by ForceHip; role not established
+    double unmapped_f8          @0x0F8  // same
+    void* interp                @0x11C  // a sub-object with a vtable; UpdateTransition calls its slot 2 and 1
+    uint32_t interp_arg         @0x120  // passed to that call; not decoded
+    char unmapped_124[0x28]     @0x124
+    uint8_t motion_blur         @0x14E  // the weapon's EnableMotionBlur database attribute, cached by SetState
+    float scope_dof_blur        @0x150  // CONFIRMED ComputeDOFBlur blends DOFBlur toward this by the fraction;
+                                        // NEGATIVE means "no scope value", which takes the unblended path
+    uint32_t ads_fov_committed  @0x160  // CONFIRMED UpdateTransition copies ads_fov into it when state 0 elapses
+    uint32_t ads_fov            @0x164  // CONFIRMED 1 while aiming; UpdateInput sets it, ZoomOut clears it.
+                                        // Freezing it at 0 stops the FOV zoom and leaves recoil ADS-light.
+    uint32_t zoom_sound         @0x170  // handle released before ZoomOut plays Scope/ZoomOutSound
+}
+
+}

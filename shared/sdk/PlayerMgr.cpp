@@ -1203,6 +1203,19 @@ std::optional<uintptr_t> PlayerMgr::aim_object(unsigned index) {
     return static_cast<uintptr_t>(*sub);
 }
 
+std::optional<bool> PlayerMgr::aim_object_owns_player(unsigned index) {
+    const auto p = slot(index);
+    const auto a = aim_object(index);
+    if (!p.has_value() || !a.has_value()) {
+        return std::nullopt;
+    }
+    const auto owner = mem::read<uint32_t>(*a + kOwnerBackPointer);
+    if (!owner.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<uintptr_t>(*owner) == *p;
+}
+
 std::optional<bool> PlayerMgr::aim_object_is_embedded(unsigned index) {
     const auto p = slot(index);
     const auto a = aim_object(index);
