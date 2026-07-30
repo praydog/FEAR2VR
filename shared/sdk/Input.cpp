@@ -1,5 +1,7 @@
 #include "Input.hpp"
 
+#include "Engine.hpp"
+
 #include <cstring>
 #include <iterator>
 
@@ -266,6 +268,30 @@ bool Input::send_mouse_button(uint8_t button, bool down) {
     using Fn = void(__fastcall*)(uintptr_t, uintptr_t, int, char);
     reinterpret_cast<Fn>(eps.mouse_set_incoming_button)(*dev, 0, static_cast<int>(button),
                                                         static_cast<char>(down ? 1 : 0));
+    return true;
+}
+
+bool Input::send_mouse_look(int32_t dx, int32_t dy) {
+    const auto eps = entry_points();
+    const uintptr_t array = device_array_address();
+    void* const hwnd = Engine::main_hwnd();
+    const auto geom = window_geometry();
+    if (eps.mouse_on_move == 0 || array == 0 || hwnd == nullptr || !geom.has_value()) {
+        return false;
+    }
+    if (geom->client_width <= 0 || geom->client_height <= 0) {
+        return false;
+    }
+    // CENTRE-RELATIVE, because that is how the engine reads it: the look loop measures the point
+    // against the client centre and re-centres afterwards. Feeding centre+delta is therefore the
+    // same stimulus a real mouse produces, not an approximation of one.
+    const int32_t cx = geom->client_width / 2 + dx;
+    const int32_t cy = geom->client_height / 2 + dy;
+
+    // mouse_on_move(deviceArray, hwnd, int clientX, int clientY, uint flags) -- the ARRAY, not the
+    // device. __thiscall, so ecx carries the array and the rest go on the stack.
+    using Fn = void(__fastcall*)(uintptr_t, uintptr_t, void*, int, int, unsigned);
+    reinterpret_cast<Fn>(eps.mouse_on_move)(array, 0, hwnd, cx, cy, 0u);
     return true;
 }
 

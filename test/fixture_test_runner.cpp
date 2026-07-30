@@ -8537,6 +8537,117 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- TURNING THE PLAYER, WHICH IS WHAT A VR THUMBSTICK DOES -------------------------
+        //
+        // `HeadTracking` turns the VIEW and leaves the aim alone. A VR mod needs the other motion
+        // too -- turning the PLAYER, aim and all -- because a seated player cannot keep rotating
+        // their chair. That is a stick axis, and the honest delivery is the engine's own look
+        // handler rather than writing the aim behind the game's back: sensitivity, acceleration,
+        // the pitch clamp and everything downstream then apply exactly as they do for a mouse.
+        //
+        // MEASURED IN YAW, not in weapon displacement. An earlier version compared muzzle positions
+        // and inherited every wobble of the arm animation; the heading is what actually changed.
+        //
+        // WHAT IS NOT ASSERTED, and why. The same dx does not always produce the same rotation --
+        // the engine applies its own sensitivity curve, and the first delta after an injection was
+        // measured turning twice as far as later identical ones. That is unexplained, so it is
+        // REPORTED rather than asserted; claiming symmetry here would be claiming something not
+        // established. What IS asserted is that the input arrives, that it turns the player, and
+        // that the fixture is restored -- the last by a CLOSED LOOP against the measured heading
+        // rather than by trusting an equal-and-opposite delta to be equal and opposite.
+        {
+            auto yaw_now = [&](double* out_v) {
+                if (!http::get(port, "/sdk/shader-params", resp)) {
+                    return false;
+                }
+                const std::string b = http::body_of(resp);
+                bool ok = false;
+                return json_bool(b, "aim_yaw_readable", ok) && ok && json_double(b, "aim_yaw_deg", *out_v);
+            };
+            auto look = [&](int dx) {
+                char url[96];
+                snprintf(url, sizeof(url), "/input/look?dx=%d&dy=0", dx);
+                http::get(port, url, resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+            };
+            // Signed shortest angular difference, so wrapping past +/-180 does not read as a huge turn.
+            auto ang_delta = [](double a, double b) {
+                double d = a - b;
+                while (d > 180.0) d -= 360.0;
+                while (d < -180.0) d += 360.0;
+                return d;
+            };
+
+            double y0 = 0.0;
+            const bool have_yaw = yaw_now(&y0);
+            check(have_yaw, "the player's heading is readable, which is what a snap turn turns FROM");
+
+            std::string ib0;
+            if (http::get(port, "/input/look?dx=0&dy=0", resp)) {
+                ib0 = http::body_of(resp);
+            }
+            double delivered0 = -1.0;
+            const bool have = json_double(ib0, "look_delivered", delivered0) && have_yaw;
+            if (have) {
+                look(200);
+                double y1 = 0.0;
+                const bool turned_ok = yaw_now(&y1);
+                std::string ib1;
+                if (http::get(port, "/input/look?dx=0&dy=0", resp)) {
+                    ib1 = http::body_of(resp);
+                }
+                double delivered1 = -1.0, last_dx = 0.0;
+                check(json_double(ib1, "look_delivered", delivered1) && delivered1 > delivered0 &&
+                          json_double(ib1, "look_last_dx", last_dx) && last_dx == 200.0,
+                      "a queued look delta is DELIVERED to the engine on the game thread, carrying "
+                      "the value asked for");
+                const double turned = turned_ok ? ang_delta(y1, y0) : 0.0;
+                check(fabs(turned) > 2.0,
+                      "and it turns the PLAYER -- the aim's heading changes, which a view-only "
+                      "override could not do");
+
+                // DIRECTION IS AN INVARIANT even though magnitude is not: a positive dx must not
+                // turn the player the other way, whatever the sensitivity curve does to the size.
+                look(200);
+                double y2 = 0.0;
+                if (yaw_now(&y2)) {
+                    const double again = ang_delta(y2, y1);
+                    check(again * turned > 0.0,
+                          "a second delta of the same sign turns the same way, so the axis has a "
+                          "consistent direction even where its gain is not constant");
+                }
+
+                // RESTORE BY CLOSED LOOP. Equal-and-opposite is not reliable here, so the suite
+                // measures what it has left and corrects until the heading is back -- which is also
+                // exactly how a VR snap-turn has to be implemented against this input.
+                int attempts = 0;
+                double err = 0.0;
+                for (; attempts < 8; ++attempts) {
+                    double yc = 0.0;
+                    if (!yaw_now(&yc)) {
+                        break;
+                    }
+                    err = ang_delta(yc, y0);
+                    if (fabs(err) < 0.5) {
+                        break;
+                    }
+                    // ~0.09 deg per unit of dx at the observed gain; deliberately under-corrects so
+                    // the loop converges instead of oscillating.
+                    int dx = static_cast<int>(-err / 0.09 * 0.7);
+                    dx = dx > 400 ? 400 : (dx < -400 ? -400 : dx);
+                    if (dx == 0) {
+                        dx = err > 0 ? -1 : 1;
+                    }
+                    look(dx);
+                }
+                printf("[fixture] look primitive: dx=200 turned %+.2f deg, restored to %+.3f deg "
+                       "in %d correction(s)\n", turned, err, attempts);
+                check(fabs(err) < 0.5,
+                      "and the suite puts the player's heading back where it found it, closing the "
+                      "loop on a measurement rather than assuming the input is symmetric");
+            }
+        }
+
         // ---- HEAD-LOOK MUST NOT SWING THE WEAPON --------------------------------------------
         //
         // Composing a head pose into the camera turns the view without turning the aim, which the

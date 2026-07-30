@@ -735,6 +735,14 @@ std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_oper
     return out;
 }
 
+std::optional<float> PlayerMgr::aim_yaw(unsigned index) {
+    const auto d = aim_vs_view(index);
+    if (!d.has_value()) {
+        return std::nullopt;
+    }
+    return std::atan2(d->aim_forward[0], d->aim_forward[2]);
+}
+
 std::optional<PlayerMgr::AimViewDivergence> PlayerMgr::aim_vs_view(unsigned index) {
     const auto ops = camera_rotation_operands(index);
     if (!ops.has_value()) {

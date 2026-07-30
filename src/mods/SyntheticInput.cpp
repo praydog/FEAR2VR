@@ -44,6 +44,13 @@ bool send_one(uint32_t code, bool down) {
     return sdk::Input::send_key(static_cast<uint8_t>(code), down);
 }
 
+// Pending look delta, accumulated by callers and drained by the poll detour.
+std::atomic<int32_t> g_look_dx{0};
+std::atomic<int32_t> g_look_dy{0};
+std::atomic<uint64_t> g_look_delivered{0};
+std::atomic<int32_t> g_look_last_dx{0};
+std::atomic<int32_t> g_look_last_dy{0};
+
 // Applies every pending key state. Called from the poll detour AFTER the original has run, which is the only
 // instant in the frame where a write survives to be read -- see SyntheticInput.hpp.
 void apply_pending();
@@ -68,6 +75,16 @@ void __fastcall poll_detour(void* self, void* /*edx*/) {
     // simulating one. An earlier version wrote the CURRENT state after the original and had to hit a one-call
     // window in the frame to survive; this has no such window.
     apply_pending();
+
+    // The look delta rides the same "after the original has run" slot as the key state: the poll
+    // has just finished reading the device, so a move written now is what the NEXT read sees.
+    const int32_t dx = g_look_dx.exchange(0, std::memory_order_relaxed);
+    const int32_t dy = g_look_dy.exchange(0, std::memory_order_relaxed);
+    if ((dx != 0 || dy != 0) && sdk::Input::send_mouse_look(dx, dy)) {
+        g_look_last_dx.store(dx, std::memory_order_relaxed);
+        g_look_last_dy.store(dy, std::memory_order_relaxed);
+        g_look_delivered.fetch_add(1, std::memory_order_relaxed);
+    }
 
     auto* hook = Hooks::get().find(kPollHook);
     if (hook != nullptr) {
@@ -169,6 +186,21 @@ void SyntheticInput::hold(uint32_t vk, bool down) {
         s->held.store(true, std::memory_order_relaxed);
         s->frames.store(0, std::memory_order_relaxed);
     }
+}
+
+void SyntheticInput::queue_look(int32_t dx, int32_t dy) {
+    g_look_dx.fetch_add(dx, std::memory_order_relaxed);
+    g_look_dy.fetch_add(dy, std::memory_order_relaxed);
+}
+
+SyntheticInput::LookStats SyntheticInput::look_stats() const {
+    LookStats out{};
+    out.delivered = g_look_delivered.load(std::memory_order_relaxed);
+    out.last_dx = g_look_last_dx.load(std::memory_order_relaxed);
+    out.last_dy = g_look_last_dy.load(std::memory_order_relaxed);
+    out.pending_dx = g_look_dx.load(std::memory_order_relaxed);
+    out.pending_dy = g_look_dy.load(std::memory_order_relaxed);
+    return out;
 }
 
 void SyntheticInput::release_all() {

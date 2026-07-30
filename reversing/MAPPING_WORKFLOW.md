@@ -5021,3 +5021,48 @@ hits while the view is still) -- so the setter never ran and there was nothing t
 Any test of this mechanism has to RELEASE the pose, set the state under test, and only then apply
 the pose. The check now does, and reports both numbers so a future regression is legible rather
 than a bare boolean.
+
+## Turning the player: the VR stick-turn primitive
+
+`HeadTracking` turns the view and leaves the aim alone; `ViewmodelDecouple` keeps the weapon out of
+it. Neither turns the PLAYER, and a seated VR player cannot keep rotating their chair -- so a stick
+axis has to reach the game somehow.
+
+`Input::mouse_on_move` had been mapped for several sessions and explicitly NOT driven ("deciding
+when to drive them belongs to the consumer"). That left the last locomotion primitive one call
+away and unreachable. It is now `Input::send_mouse_look(dx, dy)`.
+
+The entry point takes an ABSOLUTE client point and the engine's look loop reads it relative to the
+client centre, so the SDK does the geometry and the API takes a delta -- the same reasoning that
+already applies to the device-vs-array asymmetry beside it. `SyntheticInput::queue_look` puts it on
+the game thread and the poll detour drains it, accumulating rather than dropping, so two deltas in
+one frame become one movement of their sum.
+
+Driving the engine's own handler rather than writing the aim means sensitivity, acceleration, the
+pitch clamp and every downstream consumer behave exactly as they do for a mouse. Measured: dx=200
+turns the player +28.5 to +28.9 degrees, and the weapon follows because the aim itself moved.
+
+### What is NOT claimed
+
+The gain is not constant. The FIRST delta after an injection was measured turning roughly twice as
+far as later identical ones, and a dx=400 turns less than twice a dx=200. That is unexplained, so
+the suite reports it and asserts only what is established: the delta is delivered, it turns the
+player, and its DIRECTION is consistent even where its magnitude is not.
+
+### The restore had to become a closed loop
+
+A test that turns the player must put them back, and the first version assumed equal-and-opposite
+would do it. It does not, for the reason above -- one run finished exactly one turn's worth off.
+
+So the suite now measures the heading (`PlayerMgr::aim_yaw`, added for this and for snap-turn,
+which needs the same thing) and corrects until it is back: restored to within 0.06-0.26 degrees in
+1-3 corrections across three runs. **That loop IS how a VR snap turn has to be implemented against
+this input**, so the test and the feature share a mechanism rather than the test simulating one.
+
+### And it needs a settled world
+
+An intermediate version measured weapon DISPLACEMENT instead of heading and went red with a
+residual of 1.897 while the turn itself was identical to the millimetre -- the arm animation, over
+the four waits the block spans. Two fixes applied together: measure the heading (which the
+animation does not move) and gate the block on `world_is_quiescent`, waiting up to four seconds for
+the blocks above it to stop displacing the rig.

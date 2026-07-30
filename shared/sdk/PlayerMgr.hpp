@@ -1368,6 +1368,18 @@ public:
     // nullopt when the player, the holder or the camera object cannot be read.
     static std::optional<AimViewDivergence> aim_vs_view(unsigned index);
 
+    // THE PLAYER'S HEADING, in radians, measured from the aim's forward axis in the world's
+    // horizontal plane (atan2(x, z), so +Z is zero and it increases toward +X).
+    //
+    // WHY A CONSUMER WANTS IT: a VR snap-turn is "face 30 degrees further round", and that needs a
+    // number to turn FROM. Driving `Input::send_mouse_look` open-loop cannot do it -- the engine
+    // applies sensitivity and acceleration to a delta, so the same dx does not always produce the
+    // same rotation. Reading the heading turns snap-turn into a closed loop: look, measure, correct.
+    //
+    // Horizontal only, deliberately. Pitch is separately clamped by the engine and a single angle
+    // that silently mixed the two would be wrong at exactly the moments it mattered.
+    static std::optional<float> aim_yaw(unsigned index);
+
     // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
     // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
     // the same algebra and need not round identically.

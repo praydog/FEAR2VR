@@ -63,6 +63,30 @@ public:
     // leaves a key stuck down in the engine's device array.
     void release_all();
 
+    // ---- A LOOK DELTA, APPLIED ON THE GAME THREAD ---------------------------------------
+    //
+    // Queued rather than sent, for the same reason the key path queues: `Input::send_mouse_look`
+    // mutates device state the engine reads without a lock, so it belongs on the engine's own
+    // thread. The poll detour drains this the next time it runs.
+    //
+    // ACCUMULATES. Two calls before the next poll turn into one movement of their sum, which is
+    // what a caller feeding a per-frame stick delta wants and what a mouse would have produced
+    // anyway -- the alternative, dropping all but the last, silently loses input under load.
+    //
+    // For VR this is stick turning: dx is yaw. Snap turn is one large dx.
+    void queue_look(int32_t dx, int32_t dy);
+
+    // How many look deltas have actually been delivered to the engine, and the last one sent.
+    // A consumer driving turn rate needs to know its input is landing, not just being queued.
+    struct LookStats {
+        uint64_t delivered{};
+        int32_t last_dx{};
+        int32_t last_dy{};
+        int32_t pending_dx{};
+        int32_t pending_dy{};
+    };
+    LookStats look_stats() const;
+
     struct State {
         uint32_t active_taps{};   // taps still counting down
         uint32_t held_keys{};     // keys held indefinitely

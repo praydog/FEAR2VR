@@ -5707,6 +5707,11 @@ std::string build_shader_params_json(bool include_write_probes) {
                        avd.has_value() ? avd->body_to_view_angle * 57.2957795 : -1.0, 4);
     json_append_double(out, "avd_body_aim_deg",
                        avd.has_value() ? avd->body_to_aim_angle * 57.2957795 : -1.0, 4);
+    {
+        const auto yaw = sdk::PlayerMgr::aim_yaw(0);
+        json_append_bool(out, "aim_yaw_readable", yaw.has_value());
+        json_append_double(out, "aim_yaw_deg", yaw.value_or(0.0f) * 57.2957795, 4);
+    }
     json_append_bool(out, "avd_shell_readable", avd.has_value() && avd->shell_readable);
     json_append_bool(out, "avd_shell_is_body", avd.has_value() && avd->shell_is_body);
     json_append_double(out, "avd_shell_view_deg",
@@ -10391,7 +10396,13 @@ bool Framework::initialize() {
         auto& si = SyntheticInput::get();
 
         std::string err;
-        if (route == "/input/tap") {
+        if (route == "/input/look") {
+            // A LOOK DELTA through the engine's own move handler -- the VR stick-turn primitive.
+            // Queued onto the game thread rather than called here: it mutates device state the
+            // engine reads without a lock, and this handler runs on the IPC thread.
+            si.queue_look(static_cast<int32_t>(webapi_query_int(q, "dx", 0)),
+                          static_cast<int32_t>(webapi_query_int(q, "dy", 0)));
+        } else if (route == "/input/tap") {
             // uint32, not uint8: mouse buttons are encoded above the virtual-key range
             // (SyntheticInput::kMouseButton + n), and truncating here turned 0x100 into 0.
             const auto vk = static_cast<uint32_t>(webapi_query_int(q, "vk", 0));
@@ -10417,6 +10428,7 @@ bool Framework::initialize() {
         }
 
         const auto st = si.state();
+        const auto lk = si.look_stats();
         std::string out;
         {
             JsonFields jf(out);
@@ -10428,7 +10440,10 @@ bool Framework::initialize() {
               .u("active_taps", st.active_taps)
               .u("held_keys", st.held_keys)
               .u("writes", static_cast<size_t>(st.writes))
-              .u("taps_completed", static_cast<size_t>(st.taps_completed));
+              .u("taps_completed", static_cast<size_t>(st.taps_completed))
+              .u("look_delivered", static_cast<size_t>(lk.delivered))
+              .i("look_last_dx", lk.last_dx).i("look_last_dy", lk.last_dy)
+              .i("look_pending_dx", lk.pending_dx).i("look_pending_dy", lk.pending_dy);
         }
         return out;
     };

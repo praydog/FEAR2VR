@@ -601,6 +601,25 @@ public:
     // +0x04, which is what MouseState reports.
     static bool send_mouse_button(uint8_t button, bool down);
 
+    // ---- TURNING THE PLAYER, WHICH IS HOW A VR STICK DRIVES YAW ------------------------
+    //
+    // A DELTA, because that is what a consumer has and what the engine consumes. The entry point
+    // itself takes an ABSOLUTE client point -- `mouse_on_move(array, hwnd, x, y, flags)` -- and the
+    // engine's look loop reads it relative to the client CENTRE and then re-centres the cursor. So a
+    // caller wanting "turn 3 units right" has to know the window geometry, find the centre, and add
+    // to it. That is a footgun with no upside, exactly like the device-vs-array asymmetry above, so
+    // the SDK does the arithmetic and takes the delta.
+    //
+    // FOR VR this is the locomotion primitive: a thumbstick's x axis becomes a yaw delta here, and
+    // snap turn is one call with a large dx. It drives the engine's own path, so the aim, the weapon
+    // and everything downstream follow exactly as they do for a real mouse -- no field is written
+    // behind the game's back.
+    //
+    // THREAD AFFINITY: the game's thread, like the rest of this block.
+    //
+    // false when the entry point, the device array, the window or its geometry did not resolve.
+    static bool send_mouse_look(int32_t dx, int32_t dy);
+
     // WRITES THE CURRENT BUTTON BANK DIRECTLY, bypassing the incoming/shift pipeline.
     //
     // send_mouse_button() is the right call for producing input. This one exists for the opposite job:
