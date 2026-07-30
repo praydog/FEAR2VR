@@ -4997,6 +4997,14 @@ std::string build_shader_params_json(bool include_write_probes) {
                 json_append_bool(out, "pitch_timer_inactive_is_elapsed", tmr->elapsed(0.0) || tmr->active);
                 json_append_bool(out, "pitch_timer_duration_finite",
                                  tmr->duration >= 0.0 && tmr->duration < 3600.0);
+                // IS THE CLAMP CORRECTING RIGHT NOW? `active` means ARMED, not running: measured live it stays
+                // true after a correction finishes. Anything conditioning on "the clamp is mid-interpolation"
+                // must use active AND NOT elapsed, or it takes the permissive branch forever -- the same
+                // vacuity trap as a conditional that never sees its strong case.
+                const auto tclk = sdk::Engine::client_time();
+                const double tnow = tclk.has_value() ? tclk->seconds : 0.0;
+                json_append_bool(out, "pitch_correcting", tmr->active && !tmr->elapsed(tnow));
+                json_append_bool(out, "pitch_clock_available", tclk.has_value());
             }
             const auto aim = sdk::PlayerMgr::aim_tracking_limits();
             const auto astate = sdk::PlayerMgr::aim_state_raw(0);
@@ -5647,9 +5655,38 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "eo_physics_is_model_determinable", eo_is_model.has_value());
     json_append_bool(out, "eo_physics_is_model", eo_is_model.has_value() && *eo_is_model);
     // The applied pose must still be what the camera object carries -- the invariant a VR override depends on.
-    const auto eo_pose_match = sdk::PlayerMgr::applied_pose_matches_camera_object(0);
-    json_append_bool(out, "eo_pose_match_determinable", eo_pose_match.has_value());
-    json_append_bool(out, "eo_pose_matches_camera", eo_pose_match.has_value() && *eo_pose_match);
+    // THE TORN-AWARE FORM, because the single-read bool races and this was the last caller still using it.
+    //
+    // Both this and pmgr_applied_matches_object call the same accessor, and in ONE response they disagreed --
+    // True at the earlier site, False here. The accessor reads the pose, then the camera object, so a frame
+    // landing between them makes the two differ; the response takes long enough to build that two calls at
+    // different points in it straddle frames. That is exactly what PoseAgreement's double read exists to
+    // distinguish, and reporting "differs" for a torn read sends the next reader hunting a moved offset.
+    const auto eo_agree = sdk::PlayerMgr::applied_pose_agreement(0);
+    json_append_bool(out, "eo_pose_match_determinable",
+                     eo_agree != sdk::PlayerMgr::PoseAgreement::Unreadable);
+    json_append_bool(out, "eo_pose_never_differs",
+                     eo_agree != sdk::PlayerMgr::PoseAgreement::Differ);
+    json_append_bool(out, "eo_pose_matches_camera",
+                     eo_agree == sdk::PlayerMgr::PoseAgreement::Equal);
+    // A CENSUS, because a single verdict cannot describe a PHASE relationship.
+    //
+    // Differ here is neither a race nor a wrong offset: within a frame the applied pose is updated before the
+    // camera object, so for part of every frame the two hold different -- and individually STABLE -- values.
+    // The double read cannot see that, because nothing moves during the microseconds it samples.
+    //
+    // What is true and useful: they are the SAME quantity, coinciding once the frame settles. So the shape to
+    // report is how often 16 samples find them equal. A VR override reading both must take them from the same
+    // phase, or take one consistently.
+    {
+        const auto eo_cen = sdk::PlayerMgr::agreement_census(0, 1, 16);
+        json_append_double(out, "eo_pose_equal", static_cast<double>(eo_cen.equal), 0);
+        json_append_double(out, "eo_pose_differ", static_cast<double>(eo_cen.differ), 0);
+        json_append_double(out, "eo_pose_torn", static_cast<double>(eo_cen.torn), 0);
+        json_append_double(out, "eo_pose_samples",
+                           static_cast<double>(eo_cen.equal + eo_cen.differ + eo_cen.torn +
+                                               eo_cen.unreadable), 0);
+    }
     // The wrong-holder trap, reproduced as a check: reading the POSE offsets off the PHYSICS holder must not
     // yield a usable pose. If it ever did, the two holders would be interchangeable and the warning is wrong.
     if (const auto p = sdk::PlayerMgr::slot(0); p.has_value()) {

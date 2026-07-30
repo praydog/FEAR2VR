@@ -777,10 +777,43 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_holder_quaternion(u
             }
         }
     }
-    mem::write<std::array<float, 4>>(at, saved);
+    // RESTORE ONLY WHAT WE STILL OWN. If the value was reclaimed, the engine has already written something
+    // NEWER than our saved copy, and putting the copy back would clobber live state with a stale rotation --
+    // which is visible in game and breaks the camera-pose equality invariants the suite checks. Measured: a
+    // probe run left four checks red until this became conditional.
+    //
+    // So the restore is a compare-and-set: only if the field still holds exactly what we wrote is it ours to
+    // put back. Otherwise the engine owns it again and the right action is none.
+    {
+        std::array<float, 4> current{};
+        if (mem::copy(current.data(), at, sizeof(current)) &&
+            std::memcmp(current.data(), probe.data(), sizeof(probe)) == 0) {
+            mem::write<std::array<float, 4>>(at, saved);
+        }
+    }
+    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES: with the render path frozen nothing could
+    // have overwritten it, so the verdict stays Inconclusive however long it lasted.
+    //
+    // INCONCLUSIVE MEANS "NO INFORMATION", AND RECLAIMED-IMMEDIATELY IS NOT THAT.
+    //
+    // The old rule was `frames_observed <= 1 -> Inconclusive`, meant to catch a frozen render path. But the
+    // loop BREAKS the moment the value is overwritten, so a write reclaimed inside the first frame also exits
+    // with one frame time recorded -- and got reported as Inconclusive. Those are opposite outcomes: one is
+    // "nothing could have overwritten it", the other is "something overwrote it at once", which is precisely
+    // the answer a consumer wanting to steer the view needs.
+    //
+    // So the frame clock is read AFTER the loop regardless of how it ended, and the question becomes whether
+    // the render path advanced across the probe's own window. A value that vanished while frames were being
+    // produced was reclaimed by a producer, whatever the sample count says.
+    // SLEEP FIRST, or this lands in the same frame as the last in-loop sample and observes nothing. The loop
+    // breaks on reclaim, so on a running game it typically took exactly ONE sample -- and two reads
+    // microseconds apart cannot see a frame boundary however live the path is.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (const auto t_end = ShaderParams::frame_time();
+        t_end.has_value() && std::find(frames.begin(), frames.end(), *t_end) == frames.end()) {
+        frames.push_back(*t_end);
+    }
     out.frames_observed = static_cast<unsigned>(frames.size());
-    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES. With the render path frozen nothing could have
-    // overwritten it, so the verdict is Inconclusive however long it lasted.
     out.verdict = out.frames_observed <= 1  ? ProbeVerdict::Inconclusive
                   : out.survived == samples ? ProbeVerdict::Held
                                             : ProbeVerdict::Reclaimed;
@@ -825,10 +858,43 @@ std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_camera_object_rotat
         ++out.survived;
     }
     out.followed = out.survived == samples;
-    mem::write<std::array<float, 4>>(at, saved);
+    // RESTORE ONLY WHAT WE STILL OWN. If the value was reclaimed, the engine has already written something
+    // NEWER than our saved copy, and putting the copy back would clobber live state with a stale rotation --
+    // which is visible in game and breaks the camera-pose equality invariants the suite checks. Measured: a
+    // probe run left four checks red until this became conditional.
+    //
+    // So the restore is a compare-and-set: only if the field still holds exactly what we wrote is it ours to
+    // put back. Otherwise the engine owns it again and the right action is none.
+    {
+        std::array<float, 4> current{};
+        if (mem::copy(current.data(), at, sizeof(current)) &&
+            std::memcmp(current.data(), probe.data(), sizeof(probe)) == 0) {
+            mem::write<std::array<float, 4>>(at, saved);
+        }
+    }
+    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES: with the render path frozen nothing could
+    // have overwritten it, so the verdict stays Inconclusive however long it lasted.
+    //
+    // INCONCLUSIVE MEANS "NO INFORMATION", AND RECLAIMED-IMMEDIATELY IS NOT THAT.
+    //
+    // The old rule was `frames_observed <= 1 -> Inconclusive`, meant to catch a frozen render path. But the
+    // loop BREAKS the moment the value is overwritten, so a write reclaimed inside the first frame also exits
+    // with one frame time recorded -- and got reported as Inconclusive. Those are opposite outcomes: one is
+    // "nothing could have overwritten it", the other is "something overwrote it at once", which is precisely
+    // the answer a consumer wanting to steer the view needs.
+    //
+    // So the frame clock is read AFTER the loop regardless of how it ended, and the question becomes whether
+    // the render path advanced across the probe's own window. A value that vanished while frames were being
+    // produced was reclaimed by a producer, whatever the sample count says.
+    // SLEEP FIRST, or this lands in the same frame as the last in-loop sample and observes nothing. The loop
+    // breaks on reclaim, so on a running game it typically took exactly ONE sample -- and two reads
+    // microseconds apart cannot see a frame boundary however live the path is.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (const auto t_end = ShaderParams::frame_time();
+        t_end.has_value() && std::find(frames.begin(), frames.end(), *t_end) == frames.end()) {
+        frames.push_back(*t_end);
+    }
     out.frames_observed = static_cast<unsigned>(frames.size());
-    // A SURVIVING VALUE MEANS NOTHING WITHOUT RENDERED FRAMES. With the render path frozen nothing could have
-    // overwritten it, so the verdict is Inconclusive however long it lasted.
     out.verdict = out.frames_observed <= 1  ? ProbeVerdict::Inconclusive
                   : out.survived == samples ? ProbeVerdict::Held
                                             : ProbeVerdict::Reclaimed;

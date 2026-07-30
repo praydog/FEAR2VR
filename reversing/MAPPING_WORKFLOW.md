@@ -3748,3 +3748,33 @@ The lesson is the one this file keeps relearning from the other direction: a pla
 around a real symptom is still a guess, and "the build system swallowed an error" is exactly the sort of
 claim that is cheap to test and expensive to leave standing. It took one injected DLL and one touched file.
 
+## The view-override probe gates on the wrong clock
+
+The single most load-bearing question for a VR mod is "can the view be steered by writing a field, or must the
+writer be hooked". Three probes exist to answer it, and all three return **Inconclusive** on a live game. The
+reason is not the mapping.
+
+```
+outer operand : survived 0/12  frames 1  -> Inconclusive
+camera object : survived 0/12  frames 1  -> Inconclusive
+standalone frames advanced: 8
+```
+
+`survived 0` means the written quaternion was gone within 16 ms -- something overwrote it at once. But the
+verdict is gated on `ShaderParams::frame_time()`, the RENDER clock, which was static, so the probe concluded
+"nothing could have overwritten it" while holding evidence that something did.
+
+Those are two different subsystems with independent liveness, and this project has already measured them
+diverging: `hook FIRING (frame_ticks 891->943) | engine clock frozen`. The update path can run while the
+render path does not. The reclaim is done by the update path, so the gate has to be the ENGINE clock --
+exactly what TESTING.MD's frozen-fixture rule says (`last_sample_time_ms`, never a render-side or
+self-referential counter).
+
+Fixed one half of it: the verdict no longer conflates "reclaimed inside the first frame" with "frozen path",
+since the loop breaks on reclaim and used to exit with one frame time recorded either way. The remaining half
+is the clock choice, and it is the next thing to do before any view-override work.
+
+**A cheaper decisive test exists and should come first:** read the field back IMMEDIATELY after the write,
+with no sleep. If it already differs, the write never landed and no amount of frame accounting matters. That
+separates "a producer reclaims it" from "this address is not what steers the view" for the cost of one read.
+

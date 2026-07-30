@@ -4321,8 +4321,20 @@ int main(int argc, char** argv) {
             // between the reads makes them differ whether or not anybody is moving. The SDK now reads both sides
             // TWICE and reports Torn when either moved, so the only failing outcome left is a real disagreement
             // between two values that both held still.
+            // AN ACTIVE CLAMP INTERPOLATION IS A LEGITIMATE DIVERGENCE, and this is the third time today a
+            // check has been written as an invariant when it was a quiescent-state property.
+            //
+            // CPlayerCamera_ApplyLookDelta lerps the pitch from +756 to +760 across the recovery timer, so
+            // while that timer runs the applied pose is DELIBERATELY not the camera object's transform -- the
+            // engine is dragging one toward the other. Measured during a live correction: 16 of 16 samples
+            // Differ with ZERO torn, i.e. deterministic and explained, not a race and not a mapping error.
+            //
+            // So the never-differs claim holds only while the clamp is NOT correcting. Reported either way, so
+            // a run that never sees a correction says so instead of implying it proved the strong form.
+            bool pm_clamping = false;
+            json_bool(body, "pitch_correcting", pm_clamping);  // ARMED is not CORRECTING -- see the endpoint note
             bool pm_nd = false;
-            check(json_bool(body, "pmgr_rot_never_differs", pm_nd) && pm_nd,
+            check(json_bool(body, "pmgr_rot_never_differs", pm_nd) && (pm_clamping || pm_nd),
                   "the camera object's rotation never DIFFERS from the camera pose -- equal when both held "
                   "still, torn when the engine wrote between the reads, and never a real disagreement");
 
@@ -4339,11 +4351,19 @@ int main(int argc, char** argv) {
             check(ag_census && ag_n == 16.0, "the agreement census sampled the verdict 16 times");
             check(ag_census && ag_e + ag_d + ag_t + ag_u == ag_n,
                   "and every sample landed in exactly one bucket -- the partition is total");
-            check(ag_census && ag_d == 0.0,
-                  "no sample DIFFERED: across 16 double-reads the two sides never actually disagreed");
-            check(ag_census && ag_e > 0.0,
-                  "and at least one sample came back Equal, so the never-differs check above is comparing "
+            check(ag_census && (pm_clamping || ag_d == 0.0),
+                  "with the clamp idle no sample DIFFERED across 16 double-reads -- and while it corrects, "
+                  "divergence is the engine dragging the pose, not a disagreement");
+            // THE ANTI-VACUITY CHECK STILL APPLIES, but only where Equal is achievable: mid-correction every
+            // sample legitimately differs, so requiring one Equal there would assert the opposite of the fix.
+            check(ag_census && (pm_clamping || ag_e > 0.0),
+                  "and with the clamp idle at least one sample came back Equal, so the check above compares "
                   "something rather than passing on a permanent Torn");
+            if (pm_clamping) {
+                printf("[fixture] NOTE: the pitch clamp is CORRECTING (%.0f equal / %.0f differ / %.0f torn) "
+                       "-- the pose/object equality checks were not exercised in their strong form.\n",
+                       ag_e, ag_d, ag_t);
+            }
 
             // ---- THE CAMERA'S COMPOSITION, READ FROM LINK STATE ------------------------------------
             //
@@ -4463,7 +4483,7 @@ int main(int argc, char** argv) {
             // hold if it were reading two unrelated fields.
             bool pm_applied = false, pm_gens = false, pm_arot = false;
             bool pm_and = false;
-            check(json_bool(body, "pmgr_applied_never_differs", pm_and) && pm_and,
+            check(json_bool(body, "pmgr_applied_never_differs", pm_and) && (pm_clamping || pm_and),
                   "the applied pose never DIFFERS from the camera object's own transform -- same double-read "
                   "verdict, so a frame landing mid-comparison is reported rather than failed");
             check(json_bool(body, "pmgr_pose_generations_differ", pm_gens) && pm_gens,
@@ -4477,10 +4497,23 @@ int main(int argc, char** argv) {
             double pm_eye_y = -1.0, pm_eye_len = -1.0;
             const bool pme = json_double(body, "pmgr_eye_offset_y", pm_eye_y) &&
                              json_double(body, "pmgr_eye_offset_len", pm_eye_len);
-            check(pme && pm_eye_y > 40.0 && pm_eye_y < 120.0,
-                  "the camera object sits an eye height above the model's origin");
-            check(pme && pm_eye_len > pm_eye_y && pm_eye_len < pm_eye_y * 1.5,
-                  "that offset is mostly vertical rather than pointing off sideways");
+            // THE OFFSET IS NOT ALWAYS DETERMINABLE -- it read null in a live session while the player was
+            // moving, so requiring it turns an absent reading into a failure. Asserted when present, reported
+            // when not, which is the same discipline the socket and bind-pose checks use.
+            if (pme) {
+                // THE MODEL ORIGIN MOVES WITH ANIMATION, so the height is per-frame state. What holds in every
+                // state is that the camera sits ABOVE the origin and the offset is mostly vertical; the
+                // magnitude is reported. A window of 40..120 read fine on an idle player and failed during
+                // play, which is the tell for this class (see TESTING.MD on per-frame state).
+                check(pm_eye_y > 0.0 && pm_eye_y < 1000.0,
+                      "the camera object sits ABOVE the model's origin by a finite, plausible amount");
+                check(pm_eye_len >= pm_eye_y && pm_eye_len < pm_eye_y * 2.0,
+                      "that offset is mostly vertical rather than pointing off sideways");
+                printf("[fixture] camera/model eye offset: y %.1f, length %.1f\n", pm_eye_y, pm_eye_len);
+            } else {
+                printf("[fixture] NOTE: the camera/model eye offset did not resolve -- height check NOT "
+                       "exercised this run.\n");
+            }
 
             bool pm_bounds = false;
             check(json_bool(body, "pmgr_bounds_refused", pm_bounds) && pm_bounds,
@@ -5070,14 +5103,36 @@ int main(int argc, char** argv) {
             bool p_r = false, p_lim = false, p_ar = false, p_alive = false, p_mis = false, p_con = false,
                  p_rr = false, p_ren = false;
             check(json_bool(body, "ps_resolved", p_r) && p_r, "CPlayerStats resolves by name and reads");
-            check(json_double(body, "ps_health", p_h) && p_h == 100.0, "health is 100");
-            check(json_double(body, "ps_max_health", p_mh) && p_mh == 100.0, "max health is 100");
-            check(json_double(body, "ps_armor", p_a) && p_a == 147.0, "armor is 147");
-            check(json_double(body, "ps_max_armor", p_ma) && p_ma == 150.0, "max armor is 150");
-            // THE PAIRING, stated as the thing the setters proved: health is at its OWN max, armour is below
-            // its own. Under the mispairing health would be 100 of 147, which is a different claim entirely.
-            check(p_h == p_mh && p_a < p_ma,
-                  "health sits at its own maximum while armour is below its own -- the correct pairing");
+            // NO LITERAL STAT VALUES. These asserted health == 100, armor == 147, max == 100/150 -- four
+            // hardcoded readings of a LIVE GAMEPLAY STAT. They passed for many passes because nobody was
+            // playing during a fixture run; the moment the player took damage, armor read 62 and the suite
+            // went red over the game working correctly.
+            //
+            // The maxima are properties of the character and the currents are gameplay, so what is invariant is
+            // the RELATIONSHIP: each current inside its own limit, both limits positive, and the pairing not
+            // crossed. The values are reported instead of asserted.
+            const bool ps_nums = json_double(body, "ps_health", p_h) &&
+                                 json_double(body, "ps_max_health", p_mh) &&
+                                 json_double(body, "ps_armor", p_a) &&
+                                 json_double(body, "ps_max_armor", p_ma);
+            check(ps_nums, "the four stat fields read");
+            check(ps_nums && p_mh > 0.0 && p_ma > 0.0, "both maxima are positive");
+            check(ps_nums && p_h >= 0.0 && p_h <= p_mh, "health sits within its OWN maximum");
+            check(ps_nums && p_a >= 0.0 && p_a <= p_ma, "armour sits within its OWN maximum");
+            // THE PAIRING IS THE MAPPING CLAIM, and it survives without pinning values: under the discredited
+            // pairing armour's current would be read against health's maximum, so armour exceeding max_health
+            // while staying inside max_armor is the case that separates them. Reported when it occurs, since a
+            // damaged player may not produce it.
+            if (ps_nums && p_a > p_mh) {
+                check(p_a <= p_ma,
+                      "armour exceeds MAX HEALTH while staying within max armour -- only the correct pairing "
+                      "permits that, so this run discriminates the two readings");
+            } else {
+                printf("[fixture] NOTE: armour (%.0f) does not exceed max health (%.0f), so the stat PAIRING "
+                       "was not discriminated this run -- take armour above %.0f to exercise it.\n",
+                       p_a, p_mh, p_mh);
+            }
+            printf("[fixture] player stats: health %.0f/%.0f, armour %.0f/%.0f\n", p_h, p_mh, p_a, p_ma);
             check(json_double(body, "ps_air", p_air) && p_air >= 0.0 && p_air <= 1.0,
                   "air is a fraction in [0,1], not a percentage");
             check(json_double(body, "ps_health_lost", p_lost) && p_lost >= 0.0,
@@ -5088,9 +5143,18 @@ int main(int argc, char** argv) {
                   "float in [0,1] is not what wrong offsets would yield");
             check(json_bool(body, "ps_alive", p_alive) && p_alive, "the player is alive");
             check(json_bool(body, "ps_consistent", p_con) && p_con, "the whole consistency guard passes");
-            // THE POINT: the discredited guard ALSO passes, so it never distinguished the two readings.
-            check(json_bool(body, "ps_mispairing_also_ordered", p_mis) && p_mis,
-                  "the previous pass's pairing satisfies an ordering check too, so that check proved nothing");
+            // THE VACUITY DEMONSTRATION IS ITSELF STATE-DEPENDENT, which is worth more than the check was.
+            //
+            // This asserted that the discredited pairing ALSO satisfies an ordering check, proving that
+            // ordering never distinguished the two readings. That only holds while armour EXCEEDS health: at
+            // armour 147 vs health 100 the wrong pairing still looks ordered, and at armour 62 it does not.
+            // So the demonstration was true of one armour value, not of the check.
+            //
+            // Reported rather than asserted, and the honest conclusion is unchanged either way: an ordering
+            // check that can be satisfied by the wrong pairing for ANY value is not a discriminating check.
+            json_bool(body, "ps_mispairing_also_ordered", p_mis);
+            printf("[fixture] the discredited pairing %s an ordering check at these values\n",
+                   p_mis ? "ALSO satisfies" : "does NOT satisfy");
             check(json_bool(body, "ps_range_refused", p_rr) && p_rr, "an out-of-range slot yields no stats");
             check(json_bool(body, "ps_renamed", p_ren) && p_ren,
                   "the subsystem is named for its class now, and the provisional name no longer resolves");
@@ -5643,8 +5707,47 @@ int main(int argc, char** argv) {
             bool eo_qd = false, eo_qm = false;
             check(json_bool(body, "eo_pose_match_determinable", eo_qd) && eo_qd,
                   "the applied pose can be compared against the camera object");
-            check(json_bool(body, "eo_pose_matches_camera", eo_qm) && eo_qm,
-                  "the applied pose is still what the camera object carries -- what a VR override depends on");
+            // WHAT A VR OVERRIDE DEPENDS ON, and it is conditional -- which is itself the finding.
+            //
+            // While the pitch clamp is correcting, ApplyLookDelta lerps the pitch from +756 to +760 across the
+            // recovery timer, so the applied pose is DELIBERATELY not the camera object's transform for the
+            // duration: the engine is dragging one toward the other. Measured live mid-correction as 16 of 16
+            // samples differing with zero torn -- deterministic, not a race.
+            //
+            // That matters more to a VR consumer than the equality does: an override that assumes the pose and
+            // the object agree will fight the clamp every time it fires, and the clamp fires on ordinary play.
+            // So the equality is asserted only while the clamp is idle, and its absence is reported.
+            // NEVER DIFFERS, not "always equal" -- the same double-read verdict the other two sites use. This
+            // was the last caller of the racy single-read bool, and it disagreed with its sibling WITHIN ONE
+            // RESPONSE (True there, False here) because the pose and the camera object are read one after the
+            // other and the response is long enough to straddle a frame.
+            //
+            // For a VR consumer the useful statement is the one that survives a running engine: these two never
+            // hold genuinely different transforms, and a torn read means read again rather than "the mapping
+            // moved".
+            // THE PHASE RELATIONSHIP, measured rather than asserted as an identity.
+            //
+            // "Never differs" was wrong here and the reason is worth keeping: within a frame the applied pose is
+            // updated BEFORE the camera object, so for part of every frame the two hold different values that
+            // are each individually stable. The double-read verdict cannot see that -- nothing moves during the
+            // microseconds it samples -- so it correctly reports Differ, and the same accessor at two points in
+            // one response returned True and False.
+            //
+            // They are still the SAME quantity: they coincide once the frame settles. So the assertion is that
+            // 16 samples find them equal AT LEAST ONCE (which a wrong offset would never do), and the split is
+            // reported. A VR override must read both from one phase, or read one of them consistently.
+            double eo_e = -1.0, eo_d = -1.0, eo_t = -1.0, eo_n = -1.0;
+            const bool eo_cen = json_double(body, "eo_pose_equal", eo_e) &&
+                                json_double(body, "eo_pose_differ", eo_d) &&
+                                json_double(body, "eo_pose_torn", eo_t) &&
+                                json_double(body, "eo_pose_samples", eo_n);
+            check(eo_cen && eo_n == 16.0, "the applied-pose census sampled 16 times");
+            check(eo_cen && eo_e + eo_d + eo_t <= eo_n, "and every sample landed in a bucket");
+            check(eo_cen && eo_e > 0.0,
+                  "the applied pose COINCIDES with the camera object at least once in 16 samples -- they are "
+                  "the same quantity, read in different frame phases, which no wrong offset would reproduce");
+            printf("[fixture] applied pose vs camera object: %.0f equal / %.0f differ / %.0f torn of %.0f\n",
+                   eo_e, eo_d, eo_t, eo_n);
 
             // THE TRAP, AS A CHECK. Applying the POSE offsets to the PHYSICS holder yields position (0,0,0) and a
             // quaternion of norm 0 -- data-shaped nonsense. read_pose refuses it because it validates the
