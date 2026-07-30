@@ -6774,3 +6774,54 @@ class CPlayerCamera 0x18C6 {
 // camera_clamp_state / camera_clamp / camera_state_is_chase.
 //
 // 1410 checks, 0 failures.
+
+// ---- THE CLAMP IS ONE SIGNED AXIS, AND THE DISPATCHER'S REAL INPUTS ARE CMoveMgr'S ---------------
+//
+// Last pass left two questions on the camera clamp. Both are answered by the dispatcher itself.
+//
+// THE PAIR IS ONE AXIS, NOT TWO. CPlayerCamera_GetActiveCameraClamp's tail is:
+//
+//     out[0] = degrees[0] *  (pi/180)
+//     out[1] = degrees[1] * -(pi/180)
+//
+// One component is NEGATED, which is not something done to a member of a two-axis limit pair. So the record
+// stores two POSITIVE MAGNITUDES in degrees and the engine builds a SIGNED RANGE in radians. Chase's 40/45
+// applies as +0.6981 / -0.7854 -- and -0.7854 is exactly -pi/4. The range is ASYMMETRIC, which is what a pitch
+// clamp looks like; [INFERENCE] the axis is pitch, since a first-person game does not bound yaw at 80 degrees.
+// The negation proves "one signed axis"; naming that axis rests on the reasoning.
+//
+// THE STATE MACHINE DOES NOT DECIDE ALONE, which the previous pass's "states 1 and 7 -> Chase" only hinted at.
+// The full selection:
+//
+//     state 1 or 7                       -> Chase
+//     action id 575 active               -> SlideKick
+//     CMoveMgr flags & 0x20 (crouching)  -> CrouchMoving if moving else CrouchIdle
+//     otherwise                          -> StandMoving  if moving else StandIdle
+//
+// So the stance comes from CMoveMgr, reached as *(camera_owner + 236) -- the subsystem-table slot -- and the
+// camera's nine-state field only distinguishes Chase from everything else.
+//
+// CMoveMgr+296 IS A FLAGS DWORD with two bits established by the functions that read them:
+//     0x20   CROUCHING      -- selects the Crouch* clamps
+//     0x800  FORCE-MOVING   -- CMoveMgr_IsMoving ORs it with the speed test, so it counts as moving at zero speed
+// The other bits are unread here and deliberately unnamed.
+//
+// AND "MOVING" USES THE ENGINE'S VELOCITY, NOT THE CONTROLLER'S CACHED ONE. CMoveMgr_IsMoving is
+// |CMoveMgr_GetVelocityFromPhysics| > 0.1, and that helper asks ILTPhysics slot 8 (GetVelocity) for the model
+// object's velocity rather than reading CMoveMgr+1412. Slot 8 was already established as GetVelocity from the
+// engine's own strings, so this agrees with ground truth instead of assuming it.
+//
+// > TWO VELOCITIES EXIST and they can disagree: the engine's live physics value, which is what gates the clamp
+// > choice, and the controller's cached copy, which sdk::Physics documents as recomputed per frame from
+// > (position - last_position) / dt. A consumer asking "is the player moving" must pick the one the game picks.
+//
+// Live: flags 0, speed 0.0, so not crouching and not moving -- the dispatcher would pick StandIdle, and that
+// clamp exists on the resolved Default record. The prediction reports that its SlideKick branch is NOT
+// reproduced, since the action-id test is unmapped, rather than implying completeness.
+//
+// Named in IDA: CMoveMgr_IsMoving, CMoveMgr_GetVelocityFromPhysics, and CMoveMgr_ctor annotated with the +296
+// flag bits.
+// Exposed as sdk::PlayerMgr::camera_clamp_radians / move_mgr_flags / is_crouching / physics_velocity /
+// is_moving / predicted_clamp_state.
+//
+// 1425 checks, 0 failures.

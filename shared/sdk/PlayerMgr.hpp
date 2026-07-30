@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 #include "regenny/Primitives.hpp"
@@ -354,9 +355,19 @@ public:
     // CrouchMoving 42/85, Chase 40/45, SlideKick 5/5. All 18 pairs across the three records (Default, Turret,
     // ElitePoweredArmor) are ordered min <= max.
     //
-    // WHETHER THE TWO COMPONENTS ARE A MIN/MAX OF ONE AXIS OR LIMITS ON TWO AXES IS NOT ESTABLISHED. SlideKick's
-    // 5/5 reads naturally as a lock either way, and Chase's 40/45 as a narrow band either way, so the shipped
-    // values do not separate the readings.
+    // THE PAIR IS ONE AXIS, NOT TWO, and the dispatcher's own tail settles it -- the second component is
+    // NEGATED on the way out:
+    //
+    //     out[0] = degrees[0] *  (pi/180)
+    //     out[1] = degrees[1] * -(pi/180)
+    //
+    // You do not negate one member of a two-axis limit pair. So the record stores two POSITIVE MAGNITUDES in
+    // degrees and the engine turns them into a SIGNED RANGE in radians: Default StandIdle 80/85 becomes
+    // +1.396 / -1.484 rad, an ASYMMETRIC range. Chase is +40/-45 degrees and SlideKick a symmetric +-5.
+    //
+    // [INFERENCE] the axis is PITCH. Asymmetric up/down limits are what pitch clamps look like, and a first-person
+    // game does not normally bound yaw at 80 degrees. The negation proves "one signed axis"; which axis rests on
+    // that reasoning rather than on a read.
     //
     // +6332 sits four bytes below saved_near_z at +6336, consistent with the >= 6342-byte class size an early
     // pass derived from the constructor.
@@ -371,9 +382,56 @@ public:
     // The camera's state-machine value, which selects among the clamp attributes.
     static std::optional<uint32_t> camera_clamp_state(unsigned index);
 
-    // One named clamp from that record, e.g. "Chase" or "StandIdle". nullopt when the record is absent or the
-    // attribute is not a float pair.
+    // One named clamp from that record, e.g. "Chase" or "StandIdle", AS STORED -- two positive magnitudes in
+    // degrees. nullopt when the record is absent or the attribute is not a float pair.
     static std::optional<std::pair<float, float>> camera_clamp(unsigned index, std::string_view state);
+
+    // The same clamp AS THE ENGINE APPLIES IT: a signed range in radians, second component negated. This is the
+    // form a consumer comparing against a live view angle needs, and computing it here means a caller cannot
+    // forget the negation.
+    static std::optional<std::pair<float, float>> camera_clamp_radians(unsigned index, std::string_view state);
+
+    // ---- WHICH CLAMP THE ENGINE WILL PICK, AND THE STATE IT READS IT FROM -----------------------
+    //
+    // The dispatcher's selection is not driven by the state machine alone. Its real inputs are CMoveMgr's flags
+    // and velocity:
+    //
+    //     state 1 or 7                        -> Chase
+    //     an action id of 575 is active        -> SlideKick
+    //     CMoveMgr flags & 0x20 (crouching)    -> CrouchMoving if moving else CrouchIdle
+    //     otherwise                            -> StandMoving  if moving else StandIdle
+    //
+    // and "moving" is CMoveMgr_IsMoving: the ENGINE's physics velocity exceeding 0.1, or flag 0x800 set.
+    static constexpr uintptr_t kMoveMgrFlags = 296;
+    static constexpr uint32_t kMoveFlagCrouching = 0x20;
+    static constexpr uint32_t kMoveFlagForceMoving = 0x800;
+    static constexpr float kMoveSpeedThreshold = 0.1f;
+
+    // CMoveMgr's flags dword. Two bits have established meanings (above); the rest are unread and unnamed.
+    static std::optional<uint32_t> move_mgr_flags(unsigned index);
+
+    static std::optional<bool> is_crouching(unsigned index);
+
+    // The engine's live physics velocity for the player, via ILTPhysics GetVelocity -- NOT CMoveMgr's cached
+    // copy at +1412, which can disagree.
+    static std::optional<std::array<float, 3>> physics_velocity(unsigned index);
+
+    // CMoveMgr_IsMoving reproduced: speed over the threshold, or the force-moving flag. nullopt when neither
+    // input can be read.
+    static std::optional<bool> is_moving(unsigned index);
+
+    // Which clamp name the dispatcher would pick right now, from the same inputs it uses. nullopt when the
+    // inputs cannot be read. Returns nullptr-equivalent empty string never -- the four stance cases always
+    // resolve, and the two special cases are reported as themselves.
+    //
+    // THE SlideKick CASE IS NOT REPRODUCED: it depends on an action id this project has not mapped, so this
+    // returns the stance choice the engine would make in its absence and says so via `slide_kick_unchecked`.
+    struct ClampChoice {
+        std::string state;             // the clamp attribute name
+        bool slide_kick_unchecked{};   // true always, until the action-id test is mapped
+    };
+
+    static std::optional<ClampChoice> predicted_clamp_state(unsigned index);
 
     // Does the state machine currently select the Chase clamp? The only mapping established so far, exposed as a
     // question rather than as a full state decode.

@@ -10,6 +10,7 @@
 
 #include "Memory.hpp"
 #include "Modules.hpp"
+#include "Physics.hpp"
 #include "CClientShell.hpp"
 #include "DatabaseMgr.hpp"
 #include "Engine.hpp"
@@ -1344,6 +1345,93 @@ std::optional<bool> PlayerMgr::camera_state_is_chase(unsigned index) {
         return std::nullopt;
     }
     return *st == 1 || *st == 7;
+}
+
+
+std::optional<std::pair<float, float>> PlayerMgr::camera_clamp_radians(unsigned index,
+                                                                      std::string_view state) {
+    const auto deg = camera_clamp(index, state);
+    if (!deg.has_value()) {
+        return std::nullopt;
+    }
+    // Exactly the dispatcher's tail, negation included.
+    constexpr float kDeg2Rad = 0.01745329238474369f;
+    return std::make_pair(deg->first * kDeg2Rad, deg->second * -kDeg2Rad);
+}
+
+std::optional<uint32_t> PlayerMgr::move_mgr_flags(unsigned index) {
+    const auto sub = subsystem_by_name(index, "CMoveMgr");
+    if (!sub.has_value() || sub->object == 0) {
+        return std::nullopt;
+    }
+    return mem::read<uint32_t>(sub->object + kMoveMgrFlags);
+}
+
+std::optional<bool> PlayerMgr::is_crouching(unsigned index) {
+    const auto flags = move_mgr_flags(index);
+    if (!flags.has_value()) {
+        return std::nullopt;
+    }
+    return (*flags & kMoveFlagCrouching) != 0;
+}
+
+std::optional<std::array<float, 3>> PlayerMgr::physics_velocity(unsigned index) {
+    const auto p = slot(index);
+    if (!p.has_value() || *p == 0) {
+        return std::nullopt;
+    }
+    // The engine object the physics interface knows this player by is the MODEL object -- the same one
+    // PlayerPhysics_EngineObject hands to ILTPhysics. Object.hpp owns that resolution.
+    const auto obj = mem::read_ptr(*p + kEngineHolderField);
+    if (!obj.has_value() || *obj == 0) {
+        return std::nullopt;
+    }
+    const auto model = mem::read_ptr(*obj + 320);  // physics holder +320, the LTObject given to ILTPhysics
+    if (!model.has_value() || *model == 0) {
+        return std::nullopt;
+    }
+    return Physics::velocity(*model);
+}
+
+std::optional<bool> PlayerMgr::is_moving(unsigned index) {
+    const auto flags = move_mgr_flags(index);
+    const auto vel = physics_velocity(index);
+    if (!flags.has_value() && !vel.has_value()) {
+        return std::nullopt;
+    }
+    if (flags.has_value() && (*flags & kMoveFlagForceMoving) != 0) {
+        return true;
+    }
+    if (!vel.has_value()) {
+        return std::nullopt;
+    }
+    const float speed2 =
+        (*vel)[0] * (*vel)[0] + (*vel)[1] * (*vel)[1] + (*vel)[2] * (*vel)[2];
+    return speed2 > kMoveSpeedThreshold * kMoveSpeedThreshold;
+}
+
+std::optional<PlayerMgr::ClampChoice> PlayerMgr::predicted_clamp_state(unsigned index) {
+    const auto st = camera_clamp_state(index);
+    if (!st.has_value()) {
+        return std::nullopt;
+    }
+    ClampChoice out;
+    out.slide_kick_unchecked = true;
+    if (*st == 1 || *st == 7) {
+        out.state = "Chase";
+        return out;
+    }
+    const auto crouch = is_crouching(index);
+    const auto moving = is_moving(index);
+    if (!crouch.has_value() || !moving.has_value()) {
+        return std::nullopt;
+    }
+    if (*crouch) {
+        out.state = *moving ? "CrouchMoving" : "CrouchIdle";
+    } else {
+        out.state = *moving ? "StandMoving" : "StandIdle";
+    }
+    return out;
 }
 
 }  // namespace sdk

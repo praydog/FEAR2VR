@@ -4819,6 +4819,62 @@ std::string build_shader_params_json() {
             json_append_bool(out, "cc_fallback_wider",
                              ch.has_value() && ch->second < sdk::PlayerMgr::kCameraClampFallback);
         }
+        // ---- THE PAIR IS ONE SIGNED AXIS, WHICH THE NEGATION PROVES ----
+        {
+            const auto deg = sdk::PlayerMgr::camera_clamp(0, "Chase");
+            const auto rad = sdk::PlayerMgr::camera_clamp_radians(0, "Chase");
+            json_append_bool(out, "cc_rad_available", rad.has_value());
+            if (deg.has_value() && rad.has_value()) {
+                json_append_double(out, "cc_rad_first", rad->first, 4);
+                json_append_double(out, "cc_rad_second", rad->second, 4);
+                // BOTH stored components are positive, and the applied pair straddles zero -- the signature of
+                // a signed range on one axis rather than two axis limits.
+                json_append_bool(out, "cc_stored_both_positive", deg->first > 0.0f && deg->second > 0.0f);
+                json_append_bool(out, "cc_applied_straddles_zero", rad->first > 0.0f && rad->second < 0.0f);
+                // And the magnitudes must survive the conversion.
+                const float k = 0.01745329238474369f;
+                json_append_bool(out, "cc_conversion_exact",
+                                 std::fabs(rad->first - deg->first * k) < 1e-6f &&
+                                     std::fabs(rad->second + deg->second * k) < 1e-6f);
+                json_append_bool(out, "cc_asymmetric", deg->first != deg->second);
+            }
+        }
+
+        // ---- WHAT THE DISPATCHER WOULD PICK RIGHT NOW ----
+        {
+            const auto flags = sdk::PlayerMgr::move_mgr_flags(0);
+            const auto crouch = sdk::PlayerMgr::is_crouching(0);
+            const auto moving = sdk::PlayerMgr::is_moving(0);
+            const auto vel = sdk::PlayerMgr::physics_velocity(0);
+            const auto pick = sdk::PlayerMgr::predicted_clamp_state(0);
+            json_append_bool(out, "mv_flags_readable", flags.has_value());
+            if (flags.has_value()) {
+                json_append_double(out, "mv_flags", static_cast<double>(*flags), 0);
+            }
+            json_append_bool(out, "mv_crouch_determinable", crouch.has_value());
+            json_append_bool(out, "mv_crouching", crouch.value_or(false));
+            json_append_bool(out, "mv_velocity_readable", vel.has_value());
+            if (vel.has_value()) {
+                const float sp = std::sqrt((*vel)[0] * (*vel)[0] + (*vel)[1] * (*vel)[1] +
+                                           (*vel)[2] * (*vel)[2]);
+                json_append_double(out, "mv_speed", static_cast<double>(sp), 3);
+            }
+            json_append_bool(out, "mv_moving_determinable", moving.has_value());
+            json_append_bool(out, "mv_moving", moving.value_or(false));
+            json_append_bool(out, "mv_pick_available", pick.has_value());
+            if (pick.has_value()) {
+                json_append_string(out, "mv_pick", pick->state.c_str());
+                // The picked state must be one the record actually carries, or the prediction is meaningless.
+                json_append_bool(out, "mv_pick_exists",
+                                 sdk::PlayerMgr::camera_clamp(0, pick->state).has_value());
+                json_append_bool(out, "mv_slide_kick_unchecked", pick->slide_kick_unchecked);
+            }
+            json_append_bool(out, "mv_range_refused",
+                             !sdk::PlayerMgr::move_mgr_flags(9).has_value() &&
+                                 !sdk::PlayerMgr::is_moving(9).has_value() &&
+                                 !sdk::PlayerMgr::predicted_clamp_state(9).has_value());
+        }
+
         json_append_bool(out, "cc_unknown_state_refused",
                          !sdk::PlayerMgr::camera_clamp(0, "NoSuchState").has_value() &&
                              !sdk::PlayerMgr::camera_clamp(9, "Chase").has_value());

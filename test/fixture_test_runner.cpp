@@ -4664,6 +4664,54 @@ int main(int argc, char** argv) {
             check(json_bool(body, "cc_unknown_state_refused", cc_ur) && cc_ur,
                   "an unknown state name and an out-of-range slot are both refused");
 
+            // ---- THE CLAMP PAIR IS ONE SIGNED AXIS, WHICH THE NEGATION PROVES --------------------
+            //
+            // Last pass could not tell a min/max of one axis from limits on two. The dispatcher's tail settles
+            // it: it multiplies the first component by +pi/180 and the second by -pi/180. You do not negate one
+            // member of a two-axis limit pair, so the record stores two POSITIVE MAGNITUDES and the engine turns
+            // them into a signed range.
+            double rad1 = 0.0, rad2 = 0.0;
+            bool cc_bp = false, cc_sz = false, cc_ce = false, cc_as = false, cc_ra = false;
+            check(json_bool(body, "cc_rad_available", cc_ra) && cc_ra, "the applied form is computable");
+            check(json_bool(body, "cc_stored_both_positive", cc_bp) && cc_bp,
+                  "both STORED components are positive, so neither is already a signed bound");
+            check(json_bool(body, "cc_applied_straddles_zero", cc_sz) && cc_sz,
+                  "yet the APPLIED pair straddles zero -- one signed axis, not two limits");
+            check(json_double(body, "cc_rad_first", rad1) && rad1 > 0.69 && rad1 < 0.70,
+                  "Chase's first bound applies as +0.698 rad, which is +40 degrees");
+            check(json_double(body, "cc_rad_second", rad2) && rad2 < -0.78 && rad2 > -0.79,
+                  "and its second as -0.785 rad -- exactly -pi/4, or -45 degrees");
+            check(json_bool(body, "cc_conversion_exact", cc_ce) && cc_ce,
+                  "the conversion reproduces the dispatcher's arithmetic, negation included");
+            check(json_bool(body, "cc_asymmetric", cc_as) && cc_as,
+                  "and the range is ASYMMETRIC, which is what a pitch clamp looks like and a yaw clamp does not");
+
+            // ---- WHICH CLAMP THE ENGINE WOULD PICK, FROM ITS OWN INPUTS -------------------------
+            //
+            // The state machine alone does not decide. The dispatcher reads CMoveMgr's flags for the stance and
+            // CMoveMgr_IsMoving for the rest -- and "moving" is the ENGINE's physics velocity over 0.1, or a
+            // force-moving flag, NOT CMoveMgr's cached velocity at +1412.
+            bool mv_fr = false, mv_cd = false, mv_vr = false, mv_md = false, mv_pa = false, mv_pe = false,
+                 mv_sk = false, mv_rr = false;
+            check(json_bool(body, "mv_flags_readable", mv_fr) && mv_fr, "CMoveMgr's flags dword reads");
+            check(json_bool(body, "mv_crouch_determinable", mv_cd) && mv_cd,
+                  "the crouch bit is testable");
+            check(json_bool(body, "mv_velocity_readable", mv_vr) && mv_vr,
+                  "and the engine's physics velocity is readable for the player");
+            check(json_bool(body, "mv_moving_determinable", mv_md) && mv_md,
+                  "so the is-moving predicate can be reproduced");
+            check(json_bool(body, "mv_pick_available", mv_pa) && mv_pa,
+                  "which makes the dispatcher's choice predictable");
+            // THE PREDICTION MUST NAME A CLAMP THAT EXISTS, or it is a string with no referent.
+            check(json_bool(body, "mv_pick_exists", mv_pe) && mv_pe,
+                  "and the predicted state names a clamp the resolved record actually carries");
+            // HONESTY FLAG: the SlideKick branch depends on an action id this project has not mapped, so the
+            // prediction is the stance choice made in its absence and says so.
+            check(json_bool(body, "mv_slide_kick_unchecked", mv_sk) && mv_sk,
+                  "and reports that the SlideKick branch is NOT reproduced, rather than pretending completeness");
+            check(json_bool(body, "mv_range_refused", mv_rr) && mv_rr,
+                  "an out-of-range slot yields no flags, no movement answer and no prediction");
+
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
             // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one
