@@ -457,6 +457,15 @@ Writing the field from outside is reclaimed within a frame, so the mod owns the 
 (`PlayerCamera_UpdateAttachedRotation`, gameclient +0xDED80, `__thiscall`, `this` IS the holder) and amends
 its result. Drive it with `/vr/head?yaw=&pitch=` or `?x=&y=&z=&w=`, release with `?clear=1`.
 
+**Axes, measured:** `x = roll, y = yaw, z = pitch`. `/vr/head?yaw=&pitch=&roll=` takes degrees and builds
+the quaternion; `?x=&y=&z=&w=` takes one directly. The euler helper originally put pitch in `x` and applied
+roll instead -- only yaw had been tested. If you add an axis, test it against a fixed world point.
+
+**The aim is always level.** `PlayerCamera_CancelAimRoll` (gameclient +0xDF500) rebuilds the aim quaternion
+as `FromEuler(pitch, yaw, 0)` about 28 times a second, so head tilt cannot be stored at +324 -- it belongs in
+the outer operand, which is where `HeadTracking` puts it. `sdk::PlayerMgr::aim_roll()` reports the aim's roll
+(measured as the right vector's departure from horizontal, not an Euler term).
+
 **Verify it with the projection probe, never a screenshot.** `/vr/head?px=&py=&pz=` names a world point that
 `CameraPassHook` projects inside the pass detour; a stationary point sliding across the screen is the only
 direct evidence the rendered view turned. Read from any other thread the projection lands on the frame's
