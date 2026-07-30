@@ -4067,3 +4067,26 @@ body turning 360 degrees that no number in the endpoint could see.
 Five times the player's perception was right and the instrumentation was pointing somewhere else. When a
 consumer-visible symptom disagrees with a green measurement, the measurement is aimed at the wrong stage.
 
+## Interactive tests cannot prompt from inside a backgrounded job
+
+Several measurements today needed the player to do something -- move the mouse, stand still, crouch -- and the
+prompts were printed by the script doing the measuring. Backgrounded output is not visible until the job
+finishes, so the player saw phase 1's instruction (which was in the chat message) and never saw phase 2's
+(which was inside the script). A test then reported "inconclusive" because the human could not read it.
+
+Two fixes, and the second is better:
+
+1. Put the ENTIRE schedule in the message before starting, never in the script.
+2. **Make the test schedule-free.** Sample continuously for a window and require the signal to exhibit both
+   states at some point. The quiescence check went from "hold still, then move on my cue" to "play normally for
+   20 seconds" and validated itself:
+
+```
+33 samples over 20s
+  still_frames min = 0      max = 2804      resets = 5
+  DISCRIMINATES: it climbed to 2804 while settled and reset 5 time(s) under motion.
+```
+
+No cue, no timing, nothing for the human to get wrong -- and it still refuses to pass if the signal never moved.
+Any test needing a human in the loop should be built this way.
+

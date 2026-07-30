@@ -99,6 +99,80 @@ std::atomic<bool> g_spr_installed{false};
 std::atomic<uint32_t> g_ov_body_drift_bits{0};
 std::atomic<uint32_t> g_ov_body_base[4]{};
 std::atomic<bool> g_ov_body_base_set{false};
+
+// ---- QUIESCENCE, TRACKED ON THE ENGINE THREAD -------------------------------------------------------
+//
+// A dozen suite checks silently required a settled world and passed for many sessions only because nobody was
+// playing. The fix is NOT to suppress input -- TESTING.MD forbids narrowing the input so a failing path is
+// never exercised, it would make the suite test a state that never occurs, and input is only one source of
+// motion anyway (animation, physics settling and the clamp timer keep running).
+//
+// So quiescence is MEASURED and REPORTED. Counting consecutive frames in which nothing moved has to happen
+// where the frames are: an IPC sampler cannot tell "still" from "sampled twice within one frame".
+//
+// "Nothing moved" means the camera rotation, the body rotation and the body position are all bit-identical to
+// last frame and no look input arrived. Bit equality rather than an epsilon, deliberately -- a threshold here
+// would be a tolerance invented to make a gate feel better, and the whole point is to know precisely when a
+// strong-form comparison is safe.
+std::atomic<uint64_t> g_still_frames{0};
+std::atomic<uint32_t> g_last_cam[4]{};
+std::atomic<uint32_t> g_last_body[4]{};
+std::atomic<uint32_t> g_last_pos[3]{};
+std::atomic<uint64_t> g_last_look{0};
+std::atomic<bool> g_still_primed{false};
+
+// Returns true when every watched value is unchanged from the previous frame.
+bool sample_stillness() {
+    const auto p = sdk::PlayerMgr::player(0);
+    if (!p.has_value() || p->camera_object == 0 || p->object == 0) {
+        return false;
+    }
+    std::array<float, 4> cam{}, body{};
+    std::array<float, 3> pos{};
+    if (!sdk::mem::copy(cam.data(), p->camera_object + 0x20, sizeof(cam)) ||
+        !sdk::mem::copy(body.data(), p->object + 0x20, sizeof(body)) ||
+        !sdk::mem::copy(pos.data(), p->object + 0x14, sizeof(pos))) {
+        return false;
+    }
+    const uint64_t look = g_calls.load(std::memory_order_relaxed);
+
+    bool same = g_still_primed.load(std::memory_order_relaxed) &&
+                look == g_last_look.load(std::memory_order_relaxed);
+    for (size_t i = 0; same && i < cam.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &cam[i], sizeof(a));
+        same = a == g_last_cam[i].load(std::memory_order_relaxed);
+    }
+    for (size_t i = 0; same && i < body.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &body[i], sizeof(a));
+        same = a == g_last_body[i].load(std::memory_order_relaxed);
+    }
+    for (size_t i = 0; same && i < pos.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &pos[i], sizeof(a));
+        same = a == g_last_pos[i].load(std::memory_order_relaxed);
+    }
+
+    for (size_t i = 0; i < cam.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &cam[i], sizeof(a));
+        g_last_cam[i].store(a, std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < body.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &body[i], sizeof(a));
+        g_last_body[i].store(a, std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < pos.size(); ++i) {
+        uint32_t a = 0;
+        std::memcpy(&a, &pos[i], sizeof(a));
+        g_last_pos[i].store(a, std::memory_order_relaxed);
+    }
+    g_last_look.store(look, std::memory_order_relaxed);
+    g_still_primed.store(true, std::memory_order_relaxed);
+    return same;
+}
 // What we wrote last frame, and whether there is anything to compare yet.
 std::atomic<uint32_t> g_ov_last[4]{};
 std::atomic<bool> g_ov_pending{false};
@@ -380,6 +454,13 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
     // point -- writing the object directly is reclaimed within a frame. This call owns the frame countdown.
     apply_override(true);
 
+    // QUIESCENCE, once per frame. Cheap: three guarded reads and a comparison.
+    if (sample_stillness()) {
+        g_still_frames.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_still_frames.store(0, std::memory_order_relaxed);
+    }
+
     // HOW FAR DOWNSTREAM DOES THE OVERRIDE ACTUALLY REACH?
     //
     // Zero drift at +324 only proves we win at the field we write. A player still saw the rendered view
@@ -603,6 +684,7 @@ ViewHook::Observed ViewHook::observed() const {
     out.spr_camera = g_spr_camera.load(std::memory_order_relaxed);
     out.spr_overridden = g_spr_overridden.load(std::memory_order_relaxed);
     out.spr_installed = g_spr_installed.load(std::memory_order_relaxed);
+    out.still_frames = g_still_frames.load(std::memory_order_relaxed);
     const uint32_t bd = g_ov_body_drift_bits.load(std::memory_order_relaxed);
     std::memcpy(&out.override_body_drift_deg, &bd, sizeof(out.override_body_drift_deg));
     uint32_t ab = g_ov_applied_drift_bits.load(std::memory_order_relaxed);

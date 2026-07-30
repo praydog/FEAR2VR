@@ -67,6 +67,51 @@ void check(bool ok, const char* name, const char* detail = nullptr) {
     }
 }
 
+// Defined with the other parsing helpers below; declared here because the quiescence gate needs it and the
+// gate belongs beside check() rather than buried among the parsers.
+bool json_double(const std::string& body, const char* key, double& out);
+
+// ---- QUIESCENCE, AS A REPORTED CONDITION ----------------------------------
+//
+// A dozen checks in this file silently required a settled world and passed for many sessions only because
+// nobody was playing while the suite ran. Every one of them went red the day somebody did.
+//
+// The fix is NOT to suppress the player's input. TESTING.MD prohibits "narrowing the input so the failing path
+// is never exercised", a suite that tests an artificially frozen game tests a state that never occurs, and
+// input is only one source of motion anyway -- animation, physics settling and the clamp timer keep running.
+//
+// So the DLL counts consecutive frames in which the camera rotation, the body rotation, the body position and
+// the look-input counter were all unchanged (engine thread; an IPC sampler cannot tell a still world from two
+// reads inside one frame), and a check that needs a settled world either runs or says it did not.
+//
+// THE TALLY IS WHAT KEEPS THIS HONEST. Gating without counting turns red into invisible, which is worse than
+// red. A run that skipped a lot announces itself as weak.
+int64_t g_not_exercised = 0;
+
+// 90 frames, and the number is derived rather than picked: the longest interpolation mapped in this engine is
+// the camera's pitch recovery timer at 0.300s, and the per-frame view hook runs at ~300 calls/second, so 90
+// frames is one full recovery. A shorter window could sample mid-interpolation and call it settled.
+constexpr double kQuiescentFrames = 90.0;
+
+bool world_is_quiescent(const std::string& body) {
+    double still = -1.0;
+    if (!json_double(body, "ws_still_frames", still)) {
+        return false;  // absent means unknown, and unknown is never treated as settled
+    }
+    return still >= kQuiescentFrames;
+}
+
+// Assert `ok` only when the world is settled; otherwise record that the claim was not exercised and say so.
+// The message must describe the SETTLED-WORLD claim, since that is the only thing it can establish.
+void check_quiescent(bool quiescent, bool ok, const char* name) {
+    if (quiescent) {
+        check(ok, name);
+        return;
+    }
+    ++g_not_exercised;
+    printf("[fixture] NOT EXERCISED (world in motion): %s\n", name);
+}
+
 // ---- small parsing helpers (no JSON library; payloads are ours) ------------
 
 bool json_has(const std::string& body, const char* needle) {
@@ -6042,11 +6087,14 @@ int main(int argc, char** argv) {
             //
             // The two fields were read as a pair and are not treated as one. Acceleration stays asserted
             // outright; velocity becomes a conditional, since a zero reading is only guaranteed while still.
-            bool pe_mv = false;
-            json_bool(body, "mv_moving", pe_mv);
-            check(json_bool(body, "pe_velocity_zero", pe_vz) && (pe_mv || pe_vz),
-                  "while stationary the physics target's velocity reads zero -- while moving it does NOT, which "
-                  "retracts the claim that the zeroing stores are unconditional for this field");
+            // THROUGH THE QUIESCENCE GATE, which is stricter and more honest than the movement flag this used.
+            // `mv_moving` says the player is not walking; it says nothing about a camera still settling, an
+            // animation finishing or the clamp interpolating -- any of which leaves a non-zero velocity behind.
+            const bool pe_quiet = world_is_quiescent(body);
+            json_bool(body, "pe_velocity_zero", pe_vz);
+            check_quiescent(pe_quiet, pe_vz,
+                            "in a SETTLED world the physics target's velocity reads zero -- which is also the "
+                            "retraction of an earlier claim that the zeroing stores are unconditional here");
             check(json_bool(body, "pe_acceleration_zero", pe_az) && pe_az,
                   "its ACCELERATION reads zero even while moving, so that store IS unconditional -- the two "
                   "fields are not treated alike, though an earlier pass read them as a pair");
@@ -7908,5 +7956,12 @@ int main(int argc, char** argv) {
     cleanup();
 
     printf("%s (%lld checks)\n", g_failures == 0 ? "[fixture] PASS" : "[fixture] FAIL", g_checks);
+    // THE TALLY. Gating a check on a settled world without counting the skips turns red into invisible, which
+    // is worse than red -- so a run that could not exercise its strong forms says so next to its verdict, and
+    // a large number here means the run was weak however green it looks.
+    if (g_not_exercised > 0) {
+        printf("[fixture] %lld check(s) NOT EXERCISED -- the world was in motion. Stand still to cover them.\n",
+               g_not_exercised);
+    }
     return g_failures == 0 ? kOk : kFail;
 }

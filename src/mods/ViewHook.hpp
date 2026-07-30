@@ -127,6 +127,16 @@ public:
         // The player BODY's rotation, against its own baseline. Every other drift figure here is camera-side,
         // which is how a render-only lock got reported as freezing the body when it does not.
         float override_body_drift_deg{};
+
+        // ---- QUIESCENCE ------------------------------------------------------------------------
+        //
+        // Consecutive frames in which the camera rotation, the body rotation, the body position and the look
+        // input counter were ALL unchanged. Counted on the engine thread, because an IPC sampler cannot tell a
+        // still world from two reads inside one frame.
+        //
+        // Reported, never enforced: suppressing input to manufacture a settled world would make the suite test
+        // a state that never occurs, and it is the narrowing TESTING.MD prohibits.
+        uint64_t still_frames{};
     };
 
     // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
