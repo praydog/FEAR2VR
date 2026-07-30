@@ -138,6 +138,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 14, "/view-override") == 0) {
+        if (!g_handlers.view_override) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no view-override handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.view_override(path));
+        return;
+    }
+
     // BEFORE the shader-params prefix test, since "/sdk/write-probe" must not be swallowed by a broader match
     // and because this is the only route in this server that changes the game rather than reporting on it.
     if (path.compare(0, 16, "/sdk/write-probe") == 0) {

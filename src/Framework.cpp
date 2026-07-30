@@ -5988,6 +5988,36 @@ std::string build_shader_params_json(bool include_write_probes) {
         // SAME-PHASE AGREEMENT, measured on the engine thread inside the detour. The out-of-band census in
         // the pmgr_/eo_ blocks cannot answer this: UpdateViewPose rewrites the pose every frame, so an IPC
         // reader always lands mid-update. This is the number that means something.
+        // THE OVERRIDE EXPERIMENT'S RESULT. carried == applied means the engine propagated OUR pose into the
+        // camera object -- the go/no-go for driving a head-tracked view from this hook.
+        json_append_double(out, "vh_ov_frames_left", static_cast<double>(vh.override_frames_left), 0);
+        json_append_double(out, "vh_ov_yaw_deg", static_cast<double>(vh.override_yaw_deg), 3);
+        json_append_double(out, "vh_ov_applied", static_cast<double>(vh.override_applied), 0);
+        json_append_double(out, "vh_ov_carried", static_cast<double>(vh.override_carried), 0);
+        json_append_double(out, "vh_ov_rejected", static_cast<double>(vh.override_rejected), 0);
+        json_append_double(out, "vh_ov_pose_held", static_cast<double>(vh.override_pose_held), 0);
+        // THE REFUSAL PATH, checkable without touching the view. write_view_rotation must reject a non-unit
+        // quaternion, because read_pose treats non-unit as proof of a wrong offset -- a writer that could
+        // manufacture that state would be able to fake a mapping error into existence.
+        json_append_bool(out, "vh_rejects_non_unit",
+                         !sdk::PlayerMgr::write_view_rotation(0, {0.0f, 0.0f, 0.0f, 0.0f}) &&
+                             !sdk::PlayerMgr::write_view_rotation(0, {2.0f, 0.0f, 0.0f, 0.0f}) &&
+                             !sdk::PlayerMgr::write_applied_rotation(0, {0.0f, 0.0f, 0.0f, 0.0f}));
+        json_append_bool(out, "vh_rejects_out_of_range",
+                         !sdk::PlayerMgr::write_view_rotation(9, {0.0f, 0.0f, 0.0f, 1.0f}) &&
+                             !sdk::PlayerMgr::view_rotation(9).has_value());
+        // BOTH GENERATIONS, so an override can see whether the engine DERIVED the applied pose from the source
+        // it was handed. carried==0 while writing +324 is expected -- the rebuild goes through euler and a pitch
+        // clamp, so the result is transformed, not copied -- and this is how that gets checked rather than
+        // assumed.
+        if (const auto vr = sdk::PlayerMgr::view_rotation(0)) {
+            json_append_double(out, "vh_src_y", static_cast<double>((*vr)[1]), 5);
+            json_append_double(out, "vh_src_w", static_cast<double>((*vr)[3]), 5);
+        }
+        if (const auto ar = sdk::PlayerMgr::applied_rotation(0)) {
+            json_append_double(out, "vh_applied_y", static_cast<double>((*ar)[1]), 5);
+            json_append_double(out, "vh_applied_w", static_cast<double>((*ar)[3]), 5);
+        }
         json_append_double(out, "vh_pose_agree_equal", static_cast<double>(vh.pose_agree_equal), 0);
         json_append_double(out, "vh_pose_agree_differ", static_cast<double>(vh.pose_agree_differ), 0);
         json_append_double(out, "vh_pose_agree_other", static_cast<double>(vh.pose_agree_other), 0);
@@ -9247,6 +9277,32 @@ bool Framework::initialize() {
     // READ-ONLY BY DEFAULT. The mutation probes are visible in-game, so observing state never triggers them.
     handlers.shader_params = [] { return build_shader_params_json(false); };
     handlers.write_probe = [] { return build_shader_params_json(true); };
+    // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
+    // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.view_override = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        // Yaw in whole degrees: the experiment only needs a magnitude big enough to SEE, and an integer keeps
+        // the query surface to the one parser this file already has.
+        const long long yaw_i = webapi_query_int(q, "yaw", 15);
+        const double yaw = static_cast<double>(yaw_i);
+        const long long frames = webapi_query_int(q, "frames", 600);
+        // target=source writes +324 (the candidate upstream field); anything else writes +244.
+        const auto tgt = webapi_query_string(q, "target");
+        const bool write_source = tgt == "source";
+        ViewHook::get().arm_override(static_cast<float>(yaw),
+                                     static_cast<uint32_t>(frames < 0 ? 0 : frames), write_source);
+        const auto vh = ViewHook::get().observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true);
+            jf.f("yaw_deg", yaw, 3);
+            jf.u("frames", static_cast<size_t>(vh.override_frames_left));
+            jf.b("pose_hook_installed", vh.pose_installed);
+            jf.s("target", write_source ? "source(+324)" : "applied(+244)");
+        }
+        return out;
+    };
     handlers.engine_hook = build_engine_hook_json;
     handlers.api = build_api_json;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {

@@ -5097,6 +5097,28 @@ int main(int argc, char** argv) {
                            "-- the object lags the pose within the frame\n", vh_ae, vh_ad, vh_ao);
                 }
 
+                // ---- THE VIEW OVERRIDE'S PLUMBING ----------------------------------------------
+                //
+                // The suite does NOT arm the override: it steers the live camera, and a test that jolts the
+                // player's view on every run would be a defect regardless of what it proved. The capability is
+                // established by a recorded measurement (reversing/MAPPING_WORKFLOW.md -- yaw pinned at zero
+                // spread against ~4400 live look events, versus 237 degrees of spread unoverridden).
+                //
+                // What IS asserted here is the part that must hold in every state: the writer refuses values
+                // that would corrupt the mapping. read_pose treats a non-unit quaternion as proof of a wrong
+                // offset, so a writer able to store one could fabricate that error into existence.
+                bool vh_ru = false, vh_rr = false;
+                check(json_bool(body, "vh_rejects_non_unit", vh_ru) && vh_ru,
+                      "the view writers REFUSE a zero and an over-length quaternion -- a write path that could "
+                      "store a non-unit rotation could manufacture the very state read_pose treats as a wrong "
+                      "offset");
+                check(json_bool(body, "vh_rejects_out_of_range", vh_rr) && vh_rr,
+                      "and an out-of-range player slot is refused by both the reader and the writer");
+                // DISARMED BY DEFAULT, so nothing in a normal run is steering the camera.
+                double vh_ovf = -1.0;
+                check(json_double(body, "vh_ov_frames_left", vh_ovf) && vh_ovf == 0.0,
+                      "the override is disarmed -- no test run leaves the view under our control");
+
                 // TWO POLLS, and the engine clock decides whether the result means anything.
                 {
                     // THE GATE IS THE ENGINE'S OWN CLOCK, read from the same two bodies -- engine-side, and

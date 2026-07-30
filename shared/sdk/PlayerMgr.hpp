@@ -708,6 +708,41 @@ public:
     // 0 until gameclient.dll resolves; RETRYABLE, same as above.
     static uintptr_t update_view_pose_fn();
 
+    // ---- WRITING THE VIEW ------------------------------------------------------------------------
+    //
+    // THE method a head-tracked view needs, and the placement is measured rather than chosen:
+    //
+    //   * writing the camera OBJECT's rotation is reclaimed within one frame (probe_camera_object_rotation
+    //     returns Reclaimed on a running game), so the object is downstream and not writable;
+    //   * the applied pose is UPSTREAM -- sampled inside the UpdateViewPose detour, the camera object still
+    //     holds the previous frame's value when that function returns, and something later in the frame
+    //     propagates the pose into it.
+    //
+    // So an override writes HERE and lets the engine carry it. Called from inside the UpdateViewPose detour,
+    // after the original has run, it replaces the pose the engine just computed for this frame.
+    //
+    // REFUSES A NON-UNIT QUATERNION, mirroring read_pose's own validity test: the read side treats non-unit as
+    // proof of a wrong offset, so the write side must not be the thing that creates one. Returns false on a
+    // rejected value or a faulting store; per Memory.hpp's note on `store`, a true return is not proof the
+    // engine accepted it -- read it back if that matters.
+    static bool write_applied_rotation(unsigned index, const std::array<float, 4>& rotation);
+
+    // THE OTHER GENERATION, at +324, and the evidence says it is the SOURCE the applied pose is derived from.
+    //
+    // Writing the applied rotation is visible -- a live override there makes the view blur, so the renderer
+    // does consume it -- but it does NOT survive to the next frame and never reaches the camera object. So the
+    // engine rebuilds the applied pose each frame, and CPlayerCamera_ClampPitch shows what from: it takes euler
+    // angles out of `this + 324` via Quaternion_ToEuler, clamps the pitch, and rebuilds a quaternion.
+    //
+    // That makes +324 the upstream candidate. An override that writes here is asking the engine to derive the
+    // view from our rotation rather than fighting its output.
+    static bool write_view_rotation(unsigned index, const std::array<float, 4>& rotation);
+    static std::optional<std::array<float, 4>> view_rotation(unsigned index);
+
+    // The applied pose's rotation as the engine last wrote it. Separate from player()'s snapshot so an override
+    // can read exactly the value it is about to replace, with no other fields in the way.
+    static std::optional<std::array<float, 4>> applied_rotation(unsigned index);
+
     struct AimTrackingLimits {
         std::optional<float> normal_degrees;
         std::optional<float> zoomed_degrees;

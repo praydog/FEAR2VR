@@ -7008,6 +7008,30 @@ class CPlayerCamera 0x18C6 {
 //     aim-tracking path uses id 2, but the region also serves FX and interface code ('FXName', 'Lifetime',
 //     'Icon Size' are referenced nearby), so the family is SHARED and naming it after the camera would be wrong.
 
+// ---- THE VIEW OVERRIDE POINT ---------------------------------------------------------------------
+//
+// The camera holder carries TWO rotation generations, and which one a consumer writes decides whether it
+// controls the view at all. Measured live:
+//
+//     holder + 244  applied pose      DERIVED. A write lands -- the view visibly blurs, so the renderer does
+//                                    consume it -- but it is recomputed every frame and never survives.
+//     holder + 324  view rotation     THE SOURCE. A write persists (900/900 frames) and drives the camera and
+//                                    the player's movement direction.
+//     camera object LTObject.rotation DOWNSTREAM. Reclaimed within one frame.
+//
+// PROVEN AGAINST LIVE PLAYER INPUT, which is the only form of this test that means anything: with ~4400 look
+// events arriving during the override, yaw held at exactly -93.13 degrees, zero spread, versus 237 degrees of
+// spread unoverridden. An earlier run that showed the yaw pinned while nobody was looking around proved
+// nothing and was retracted.
+//
+// A write must be ABSOLUTE, from a baseline captured once. Composing an offset onto the live value feeds the
+// write's own output back the next frame -- at ~300 fps a 40-degree offset became a runaway spin, which is
+// itself proof the engine derives the view from this field.
+//
+// Exposed as sdk::PlayerMgr::write_view_rotation / view_rotation (and write_applied_rotation /
+// applied_rotation for the derived generation, kept because the blur makes it useful for identifying what
+// consumes what). Driven from src/mods/ViewHook's UpdateViewPose detour.
+
 // ---- THE PLAYER'S ZOOM / ADS CONTROLLER ---------------------------------------------------------
 //
 // *(player + 256), and the ONE of the player's four sub-object pointers that is NOT an embedded member:

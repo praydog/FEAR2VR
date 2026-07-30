@@ -3838,3 +3838,55 @@ would tear. Exactly backwards. The out-of-band reader is sampling settled frames
 and the earlier "0 equal / 16 differ" readings came from heavy movement where the propagation had not caught up
 by the time the response was built.
 
+## The view CAN be driven: an absolute rotation at holder+324, written from the UpdateViewPose detour
+
+The go/no-go for head tracking, and it took three wrong answers to get to it. All three are worth keeping
+because each eliminated a candidate the previous one made look right.
+
+### The chain, measured end to end
+
+| write target | outcome |
+|---|---|
+| camera object `LTObject.rotation` | **Reclaimed** within one frame -- downstream, not writable |
+| applied pose `holder+244` | write lands (the view visibly BLURS, so the renderer consumes it) but does not survive to the next frame -- derived, recomputed every frame |
+| view rotation `holder+324` | **persists 900/900 frames**, and drives the camera AND the player's movement direction |
+
+The blur is what identified `+244` as real-but-derived: a field nothing consumed would produce no visual
+artefact at all, and one that persisted would not oscillate. Temporal blur means the renderer saw our value and
+the engine's alternately, every frame.
+
+### The bug that proved the point
+
+The first `+324` test composed its offset onto whatever the field held THAT frame. Because the write persists,
+the next frame read our own output and composed again -- 40 degrees at ~300 fps, which the player described as
+the camera "spinning like crazy" and dragging their movement with it. That was a bug in the experiment, and it
+is also the strongest possible evidence: only a field the engine truly derives the view from could runaway like
+that. The fix is to apply the offset to a baseline captured once, which makes the write ABSOLUTE -- the shape a
+head pose actually takes.
+
+### The test that finally counted
+
+An earlier "view lock" run reported the yaw pinned and I called it proof. It was not: the player was not trying
+to look around, so there was no input for the override to beat. A null result had been read as a win -- the
+exact vacuity this file keeps documenting, committed by the person documenting it.
+
+The valid form asserts its own preconditions:
+
+```
+PHASE 1  free look, mouse moving:      yaw spread 237.03 deg   look_calls +4594
+PHASE 2  override armed, still moving: yaw spread   0.00 deg   look_calls +4443
+VERDICT: OVERRIDE HOLDS
+```
+
+Phase 1 must show movement or the run reports INVALID, and phase 2 must show look input still arriving. With
+~4400 look events landing during the override the yaw sat at exactly -93.13 degrees, zero spread. The override
+wins over player input outright.
+
+**So VR head tracking is viable:** write an absolute rotation to `holder + 324` from inside the UpdateViewPose
+detour, every frame. Releasing it returns control immediately and needs no restore, because the engine
+recomputes from that field continuously -- which is also why a bounded frame countdown is enough to make the
+experiment safe.
+
+**Still open:** the write also steers movement direction, so a VR mod that decouples aim from view has to
+separate them -- that is the next question, not a solved one.
+

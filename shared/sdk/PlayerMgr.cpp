@@ -1780,6 +1780,68 @@ std::optional<PlayerMgr::TimerState> PlayerMgr::timer_at(uintptr_t address) {
     return out;
 }
 
+std::optional<std::array<float, 4>> PlayerMgr::applied_rotation(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    std::array<float, 4> q{};
+    if (!mem::copy(q.data(), p->holder + kAppliedRotation, sizeof(q))) {
+        return std::nullopt;
+    }
+    return q;
+}
+
+std::optional<std::array<float, 4>> PlayerMgr::view_rotation(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    std::array<float, 4> q{};
+    if (!mem::copy(q.data(), p->holder + kRotation, sizeof(q))) {
+        return std::nullopt;
+    }
+    return q;
+}
+
+bool PlayerMgr::write_view_rotation(unsigned index, const std::array<float, 4>& rotation) {
+    const float n2 = rotation[0] * rotation[0] + rotation[1] * rotation[1] + rotation[2] * rotation[2] +
+                     rotation[3] * rotation[3];
+    if (!(n2 > 0.98f && n2 < 1.02f)) {
+        return false;
+    }
+    for (const float c : rotation) {
+        if (!std::isfinite(c)) {
+            return false;
+        }
+    }
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return false;
+    }
+    return mem::store(p->holder + kRotation, rotation.data(), sizeof(rotation));
+}
+
+bool PlayerMgr::write_applied_rotation(unsigned index, const std::array<float, 4>& rotation) {
+    // UNIT CHECK FIRST. read_pose refuses a non-unit quaternion because that is the signature of a wrong
+    // offset; writing one would manufacture exactly the state the read side treats as a mapping error.
+    const float n2 = rotation[0] * rotation[0] + rotation[1] * rotation[1] + rotation[2] * rotation[2] +
+                     rotation[3] * rotation[3];
+    if (!(n2 > 0.98f && n2 < 1.02f)) {
+        return false;
+    }
+    for (const float c : rotation) {
+        if (!std::isfinite(c)) {
+            return false;
+        }
+    }
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return false;
+    }
+    return mem::store(p->holder + kAppliedRotation, rotation.data(), sizeof(rotation));
+}
+
 uintptr_t PlayerMgr::update_view_pose_fn() {
     static uintptr_t s_fn = 0;
     if (s_fn != 0) {

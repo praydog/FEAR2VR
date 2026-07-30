@@ -82,7 +82,28 @@ public:
         uint64_t pose_agree_equal{};
         uint64_t pose_agree_differ{};
         uint64_t pose_agree_other{};   // unreadable or torn
+
+        // ---- THE OVERRIDE EXPERIMENT ------------------------------------------------------------
+        //
+        // Writes a yaw offset into the applied pose after the original computes it, then checks on the NEXT
+        // frame whether the camera object came to hold what we wrote. That is the go/no-go for head tracking:
+        // if propagation carries our value, this hook is the place to drive a VR view from.
+        uint32_t override_frames_left{};  // auto-disarms, so a forgotten override cannot wedge the view
+        float override_yaw_deg{};
+        uint64_t override_applied{};      // frames we wrote a pose on
+        uint64_t override_carried{};      // frames the camera object then held OUR value
+        uint64_t override_rejected{};     // frames the write itself was refused
+        // Did OUR pose still stand at the next frame? Distinguishes "the engine recomputed the pose" from
+        // "the pose stood but nothing propagated it into the object" -- opposite problems with one symptom.
+        uint64_t override_pose_held{};
     };
+
+    // Arm the override for `frames` frames at `yaw_deg`. Bounded on purpose: the view returns to the engine by
+    // itself when the count runs out, because the engine recomputes the pose every frame -- there is nothing to
+    // restore and no way for a crash mid-experiment to leave the camera stuck.
+    // `write_source` picks the field: false writes the APPLIED pose at +244 (derived -- lands, blurs the
+    // view, does not survive the frame), true writes the VIEW rotation at +324 (the source candidate).
+    void arm_override(float yaw_deg, uint32_t frames, bool write_source);
 
     Observed observed() const;
 

@@ -125,6 +125,10 @@ using ShaderParamsFn = std::function<std::string()>;              // full JSON o
 // those are visible in-game -- a single-frame camera snap -- so a caller must ask for them deliberately
 // rather than get them as a side effect of reading state.
 using WriteProbeFn = std::function<std::string()>;                // full JSON object
+// ARMS THE VIEW OVERRIDE. Takes the raw request target so the handler parses its own query, like ApiFn.
+// MUTATES THE VIEW for a bounded number of frames -- the second route in this server that changes the game
+// rather than reporting on it, and like /sdk/write-probe it must be asked for deliberately.
+using ViewOverrideFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -141,6 +145,7 @@ struct Handlers {
     InterfacesFn interfaces{};   // optional; /sdk/interfaces 404s without it
     ShaderParamsFn shader_params{};  // optional; /sdk/shader-params 404s without it
     WriteProbeFn write_probe{};      // optional; /sdk/write-probe 404s without it -- MUTATES then restores
+    ViewOverrideFn view_override{};  // optional; /view-override 404s without it -- MUTATES the view, bounded
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };
