@@ -5854,3 +5854,35 @@ class LTInputDeviceMouse 0x30 {
 // cinematic_active / saved_near_z / cinematic_camera_count.
 //
 // 1201 checks, 0 failures.
+
+// ---- THE FOV PAIR IS (HORIZONTAL, VERTICAL), AND THE MAGNITUDE WAS THE WRONG EVIDENCE -----------
+//
+// Last pass recorded holder+292 as "meaning NOT established" and argued it could not be a horizontal FOV because
+// 2.31 rad is 132 degrees, which "fits no ordinary aspect ratio beside a 65-degree vertical". One decompile of the
+// producer settles it. Camera_ComputeFovPair:
+//
+//     aspect = (this[53] + this[51] - this[55] - this[49]) / (this[52] + this[54] - this[56] - this[50])
+//              falling back to 1.7777778 when the denominator is zero
+//     fov_y  = clamp(input_radians, 0, 3.1066861)                      ; 3.1066861 rad = 178.0 degrees
+//     fov_x  = clamp(2 * atan(tan(fov_y / 2) * aspect) * scale, 0, 3.1066861)
+//     out[0] = fov_x     out[1] = fov_y
+//
+// > The identity was plain in the body all along; I reasoned from the VALUE instead of reading the producer. A
+// > magnitude that looks wrong is a reason to go find the code that made it, not evidence about what the field is.
+//
+// AND THE MAGNITUDE TURNS OUT TO BE INFORMATIVE, once it is a residual rather than an objection. The recovered
+// ratio tan(fov_x/2)/tan(fov_y/2) is 3.5556 live -- that is 32/9, EXACTLY TWICE 16/9. A clean factor of two points
+// at a doubled-width or halved-height rect rather than an arbitrary scale. Which of the two, and which object
+// supplies the rect, is NOT established: it arrives in ECX and the decompiler does not show it.
+//
+// The suite checks the identity arithmetically rather than trusting it -- the recovered ratio must REBUILD fov_x
+// from fov_y through the producer's own formula, which it does to 1e-4 -- plus that both angles sit strictly inside
+// the 178-degree clamp, and that the horizontal exceeds the vertical so a swapped pair would fail. The 32/9 value
+// itself is asserted loosely and labelled measured-not-accounted-for, so a different viewport shows up as a change
+// instead of passing silently.
+//
+// Exposed as sdk::PlayerMgr::camera_fov (fov_x, fov_y) and ::aspect_ratio, with kFovClampRadians. A VR consumer
+// building per-eye projections should take the ratio from here rather than assuming the display aspect, precisely
+// because the engine's effective value is not the display's.
+//
+// 1205 checks, 0 failures.

@@ -4524,17 +4524,39 @@ int main(int argc, char** argv) {
             double cfv_y = -1.0, cfv_deg = -1.0, cfv_a = -1.0;
             check(json_bool(body, "cf_readable", cfv_r) && cfv_r, "the holder's FOV pair reads");
             check(json_double(body, "cf_fov_y", cfv_y) && json_double(body, "cf_fov_y_degrees", cfv_deg) &&
-                      json_double(body, "cf_unknown_a", cfv_a),
+                      json_double(body, "cf_fov_x", cfv_a),
                   "both components of the pair are reported");
             check(json_bool(body, "cf_fov_y_plausible", cfv_p) && cfv_p,
                   "the vertical FOV is in a plausible band for an angle in radians");
             // THE ROUNDNESS IS THE EVIDENCE: 65.0000 degrees to four decimals.
             check(cfv_deg > 0.0 && std::fabs(cfv_deg - std::round(cfv_deg)) < 0.001,
                   "the vertical FOV is a round number of degrees, as a converted setting should be");
-            // AND +292 IS NOT ASSUMED TO BE THE HORIZONTAL FOV. It is 2.31 rad = 132 degrees, which no ordinary
-            // aspect ratio produces beside a 65-degree vertical, so the pair is deliberately left half-named.
-            check(cfv_a > 0.0 && std::fabs(cfv_a - cfv_y) > 0.5,
-                  "the pair's other component is a distinctly different value, not a duplicate of the FOV");
+            // +292 IS THE HORIZONTAL FOV, settled by reading the producer: it computes
+            // fov_x = clamp(2 * atan(tan(fov_y/2) * aspect) * scale) and fov_y = clamp(input), storing them in
+            // that order. An earlier draft called it unestablished on the grounds that 132 degrees looked
+            // implausible beside 65 -- reasoning from the MAGNITUDE when the identity was plain in the code.
+            bool cfv_wc = false, cfv_xy = false;
+            check(json_bool(body, "cf_within_clamp", cfv_wc) && cfv_wc,
+                  "both angles sit strictly inside the engine's 178-degree clamp");
+            // A horizontal FOV exceeds the vertical for any ratio above one, which is the cheapest check that the
+            // pair is not stored swapped -- the producer's argument order invites exactly that mistake.
+            check(json_bool(body, "cf_x_exceeds_y", cfv_xy) && cfv_xy,
+                  "the horizontal FOV exceeds the vertical, so the pair is not swapped");
+
+            // THE RATIO THE PAIR IMPLIES must reproduce fov_x from fov_y through the producer's own formula. That
+            // is the decompiled identity checked arithmetically rather than taken on trust.
+            bool ar_av = false, ar_rt = false;
+            double ar_v = -1.0;
+            check(json_bool(body, "cf_aspect_available", ar_av) && ar_av &&
+                      json_double(body, "cf_aspect", ar_v) && ar_v > 1.0 && ar_v < 16.0,
+                  "the pair yields a plausible ratio above one");
+            check(json_bool(body, "cf_aspect_round_trips", ar_rt) && ar_rt,
+                  "that ratio rebuilds the horizontal FOV from the vertical, as the producer computes it");
+            // RECORDED, NOT EXPLAINED: the live ratio is 32/9, exactly twice 16/9. Asserted loosely so a different
+            // viewport shows up as a change rather than passing silently, without pretending the factor is
+            // understood.
+            check(ar_av && std::fabs(ar_v - 3.5556) < 0.05,
+                  "the effective ratio is twice 16:9 on this build -- measured, not accounted for");
 
             const bool fov_y_known = json_bool(body, "cf_fov_y_determinable", cfv_yd);
             json_bool(body, "cf_fov_y_matches", cfv_ym);

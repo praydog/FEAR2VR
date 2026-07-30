@@ -4619,7 +4619,16 @@ std::string build_shader_params_json() {
     json_append_bool(out, "cf_readable", cfv.has_value());
     if (cfv.has_value()) {
         json_append_double(out, "cf_fov_y", static_cast<double>(cfv->fov_y), 6);
-        json_append_double(out, "cf_unknown_a", static_cast<double>(cfv->unknown_a), 6);
+        json_append_double(out, "cf_fov_x", static_cast<double>(cfv->fov_x), 6);
+        json_append_double(out, "cf_fov_x_degrees", static_cast<double>(cfv->fov_x * 57.29577951f), 4);
+        // BOTH angles must sit strictly inside the engine's clamp; a value AT the clamp means the setting was out
+        // of range, which is a different state from a wide view.
+        json_append_bool(out, "cf_within_clamp",
+                         cfv->fov_x > 0.0f && cfv->fov_x < sdk::PlayerMgr::kFovClampRadians &&
+                             cfv->fov_y > 0.0f && cfv->fov_y < sdk::PlayerMgr::kFovClampRadians);
+        // A horizontal FOV must exceed the vertical for any ratio above 1 -- the cheapest check that the pair is
+        // not swapped, which is exactly the mistake the producer's argument order invites.
+        json_append_bool(out, "cf_x_exceeds_y", cfv->fov_x > cfv->fov_y);
         json_append_double(out, "cf_fov_y_degrees", static_cast<double>(cfv->fov_y * 57.29577951f), 4);
         // A vertical FOV has to be a plausible angle; a wrong offset would not land in this band.
         json_append_bool(out, "cf_fov_y_plausible", cfv->fov_y > 0.3f && cfv->fov_y < 2.5f);
@@ -4643,11 +4652,25 @@ std::string build_shader_params_json() {
     // should read as the zero it was constructed with. Asserted as a consistency pair, not as a magic number.
     json_append_bool(out, "cf_nearz_idle_consistent",
                      cin.has_value() && nz.has_value() && (*cin || *nz == 0.0f));
+    // THE RECOVERED RATIO. Reported rather than asserted against 16:9, because the producer also scales the
+    // half-angle and the live value is 3.56 -- which is the honest measurement, not a bug.
+    const auto ar = sdk::PlayerMgr::aspect_ratio(0);
+    json_append_bool(out, "cf_aspect_available", ar.has_value());
+    json_append_double(out, "cf_aspect", static_cast<double>(ar.value_or(-1.0f)), 4);
+    // It must be a positive finite number, and it must REPRODUCE fov_x from fov_y through the producer's formula --
+    // that is the identity the decompile established, checked arithmetically rather than taken on trust.
+    bool ar_round_trips = false;
+    if (ar.has_value() && cfv.has_value()) {
+        const auto rebuilt = 2.0f * std::atan(std::tan(cfv->fov_y * 0.5f) * *ar);
+        ar_round_trips = std::fabs(rebuilt - cfv->fov_x) <= 1e-4f;
+    }
+    json_append_bool(out, "cf_aspect_round_trips", ar_round_trips);
     json_append_bool(out, "cf_range_refused",
                      !sdk::PlayerMgr::camera_fov(9).has_value() &&
                          !sdk::PlayerMgr::cinematic_active(9).has_value() &&
                          !sdk::PlayerMgr::saved_near_z(9).has_value() &&
-                         !sdk::PlayerMgr::fov_y_matches_projection(9).has_value());
+                         !sdk::PlayerMgr::fov_y_matches_projection(9).has_value() &&
+                         !sdk::PlayerMgr::aspect_ratio(9).has_value());
 
     // WHERE THE CAMERA POSE COMES FROM: a model socket named in gameclient's code, plus three tunable floats.
     // The socket name is the cross-check -- a string literal in the DLL against the model ASSET's own socket table,

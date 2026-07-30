@@ -772,7 +772,7 @@ std::optional<PlayerMgr::CameraFov> PlayerMgr::camera_fov(unsigned index) {
         return std::nullopt;
     }
     CameraFov out;
-    out.unknown_a = *a;
+    out.fov_x = *a;
     out.fov_y = *b;
     return out;
 }
@@ -809,7 +809,7 @@ std::optional<bool> PlayerMgr::fov_x_matches_projection(unsigned index, float to
     if (!fov.has_value()) {
         return std::nullopt;
     }
-    return compare_fov_against_projection(fov->unknown_a, true, tolerance);
+    return compare_fov_against_projection(fov->fov_x, true, tolerance);
 }
 
 std::optional<bool> PlayerMgr::cinematic_active(unsigned index) {
@@ -849,6 +849,25 @@ std::optional<size_t> PlayerMgr::cinematic_camera_count() {
         return std::nullopt;
     }
     return span / sizeof(uintptr_t);
+}
+
+
+std::optional<float> PlayerMgr::aspect_ratio(unsigned index) {
+    const auto fov = camera_fov(index);
+    if (!fov.has_value()) {
+        return std::nullopt;
+    }
+    // Both angles must be inside the engine's own clamp for the ratio to mean anything: at the clamp the setting
+    // was out of range, and at zero the tangent ratio is undefined.
+    if (!(fov->fov_x > 0.0f && fov->fov_x < kFovClampRadians && fov->fov_y > 0.0f &&
+          fov->fov_y < kFovClampRadians)) {
+        return std::nullopt;
+    }
+    const auto ty = std::tan(fov->fov_y * 0.5f);
+    if (!(ty > 0.0f)) {
+        return std::nullopt;
+    }
+    return std::tan(fov->fov_x * 0.5f) / ty;
 }
 
 }  // namespace sdk

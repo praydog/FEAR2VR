@@ -307,11 +307,27 @@ public:
     // and read back -- not from the live camera. Comparing a game field against our own test fixture and calling
     // it independent corroboration is precisely the mistake this file keeps recording.
     //
-    // +292 IS ITS PAIR AND ITS MEANING IS NOT ESTABLISHED. It reads 2.3101103, which as an angle is 132.36 degrees
-    // -- implausible as a horizontal FOV beside a 65-degree vertical one, and inconsistent with any ordinary
-    // aspect ratio (it would need about 3.56). fov_x_matches_projection() tests it against the projection's own
-    // horizontal FOV so the question is answered by measurement; until it passes, the field is exposed under a
-    // name that claims nothing.
+    // +292 IS THE HORIZONTAL FOV IN RADIANS, and this was settled by reading the producer rather than by measuring
+    // anything. sub_100DFFD0 computes both fields in one place:
+    //
+    //     fov_y = clamp(input_radians, 0, kFovClampRadians)
+    //     fov_x = clamp(2 * atan(tan(fov_y / 2) * aspect) * scale, 0, kFovClampRadians)
+    //     out[0] = fov_x    out[1] = fov_y
+    //
+    // An earlier draft called +292 "not established" and reasoned that 2.31 rad = 132 degrees was implausible
+    // beside a 65-degree vertical. The magnitude WAS the wrong thing to reason from: the identity is unambiguous in
+    // the code, and what the magnitude actually tells us is the effective ratio the engine used.
+    //
+    // AND THE RATIO IS A RECOGNISABLE NUMBER, which narrows what remains open. tan(fov_x/2) / tan(fov_y/2) recovers
+    // 3.5556 live -- that is 32/9, EXACTLY TWICE 16/9, not the 1.7778 a 16:9 viewport alone would give.
+    //
+    // The producer derives its aspect from a rect as (b + d - f - h) / (a + c - e - g) over integer fields, and
+    // separately multiplies the half-angle by a `scale` argument. A factor of exactly two therefore points at a
+    // doubled-width or halved-height rect rather than at an arbitrary scale -- but WHICH, and which object supplies
+    // the rect, is not established: the caller passes it in ECX and the decompiler does not show it.
+    //
+    // aspect_ratio() returns the recovered ratio and names it for what it is. A VR consumer should use it rather
+    // than assuming the display aspect, precisely because the engine's effective value is not the display's.
     //
     // THE CINEMATIC FLAG MATTERS TO A VR CONSUMER independently of the FOV: while a cinematic camera is driving
     // the view, overriding the pose fights the script. cinematic_active() is the cheap test, and the descriptor
@@ -322,9 +338,13 @@ public:
     static constexpr uintptr_t kCinematicVectorBegin = 4660;  // on the MANAGER, not the holder
     static constexpr uintptr_t kCinematicVectorEnd = 4664;
 
+    // The engine clamps both angles to this, which is 178.0 degrees -- so a value at the clamp means the setting
+    // was out of range rather than that the view is that wide.
+    static constexpr float kFovClampRadians = 3.1066861f;
+
     struct CameraFov {
-        float unknown_a{};  // +292, paired output of the same producer; meaning NOT established
-        float fov_y{};      // +296, vertical FOV in radians -- agrees with the projection
+        float fov_x{};  // +292, horizontal FOV in radians
+        float fov_y{};  // +296, vertical FOV in radians
     };
 
     static std::optional<CameraFov> camera_fov(unsigned index);
@@ -333,9 +353,17 @@ public:
     // that establishes the field, and a staleness test for a consumer that cached either.
     static std::optional<bool> fov_y_matches_projection(unsigned index, float tolerance = 0.01f);
 
-    // The same question for +292 against the projection's HORIZONTAL FOV. Expected to be false on this build --
-    // it is here so the field's meaning is decided by measurement rather than by its position beside fov_y.
+    // The same question for the horizontal FOV against the projection's own. Kept because the two are computed by
+    // different code from different inputs -- the game from a setting and an aspect, the renderer's from its
+    // projection matrix -- so agreement is a real cross-check once a perspective pass exists to read.
     static std::optional<bool> fov_x_matches_projection(unsigned index, float tolerance = 0.01f);
+
+    // The ratio the pair implies: tan(fov_x/2) / tan(fov_y/2). That is what the engine effectively applied, which
+    // is NOT necessarily the display aspect -- the producer also scales the half-angle. A VR consumer building
+    // per-eye projections wants this number rather than assuming 16:9.
+    //
+    // nullopt when the pair cannot be read or either angle is outside (0, kFovClampRadians).
+    static std::optional<float> aspect_ratio(unsigned index);
 
     // Is a cinematic camera currently driving the view? While it is, the pose comes from the descriptor's own
     // object and NearZ is overridden, with the previous value parked at kSavedNearZ until the cinematic ends.
