@@ -366,23 +366,58 @@ bin\injector.exe --status                   # module/IPC snapshot
 ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```
 
-**After a crash, `python tools/resume_game.py`.** It relaunches through Steam if the
-process is gone, injects, and puts the game back in-world -- unattended and idempotent.
+## Crash recovery: `python tools/resume_game.py`
 
-The menu cannot be driven by synthetic input, and that is measured rather than assumed:
-`SendInput` moves the cursor and the highlight follows it but nothing activates; the
-window-message key queue is not drained (buffered input reads false at the menu); and a
-press written into the engine's own device array -- visible in its MouseState as a clean
-press and release -- is ignored by Scaleform. What works is the game's own UI command
-table, `sdk::UiCommands`, which is where a menu click dispatches anyway:
-`Menu.StartCheckpoint` is "Continue From Last Saved Point".
+**One command takes a dead game to an injected, in-world, test-ready session with no
+human.** Verified end to end from a terminated process: 71 seconds, cold.
 
-Once a world is loaded synthetic input DOES work, because the game consumes it rather
-than the front end -- so the load screen's "press to continue" is a synthetic Space.
+```
+python tools/resume_game.py          # idempotent -- run it any time
+```
 
-Beware the console command that looks equivalent: `LoadCheckpoint` reaches the same
-dispatcher with a different mode and refuses outside a loaded world, printing "You can
-only reload a checkpoint from within the world". At the menu it runs and does nothing.
+```
+[resume] FEAR2 is not running -- launching through Steam
+[resume] waiting for the engine to come up
+[resume] injecting
+[resume] at the menu -- invoking Menu.StartCheckpoint
+[resume] world loaded
+[resume] in-world
+```
+
+What it does, and why each step is what it is:
+
+1. **Launch through Steam** (`steam://rungameid/16450`), never the exe. The on-disk
+   `FEAR2.exe` is CEG/SteamStub-wrapped and refuses a direct launch.
+2. **Inject** and wait for `/health`.
+3. **`/console/run?cmd=Menu.StartCheckpoint`** -- the game's OWN UI command, not a
+   synthesised click. This is "Continue From Last Saved Point".
+4. **`/input/tap?vk=32`** to dismiss the load screen's "press to continue".
+
+**The menu CANNOT be driven by synthetic input.** Measured, not assumed -- all three
+routes fail, and the evidence is in `reversing/MAPPING_WORKFLOW.MD`:
+
+| route | result |
+|---|---|
+| `SendInput` (VK and scancode, window verified foreground) | cursor moves, highlight follows, nothing activates |
+| window-message key queue | never drained -- buffered input is false at the menu AND in play |
+| engine device array via its own entry points | press visible in the engine's own `MouseState`, Scaleform ignores it |
+
+So step 3 dispatches what a click would have dispatched. `sdk::UiCommands` maps
+gameclient's table of 52 `{name, handler, flag}` rows, found by scanning for a POINTER
+to a known command name (the table is built by a run of `mov`s, so a byte pattern over
+it would encode link-time offsets).
+
+**Do not substitute the console's `LoadCheckpoint`.** It reaches the same dispatcher at
+a different mode and refuses outside a loaded world -- it prints "You can only reload a
+checkpoint from within the world" and returns, which at the menu looks exactly like a
+broken call. `Menu.StartCheckpoint` is mode 8, `Menu.ContinueGame` mode 1,
+`LoadCheckpoint` mode 9.
+
+**Step 4 works where step 3's equivalent does not**, and that asymmetry is the useful
+fact: once a world is loaded the GAME consumes device-array input, so synthetic keys
+land. Only the Scaleform front end ignores them.
+
+## Iteration, once you are in
 
 **`build.bat` unloads the payload before building.** A resident `fear2vr.dll`
 holds its own file open, so relinking it fails with `LNK1104: cannot open file

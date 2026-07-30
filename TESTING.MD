@@ -81,6 +81,62 @@ A fixture red is information, never "flaky". Reproduce the specific claim
 standalone (`curl http://127.0.0.1:8798/sdk/targets` plus a debugger read)
 before believing anything else.
 
+## Getting a test-ready fixture: `python tools/resume_game.py`
+
+Most of this suite needs a loaded world and a live player. At the main menu 103 checks
+go red for want of a client shell, a world and a player -- legitimate engine state, not
+defects -- against 3 in-world. So "is the fixture in the right state" is a prerequisite
+of reading any result, and it is automated:
+
+```
+python tools/resume_game.py          # idempotent; run before a session or after a crash
+```
+
+Verified end to end from a TERMINATED process: 71 seconds, cold, no human input.
+Dead game -> Steam launch -> inject -> `Menu.StartCheckpoint` -> Space -> in-world,
+followed immediately by a full suite run of 1532 checks.
+
+It matters for the evidence rules, not just convenience. A red that only appears at the
+menu is a state, and a suite run against the wrong state produces a hundred plausible
+failures that mean nothing -- exactly the "narrowing the input" failure this file
+prohibits, arrived at by accident instead of by choice.
+
+**Why it does not synthesise a menu click.** All three input routes were measured
+against the main menu and none works: `SendInput` moves the cursor and the highlight
+follows but nothing activates; the window-message key queue is never drained (buffered
+input reads false); and a press written through the engine's own entry points is
+visible in the engine's own `MouseState` and ignored by Scaleform. So the script
+dispatches the game's own UI command instead -- `sdk::UiCommands`, the table a click
+goes through anyway. Full evidence in `reversing/MAPPING_WORKFLOW.MD`.
+
+Once a world IS loaded, synthetic input works, because the game consumes it rather than
+the front end. That is why step 4 (a synthetic Space on the load screen) succeeds where
+a synthetic click on the menu does not.
+
+## Uninject is tested with something ARMED, and that is why it caught this
+
+TESTING.MD already required the teardown path to be held to the same bar. The watchpoint
+work sharpened it: the suite now leaves a hardware watch **armed on purpose** across the
+uninject, because debug registers live in every thread's context and the vectored
+handler lives in code about to be unmapped. The existing "game process survived
+uninjection" assertion only means something if something was armed.
+
+It earned its keep immediately. `Watchpoints` excluded the CALLING thread from its
+thread sweep -- correct when arming, so our own SDK reads do not trap and report this
+mod as the accessor, and fatal when disarming: the unload thread kept its DR7, then
+`RemoveVectoredExceptionHandler` took the handler away, and the next trap had nowhere to
+go. An unhandled `STATUS_SINGLE_STEP` terminates the process.
+
+The suite reported it precisely as `[FAIL] game process survived uninjection`.
+
+Two generalisations worth carrying:
+
+- **A symmetric-looking pair of operations may not be symmetric.** Arm and disarm shared
+  one helper and one exclusion rule; only one of them wanted it.
+- **Raise the stress of the teardown test deliberately.** The bug existed while the
+  armed watch was on a rarely-written field and stayed invisible. Switching the target
+  to one read ~480 times a second is what turned a latent crash into a reproducible one.
+
 ## The rules that make a fixture test VALID
 
 1. **Prove residency host-side.** Module geometry comes from the runner's own

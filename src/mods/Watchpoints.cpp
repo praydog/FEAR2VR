@@ -160,7 +160,12 @@ struct ThreadIter {
         return Thread32First(snap, &te) != FALSE;
     }
 
-    bool valid() const { return te.th32OwnerProcessID == pid && te.th32ThreadID != self; }
+    // `include_self` is the difference between arming and disarming, and getting it wrong is fatal rather
+    // than merely untidy -- see apply_slot_everywhere.
+    bool include_self{false};
+    bool valid() const {
+        return te.th32OwnerProcessID == pid && (include_self || te.th32ThreadID != self);
+    }
     bool next() { return Thread32Next(snap, &te) != FALSE; }
 
     ~ThreadIter() {
@@ -170,9 +175,36 @@ struct ThreadIter {
     }
 };
 
+// Clears every debug register on the CURRENT thread. No suspension: a thread editing its own context while
+// running is the one case where Suspend/Resume is impossible, and no other writer exists for these registers.
+bool clear_own_debug_registers() {
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (!GetThreadContext(GetCurrentThread(), &ctx)) {
+        return false;
+    }
+    ctx.Dr0 = 0;
+    ctx.Dr1 = 0;
+    ctx.Dr2 = 0;
+    ctx.Dr3 = 0;
+    ctx.Dr6 = 0;
+    ctx.Dr7 = 0;
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    return SetThreadContext(GetCurrentThread(), &ctx) != FALSE;
+}
+
 uint32_t apply_slot_everywhere(size_t i, bool enable, uintptr_t address, uint8_t size, uint8_t rw,
                                bool only_new_threads) {
     ThreadIter it;
+    // SELF-EXCLUSION IS FOR ARMING ONLY. Arming skips the caller so our own SDK reads do not trap and report
+    // this mod as the accessor. DISARMING must cover EVERY thread including the caller, and the asymmetry is
+    // not cosmetic: it killed FEAR2 on uninject.
+    //
+    // The unload path runs on a different thread from the one that armed, so the unloading thread still had
+    // DR7 set. disarm_all() skipped it, RemoveVectoredExceptionHandler then took the handler away, and the
+    // next trap -- on a field read roughly 480 times a second -- had nowhere to go. Unhandled STATUS_SINGLE_STEP
+    // terminates the process, which is exactly what the fixture saw as "game process survived uninjection".
+    it.include_self = !enable;
     if (!it.begin()) {
         return 0;
     }
@@ -183,6 +215,17 @@ uint32_t apply_slot_everywhere(size_t i, bool enable, uintptr_t address, uint8_t
         }
         const uint32_t tid = it.te.th32ThreadID;
         if (only_new_threads && tid_known(tid)) {
+            continue;
+        }
+        if (tid == it.self) {
+            // A thread cannot suspend itself to edit its own context. Set/GetThreadContext on the CURRENT
+            // thread is documented as unreliable, so the caller's registers are cleared through the same
+            // path the handler uses: an exception's CONTEXT is writable. Here the cheap, correct route is
+            // simply to leave the OS to it -- clearing DR7 via a self-context write with no suspension is
+            // valid because nothing else is mutating this thread's registers while it runs this line.
+            if (clear_own_debug_registers()) {
+                ++applied;
+            }
             continue;
         }
         HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, tid);

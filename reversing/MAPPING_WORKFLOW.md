@@ -4284,3 +4284,44 @@ owner rewrites a value, fighting the store loses. Intercept the call that DECIDE
 **Still suspended while unfocused:** `UpdateViewPose` and the renderer (`renderer_state` 1 rather than 4). Time
 runs; the view and render path do not. That is a separate gate and remains unmapped.
 
+## Arming and disarming are not symmetric, and the difference killed the game on uninject
+
+`Watchpoints::apply_slot_everywhere` enumerated threads through one helper that SKIPPED THE CALLING THREAD.
+That is correct for arming -- the caller is the IPC thread, which reads these very addresses to build /sdk/*
+reports, so arming it would trap on our own reads and name this mod as the accessor. It is fatal for
+disarming, because the unload path runs on a DIFFERENT thread than the one that armed: that thread kept its
+DR7, `RemoveVectoredExceptionHandler` then removed the handler, and the next trap had nowhere to go. An
+unhandled STATUS_SINGLE_STEP terminates the process.
+
+Diagnosed by reading rather than by a debugger, from two facts that only collide in this configuration:
+
+  1. the sweep excludes `self`, unconditionally, and
+  2. the suite's deliberate leave-armed-across-uninject watch had just been retargeted from a rarely-written
+     field to `g_ClientGlob_bClientActive` with `type=rw` -- read about 480 times a second.
+
+The bug was latent for as long as the armed target was cold. Raising the stress of the teardown test is what
+made it reproducible, which is the argument for arming something hot there on purpose.
+
+Fix: `include_self = !enable`, plus a `clear_own_debug_registers()` path, because a thread cannot suspend
+itself to edit its own context and Get/SetThreadContext on the current thread is only safe precisely because
+nothing else writes those registers while it runs.
+
+Symptom to recognise: the fixture prints `[FAIL] game process survived uninjection` and the process is gone.
+That check exists for this class of defect and it is the reason the suite arms something before unloading.
+
+## The whole crash-recovery loop, proven cold
+
+Terminated the process, then `python tools/resume_game.py`:
+
+    [resume] FEAR2 is not running -- launching through Steam
+    [resume] waiting for the engine to come up
+    [resume] injecting
+    [resume] at the menu -- invoking Menu.StartCheckpoint
+    [resume] world loaded
+    [resume] in-world
+    rc=0  elapsed=71s
+
+followed by a full suite run against that session: 1532 checks, 3 reds, and the game alive afterwards. The
+loop needs no human at any step, which is the whole point -- an unattended session that crashes now recovers
+itself instead of stalling until somebody clicks a menu.
+
