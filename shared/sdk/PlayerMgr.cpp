@@ -1,6 +1,8 @@
 #include "PlayerMgr.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <cstring>
 #include <iterator>
 
@@ -559,6 +561,123 @@ std::optional<bool> PlayerMgr::camera_rotation_is_composed(unsigned index, float
         flipped += std::fabs(ops->composed[i] + ops->actual[i]);
     }
     return std::min(same, flipped) <= tolerance * 4.0f;
+}
+
+
+std::optional<bool> PlayerMgr::camera_attachment_driving(unsigned index) {
+    const auto ops = camera_rotation_operands(index);
+    if (!ops.has_value()) {
+        return std::nullopt;
+    }
+    const auto& q = ops->outer;
+    const bool identity = std::fabs(q[0]) < 1e-4f && std::fabs(q[1]) < 1e-4f && std::fabs(q[2]) < 1e-4f &&
+                          std::fabs(std::fabs(q[3]) - 1.0f) < 1e-4f;
+    return !identity;
+}
+
+std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_outer_operand(unsigned index, unsigned samples) {
+    return probe_holder_quaternion(index, kCameraRotationOuter, true, samples);
+}
+
+std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_holder_quaternion(unsigned index,
+                                                                              uintptr_t holder_offset,
+                                                                              bool expect_composed_with_inner,
+                                                                              unsigned samples) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0 || p->camera_object == 0) {
+        return std::nullopt;
+    }
+    const auto at = p->holder + holder_offset;
+    std::array<float, 4> saved{};
+    if (!mem::copy(saved.data(), at, sizeof(saved))) {
+        return std::nullopt;
+    }
+    std::array<float, 4> inner{};
+    if (!mem::copy(inner.data(), p->holder + kCameraRotationInner, sizeof(inner))) {
+        return std::nullopt;
+    }
+    // A 90-degree yaw: unmistakably not identity, and harmless for the frames it lasts.
+    const std::array<float, 4> probe{0.0f, 0.70710678f, 0.0f, 0.70710678f};
+    if (!mem::write<std::array<float, 4>>(at, probe)) {
+        return std::nullopt;
+    }
+    std::array<float, 4> exp = probe;
+    if (expect_composed_with_inner) {
+        regenny::LTRotation a{};
+        regenny::LTRotation b{};
+        a.x = probe[0]; a.y = probe[1]; a.z = probe[2]; a.w = probe[3];
+        b.x = inner[0]; b.y = inner[1]; b.z = inner[2]; b.w = inner[3];
+        const auto prod = multiply_rotations(a, b);
+        exp = {prod.x, prod.y, prod.z, prod.w};
+    }
+
+    OuterOperandProbe out;
+    out.samples = samples;
+    for (unsigned i = 0; i < samples; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        std::array<float, 4> now{};
+        if (!mem::copy(now.data(), at, sizeof(now))) {
+            break;
+        }
+        if (std::memcmp(now.data(), probe.data(), sizeof(probe)) != 0) {
+            break;  // reclaimed by whatever writes this field
+        }
+        ++out.survived;
+        if (!out.followed) {
+            if (const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(p->camera_object));
+                info.has_value()) {
+                const std::array<float, 4> act{info->rotation.x, info->rotation.y, info->rotation.z,
+                                               info->rotation.w};
+                float same = 0.0f;
+                float flip = 0.0f;
+                for (size_t k = 0; k < 4; ++k) {
+                    same += std::fabs(exp[k] - act[k]);
+                    flip += std::fabs(exp[k] + act[k]);
+                }
+                if (std::min(same, flip) <= 0.01f) {
+                    out.followed = true;
+                }
+            }
+        }
+    }
+    mem::write<std::array<float, 4>>(at, saved);
+    return out;
+}
+
+
+std::optional<PlayerMgr::OuterOperandProbe> PlayerMgr::probe_camera_object_rotation(unsigned index,
+                                                                                   unsigned samples) {
+    const auto p = player(index);
+    if (!p.has_value() || p->camera_object == 0) {
+        return std::nullopt;
+    }
+    // LTObject.rotation, the field the engine's own SetObjectRotation writes.
+    constexpr uintptr_t kObjectRotation = 0x20;
+    const auto at = p->camera_object + kObjectRotation;
+    std::array<float, 4> saved{};
+    if (!mem::copy(saved.data(), at, sizeof(saved))) {
+        return std::nullopt;
+    }
+    const std::array<float, 4> probe{0.0f, 0.70710678f, 0.0f, 0.70710678f};
+    if (!mem::write<std::array<float, 4>>(at, probe)) {
+        return std::nullopt;
+    }
+    OuterOperandProbe out;
+    out.samples = samples;
+    for (unsigned i = 0; i < samples; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        std::array<float, 4> now{};
+        if (!mem::copy(now.data(), at, sizeof(now))) {
+            break;
+        }
+        if (std::memcmp(now.data(), probe.data(), sizeof(probe)) != 0) {
+            break;
+        }
+        ++out.survived;
+    }
+    out.followed = out.survived == samples;
+    mem::write<std::array<float, 4>>(at, saved);
+    return out;
 }
 
 }  // namespace sdk

@@ -5690,3 +5690,52 @@ class LTInputDeviceMouse 0x30 {
 // action-id dispatcher acting on the model, deliberately unnamed, so it is not re-examined as a camera candidate.
 //
 // 1168 checks, 0 failures.
+
+// ---- THE OUTER OPERAND'S WRITER, AND THREE MUTATION PROBES THAT PROVED LESS THAN THEY SEEMED -----
+//
+// Last pass ended by calling the pose holder's +552 quaternion "the natural place to compose a headset
+// orientation", inferred from the write path's code. This pass went to check that claim and came back with a
+// weaker, more useful answer.
+//
+// THE SOLE WRITER, found by scanning every camera-range function for writes to +552: exactly one,
+// PlayerCamera_UpdateAttachedRotation. Its three branches settle what the field IS:
+//
+//     attached      rot = GetObjectRotation(attached_object), optionally pre-multiplied, optionally
+//                   constrained per axis by conjugating the previous value and zeroing pitch or yaw in Euler
+//     +720 set      an Euler clamp path on +324
+//     otherwise     IDENTITY
+//
+// So +552 is an ATTACHMENT ROTATION -- cinematic, mount, scripted view -- and identity in ordinary play. That is
+// now a consumer predicate: sdk::PlayerMgr::camera_attachment_driving() answers "is something steering the view".
+//
+// THEN THE PROBES, and this is the part worth keeping. Three mutation tests, each writing a 90-degree yaw,
+// sampling ~200ms, and restoring:
+//
+//     +552 (outer operand)          survived 12/12    camera object did NOT follow
+//     +324 (inner operand)          survived 12/12    camera object did NOT follow
+//     camera object's rotation      survived 12/12    -
+//
+// I first read the code's identity branch as "a write is reclaimed every frame" and expected survival 0. It
+// survived everything, so I flipped to "the field is writable but nothing reads it". THAT WAS ALSO WRONG. The
+// third probe settles it: a value written directly to the camera object -- the thing the renderer reads -- also
+// survives untouched.
+//
+// > NOTHING WRITES ANY OF THEM WHILE THE PLAYER STANDS STILL. The pose pipeline is quiescent, so a write cannot
+// > propagate and its failure to propagate says nothing about the field. Two successive readings of the same
+// > measurement were wrong in opposite directions before the control probe showed the measurement could not
+// > answer the question at all.
+//
+// THAT ALSO VOIDS THE CAUSAL READING of every equality recorded here: applied pose == camera object transform,
+// composed product == camera object rotation. With the pipeline idle those are a last-synced snapshot and
+// establish no direction. The equalities stand; the arrows do not.
+//
+// Exposed as sdk::PlayerMgr::probe_holder_quaternion / probe_camera_object_rotation -- a consumer choosing an
+// injection point can ask "does writing here reach the engine" directly, and the header states plainly that the
+// probes only discriminate on a MOVING camera.
+//
+// AND A TEST-DESIGN FAULT WORTH RECORDING. Placed first in the endpoint, the camera-object probe perturbed the
+// object that a later read-only check compares the applied pose against, and that check FAILED. The assertion was
+// right and the probe placement was wrong: a verification probe must not mutate state other assertions read. The
+// probes now run last, after every read-only measurement.
+//
+// 1174 checks, 0 failures.

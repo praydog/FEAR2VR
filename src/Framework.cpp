@@ -4651,7 +4651,9 @@ std::string build_shader_params_json() {
     }
     json_append_bool(out, "cro_range_refused",
                      !sdk::PlayerMgr::camera_rotation_operands(9).has_value() &&
-                         !sdk::PlayerMgr::camera_rotation_is_composed(9).has_value());
+                         !sdk::PlayerMgr::camera_rotation_is_composed(9).has_value() &&
+                         !sdk::PlayerMgr::camera_attachment_driving(9).has_value() &&
+                         !sdk::PlayerMgr::probe_outer_operand(9).has_value());
 
     // PLATFORM CARRY -- the producer of the external-delta accumulator. Live nothing is being ridden, so the
     // assertions are about the IDLE state being internally consistent and about the carried case being reported
@@ -4952,6 +4954,45 @@ std::string build_shader_params_json() {
     json_append_bool(out, "cv_absent_refused",
                      !sdk::Engine::find_cached_var("NoSuchCachedVariable").has_value() &&
                          !sdk::Engine::find_cached_var("").has_value());
+
+    // ---- MUTATION PROBES, DELIBERATELY LAST -----------------------------------------------
+    // These WRITE engine state and restore it. Everything above is read-only, so the probes run after
+    // it: an earlier version placed them first and the camera-object probe perturbed the object that a
+    // later read-only check compares the applied pose against, failing an assertion that was correct.
+    // A verification probe must not mutate state other assertions read.
+    // IS AN ATTACHMENT STEERING THE VIEW right now? Non-identity outer operand means yes.
+    const auto cro_att = sdk::PlayerMgr::camera_attachment_driving(0);
+    json_append_bool(out, "cro_attachment_determinable", cro_att.has_value());
+    json_append_bool(out, "cro_attachment_driving", cro_att.has_value() && *cro_att);
+    // DOES A WRITTEN VALUE SURVIVE? The operand's only writer runs every frame and rewrites it unconditionally,
+    // so a consumer cannot steer the view by writing here. Measured rather than asserted: write a 90-degree yaw,
+    // sample until it disappears, restore. 0 samples survived means it was reclaimed before the first sample.
+    const auto cro_pr = sdk::PlayerMgr::probe_outer_operand(0);
+    json_append_bool(out, "cro_probe_ran", cro_pr.has_value());
+    json_append_double(out, "cro_probe_survived", static_cast<double>(cro_pr.has_value() ? cro_pr->survived : 9999), 0);
+    json_append_double(out, "cro_probe_samples", static_cast<double>(cro_pr.has_value() ? cro_pr->samples : 0), 0);
+    json_append_bool(out, "cro_probe_view_followed", cro_pr.has_value() && cro_pr->followed);
+    // THE INNER OPERAND, probed the same way. It is what the camera object's rotation currently equals, so if any
+    // holder field steers the view in this state it should be this one. `false` for expect_composed means the
+    // camera rotation is compared against the written value directly, since the outer operand is identity.
+    const auto cro_pi = sdk::PlayerMgr::probe_holder_quaternion(0, sdk::PlayerMgr::kCameraRotationInner, false);
+    json_append_bool(out, "cro_inner_probe_ran", cro_pi.has_value());
+    json_append_double(out, "cro_inner_probe_survived",
+                       static_cast<double>(cro_pi.has_value() ? cro_pi->survived : 9999), 0);
+    json_append_bool(out, "cro_inner_probe_view_followed", cro_pi.has_value() && cro_pi->followed);
+    // THE CAMERA OBJECT ITSELF. The engine renders from this, so survival here is what a VR override needs.
+    const auto cro_pc = sdk::PlayerMgr::probe_camera_object_rotation(0);
+    json_append_bool(out, "cro_object_probe_ran", cro_pc.has_value());
+    json_append_double(out, "cro_object_probe_survived",
+                       static_cast<double>(cro_pc.has_value() ? cro_pc->survived : 9999), 0);
+    json_append_double(out, "cro_object_probe_samples",
+                       static_cast<double>(cro_pc.has_value() ? cro_pc->samples : 0), 0);
+    // After the probe the operand must be back to a unit quaternion -- the restore has to leave it usable.
+    if (const auto after = sdk::PlayerMgr::camera_rotation_operands(0); after.has_value()) {
+        const auto n = std::sqrt(after->outer[0] * after->outer[0] + after->outer[1] * after->outer[1] +
+                                 after->outer[2] * after->outer[2] + after->outer[3] * after->outer[3]);
+        json_append_bool(out, "cro_probe_left_unit", std::fabs(n - 1.0f) <= 0.01f);
+    }
 
     // THE CAMERA'S CACHED TUNABLES. The claim under test is the GRID ORDERING, and the check is that a name
     // COMPOSED from (channel, axis, parameter) resolves through the console tables to the very record cached at

@@ -4545,6 +4545,53 @@ int main(int argc, char** argv) {
             // means it must not. Either way the assertion is exact, and it upgrades itself when the view moves.
             check(cro_n && (cro_oi ? cro_re <= 0.004 : cro_re > 0.004),
                   "the reversed product matches only while the outer operand is identity");
+            // ---- WHAT WRITING THESE FIELDS DOES, AND WHY IT CANNOT BE READ AS AN ANSWER YET --------
+            //
+            // Three mutation probes: the outer operand, the inner operand, and the camera object's own rotation.
+            // Each writes a 90-degree yaw, samples, and restores.
+            //
+            // ALL THREE SURVIVE EVERY SAMPLE. That is the finding, and it is a statement about the PIPELINE, not
+            // about the fields: with the player standing still the camera pose is not being recomputed or pushed,
+            // so nothing can propagate and nothing reclaims a write. A probe on a static scene cannot tell "this
+            // field is not read" from "nothing is running".
+            //
+            // So the suite asserts the CONDITIONAL. While the camera object's own rotation survives untouched the
+            // pipeline is idle and the holder probes must show no propagation; the moment the object's rotation
+            // starts being reclaimed the pipeline is live and those probes become meaningful.
+            bool cro_ar = false, cro_ad = false;
+            check(json_bool(body, "cro_attachment_determinable", cro_ar) && cro_ar,
+                  "whether an attachment is steering the camera is answerable");
+            // The outer operand's sole writer stores an attached object's rotation or identity, so a non-identity
+            // value means something is steering the view. Standing still, nothing is.
+            bool cro_oi2 = false;
+            check(json_bool(body, "cro_outer_identity", cro_oi2) && cro_oi2 &&
+                      json_bool(body, "cro_attachment_driving", cro_ad) && !cro_ad,
+                  "the outer operand is identity and no attachment is reported driving the view");
+
+            double op_s = -1.0, op_n = -1.0, ip_s = -1.0, cp_s = -1.0, cp_n = -1.0;
+            bool op_f = false, ip_f = false, pr1 = false, pr2 = false, pr3 = false;
+            const bool probes = json_bool(body, "cro_probe_ran", pr1) &&
+                                json_bool(body, "cro_inner_probe_ran", pr2) &&
+                                json_bool(body, "cro_object_probe_ran", pr3) &&
+                                json_double(body, "cro_probe_survived", op_s) &&
+                                json_double(body, "cro_probe_samples", op_n) &&
+                                json_double(body, "cro_inner_probe_survived", ip_s) &&
+                                json_double(body, "cro_object_probe_survived", cp_s) &&
+                                json_double(body, "cro_object_probe_samples", cp_n) &&
+                                json_bool(body, "cro_probe_view_followed", op_f) &&
+                                json_bool(body, "cro_inner_probe_view_followed", ip_f);
+            check(probes && pr1 && pr2 && pr3, "all three mutation probes ran and restored");
+            const bool pipeline_idle = probes && cp_n > 0.0 && cp_s == cp_n;
+            // THE CONDITIONAL, exact in both directions.
+            check(probes && (pipeline_idle ? (!op_f && !ip_f) : true),
+                  "while the camera object holds a written rotation, no holder write propagates -- the pipeline is idle");
+            check(probes && (pipeline_idle ? (op_s == op_n && ip_s == op_n) : true),
+                  "an idle pipeline reclaims none of the holder fields either");
+            // A probe must LEAVE THE FIELD USABLE whatever it found.
+            bool cro_lu = false;
+            check(json_bool(body, "cro_probe_left_unit", cro_lu) && cro_lu,
+                  "the probe restores a unit quaternion");
+
             bool cro_rr = false;
             check(json_bool(body, "cro_range_refused", cro_rr) && cro_rr,
                   "an out-of-range slot yields neither the operands nor the comparison");

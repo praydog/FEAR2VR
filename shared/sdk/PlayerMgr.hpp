@@ -329,6 +329,71 @@ public:
     // the same algebra and need not round identically.
     static std::optional<bool> camera_rotation_is_composed(unsigned index, float tolerance = 0.001f);
 
+    // IS AN ATTACHMENT DRIVING THE VIEW? The outer operand has exactly ONE writer,
+    // PlayerCamera_UpdateAttachedRotation, and it either copies an attached object's rotation into it or -- in the
+    // ordinary case -- stores IDENTITY. So a non-identity outer operand means something is currently steering the
+    // camera: a cinematic, a mounted position, a scripted view.
+    //
+    // nullopt when the operand cannot be read.
+    static std::optional<bool> camera_attachment_driving(unsigned index);
+
+    // DOES WRITING THE OUTER OPERAND ACTUALLY STEER THE VIEW? This is the question a VR mod turns on, and it is
+    // answered by measurement rather than by reading the writer.
+    //
+    // WHAT THE PROBES ACTUALLY SHOW, AND WHAT THEY CANNOT. Measured with the player standing still: a quaternion
+    // written to the outer operand survives every sample over ~200ms and the camera object does NOT change; the
+    // same holds for the inner operand; AND a value written directly to the camera object's own rotation also
+    // survives untouched.
+    //
+    // ALL THREE SURVIVING MEANS THE PIPELINE IS QUIESCENT, not that any field is unread. With nothing moving, the
+    // camera pose is not being recomputed or pushed at all, so a write cannot propagate and its failure to
+    // propagate proves nothing about the field. These probes only discriminate on a MOVING camera.
+    //
+    // THAT ALSO VOIDS ANY CAUSAL READING of the equalities this class documents. The applied pose equals the
+    // camera object's transform and the composed product equals its rotation, but with the pipeline idle those
+    // equalities are a last-synced snapshot: they do not establish which side is upstream. An earlier note here
+    // called the outer operand "the natural place to compose a headset orientation" -- that was inferred from the
+    // write path's code, and nothing measured so far supports or refutes it.
+    //
+    // IT WRITES ENGINE STATE briefly and restores it, so it is a verification tool rather than something to call
+    // from a shipping mod.
+    struct OuterOperandProbe {
+        unsigned samples{};   // how many samples were taken
+        unsigned survived{};  // how many still held the written value
+        bool followed{};      // the camera object's rotation matched probe * inner
+    };
+
+    // nullopt when the operand cannot be read or the write faulted.
+    static std::optional<OuterOperandProbe> probe_outer_operand(unsigned index, unsigned samples = 12);
+
+    // THE GENERAL FORM: does writing a quaternion at `holder_offset` steer the camera object? Answers the only
+    // question that matters when choosing where to inject a head orientation, and answers it by doing it.
+    //
+    //   survived  -- how many samples kept the written value, i.e. whether anything reclaims the field
+    //   followed  -- whether the camera object's rotation changed to match, i.e. whether anything READS it
+    //
+    // The two are independent and both matter. A field that survives but is not followed is dead in this state
+    // (nothing reads it); a field that is followed but does not survive needs writing every frame. Measured on
+    // the OUTER operand: survives every sample and is NOT followed -- so the composer that reads it is not the
+    // one currently driving the view.
+    //
+    // `expect_composed_with_inner` selects what "followed" compares against: true for an operand that the engine
+    // multiplies by holder[+324], false for a field that becomes the rotation outright.
+    //
+    // WRITES ENGINE STATE briefly and restores it. A verification tool, not a shipping path.
+    static std::optional<OuterOperandProbe> probe_holder_quaternion(unsigned index, uintptr_t holder_offset,
+                                                                    bool expect_composed_with_inner,
+                                                                    unsigned samples = 12);
+
+    // AND THE ONE THAT ACTUALLY MATTERS: write the CAMERA OBJECT's own rotation and see whether it holds. The
+    // engine builds the view from this object, so a value that survives here is a value the renderer will use.
+    //
+    // `followed` is meaningless for this probe (the field IS the target) and is reported as the survival result,
+    // so read `survived` alone: equal to `samples` means nothing overwrote it for the whole window.
+    //
+    // WRITES ENGINE STATE briefly and restores it.
+    static std::optional<OuterOperandProbe> probe_camera_object_rotation(unsigned index, unsigned samples = 12);
+
     // ---- PLATFORM CARRY, WHICH IS WHERE external_delta COMES FROM --------------------------
     //
     // The external_delta field above was documented last pass from the CONSUMER side: the velocity commit
