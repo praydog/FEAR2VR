@@ -4610,6 +4610,49 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE CAMERA'S COMPOSED ROTATION. The write path multiplies two stored quaternions and pushes the product to
+    // the camera object, so recomputing the product here and comparing against what the object carries
+    // establishes BOTH operands AND the multiplication order in one measurement.
+    const auto cro = sdk::PlayerMgr::camera_rotation_operands(0);
+    const auto cro_ok = sdk::PlayerMgr::camera_rotation_is_composed(0);
+    json_append_bool(out, "cro_resolved", cro.has_value());
+    json_append_bool(out, "cro_determinable", cro_ok.has_value());
+    json_append_bool(out, "cro_composed_matches", cro_ok.has_value() && *cro_ok);
+    if (cro.has_value()) {
+        const auto unit = [](const std::array<float, 4>& q) {
+            const auto n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+            return std::fabs(n - 1.0f) <= 0.01f;
+        };
+        // All four must be real orientations; a wrong offset does not produce norm 1.
+        json_append_bool(out, "cro_outer_unit", unit(cro->outer));
+        json_append_bool(out, "cro_inner_unit", unit(cro->inner));
+        json_append_bool(out, "cro_actual_unit", unit(cro->actual));
+        // THE OPERANDS MUST BE DIFFERENT QUATERNIONS. If one were identity the product would equal the other and
+        // the test would pass without establishing the composition at all -- so identity is measured, not assumed
+        // away.
+        const auto is_identity = [](const std::array<float, 4>& q) {
+            return std::fabs(q[0]) < 1e-4f && std::fabs(q[1]) < 1e-4f && std::fabs(q[2]) < 1e-4f &&
+                   std::fabs(std::fabs(q[3]) - 1.0f) < 1e-4f;
+        };
+        json_append_bool(out, "cro_outer_identity", is_identity(cro->outer));
+        json_append_bool(out, "cro_inner_identity", is_identity(cro->inner));
+        // The WRONG ORDER must be distinguishable, otherwise the order claim is untestable on this data.
+        regenny::LTRotation ra{}, rb{};
+        ra.x = cro->outer[0]; ra.y = cro->outer[1]; ra.z = cro->outer[2]; ra.w = cro->outer[3];
+        rb.x = cro->inner[0]; rb.y = cro->inner[1]; rb.z = cro->inner[2]; rb.w = cro->inner[3];
+        const auto rev = sdk::multiply_rotations(rb, ra);
+        const std::array<float, 4> reversed{rev.x, rev.y, rev.z, rev.w};
+        float d_same = 0.0f, d_flip = 0.0f;
+        for (size_t i = 0; i < 4; ++i) {
+            d_same += std::fabs(reversed[i] - cro->actual[i]);
+            d_flip += std::fabs(reversed[i] + cro->actual[i]);
+        }
+        json_append_double(out, "cro_reversed_error", static_cast<double>(std::min(d_same, d_flip)), 5);
+    }
+    json_append_bool(out, "cro_range_refused",
+                     !sdk::PlayerMgr::camera_rotation_operands(9).has_value() &&
+                         !sdk::PlayerMgr::camera_rotation_is_composed(9).has_value());
+
     // PLATFORM CARRY -- the producer of the external-delta accumulator. Live nothing is being ridden, so the
     // assertions are about the IDLE state being internally consistent and about the carried case being reported
     // as unavailable rather than as agreement.

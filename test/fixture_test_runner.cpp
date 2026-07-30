@@ -4509,6 +4509,46 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE CAMERA'S COMPOSED ROTATION, AND A CHECK THAT REFUSES TO OVERCLAIM --------------
+            //
+            // The camera pose write path composes the final orientation as a product of two quaternions stored on
+            // the pose holder and pushes it to the camera object with SetObjectPosAndRotation. Recomputing that
+            // product here and comparing against what the object carries establishes the OPERANDS.
+            //
+            // IT DOES NOT ESTABLISH THE ORDER, and the suite says so. Live, the outer operand is IDENTITY -- the
+            // view is unperturbed -- so both multiplication orders give the same answer. The order comes from the
+            // disassembly instead. The degeneracy is asserted CONDITIONALLY so this check starts discriminating
+            // the moment the data allows.
+            bool cro_r = false, cro_d = false, cro_cm = false;
+            check(json_bool(body, "cro_resolved", cro_r) && cro_r,
+                  "the camera's rotation operands read off the pose holder");
+            check(json_bool(body, "cro_determinable", cro_d) && cro_d,
+                  "the composition can be compared against the camera object");
+            check(json_bool(body, "cro_composed_matches", cro_cm) && cro_cm,
+                  "the product of the two stored quaternions is what the camera object carries");
+
+            bool cro_ou = false, cro_iu = false, cro_au = false;
+            // A wrong offset does not produce norm 1, so unit-length is the cheap structural check on all three.
+            check(json_bool(body, "cro_outer_unit", cro_ou) && cro_ou, "the outer operand is a unit quaternion");
+            check(json_bool(body, "cro_inner_unit", cro_iu) && cro_iu, "the inner operand is a unit quaternion");
+            check(json_bool(body, "cro_actual_unit", cro_au) && cro_au,
+                  "the camera object's rotation is a unit quaternion");
+
+            bool cro_oi = false, cro_ii = false;
+            double cro_re = -1.0;
+            const bool cro_n = json_bool(body, "cro_outer_identity", cro_oi) &&
+                               json_bool(body, "cro_inner_identity", cro_ii) &&
+                               json_double(body, "cro_reversed_error", cro_re);
+            // THE INNER OPERAND MUST NOT BE IDENTITY, or the product would carry no information at all.
+            check(cro_n && !cro_ii, "the inner operand is a real rotation, not identity");
+            // THE CONDITIONAL: identity outer means the reversed product must match too, and a non-identity outer
+            // means it must not. Either way the assertion is exact, and it upgrades itself when the view moves.
+            check(cro_n && (cro_oi ? cro_re <= 0.004 : cro_re > 0.004),
+                  "the reversed product matches only while the outer operand is identity");
+            bool cro_rr = false;
+            check(json_bool(body, "cro_range_refused", cro_rr) && cro_rr,
+                  "an out-of-range slot yields neither the operands nor the comparison");
+
             // ---- PLATFORM CARRY, THE PRODUCER OF external_delta -------------------------------------
             //
             // The velocity commit subtracts an accumulator at controller+352 and clears it, so displacement it

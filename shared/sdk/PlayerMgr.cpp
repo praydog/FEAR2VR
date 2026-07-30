@@ -509,4 +509,56 @@ std::optional<bool> PlayerMgr::platform_carry_position_current(unsigned index) {
     return std::memcmp(carry->last_position->data(), cur.data(), sizeof(cur)) == 0;
 }
 
+
+std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_operands(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0 || p->camera_object == 0) {
+        return std::nullopt;
+    }
+    const auto read_quat = [](uintptr_t at) -> std::optional<std::array<float, 4>> {
+        std::array<float, 4> q{};
+        if (!mem::copy(q.data(), at, sizeof(q))) {
+            return std::nullopt;
+        }
+        return q;
+    };
+    const auto outer = read_quat(p->holder + kCameraRotationOuter);
+    const auto inner = read_quat(p->holder + kCameraRotationInner);
+    if (!outer.has_value() || !inner.has_value()) {
+        return std::nullopt;
+    }
+    const auto* cam = reinterpret_cast<const regenny::LTObject*>(p->camera_object);
+    const auto info = object_info(cam);
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    CameraRotationOperands out;
+    out.outer = *outer;
+    out.inner = *inner;
+    regenny::LTRotation a{};
+    regenny::LTRotation b{};
+    a.x = out.outer[0]; a.y = out.outer[1]; a.z = out.outer[2]; a.w = out.outer[3];
+    b.x = out.inner[0]; b.y = out.inner[1]; b.z = out.inner[2]; b.w = out.inner[3];
+    const auto prod = multiply_rotations(a, b);
+    out.composed = {prod.x, prod.y, prod.z, prod.w};
+    out.actual = {info->rotation.x, info->rotation.y, info->rotation.z, info->rotation.w};
+    return out;
+}
+
+std::optional<bool> PlayerMgr::camera_rotation_is_composed(unsigned index, float tolerance) {
+    const auto ops = camera_rotation_operands(index);
+    if (!ops.has_value()) {
+        return std::nullopt;
+    }
+    // A quaternion and its negation are the same rotation, so both signs are accepted -- rejecting one would
+    // report a correct composition as wrong roughly half the time.
+    float same = 0.0f;
+    float flipped = 0.0f;
+    for (size_t i = 0; i < 4; ++i) {
+        same += std::fabs(ops->composed[i] - ops->actual[i]);
+        flipped += std::fabs(ops->composed[i] + ops->actual[i]);
+    }
+    return std::min(same, flipped) <= tolerance * 4.0f;
+}
+
 }  // namespace sdk

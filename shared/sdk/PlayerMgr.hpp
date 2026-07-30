@@ -281,6 +281,54 @@ public:
         std::array<float, 3> external_delta{};
     };
 
+    // ---- HOW THE CAMERA'S ROTATION IS COMPOSED, AND WHERE A VR MOD WOULD CUT IN -------------
+    //
+    // The camera pose write path is now read. Per frame, on the POSE HOLDER:
+    //
+    //     base pose  = PlayerCamera_ComputeBasePose(...)        -> holder[+300] position, [+568] rotation
+    //     rotation   = LTRotation_Multiply(holder[+552], holder[+324])
+    //     position   = PlayerCamera_ApplyCollisionAndLeash(position, rotation)   -- clamps in place
+    //     ILTClient::SetObjectPosAndRotation(holder[+188], position, rotation)   -- slot 24
+    //
+    // SO THE FINAL ORIENTATION IS A PRODUCT OF TWO STORED QUATERNIONS, holder[+552] and holder[+324], and the
+    // camera object carries the result. That product is the natural place for a headset rotation to enter: a VR
+    // mod either writes one operand or replaces the composed result before it reaches the engine object.
+    //
+    // THE OUTER OPERAND IS IDENTITY WHEN THE VIEW IS UNPERTURBED, and that is the interesting part. Measured live
+    // with the player standing still, holder[+552] is the identity quaternion, so the product equals holder[+324]
+    // alone. That makes +552 an ADDITIVE rotation slot -- whatever shakes, sways or leans the camera writes it --
+    // and it is exactly where a headset orientation would be composed in.
+    //
+    // IT ALSO MEANS THE LIVE DATA CANNOT ESTABLISH THE ORDER. With one operand identity, both multiplication
+    // orders produce the same result, so camera_rotation_is_composed() passing proves the operands and NOT the
+    // order. The order comes from the disassembly -- LTRotation_Multiply(holder+552, out, holder+324), operands
+    // pinned by register -- and sdk::multiply_rotations(a, b) is R(a)*R(b), i.e. apply b first. A consumer that
+    // gets it backwards produces a rotation that looks plausible and turns the wrong way.
+    //
+    // The suite asserts the degeneracy CONDITIONALLY: while the outer operand is identity, the reversed product
+    // must also match, and if it ever stops being identity the reversed product must stop matching. That way the
+    // check discriminates as soon as the data allows and never pretends to in the meantime.
+    static constexpr uintptr_t kCameraRotationOuter = 552;  // the LEFT operand
+    static constexpr uintptr_t kCameraRotationInner = 324;  // the RIGHT operand -- also kRotation
+    static constexpr uintptr_t kCameraBasePosition = 300;   // also kPosition
+    static constexpr uintptr_t kCameraBaseRotation = 568;
+
+    struct CameraRotationOperands {
+        std::array<float, 4> outer{};    // holder[+552]
+        std::array<float, 4> inner{};    // holder[+324]
+        std::array<float, 4> composed{}; // multiply_rotations(outer, inner)
+        std::array<float, 4> actual{};   // what the camera object carries
+    };
+
+    // The two operands, their product, and the camera object's rotation side by side. nullopt when the player,
+    // the holder or the camera object cannot be read.
+    static std::optional<CameraRotationOperands> camera_rotation_operands(unsigned index);
+
+    // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
+    // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
+    // the same algebra and need not round identically.
+    static std::optional<bool> camera_rotation_is_composed(unsigned index, float tolerance = 0.001f);
+
     // ---- PLATFORM CARRY, WHICH IS WHERE external_delta COMES FROM --------------------------
     //
     // The external_delta field above was documented last pass from the CONSUMER side: the velocity commit

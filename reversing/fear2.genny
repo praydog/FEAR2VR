@@ -5646,3 +5646,47 @@ class LTInputDeviceMouse 0x30 {
 // unestablished -- so the next pass does not re-examine it as a camera candidate.
 //
 // 1159 checks, 0 failures.
+
+// ---- THE CAMERA POSE WRITE PATH, FOUND -- AND A TEST THAT REFUSED TO OVERCLAIM ------------------
+//
+// Four passes tried to find where the camera's transform is written. Three failed: scanning writes to +232 (57
+// candidates), grepping "232|244" among SetObjectPos callers (matched the wrong OBJECT's offsets), and
+// intersecting the SEPARATE setters slot 17 and slot 19 (found a state machine and a look-at).
+//
+// THE MISS WAS THE SLOT. The camera pose is written with the COMBINED setter, ILTClient slot 24 (+96), taking
+// SEVEN FLOATS -- position then quaternion. That was identified from an unrelated function pushing
+// this+108..132 through it. Slot 22 (+88) is its getter. Neither was on my list because I only ever searched the
+// separate Get/SetObjectPos and Get/SetObjectRotation pairs.
+//
+// Of 15 slot-24 callers in the camera range, FOUR pass this[+188] -- the camera object -- and the path is:
+//
+//     PlayerCamera_ComposeAndPushPose(pose_holder):
+//       base = sub_100DF5A0(...)                 -> holder[+300] position (copy at +540), [+568] rotation
+//       rot  = LTRotation_Multiply(holder+552, holder+324)          ; OUTER * INNER, pinned by register
+//       PlayerCamera_ApplyCollisionAndLeash(holder, &pos, &rot)     ; clamps pos IN PLACE
+//       SetObjectPosAndRotation(holder[+188], pos, rot)             ; slot 24
+//
+// TWO THINGS A VR MOD CAN USE IMMEDIATELY. holder[+552] IS IDENTITY when the view is unperturbed, measured live
+// -- so it is the ADDITIVE rotation slot (shake, sway, lean) and the natural place to compose a headset
+// orientation. And PlayerCamera_ApplyCollisionAndLeash is gated entirely on the cached console variable
+// CameraCollisionUseObject being >= 1.0, so the whole camera clamp can be switched off with one float store --
+// through a pointer the earlier cached-variable pass already named.
+//
+// THE NAMING PASS PAID OFF HERE. That collision function decompiled with g_cvar_CameraLeashLen,
+// g_cvar_CameraCollisionUseObject and g_cvar_CameraAimTrackingCollisionThreshold already spelled out, because 474
+// cache pairs were named two passes ago. Reading it took no lookups at all.
+//
+// AND THE TEST DECLINED TO CLAIM THE ORDER. Recomputing the product and comparing it against the camera object
+// matched -- but the outer operand is identity, so BOTH multiplication orders match, and the reversed-product
+// probe measured 0.0 error too.
+//
+// > The composition check proves the OPERANDS and says nothing about the ORDER on this data. The order comes from
+// > the disassembly. Rather than delete the weak check or dress it up, the suite asserts the degeneracy
+// > CONDITIONALLY: while the outer operand is identity the reversed product must ALSO match, and if it ever stops
+// > being identity the reversed product must stop matching. The check upgrades itself the moment the view moves.
+//
+// ALSO NAMED: PlayerCamera_SnapPoseToModel -- copies the model object's pose (slot 22) straight onto the camera
+// object (slot 24) with no composition, i.e. snaps the view to the body. And 0x100FA330 is recorded as an
+// action-id dispatcher acting on the model, deliberately unnamed, so it is not re-examined as a camera candidate.
+//
+// 1168 checks, 0 failures.
