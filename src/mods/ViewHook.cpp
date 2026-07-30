@@ -454,6 +454,27 @@ int __fastcall update_view_pose_detour(uintptr_t self, uintptr_t /*edx*/) {
     // point -- writing the object directly is reclaimed within a frame. This call owns the frame countdown.
     apply_override(true);
 
+    // SAME-PHASE AGREEMENT, sampled AFTER the original so the pose it just wrote and the camera object are in
+    // one phase. This is a question the IPC thread cannot ask -- an out-of-band reader never lands in a known
+    // phase because this function rewrites the pose every frame.
+    //
+    // RESTORED: a refactor that replaced this region with apply_override() deleted it, and the counters kept
+    // being reported as zeros. The assertion "the in-detour sampler actually ran" is what caught that, which is
+    // the whole reason an anti-vacuity check earns its place next to the measurement it guards.
+    if ((g_pose_calls.load(std::memory_order_relaxed) & 63u) == 0u) {
+        switch (sdk::PlayerMgr::applied_pose_agreement(0)) {
+        case sdk::PlayerMgr::PoseAgreement::Equal:
+            g_pose_agree_equal.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case sdk::PlayerMgr::PoseAgreement::Differ:
+            g_pose_agree_differ.fetch_add(1, std::memory_order_relaxed);
+            break;
+        default:
+            g_pose_agree_other.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+    }
+
     // QUIESCENCE, once per frame. Cheap: three guarded reads and a comparison.
     if (sample_stillness()) {
         g_still_frames.fetch_add(1, std::memory_order_relaxed);

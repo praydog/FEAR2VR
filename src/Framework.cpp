@@ -351,6 +351,11 @@ std::string build_health_fragment() {
     return buf;
 }
 
+// Defined further down, beside the other JSON helpers it uses. Declared here because /sdk/targets is built
+// before them and the gate's signals must appear in EVERY document a gated check reads -- emitting them from
+// one place is what stops a second document drifting out of sync, which is exactly what jammed the gate shut.
+void append_world_state(std::string& out);
+
 std::string build_targets_json() {
     // Grown three times now, each time by one more field. The GUARD below is the part
     // that matters: an overflow used to ship invalid JSON and break the caller's parser
@@ -1528,7 +1533,21 @@ std::string build_targets_json() {
                std::to_string(written) + "}";
     }
     // Splice the escaped string fields in after the '{' rather than through the format string.
-    return "{" + world_json + std::string(buf + 1);
+    std::string body = "{" + world_json + std::string(buf + 1);
+    // AND THE GATE'S SIGNALS. The world-dependent checks read THIS document, so without them here the gate
+    // reads false in a loaded level and silently skips 57 assertions.
+    std::string ws;
+    append_world_state(ws);
+    while (!ws.empty() && ws.back() == ',') {
+        ws.pop_back();
+    }
+    if (!ws.empty() && body.size() > 1 && body.back() == '}') {
+        body.pop_back();
+        body += ',';
+        body += ws;
+        body += '}';
+    }
+    return body;
 }
 
 // /sdk/models -- written the way a MOD would use the SDK, not the way the test
@@ -3334,6 +3353,25 @@ void json_append_double(std::string& out, const char* key, double value, int dec
     out += "\":";
     out += buf;
     out += ',';
+}
+
+// THE GATE'S SIGNALS, emitted into EVERY document a gated check might read.
+//
+// Learned the hard way: these first went only into /sdk/shader-params while the world-dependent checks read
+// /sdk/targets, so json_bool missed, the condition read false, and 57 checks reported "no world loaded" while
+// standing in a level. A gate stuck SHUT converts failure into silence, which is worse than the reds it
+// replaced -- and the only reason it was caught immediately is that the skip tally made 57 in-game skips
+// obviously absurd. Emit from one function so a second document cannot drift again.
+void append_world_state(std::string& out) {
+    const auto loaded = sdk::WorldBSP::is_world_loaded();
+    const auto lp = sdk::PlayerMgr::player(0);
+    const bool have_world = loaded.has_value() && *loaded;
+    // The player object POINTER survives leaving a level, so this proves little on its own; world_loaded is the
+    // load-bearing half and this is reported for diagnosis.
+    const bool have_player = lp.has_value() && lp->object != 0;
+    json_append_bool(out, "ws_world_loaded", have_world);
+    json_append_bool(out, "ws_player_present", have_player);
+    json_append_bool(out, "ws_world_ready", have_world && have_player);
 }
 
 std::string build_shader_params_json(bool include_write_probes) {
@@ -6019,15 +6057,7 @@ std::string build_shader_params_json(bool include_write_probes) {
         //
         // Reported as two independent signals plus the conjunction, so a run can say WHICH half is missing.
         // gameserver.dll being absent at a menu is already documented as expected for the same reason.
-        {
-            const auto loaded = sdk::WorldBSP::is_world_loaded();
-            const auto lp = sdk::PlayerMgr::player(0);
-            const bool have_world = loaded.has_value() && *loaded;
-            const bool have_player = lp.has_value() && lp->object != 0;
-            json_append_bool(out, "ws_world_loaded", have_world);
-            json_append_bool(out, "ws_player_present", have_player);
-            json_append_bool(out, "ws_world_ready", have_world && have_player);
-        }
+        append_world_state(out);
         json_append_double(out, "vh_ov_body_drift_deg",
                            static_cast<double>(vh.override_body_drift_deg), 4);
         // THE RENDER CHAIN'S OWN ADDRESSES, so a data breakpoint can find the writer that actually feeds the
