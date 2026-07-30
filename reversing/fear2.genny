@@ -6302,3 +6302,52 @@ class CPlayerCamera 0x18C6 {
 // sdk::Delegates::kHandlerSlot / notify_fn / handler_of.
 //
 // 1290 checks, 0 failures.
+
+// ---- CMoveMgr, 79 CONSOLE REGISTRATIONS, AND FIVE COMMANDS THAT DO NOTHING ----------------------
+//
+// The route that identified CPlayerStats last pass generalises: every RegisterConsoleProgram call site pairs a
+// NAME with a HANDLER inside a function whose identity the pair betrays. Sweeping gameclient for them gives 79
+// registrations across 11 registrars, and the biggest single result is a class this project has been calling by
+// a placeholder for many passes.
+//
+// THE +236 SUBSYSTEM IS CMoveMgr. Three routes, no shared assumptions:
+//   CONTENT   its Init reads 'WaterAffectsSpeed' -- the same string the reference's CMoveMgr::Init reads on the
+//             same line -- plus 'PlayerGravity', 'SurfaceSwimHeight', 'YawClamp', 'YawBias', 'YawInterp',
+//             'MouseYawMult', 'KeyboardYawMult', 'GamePad', 'FallDamageDebug', 'SpectatorSpeedMul', 'GunLead'.
+//   REGISTRY  it registers exactly the five programs the reference's CMoveMgr::Init registers: PlayerLeash,
+//             TestFire, TestFire2, TestSAFire, TestGrenade.
+//   LOCALITY  0x26C0 from the ctor, inside the 0x8000 radius calibrated on classes established otherwise.
+//
+// > For the eventual VR work the yaw knobs are the find: YawClamp/YawBias/YawInterp and the mouse and keyboard
+// > yaw multipliers are where view and aim are coupled, and they are console-tunable.
+//
+// FIVE REGISTERED COMMANDS DO NOTHING. AIDebug, ForceSpectatorClipMode, PrintCollisionProperties, RebindFX and
+// ReportMemory all resolve to gameclient 0x100F6680 -- the /OPT:ICF-folded empty stub an earlier pass found from
+// VTABLE SLOTS. Two unrelated routes to one address. Their bodies were compiled out of this retail build; the
+// commands still exist, resolve and accept arguments, and have no effect. Exposed as Console::is_noop.
+//
+// THE SWEEP TOOK THREE COUNTS AND EVERY INTERMEDIATE LOOKED COMPLETE: 71, 76, 79.
+//   71  the two pushes were told apart by asking which operand looked like a string. IDA read the HANDLER's
+//       code bytes at 0x100F6680 as the string "Q", so that site was dropped and CPlayerStats appeared to
+//       register four programs instead of five.
+//   76  position instead of content -- but requiring the pushes ADJACENT misses `push handler; mov edx,
+//       [eax+134h]; push name; call edx`, where the slot load sits between them.
+//   79  arguments collected across intervening instructions up to the call.
+//
+// AND THE ONLY REASON 76 WAS CAUGHT is that the total was checked against the engine's LIVE registry, which knew
+// SpawnLaserSight, LOOPID and GetPlayerOrientation. The accounting now closes exactly:
+//
+//     77 live commands with handlers in gameclient
+//     77 of the table's 79 entries are live         -> 0 unattributed
+//      2 entries are NOT live: NextSpawnPoint, PrevSpawnPoint, whose registrar has not run this session
+//
+// So the static table is what the code CAN register and the live list is what it HAS. Both residues are
+// functions -- unattributed_commands() and unregistered_table_commands() -- so a stale table is detectable
+// rather than merely commented.
+//
+// Named in IDA: CMoveMgr_Init/_ctor/_dtor, g_vtbl_CMoveMgr, CCheatMgr_Init, CClientInfoMgr_Init,
+// PlayerInputBindings_Init, and the folded stub annotated with the five commands folding onto it.
+// Exposed as sdk::Console::registrars / registrar_of / commands_registered_by / empty_stub / is_noop /
+// noop_commands / unattributed_commands / unregistered_table_commands.
+//
+// 1308 checks, 0 failures.

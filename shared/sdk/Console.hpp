@@ -166,6 +166,90 @@ public:
     // legitimate answer: 84 of the 118 come from game DLLs, so the set depends on what is loaded.
     static std::optional<CommandHandler> handler_of(std::string_view name);
 
+    // ---- WHO REGISTERED IT, WHICH THE LIVE LIST CANNOT KNOW -------------------------------------
+    //
+    // A live entry records its name, handler and flags. It does NOT record the function that created it, and
+    // that function is what identifies a SUBSYSTEM: CMoveMgr was found because one function registers exactly
+    // the five programs the reference's CMoveMgr::Init registers.
+    //
+    // So this is a static table, swept from gameclient's registration sites: 79 registrations across 11
+    // registrars. It is gameclient only -- the exe's own commands and any gameserver ones are not in it, and
+    // registrar_of returns nothing for those rather than guessing.
+    //
+    // THE SWEEP TOOK TWO ATTEMPTS AND THE FIRST WAS WRONG IN AN INSTRUCTIVE WAY. A registration is
+    // `push handler; push name; call reg`, and the first version identified the two pushes by asking which
+    // operand looked like a string. IDA's get_strlit_contents answered "yes" for a HANDLER address -- the code
+    // bytes at 0x100F6680 read as the one-character string "Q" -- so that site was discarded and CPlayerStats
+    // appeared to register four programs rather than five. Position, not content, tells the two pushes apart.
+    // Counted 71 that way.
+    //
+    // THE SECOND ATTEMPT WAS ALSO SHORT, BY THREE, and the residue named them. Requiring the two pushes to be
+    // ADJACENT misses the shape the compiler actually emits sometimes:
+    //
+    //     push offset handler
+    //     mov  edx, [eax+134h]      <- the slot load sits BETWEEN the pushes
+    //     push offset name
+    //     call edx
+    //
+    // GetPlayerOrientation and LOOPID are registered that way, and SpawnLaserSight has its handler pushed
+    // further back still. Counted 76 that way, and 79 once the arguments are collected across intervening
+    // instructions up to the call. Three counts of one set, each looking complete.
+    struct Registrar {
+        uintptr_t offset;   // gameclient-relative
+        const char* name;   // the function's role where established, else nullptr
+        size_t count;       // how many programs it registers
+    };
+
+    // The ten registering functions, most prolific first.
+    static const Registrar* registrars(size_t& count);
+
+    // Which function registered this command, or nullptr when the command is not one of gameclient's 76.
+    static const Registrar* registrar_of(std::string_view name);
+
+    // Every command a given registrar creates, by gameclient-relative offset. Empty for an unknown offset.
+    static std::vector<std::string> commands_registered_by(uintptr_t registrar_offset);
+
+    // ---- COMMANDS THAT DO NOTHING --------------------------------------------------------------
+    //
+    // gameclient's retn-only functions were all folded onto one address by /OPT:ICF -- see CClientShell.hpp,
+    // which found it from vtable slots. FIVE REGISTERED CONSOLE PROGRAMS have that address as their handler:
+    // AIDebug, ForceSpectatorClipMode, PrintCollisionProperties, RebindFX and ReportMemory. Their bodies were
+    // compiled out of this retail build and the empty remains merged.
+    //
+    // That matters to a consumer in a way a name never would: these commands EXIST, resolve, and accept
+    // arguments, and calling them has no effect whatsoever. Anything driving the game through the console needs
+    // to know which of its levers are disconnected.
+    static constexpr uintptr_t kEmptyStubOffset = 0x0F6680;  // gameclient-relative
+
+    // Runtime address of the folded empty stub, 0 when gameclient is not mapped.
+    static uintptr_t empty_stub();
+
+    // Does this command resolve to the folded stub -- i.e. is it a no-op? Read from the LIVE handler, so it
+    // also answers for commands outside the static table. nullopt when the command does not exist.
+    static std::optional<bool> is_noop(std::string_view name);
+
+    // Every live command whose handler is the folded stub. The five above when only gameclient is mapped.
+    static std::vector<std::string> noop_commands();
+
+    // ---- WHAT THE SWEEP DID NOT FIND, MEASURED RATHER THAN ASSUMED -----------------------------
+    //
+    // Live, 77 commands have handlers in gameclient and all 77 are now attributed: the table's 79 entries
+    // cover them plus two that are not currently registered. The residues below are what remains measurable,
+    // and unattributed_commands() returning anything means the sweep has gone stale against a new build.
+    //
+    // The other direction is a different fact: NextSpawnPoint and PrevSpawnPoint are in the table and NOT live,
+    // because the function registering them has not run in this session. So the table is what the code CAN
+    // register and the live list is what it HAS, and a consumer must not read either as the other.
+    //
+    // Both residues are exposed so they stay measured. Three counts were needed to get this right -- 71, then
+    // 76, then 79 -- and each intermediate looked complete, which is why these are functions and not a comment.
+
+    // Live commands implemented in gameclient with no registrar in the static table.
+    static std::vector<std::string> unattributed_commands();
+
+    // Table entries that are not currently registered.
+    static std::vector<std::string> unregistered_table_commands();
+
     struct Stats {
         size_t total{};                // nodes with a readable name
         size_t from_exe{};             // handler inside FEAR2.exe

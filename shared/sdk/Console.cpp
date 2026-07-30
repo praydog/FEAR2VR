@@ -1,5 +1,7 @@
 #include "Console.hpp"
 
+#include <iterator>
+
 #include <algorithm>
 #include <string>
 #include <cctype>
@@ -348,6 +350,208 @@ std::optional<Console::RegisterProgramFn> Console::register_program_fn() {
         return std::nullopt;
     }
     return reinterpret_cast<RegisterProgramFn>(fn);
+}
+
+
+namespace {
+
+constexpr Console::Registrar kRegistrars[] = {
+    {0x07F3B0, "GameClient_RegisterConsoleCommands", 56},
+    {0x108CD0, "CMoveMgr_Init", 5},
+    {0x114F10, "CPlayerStats_Init", 5},
+    {0x0B5500, nullptr, 3},
+    {0x0F8B40, nullptr, 3},
+    {0x07ACF0, nullptr, 2},
+    {0x047A30, "CCheatMgr_Init", 1},
+    {0x053FC0, "CClientInfoMgr_Init", 1},
+    {0x0F4920, "PlayerInputBindings_Init", 1},
+    {0x159D20, nullptr, 1},
+    {0x0C1FB0, nullptr, 1},
+};
+
+struct CommandRegistrar {
+    const char* command;
+    uintptr_t registrar;
+};
+
+// 76 registrations swept from gameclient's registration sites. See the header for why the first sweep
+// produced 71.
+constexpr CommandRegistrar kCommandRegistrars[] = {
+    {"ABORT", 0x07F3B0},
+    {"ADD", 0x07F3B0},
+    {"AIDebug", 0x07F3B0},
+    {"AddGoal", 0x07F3B0},
+    {"AllocateMemory", 0x07F3B0},
+    {"CameraClientFX", 0x07F3B0},
+    {"ChaseToggle", 0x07F3B0},
+    {"ClientFX", 0x07F3B0},
+    {"Cmd", 0x07F3B0},
+    {"ConsoleRunWorld", 0x07F3B0},
+    {"DELAY", 0x07F3B0},
+    {"DELAYID", 0x07F3B0},
+    {"DoDamage", 0x07F3B0},
+    {"ExitLevel", 0x07F3B0},
+    {"ForceSpectatorClipMode", 0x07F3B0},
+    {"FragSelf", 0x07F3B0},
+    {"GPDClear", 0x07F3B0},
+    {"GPDOutput", 0x07F3B0},
+    {"GPDSet", 0x07F3B0},
+    {"GetPlayerOrientation", 0x07F3B0},
+    {"GetPlayerPos", 0x07F3B0},
+    {"IF", 0x07F3B0},
+    {"INT", 0x07F3B0},
+    {"InitSound", 0x07F3B0},
+    {"LISTCMDS", 0x07F3B0},
+    {"LOOP", 0x07F3B0},
+    {"LOOPID", 0x07F3B0},
+    {"List", 0x07F3B0},
+    {"LoadCheckpoint", 0x07F3B0},
+    {"MSG", 0x07F3B0},
+    {"MapCapture", 0x07F3B0},
+    {"OBJ", 0x07F3B0},
+    {"OrbitalSSCapture", 0x07F3B0},
+    {"OrbitalSSClearMarker", 0x07F3B0},
+    {"OrbitalSSPlaceCameraMarker", 0x07F3B0},
+    {"OrbitalSSPlaceMarkerAt", 0x07F3B0},
+    {"PlaySoundRecord", 0x07F3B0},
+    {"PlaySoundString", 0x07F3B0},
+    {"PrintCollisionProperties", 0x07F3B0},
+    {"RAND", 0x07F3B0},
+    {"RANDWEIGHT", 0x07F3B0},
+    {"REPEAT", 0x07F3B0},
+    {"REPEATID", 0x07F3B0},
+    {"RebindFX", 0x07F3B0},
+    {"RemoveGoal", 0x07F3B0},
+    {"ReportClientObjects", 0x07F3B0},
+    {"ReportMemory", 0x07F3B0},
+    {"ReportUnusedAnimProps", 0x07F3B0},
+    {"SET", 0x07F3B0},
+    {"SHOWVAR", 0x07F3B0},
+    {"SUB", 0x07F3B0},
+    {"SetPlayerOrientation", 0x07F3B0},
+    {"Stimulus", 0x07F3B0},
+    {"Teleport", 0x07F3B0},
+    {"VMSG", 0x07F3B0},
+    {"WHEN", 0x07F3B0},
+    {"PlayerLeash", 0x108CD0},
+    {"TestFire", 0x108CD0},
+    {"TestFire2", 0x108CD0},
+    {"TestGrenade", 0x108CD0},
+    {"TestSAFire", 0x108CD0},
+    {"Air", 0x114F10},
+    {"Armor", 0x114F10},
+    {"Health", 0x114F10},
+    {"MaxArmor", 0x114F10},
+    {"MaxHealth", 0x114F10},
+    {"DetectPerf", 0x0B5500},
+    {"PerformanceGroupLevel", 0x0B5500},
+    {"RunPerfTest", 0x0B5500},
+    {"DumpIP", 0x0F8B40},
+    {"StartIP", 0x0F8B40},
+    {"StopAllIPs", 0x0F8B40},
+    {"NextSpawnPoint", 0x07ACF0},
+    {"PrevSpawnPoint", 0x07ACF0},
+    {"Cheat", 0x047A30},
+    {"AddClient", 0x053FC0},
+    {"ShowCommandSet", 0x0F4920},
+    {"SetProfileName", 0x159D20},
+    {"SpawnLaserSight", 0x0C1FB0},
+};
+
+}  // namespace
+
+const Console::Registrar* Console::registrars(size_t& count) {
+    count = std::size(kRegistrars);
+    return kRegistrars;
+}
+
+const Console::Registrar* Console::registrar_of(std::string_view name) {
+    if (name.empty()) {
+        return nullptr;
+    }
+    for (const auto& cr : kCommandRegistrars) {
+        if (name == cr.command) {
+            for (const auto& r : kRegistrars) {
+                if (r.offset == cr.registrar) {
+                    return &r;
+                }
+            }
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<std::string> Console::commands_registered_by(uintptr_t registrar_offset) {
+    std::vector<std::string> out;
+    for (const auto& cr : kCommandRegistrars) {
+        if (cr.registrar == registrar_offset) {
+            out.emplace_back(cr.command);
+        }
+    }
+    return out;
+}
+
+uintptr_t Console::empty_stub() {
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return 0;
+    }
+    return gc->base + kEmptyStubOffset;
+}
+
+std::optional<bool> Console::is_noop(std::string_view name) {
+    const auto cmd = find(name);
+    if (!cmd.has_value()) {
+        return std::nullopt;
+    }
+    const auto stub = empty_stub();
+    if (stub == 0) {
+        return std::nullopt;
+    }
+    return cmd->handler == stub;
+}
+
+std::vector<std::string> Console::noop_commands() {
+    std::vector<std::string> out;
+    const auto stub = empty_stub();
+    if (stub == 0) {
+        return out;
+    }
+    for (const auto& c : all()) {
+        if (c.handler == stub) {
+            out.push_back(c.name);
+        }
+    }
+    return out;
+}
+
+
+std::vector<std::string> Console::unattributed_commands() {
+    std::vector<std::string> out;
+    const auto* gc = Modules::get().game_client();
+    if (gc == nullptr || gc->base == 0) {
+        return out;
+    }
+    for (const auto& c : all()) {
+        if (c.from_exe || c.handler < gc->base || c.handler >= gc->base + gc->size) {
+            continue;
+        }
+        if (registrar_of(c.name) == nullptr) {
+            out.push_back(c.name);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> Console::unregistered_table_commands() {
+    std::vector<std::string> out;
+    for (const auto& cr : kCommandRegistrars) {
+        if (!find(cr.command).has_value()) {
+            out.emplace_back(cr.command);
+        }
+    }
+    return out;
 }
 
 }  // namespace sdk

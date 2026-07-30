@@ -3508,3 +3508,34 @@ sections and in gameclient they do not overlap at all -- `.text` ends at `+0x1C1
 
 Corrected figures: **68 slots over 40 objects**. Two thirds of the original count was noise, and nothing about the
 inflated version looked wrong.
+
+## `get_strlit_contents` is not a type test
+
+A sweep for `RegisterConsoleProgram` call sites had to tell two pushed arguments apart -- `push handler;
+push name; call reg` -- and did it by asking which operand IDA could read a string from. IDA answered **yes for
+the handler**: the code bytes at gameclient `0x100F6680` read as the one-character string `"Q"`. That site was
+discarded, and `CPlayerStats` appeared to register four console programs when it registers five.
+
+The fix was to stop sniffing content and use **position**: the handler is the first push, the name is the second,
+and the pair ends at an indirect `call`. Which raised a second problem -- requiring the two pushes to be
+*adjacent* misses the shape MSVC sometimes emits:
+
+```
+push offset handler
+mov  edx, [eax+134h]      <- the slot load sits BETWEEN the pushes
+push offset name
+call edx
+```
+
+Three counts of the same set: **71, then 76, then 79.** Every intermediate looked complete, and the only reason
+the second one was caught is that the total was checked against the engine's live command list, which knew about
+`SpawnLaserSight`, `LOOPID` and `GetPlayerOrientation`.
+
+**So: never conclude a sweep is complete from the sweep.** Find a second, independent enumeration of the same
+set -- here the live registry -- and make the residue in both directions a measured value rather than a comment.
+`Console::unattributed_commands()` returning anything now means the static table has gone stale against the
+binary, and `unregistered_table_commands()` names the entries whose registrar has not run.
+
+A related trap worth keeping separate: a code address can be a valid *anything*. This is the same class of error
+as the section test below, where "points into the module" admitted function pointers as vtables. In both cases the
+predicate was about a *value* when the question was about a *role*.

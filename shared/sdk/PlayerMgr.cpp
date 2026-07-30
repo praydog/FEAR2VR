@@ -1095,7 +1095,7 @@ struct SubsystemRecord {
 constexpr SubsystemRecord kSubsystemRecords[] = {
     {228, 0x0F3B70, 156, "head bob"},
     {232, 0x0EF8F0, 836, "flashlight"},
-    {236, 0x10B390, 2220, "movement controller"},
+    {236, 0x10B390, 2220, "CMoveMgr"},
     {240, 0x0FB470, 95, nullptr},
     {244, 0x137B10, 536, "weapon chooser"},
     {248, 0x1179C0, 360, "target info"},

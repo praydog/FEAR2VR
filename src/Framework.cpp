@@ -4195,6 +4195,93 @@ std::string build_shader_params_json() {
     const auto con_stats = sdk::Console::stats();
     const auto con_live = sdk::Console::all();
     const auto con_static = sdk::Console::static_commands();
+    // ---- WHO REGISTERED EACH COMMAND, AND WHICH ONES DO NOTHING ----
+    {
+        size_t nreg = 0;
+        const auto* regs = sdk::Console::registrars(nreg);
+        json_append_double(out, "creg_registrars", static_cast<double>(nreg), 0);
+        size_t total = 0;
+        bool counts_agree = true;
+        for (size_t i = 0; i < nreg; ++i) {
+            const auto listed = sdk::Console::commands_registered_by(regs[i].offset);
+            if (listed.size() != regs[i].count) {
+                counts_agree = false;
+            }
+            total += listed.size();
+        }
+        json_append_double(out, "creg_total", static_cast<double>(total), 0);
+        // EVERY registrar's declared count must equal the number of commands attributed to it -- the table is
+        // hand-transcribed, so the two halves must be checked against each other.
+        json_append_bool(out, "creg_counts_agree", counts_agree);
+        // THE IDENTIFICATION THAT MATTERS: CMoveMgr registers exactly the five the reference does.
+        const auto move = sdk::Console::commands_registered_by(0x108CD0);
+        json_append_double(out, "creg_movemgr", static_cast<double>(move.size()), 0);
+        const auto* leash = sdk::Console::registrar_of("PlayerLeash");
+        const auto* health = sdk::Console::registrar_of("Health");
+        json_append_bool(out, "creg_leash_is_movemgr",
+                         leash != nullptr && leash->offset == 0x108CD0 && leash->name != nullptr);
+        json_append_bool(out, "creg_health_is_stats",
+                         health != nullptr && health->offset == 0x114F10);
+        json_append_bool(out, "creg_unknown_refused",
+                         sdk::Console::registrar_of("quit") == nullptr &&
+                             sdk::Console::registrar_of("") == nullptr &&
+                             sdk::Console::commands_registered_by(0).empty());
+        {
+            const auto unattr = sdk::Console::unattributed_commands();
+            const auto unreg = sdk::Console::unregistered_table_commands();
+            json_append_double(out, "creg_unattributed", static_cast<double>(unattr.size()), 0);
+            json_append_double(out, "creg_unregistered", static_cast<double>(unreg.size()), 0);
+            std::string names;
+            for (const auto& n : unattr) {
+                if (!names.empty()) {
+                    names += ",";
+                }
+                names += n;
+            }
+            json_append_string(out, "creg_unattributed_names", names.c_str());
+            std::string un;
+            for (const auto& n : unreg) {
+                if (!un.empty()) {
+                    un += ",";
+                }
+                un += n;
+            }
+            json_append_string(out, "creg_unregistered_names", un.c_str());
+            // THE ARITHMETIC MUST CLOSE: live-in-gameclient = (table entries that are live) + unattributed.
+            size_t table_live = 0;
+            size_t ntab = 0;
+            const auto* rr = sdk::Console::registrars(ntab);
+            for (size_t i = 0; i < ntab; ++i) {
+                for (const auto& nm : sdk::Console::commands_registered_by(rr[i].offset)) {
+                    if (sdk::Console::find(nm).has_value()) {
+                        ++table_live;
+                    }
+                }
+            }
+            size_t live_gc = 0;
+            const auto* gcm = sdk::Modules::get().game_client();
+            for (const auto& c : sdk::Console::all()) {
+                if (!c.from_exe && gcm != nullptr && c.handler >= gcm->base &&
+                    c.handler < gcm->base + gcm->size) {
+                    ++live_gc;
+                }
+            }
+            json_append_double(out, "creg_table_live", static_cast<double>(table_live), 0);
+            json_append_double(out, "creg_live_gc", static_cast<double>(live_gc), 0);
+            json_append_bool(out, "creg_accounting_closes", live_gc == table_live + unattr.size());
+        }
+
+        // NO-OPS: five commands resolve to the ICF-folded empty stub.
+        const auto noops = sdk::Console::noop_commands();
+        json_append_double(out, "creg_noops", static_cast<double>(noops.size()), 0);
+        json_append_bool(out, "creg_stub_found", sdk::Console::empty_stub() != 0);
+        json_append_bool(out, "creg_rebindfx_noop", sdk::Console::is_noop("RebindFX").value_or(false));
+        json_append_bool(out, "creg_aidebug_noop", sdk::Console::is_noop("AIDebug").value_or(false));
+        // AND A REAL COMMAND MUST NOT BE ONE, or the test would pass on everything.
+        json_append_bool(out, "creg_health_not_noop", sdk::Console::is_noop("Health") == false);
+        json_append_bool(out, "creg_noop_absent_refused", !sdk::Console::is_noop("NoSuchCommand").has_value());
+    }
+
     json_append_bool(out, "console_stats_readable", con_stats.has_value());
     json_append_double(out, "console_static_count", static_cast<double>(con_static.size()), 0);
     json_append_double(out, "console_live_total", static_cast<double>(con_live.size()), 0);

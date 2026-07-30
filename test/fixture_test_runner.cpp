@@ -4509,6 +4509,72 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- WHO REGISTERED EACH CONSOLE COMMAND, AND WHICH ONES DO NOTHING ---------------------
+            //
+            // A live console entry records name, handler and flags but NOT the function that created it, and
+            // that function identifies a subsystem: CMoveMgr was found because one function registers exactly
+            // the five programs the reference's CMoveMgr::Init registers, and it also reads
+            // 'WaterAffectsSpeed' -- the same line of the same reference function.
+            //
+            // THE SWEEP NEEDED THREE COUNTS. 71 first, because the two pushes were told apart by asking which
+            // operand looked like a string and IDA read a handler's code bytes as the string "Q". 76 next, by
+            // position instead -- still short, because the compiler sometimes puts the slot load BETWEEN the
+            // two pushes. 79 finally. Each intermediate looked complete, which is why the residues below are
+            // measured rather than asserted away.
+            double cr_reg = 0.0, cr_tot = 0.0, cr_mm = 0.0, cr_live = 0.0, cr_tl = 0.0, cr_un = 0.0,
+                   cr_unreg = 0.0, cr_noop = 0.0;
+            bool cr_ca = false, cr_lm = false, cr_hs = false, cr_ur = false, cr_close = false, cr_sf = false,
+                 cr_rb = false, cr_ai = false, cr_hn = false, cr_nar = false;
+            check(json_double(body, "creg_registrars", cr_reg) && cr_reg == 11.0,
+                  "eleven functions in gameclient register console programs");
+            check(json_double(body, "creg_total", cr_tot) && cr_tot == 79.0,
+                  "and they register 79 between them");
+            check(json_bool(body, "creg_counts_agree", cr_ca) && cr_ca,
+                  "each registrar's declared count equals the commands attributed to it -- the table is "
+                  "hand-transcribed, so both halves must agree");
+
+            // THE ACCOUNTING, which is the whole point: live commands in gameclient = table entries that are
+            // live, plus any the sweep failed to attribute. It closes at zero unattributed.
+            check(json_double(body, "creg_live_gc", cr_live) && cr_live == 77.0,
+                  "77 live commands have handlers in gameclient");
+            check(json_double(body, "creg_table_live", cr_tl) && cr_tl == 77.0,
+                  "and all 77 are attributed to a registrar");
+            check(json_double(body, "creg_unattributed", cr_un) && cr_un == 0.0,
+                  "nothing live is unattributed -- if this ever rises the sweep has gone stale");
+            check(json_bool(body, "creg_accounting_closes", cr_close) && cr_close,
+                  "the arithmetic closes exactly rather than approximately");
+            // THE OTHER DIRECTION IS A DIFFERENT FACT: two table entries are not registered in this session,
+            // because the function registering them has not run. The table is what the code CAN register.
+            check(json_double(body, "creg_unregistered", cr_unreg) && cr_unreg == 2.0,
+                  "two table entries are not live -- NextSpawnPoint and PrevSpawnPoint, whose registrar has "
+                  "not run, so the table and the live list answer different questions");
+
+            check(json_double(body, "creg_movemgr", cr_mm) && cr_mm == 5.0,
+                  "CMoveMgr_Init registers five programs, the count the reference's CMoveMgr::Init registers");
+            check(json_bool(body, "creg_leash_is_movemgr", cr_lm) && cr_lm,
+                  "PlayerLeash resolves to that registrar, and it carries an established role name");
+            check(json_bool(body, "creg_health_is_stats", cr_hs) && cr_hs,
+                  "Health resolves to CPlayerStats_Init");
+            check(json_bool(body, "creg_unknown_refused", cr_ur) && cr_ur,
+                  "an exe command, an empty name and a bogus offset are all refused");
+
+            // ---- COMMANDS THAT DO NOTHING ----
+            //
+            // gameclient's retn-only functions were folded onto one address by /OPT:ICF, which an earlier pass
+            // established from vtable slots. Five REGISTERED console programs have it as their handler, which
+            // is an independent route to the same address -- and a fact a consumer needs, since those commands
+            // exist, resolve, accept arguments and have no effect.
+            check(json_bool(body, "creg_stub_found", cr_sf) && cr_sf, "the folded empty stub resolves");
+            check(json_double(body, "creg_noops", cr_noop) && cr_noop == 5.0,
+                  "exactly five live commands resolve to it");
+            check(json_bool(body, "creg_rebindfx_noop", cr_rb) && cr_rb, "RebindFX is one of them");
+            check(json_bool(body, "creg_aidebug_noop", cr_ai) && cr_ai, "AIDebug is another");
+            // AND A REAL COMMAND MUST NOT BE, or the check would pass on everything.
+            check(json_bool(body, "creg_health_not_noop", cr_hn) && cr_hn,
+                  "Health is NOT a no-op, so the test discriminates");
+            check(json_bool(body, "creg_noop_absent_refused", cr_nar) && cr_nar,
+                  "a command that does not exist yields no answer rather than false");
+
             // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
             //
             // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one
