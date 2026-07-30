@@ -5924,3 +5924,48 @@ class LTInputDeviceMouse 0x30 {
 // Exposed as sdk::PlayerMgr::viewport_rect / fov_inputs / fov_derivation_holds, beside camera_fov and aspect_ratio.
 //
 // 1211 checks, 0 failures.
+
+// ---- THE VIEW POSE UPDATE, AND SMOOTHING THAT IS INERT TWICE OVER -------------------------------
+//
+// 0x100E34E0 was left unnamed last pass on the grounds that one established call is not enough for 2426 bytes.
+// Profiling it instead of dumping it gave the evidence cheaply: 23 holder fields written, six cached console
+// variables read, two ILT slots called. It is PlayerCamera_UpdateViewPose -- the NON-CINEMATIC path -- and it
+// calls PlayerCamera_ComputeBasePoseFromSocket, computes the FOV pair, and pushes to the camera object.
+//
+// ITS SIX CONSOLE VARIABLES WERE ALL ALREADY NAMED by the 474-pair cache pass, so the decompile read as prose:
+// FovY, FovAspectRatioScale, CameraSmoothingEnabled, CameraHeightInterpSpeedUp/Down, and AnimCamIntrepolationRate
+// (the game's own spelling, kept).
+//
+// CAMERA HEIGHT SMOOTHING, in full:
+//
+//     if (CameraSmoothingEnabled == 1.0) {
+//         holder[+996] = 0
+//         if (holder[+748] && holder[+752] != new_height) {
+//             rate = (holder[+752] >= new_height) ? SpeedDown : SpeedUp
+//             rate = min(rate, 1.0)
+//             new_height = lerp(holder[+752], new_height, rate)
+//             holder[+996] = new_height - previous
+//         }
+//         holder[+748] = 1;  holder[+752] = new_height
+//     }
+//
+// holder[+752] IS SHARED WITH PlayerCamera_TranslateCameraObject, which adds the platform-carry vertical delta into
+// it -- so the smoother does not read being carried as the player moving. Two subsystems, one field, and that is
+// why the carry function writes both +752 and +1000.
+//
+// AND THE VR ADVICE WOULD HAVE BEEN WASTED. Head-tracked views hate smoothed cameras, so "set
+// CameraSmoothingEnabled to 0" is the obvious recommendation. Measured: it is ALREADY 0.0 -- and both interpolation
+// speeds are 1000.0, which the producer's own min(rate, 1.0) turns into an INSTANT lerp. So the block neither runs
+// nor would smooth anything if it did.
+//
+// > Reading the gate alone would have said "off" and stopped there. Reading the clamp says it is off for TWO
+// > independent reasons, which is the difference between "currently disabled" and "cannot do anything at these
+// > settings" -- and that is what a consumer needs before deciding whether to touch it.
+//
+// So is_effective() reports the CONJUNCTION rather than the gate, the suite asserts the predicate equals the
+// conjunction it documents (so it cannot drift from its own comment), and it asserts the clamp arithmetically
+// rather than in prose.
+//
+// Exposed as sdk::PlayerMgr::camera_height_smoothing / set_camera_smoothing_enabled.
+//
+// 1218 checks, 0 failures.

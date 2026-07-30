@@ -281,6 +281,55 @@ public:
         std::array<float, 3> external_delta{};
     };
 
+    // ---- CAMERA HEIGHT SMOOTHING, WHICH IS OFF AND WOULD BE A NO-OP ANYWAY ------------------
+    //
+    // PlayerCamera_UpdateViewPose lerps the camera's height toward its new value instead of snapping, which is
+    // exactly the kind of lag that fights a head-tracked view. The whole block is:
+    //
+    //     if (CameraSmoothingEnabled == 1.0) {
+    //         holder[+996] = 0
+    //         if (holder[+748] && holder[+752] != new_height) {
+    //             rate = (holder[+752] >= new_height) ? CameraHeightInterpSpeedDown
+    //                                                 : CameraHeightInterpSpeedUp
+    //             rate = min(rate, 1.0)                          <- the clamp that matters
+    //             new_height = lerp(holder[+752], new_height, rate)
+    //             holder[+996] = new_height - previous           <- what smoothing moved this frame
+    //         }
+    //         holder[+748] = 1;  holder[+752] = new_height
+    //     }
+    //
+    // holder[+752] IS THE SAME FIELD PlayerCamera_TranslateCameraObject ACCUMULATES INTO. Platform carry adds its
+    // vertical delta there so the smoother does not treat being carried as the player moving -- two subsystems
+    // sharing one field, which is why that function writes both +752 and +1000.
+    //
+    // AND IT IS DOING NOTHING ON THIS BUILD, which is worth stating because the obvious VR advice would be wasted
+    // effort. Measured live: CameraSmoothingEnabled is 0.0, so the block never runs -- and the two interpolation
+    // speeds are 1000.0, which `min(rate, 1.0)` turns into an INSTANT lerp, so even enabling it would smooth
+    // nothing at the default settings. is_effective() reports that conjunction rather than just the gate, because
+    // reading the gate alone would say "off" for the wrong reason if a mod set it to 1.
+    struct HeightSmoothing {
+        float enabled{};          // the CameraSmoothingEnabled setting; the block requires exactly 1.0
+        float up_speed{};         // CameraHeightInterpSpeedUp
+        float down_speed{};       // CameraHeightInterpSpeedDown
+        bool has_previous{};      // holder[+748]
+        float previous_height{};  // holder[+752], shared with platform carry
+        float applied_delta{};    // holder[+996], what the last lerp moved
+
+        // Would this configuration actually smooth anything? The gate must be exactly 1.0 AND at least one speed
+        // must survive the clamp below 1.0.
+        bool is_effective() const;
+    };
+
+    static constexpr uintptr_t kSmoothingHasPrevious = 748;
+    static constexpr uintptr_t kSmoothingPreviousHeight = 752;
+    static constexpr uintptr_t kSmoothingAppliedDelta = 996;
+
+    static std::optional<HeightSmoothing> camera_height_smoothing(unsigned index);
+
+    // Turn the gate on or off. Provided because a consumer that DOES want to change it should not have to know the
+    // variable's name -- but see is_effective(): on the default speeds this changes nothing.
+    static bool set_camera_smoothing_enabled(bool enabled);
+
     // ---- THE GAME-SIDE FIELD OF VIEW, AND THE CINEMATIC CAMERA THAT OVERRIDES IT ------------
     //
     // PlayerCamera_UpdateCinematicCamera walks a vector of cinematic camera descriptors on the player manager and,

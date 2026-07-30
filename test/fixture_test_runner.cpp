@@ -4509,6 +4509,42 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- CAMERA HEIGHT SMOOTHING, INERT TWICE OVER ------------------------------------------
+            //
+            // The view pose lerps its height toward the new value instead of snapping, which is the kind of lag
+            // that fights a head-tracked view -- so "disable camera smoothing" is the obvious VR advice. It would
+            // be wasted effort here, and seeing that requires checking the gate AND the speeds against the clamp
+            // the producer applies:
+            //
+            //     rate = min(speed, 1.0)   ->  a speed at or above 1.0 lerps STRAIGHT to the target
+            //
+            // Live the gate is 0.0 and both speeds are 1000.0, so the block never runs and would smooth nothing if
+            // it did. is_effective() reports that conjunction, which is why it is not just a read of the gate.
+            bool hs_r = false, hs_hp = false, hs_e = false, hs_tc = false, hs_sc = false,
+                 hs_ea = false, hs_rr = false;
+            double hs_en = -1.0, hs_u = -1.0, hs_d = -1.0, hs_ph = -1.0, hs_ad = -1.0;
+            check(json_bool(body, "hs_readable", hs_r) && hs_r,
+                  "the smoothing settings and state read together");
+            check(json_double(body, "hs_enabled", hs_en) && json_double(body, "hs_up", hs_u) &&
+                      json_double(body, "hs_down", hs_d) && json_double(body, "hs_previous_height", hs_ph) &&
+                      json_double(body, "hs_applied_delta", hs_ad),
+                  "all five numbers are reported");
+            json_bool(body, "hs_has_previous", hs_hp);
+            // THE TRIO IS CONSISTENT: no previous height means neither the remembered height nor the delta is
+            // meaningful, and the producer leaves both at zero.
+            check(json_bool(body, "hs_trio_consistent", hs_tc) && hs_tc,
+                  "with no previous height recorded, the height and delta are both untouched");
+            // THE CLAMP MAKES THE DEFAULT SPEEDS INERT -- checked as arithmetic, not asserted in prose.
+            check(json_bool(body, "hs_speeds_reach_clamp", hs_sc) && hs_sc,
+                  "both interpolation speeds sit at or above the clamp, so the lerp would be instant");
+            // AND THE PREDICATE MATCHES THE CONJUNCTION IT DOCUMENTS, so it cannot drift from its own comment.
+            check(json_bool(body, "hs_effective_agrees", hs_ea) && hs_ea,
+                  "is_effective() equals the gate-and-clamp conjunction it describes");
+            json_bool(body, "hs_effective", hs_e);
+            check(!hs_e, "smoothing is not doing anything on this build, so no VR workaround is needed");
+            check(json_bool(body, "hs_range_refused", hs_rr) && hs_rr,
+                  "an out-of-range slot yields no smoothing state");
+
             // ---- THE GAME-SIDE FIELD OF VIEW, AND THE CINEMATIC CAMERA ------------------------------
             //
             // The cinematic path writes a pair of floats onto the pose holder from a descriptor's FOV in DEGREES

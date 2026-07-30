@@ -931,4 +931,55 @@ std::optional<bool> PlayerMgr::fov_derivation_holds(unsigned index, float tolera
     return std::fabs(want_y - pair->fov_y) <= tolerance && std::fabs(want_x - pair->fov_x) <= tolerance;
 }
 
+
+bool PlayerMgr::HeightSmoothing::is_effective() const {
+    if (enabled != 1.0f) {
+        return false;
+    }
+    // The producer clamps the rate to 1.0, and a rate of exactly 1.0 makes the lerp land on the target -- so a
+    // speed at or above the clamp smooths nothing.
+    const auto up = up_speed < 1.0f ? up_speed : 1.0f;
+    const auto down = down_speed < 1.0f ? down_speed : 1.0f;
+    return up < 1.0f || down < 1.0f;
+}
+
+std::optional<PlayerMgr::HeightSmoothing> PlayerMgr::camera_height_smoothing(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto gate = Engine::find_cached_var("CameraSmoothingEnabled");
+    const auto up = Engine::find_cached_var("CameraHeightInterpSpeedUp");
+    const auto down = Engine::find_cached_var("CameraHeightInterpSpeedDown");
+    if (!gate.has_value() || !up.has_value() || !down.has_value()) {
+        return std::nullopt;
+    }
+    const auto gv = Engine::read_cached(*gate);
+    const auto uv = Engine::read_cached(*up);
+    const auto dv = Engine::read_cached(*down);
+    const auto flag = mem::read<uint8_t>(p->holder + kSmoothingHasPrevious);
+    const auto prev = mem::read<float>(p->holder + kSmoothingPreviousHeight);
+    const auto delta = mem::read<float>(p->holder + kSmoothingAppliedDelta);
+    if (!gv.has_value() || !uv.has_value() || !dv.has_value() || !flag.has_value() || !prev.has_value() ||
+        !delta.has_value()) {
+        return std::nullopt;
+    }
+    HeightSmoothing out;
+    out.enabled = *gv;
+    out.up_speed = *uv;
+    out.down_speed = *dv;
+    out.has_previous = *flag != 0;
+    out.previous_height = *prev;
+    out.applied_delta = *delta;
+    return out;
+}
+
+bool PlayerMgr::set_camera_smoothing_enabled(bool enabled) {
+    const auto gate = Engine::find_cached_var("CameraSmoothingEnabled");
+    if (!gate.has_value()) {
+        return false;
+    }
+    return Engine::write_cached(*gate, enabled ? 1.0f : 0.0f);
+}
+
 }  // namespace sdk

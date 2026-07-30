@@ -4610,6 +4610,34 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // CAMERA HEIGHT SMOOTHING. The interesting result is that it is inert twice over, so the obvious VR advice
+    // ("disable smoothing") would be wasted effort -- which is only visible by checking the gate AND the speeds
+    // against the clamp the producer applies.
+    const auto hs = sdk::PlayerMgr::camera_height_smoothing(0);
+    json_append_bool(out, "hs_readable", hs.has_value());
+    if (hs.has_value()) {
+        json_append_double(out, "hs_enabled", static_cast<double>(hs->enabled), 4);
+        json_append_double(out, "hs_up", static_cast<double>(hs->up_speed), 4);
+        json_append_double(out, "hs_down", static_cast<double>(hs->down_speed), 4);
+        json_append_bool(out, "hs_has_previous", hs->has_previous);
+        json_append_double(out, "hs_previous_height", static_cast<double>(hs->previous_height), 4);
+        json_append_double(out, "hs_applied_delta", static_cast<double>(hs->applied_delta), 6);
+        json_append_bool(out, "hs_effective", hs->is_effective());
+        // THE STATE TRIO IS INTERNALLY CONSISTENT: with no previous height recorded, neither the remembered height
+        // nor the applied delta can be meaningful, and the producer leaves both at their constructed zero.
+        json_append_bool(out, "hs_trio_consistent",
+                         hs->has_previous || (hs->previous_height == 0.0f && hs->applied_delta == 0.0f));
+        // THE CLAMP IS WHAT MAKES THE SPEEDS INERT, so it is checked as arithmetic rather than asserted in prose:
+        // a speed at or above 1.0 lerps straight to the target.
+        const auto clamped_up = hs->up_speed < 1.0f ? hs->up_speed : 1.0f;
+        const auto clamped_down = hs->down_speed < 1.0f ? hs->down_speed : 1.0f;
+        json_append_bool(out, "hs_speeds_reach_clamp", clamped_up >= 1.0f && clamped_down >= 1.0f);
+        // is_effective() must agree with the conjunction it documents.
+        json_append_bool(out, "hs_effective_agrees",
+                         hs->is_effective() == (hs->enabled == 1.0f && (clamped_up < 1.0f || clamped_down < 1.0f)));
+    }
+    json_append_bool(out, "hs_range_refused", !sdk::PlayerMgr::camera_height_smoothing(9).has_value());
+
     // THE GAME-SIDE FOV, cross-checked against the renderer's projection. Two mappings sharing no offsets: a
     // float field on the pose holder against a value derived from the projection matrix by walking the
     // shader-parameter list.
