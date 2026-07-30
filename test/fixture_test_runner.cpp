@@ -8449,6 +8449,84 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- THE 2D PASS, WHICH IS WHERE THE HUD IS PAINTED ---------------------------------
+        //
+        // Established by hooking BOTH candidate slots rather than reasoning about them: slot 16
+        // (`SetupPassAffine`) never runs in normal play, while slot 17 (`SetupPassStored`) runs ~10 times a
+        // frame and leaves the record orthographic. The header had recorded slot 17's purpose as "not
+        // established"; hooking it answered the question in one run.
+        //
+        // A per-eye HUD needs the pass's viewport, and the 2D pass takes no rect argument -- it derives one
+        // from a descriptor at +0x170. The first reading of that call took +0x170 for the offset pair and
+        // read back the target pointer and the width; the pair is at +0x17C, behind a flag on the target.
+        {
+            std::string ub;
+            if (http::get(port, "/vr/hud", resp)) {
+                ub = http::body_of(resp);
+            }
+            bool hud_ok = false;
+            if (json_bool(ub, "ok", hud_ok) && hud_ok) {
+                double hp_last = -1.0, vl = -1.0, vr = -1.0, vt = -1.0, vb = -1.0;
+                bool ortho = false, gate = false, gate_read = false;
+                const bool base_ok = json_double(ub, "passes_last_frame", hp_last) &&
+                                     json_bool(ub, "ortho", ortho) && json_double(ub, "vp_left", vl) &&
+                                     json_double(ub, "vp_right", vr) && json_double(ub, "vp_top", vt) &&
+                                     json_double(ub, "vp_bottom", vb);
+                check(base_ok && hp_last > 0.0,
+                      "the 2D pass runs every frame, so slot 17 is a live entry rather than a dormant one");
+                check(ortho, "and it leaves the record ORTHOGRAPHIC, which is what identifies it as the pass "
+                             "the HUD is painted in rather than another perspective view");
+                json_bool(ub, "gate", gate);
+                check(json_bool(ub, "gate_read", gate_read) && gate_read,
+                      "the target descriptor is readable from inside the pass -- from any other thread its "
+                      "target pointer is null, because no target is bound between frames");
+
+                if (base_ok && gate) {
+                    // THE MECHANISM ITSELF. Writing the field from outside is reclaimed: the descriptor is
+                    // rebuilt whenever a target is bound, which happens before each of the frame's passes.
+                    // The mod writes it inside the pass entry instead, and the engine derives its rect from
+                    // what it finds there.
+                    constexpr double kShift = 640.0;
+                    char url[96];
+                    snprintf(url, sizeof(url), "/vr/hud?x=%d&y=0", static_cast<int>(kShift));
+                    http::get(port, url, resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    std::string sb2;
+                    if (http::get(port, "/vr/hud", resp)) {
+                        sb2 = http::body_of(resp);
+                    }
+                    double sl = -1.0, sr = -1.0, st2 = -1.0, sb3 = -1.0, writes = -1.0;
+                    const bool shifted = json_double(sb2, "vp_left", sl) && json_double(sb2, "vp_right", sr) &&
+                                         json_double(sb2, "vp_top", st2) && json_double(sb2, "vp_bottom", sb3) &&
+                                         json_double(sb2, "writes", writes);
+                    check(shifted && writes > 0.0,
+                          "arming the offset writes it on the pass entry, where the engine will read it");
+                    if (shifted) {
+                        // TRANSLATION, not a resize: every edge moves by the same amount. A rect that grew
+                        // on one side would mean the offset reached the size rather than the origin.
+                        check(sl - vl == kShift && sr - vr == kShift,
+                              "the 2D pass viewport translates horizontally by exactly the offset asked for");
+                        check(st2 == vt && sb3 == vb,
+                              "and not vertically, so the two axes are independent rather than coupled");
+                    }
+
+                    // RELEASE, unconditionally -- a shifted HUD would follow every later check and the player.
+                    http::get(port, "/vr/hud?clear=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    std::string rb2;
+                    if (http::get(port, "/vr/hud", resp)) {
+                        rb2 = http::body_of(resp);
+                    }
+                    double rl = -1.0, rr = -1.0;
+                    bool armed = true;
+                    check(json_bool(rb2, "armed", armed) && !armed && json_double(rb2, "vp_left", rl) &&
+                              json_double(rb2, "vp_right", rr) && rl == vl && rr == vr,
+                          "and releasing restores the engine's own viewport exactly, so the suite leaves the "
+                          "HUD where it found it");
+                }
+            }
+        }
+
         // ---- A HEAD-TRACKED VIEW, MEASURED BY WHERE THE WORLD LANDS ON SCREEN ---------------
         //
         // The camera's rotation is the engine's own product `holder[+552] * holder[+324]` -- an additive slot

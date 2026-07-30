@@ -529,6 +529,54 @@ public:
     // unexpected value is information rather than something to hide.
     static std::optional<uint32_t> state();
 
+    // ---- THE 2D PASS, WHICH IS WHERE THE HUD IS PAINTED -----------------------------
+    //
+    // ESTABLISHED BY MEASUREMENT. Slots 16 and 17 were both hooked live: slot 16 (`SetupPassAffine`) never
+    // ran at all in normal play, while slot 17 ran ~10 times per frame and left the record ORTHOGRAPHIC
+    // every time, at the full target width. An earlier pass through this header recorded slot 17's purpose
+    // as "NOT established"; it is the 2D pass.
+    //
+    // It carries MODE 2 -- precisely the mode `DrawScene` refuses -- which fits a pass whose contents are
+    // object lists and 2D draws rather than a scene.
+    //
+    // WHAT A PER-EYE HUD HAS TO WORK WITH. Unlike the perspective pass, the 2D pass takes no rect argument.
+    // It derives its viewport from the record alone:
+    //
+    //     pixels       = NormalizedRectToPixels(the target dimensions)
+    //     offset       = sub_620CE4(+0x170), ADDED to all four edges
+    //     half-extents = half the resulting width and height, passed where FOV goes
+    //     camera       = identity (sub_426A42 builds position 0 and quaternion (0,0,0,1))
+    //
+    // AND THE OFFSET IS GATED, which a first reading of the call missed. +0x170 is not a pair; it is a
+    // BOUND-TARGET DESCRIPTOR, and the existing kTargetSizeOffset lives inside it:
+    //
+    //     +0x170  void*  target   -- its FIRST DWORD is flags; the offset applies only if bit 0x800 is set
+    //     +0x174  int32  width    -- == kTargetSizeOffset
+    //     +0x178  int32  height
+    //     +0x17C  int32  offset x -- what sub_620CE4 returns when the flag is set, else it returns (0, 0)
+    //     +0x180  int32  offset y
+    //
+    // So moving the HUD into one eye's half is a write to +0x17C/+0x180 AND the flag bit -- reading a pair
+    // straight out of +0x170 yields the target pointer and the width, which is what the first attempt did.
+    static constexpr uintptr_t kTargetDescriptor = 0x170;
+    static constexpr uintptr_t kPassOffsetPair = 0x17C;
+    static constexpr uint32_t kTargetOffsetEnableFlag = 0x800;
+
+    // The offset the 2D pass will actually apply: the stored pair when the target's flag permits it, and
+    // (0, 0) when it does not -- i.e. what sub_620CE4 computes, not merely what is stored.
+    static std::optional<std::array<int32_t, 2>> pass_offset();
+
+    // The stored pair, whether or not the flag currently lets it through. The two differ exactly when the
+    // gate is closed, and a consumer that wants to know why its write did nothing needs both.
+    static std::optional<std::array<int32_t, 2>> pass_offset_stored();
+
+    // Is the gate open? nullopt when the descriptor or its target cannot be read.
+    static std::optional<bool> pass_offset_enabled();
+
+    // Write the stored pair. Returns false if the descriptor is unreadable. NOTE this does not open the
+    // gate: if pass_offset_enabled() is false the engine keeps applying (0, 0).
+    static bool set_pass_offset(int32_t x, int32_t y);
+
     // THE RENDER TARGET CURRENTLY BOUND, in pixels -- g_SceneRenderer+0x174, written by
     // SceneRenderer_BeginRenderTarget and the very dimensions LTRenderer_NormalizedRectToPixels multiplies a
     // fractional viewport by.
@@ -608,7 +656,7 @@ public:
         EndRenderTarget,       // 12, state 3 -> 2
         SetupPassPerspective,  // 15, state 3 -> 4, mode 0; camera, FOV angles, fractional viewport
         SetupPassAffine,       // 16, state 3 -> 4, mode 1
-        SetupPassStored,       // 17, one argument; which pass it configures is NOT established
+        SetupPassStored,       // 17, the 2D/SCREEN pass, mode 2 -- where the HUD is painted
         EndPass,               // 18, state 4 -> 3
         DrawScene,             // 20, the whole scene; requires state 4 and a mode other than 2
         DrawObjectList,        // 21, an object list and count, both validated by the wrapper

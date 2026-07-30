@@ -4583,3 +4583,54 @@ still the player stands, while sampling skew shrinks to nothing at rest.
 exact the whole time. The bound can now be tight where the old one could not be, and it is gated on having
 seen enough still frames for the claim to mean something -- a player who is moving yields a skip, not a
 failure, which is the same rule the rest of this suite follows.
+
+## The 2D pass, found by hooking both candidates instead of picking one
+
+The HUD is painted in a screen-space pass, and a per-eye HUD needs to know which entry configures it. Two
+candidates existed -- CLTRenderer slots 16 (`SetupPassAffine`) and 17 (`SetupPassStored`) -- and the header
+had recorded slot 17 as "which pass it configures is NOT established".
+
+Hooking BOTH answered it in one run: **slot 16 never fires at all in normal play, and slot 17 fires ~10 times
+per frame and leaves the record orthographic every time.** Reading either one alone would have produced a
+confident wrong answer; slot 16 decompiles like a perfectly plausible HUD pass.
+
+Slot 17 carries MODE 2 -- exactly the mode `DrawScene` refuses -- which fits a pass whose contents are object
+lists and 2D draws. Its camera is identity (`sub_426A42` builds position 0, quaternion (0,0,0,1)).
+
+**The viewport, and the mis-read that nearly shipped.** The 2D pass takes no rect argument; it derives one:
+
+```
+pixels = NormalizedRectToPixels(target dimensions)
+offset = sub_620CE4(+0x170)          <- added to ALL FOUR edges
+half   = half the resulting extents  <- passed where the perspective pass passes FOV
+```
+
+The first reading took `+0x170` for the offset pair. It is not: it is a bound-target DESCRIPTOR, and the
+already-mapped `kTargetSizeOffset` sits inside it.
+
+```
++0x170  void*  target    -- its first dword is flags; the offset applies only when bit 0x800 is set
++0x174  int32  width     -- == kTargetSizeOffset, which is how the mis-read was caught
++0x178  int32  height
++0x17C  int32  offset x
++0x180  int32  offset y
+```
+
+Reading a pair from `+0x170` returned `(0, 2560)` -- a pointer and the target width -- and 2560 being exactly
+the screen width is what exposed it. A plausible-looking pair is not a pair.
+
+**Writing it needs the writer, again.** An external write to `+0x17C` never survives: the descriptor is
+rebuilt every time a target is bound, which happens before each of the frame's ten passes. Written inside the
+pass entry, before the original derives its rect, it takes immediately:
+
+```
+released   vp = [   0    0  2560  1440]
+x = 640    vp = [ 640    0  3200  1440]
+x = 1280   vp = [1280    0  3840  1440]
+y = 360    vp = [   0  360  2560  1800]
+released   vp = [   0    0  2560  1440]
+```
+
+Exact translation on both axes, independent, and releasing restores the engine's own rect. That is the
+per-eye HUD mechanism. Consumer API: `SceneCamera::pass_offset()` / `pass_offset_stored()` /
+`pass_offset_enabled()`, `HudPassHook::set_offset()` / `clear_offset()`, route `/vr/hud`.

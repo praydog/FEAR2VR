@@ -155,6 +155,10 @@ using StereoFn = std::function<std::string(const std::string& request_target)>;
 // HEAD ORIENTATION -- /vr/head. MUTATES the view: it composes a rotation into the camera's outer operand,
 // which is where the engine already multiplies in whatever is leaning or shaking the camera.
 using HeadFn = std::function<std::string(const std::string& request_target)>;
+
+// THE 2D PASS VIEWPORT OFFSET -- /vr/hud. MUTATES what the HUD is painted over: the engine adds this pair to
+// every edge of the screen-space pass, which is how the HUD reaches one eye's half.
+using HudFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -178,6 +182,7 @@ struct Handlers {
     ConsoleFn console{};             // optional; /console/* 404s without it -- MUTATES via command handlers
     StereoFn stereo{};               // optional; /stereo/* 404s without it -- MUTATES the rendered view
     HeadFn head{};                   // optional; /vr/head 404s without it -- MUTATES the view orientation
+    HudFn hud{};                     // optional; /vr/hud 404s without it -- MUTATES where the HUD lands
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

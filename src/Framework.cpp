@@ -31,6 +31,7 @@
 #include "mods/FocusKeeper.hpp"
 #include "mods/HeadTracking.hpp"
 #include "mods/WeaponAgreement.hpp"
+#include "mods/HudPassHook.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -6258,6 +6259,38 @@ std::string build_shader_params_json(bool include_write_probes) {
                 // THE ROTATION THE RENDERER IS ACTUALLY GIVEN. The camera OBJECT's rotation is a different
                 // thing and this project has already been misled by conflating them once; this is the
                 // transform the pass is set up with, captured as the argument.
+                const auto hp = HudPassHook::get().observed();
+                json_append_bool(out, "hud_hooked", hp.hooked);
+                json_append_double(out, "hud_passes", static_cast<double>(hp.passes), 0);
+                json_append_double(out, "hud_passes_last_frame", static_cast<double>(hp.passes_last_frame), 0);
+                json_append_bool(out, "hud_ortho", hp.ortho);
+                json_append_bool(out, "hud_record_read", hp.record_read);
+                json_append_double(out, "hud_vp_w", static_cast<double>(hp.viewport[2]), 0);
+                json_append_double(out, "hud_vp_h", static_cast<double>(hp.viewport[3]), 0);
+                json_append_double(out, "hud_rect_r", hp.rect[2], 4);
+                const auto po = sdk::SceneCamera::pass_offset();
+                const auto pos = sdk::SceneCamera::pass_offset_stored();
+                const auto poe = sdk::SceneCamera::pass_offset_enabled();
+                json_append_bool(out, "hud_inphase_read", hp.offset_read);
+                json_append_bool(out, "hud_inphase_gate", hp.offset_gate);
+                json_append_double(out, "hud_inphase_eff_x", static_cast<double>(hp.offset_effective[0]), 0);
+                json_append_double(out, "hud_inphase_stored_x", static_cast<double>(hp.offset_stored[0]), 0);
+                json_append_bool(out, "hud_offset_read", po.has_value());
+                json_append_bool(out, "hud_offset_gate", poe.value_or(false));
+                json_append_bool(out, "hud_offset_gate_read", poe.has_value());
+                if (po) {
+                    json_append_double(out, "hud_offset_x", static_cast<double>((*po)[0]), 0);
+                    json_append_double(out, "hud_offset_y", static_cast<double>((*po)[1]), 0);
+                }
+                if (pos) {
+                    json_append_double(out, "hud_offset_stored_x", static_cast<double>((*pos)[0]), 0);
+                    json_append_double(out, "hud_offset_stored_y", static_cast<double>((*pos)[1]), 0);
+                }
+                json_append_bool(out, "hud_stored_hooked", hp.stored_hooked);
+                json_append_double(out, "hud_stored_passes", static_cast<double>(hp.stored_passes), 0);
+                json_append_double(out, "hud_stored_last_frame", static_cast<double>(hp.stored_last_frame), 0);
+                json_append_bool(out, "hud_stored_ortho", hp.stored_ortho);
+                json_append_double(out, "hud_stored_vp_w", static_cast<double>(hp.stored_viewport[2]), 0);
                 json_append_double(out, "cp_cam_qx", cp.camera_rotation[0], 5);
                 json_append_double(out, "cp_cam_qy", cp.camera_rotation[1], 5);
                 json_append_double(out, "cp_cam_qz", cp.camera_rotation[2], 5);
@@ -9855,6 +9888,7 @@ bool Framework::initialize() {
     // one turns the HEAD, and a VR mod needs both.
     Mods::get().add(&HeadTracking::get());
     Mods::get().add(&WeaponAgreement::get());
+    Mods::get().add(&HudPassHook::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -9872,6 +9906,33 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.hud = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        if (webapi_query_int(q, "clear", 0) != 0) {
+            HudPassHook::get().clear_offset();
+        } else if (q.find("x") != q.end() || q.find("y") != q.end()) {
+            HudPassHook::get().set_offset(static_cast<int32_t>(webapi_query_int(q, "x", 0)),
+                                          static_cast<int32_t>(webapi_query_int(q, "y", 0)));
+        }
+        const auto hp = HudPassHook::get().observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", hp.stored_hooked)
+              .u("passes", static_cast<size_t>(hp.stored_passes))
+              .u("passes_last_frame", static_cast<size_t>(hp.stored_last_frame))
+              .b("ortho", hp.stored_ortho)
+              .b("gate", hp.offset_gate).b("gate_read", hp.offset_read)
+              .b("armed", hp.offset_armed).u("writes", static_cast<size_t>(hp.offset_writes))
+              .i("req_x", hp.offset_requested[0]).i("req_y", hp.offset_requested[1])
+              .i("stored_x", hp.offset_stored[0]).i("stored_y", hp.offset_stored[1])
+              .i("effective_x", hp.offset_effective[0]).i("effective_y", hp.offset_effective[1])
+              .i("vp_left", hp.stored_viewport[0]).i("vp_top", hp.stored_viewport[1])
+              .i("vp_right", hp.stored_viewport[2]).i("vp_bottom", hp.stored_viewport[3]);
+        }
+        return out;
+    };
+
     handlers.head = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         auto& ht = HeadTracking::get();

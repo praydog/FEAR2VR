@@ -915,6 +915,59 @@ std::optional<std::array<float, 2>> SceneCamera::predicted_half_view_plane(float
     return out;
 }
 
+std::optional<std::array<int32_t, 2>> SceneCamera::pass_offset_stored() {
+    // SAME BASE AS current_target_size: the offsets in SetupPassStored are `this`-relative, and `this` is
+    // the state dword. Measuring from the camera record instead would land 0x32E790 away.
+    const auto at = exe_at(kStateOffset);
+    if (at == 0) {
+        return std::nullopt;
+    }
+    const auto x = mem::read<int32_t>(at + kPassOffsetPair);
+    const auto y = mem::read<int32_t>(at + kPassOffsetPair + 4);
+    if (!x.has_value() || !y.has_value()) {
+        return std::nullopt;
+    }
+    return std::array<int32_t, 2>{*x, *y};
+}
+
+std::optional<bool> SceneCamera::pass_offset_enabled() {
+    const auto at = exe_at(kStateOffset);
+    if (at == 0) {
+        return std::nullopt;
+    }
+    // The descriptor's first field is a POINTER to the target, and the flags are that object's first dword.
+    // Two dereferences, each of which can fail while a target is being swapped.
+    const auto target = mem::read<uintptr_t>(at + kTargetDescriptor);
+    if (!target.has_value() || *target == 0) {
+        return std::nullopt;
+    }
+    const auto flags = mem::read<uint32_t>(*target);
+    if (!flags.has_value()) {
+        return std::nullopt;
+    }
+    return (*flags & kTargetOffsetEnableFlag) != 0;
+}
+
+std::optional<std::array<int32_t, 2>> SceneCamera::pass_offset() {
+    const auto on = pass_offset_enabled();
+    if (!on.has_value()) {
+        return std::nullopt;
+    }
+    if (!*on) {
+        return std::array<int32_t, 2>{0, 0};  // what sub_620CE4 returns with the gate closed
+    }
+    return pass_offset_stored();
+}
+
+bool SceneCamera::set_pass_offset(int32_t x, int32_t y) {
+    const auto at = exe_at(kStateOffset);
+    if (at == 0) {
+        return false;
+    }
+    return mem::write<int32_t>(at + kPassOffsetPair, x) &&
+           mem::write<int32_t>(at + kPassOffsetPair + 4, y);
+}
+
 std::optional<std::array<int32_t, 4>> SceneCamera::predicted_viewport_pixels(
     const std::array<float, 4>& normalized_rect, int32_t target_width, int32_t target_height) {
     if (target_width <= 0 || target_height <= 0) {
