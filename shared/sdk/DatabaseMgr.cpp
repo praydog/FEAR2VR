@@ -965,4 +965,147 @@ DatabaseMgr::StringHeaderSample DatabaseMgr::sample_string_header(const regenny:
     return out;
 }
 
+
+namespace {
+
+std::string hex32(uint32_t v) {
+    char buf[16]{};
+    snprintf(buf, sizeof(buf), "0x%08X", v);
+    return buf;
+}
+
+std::string render_float(float f) {
+    char buf[32]{};
+    snprintf(buf, sizeof(buf), "%g", static_cast<double>(f));
+    return buf;
+}
+
+}  // namespace
+
+std::vector<DatabaseMgr::DescribedAttribute> DatabaseMgr::describe_record(
+    const regenny::DatabaseMgrRecord* record_ptr, size_t max_elements) {
+    std::vector<DescribedAttribute> out;
+    const auto n = attribute_count(record_ptr);
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const auto a = attribute_at(record_ptr, i);
+        if (!a.has_value()) {
+            continue;
+        }
+        DescribedAttribute d;
+        d.name_hash = a->name_hash;
+        d.name = attribute_name(*a);
+        d.type = a->type;
+        d.num_values = a->num_values;
+
+        const size_t shown = a->num_values < max_elements ? a->num_values : max_elements;
+        d.value.truncated = a->num_values > shown;
+        std::string rendered;
+        for (size_t e = 0; e < shown; ++e) {
+            if (!rendered.empty()) {
+                rendered += ", ";
+            }
+            switch (a->type) {
+            case kTypeBool: {
+                const auto b = attribute_bool(*a, e);
+                rendered += b.has_value() ? (*b ? "true" : "false") : "?";
+                break;
+            }
+            case kTypeFloat: {
+                const auto f = attribute_float(*a, e);
+                rendered += f.has_value() ? render_float(*f) : "?";
+                break;
+            }
+            case kTypeString:
+            case kTypeLocalizedKey: {
+                const auto t = attribute_text(*a, e);
+                rendered += t.has_value() ? ("\"" + *t + "\"") : "?";
+                break;
+            }
+            case kTypeRecordLink:
+            case kTypeRecordLinkAlt: {
+                auto* linked = attribute_record(*a, e);
+                if (linked == nullptr) {
+                    rendered += "<null link>";
+                } else {
+                    const auto nm = record_name(linked);
+                    rendered += "->" + (nm.empty() ? hex32(static_cast<uint32_t>(
+                                                          reinterpret_cast<uintptr_t>(linked)))
+                                                   : nm);
+                }
+                break;
+            }
+            case kType8Bytes:
+            case kType12Bytes:
+            case kType16Bytes: {
+                const auto dwords = attribute_struct(*a, e);
+                if (dwords.empty()) {
+                    rendered += "?";
+                    break;
+                }
+                // Types 7 and 8 measured as floats; type 6 is UNDECIDED, so it renders as hex rather than
+                // committing to a reading the measurement did not support.
+                const bool as_float = (a->type == kType12Bytes || a->type == kType16Bytes);
+                rendered += "(";
+                for (size_t k = 0; k < dwords.size(); ++k) {
+                    if (k != 0) {
+                        rendered += " ";
+                    }
+                    if (as_float) {
+                        float f = 0.0f;
+                        std::memcpy(&f, &dwords[k], sizeof(f));
+                        rendered += render_float(f);
+                    } else {
+                        rendered += hex32(dwords[k]);
+                    }
+                }
+                rendered += ")";
+                break;
+            }
+            default: {
+                // Type 3 (integer by elimination, signedness unestablished) and anything unseen: raw hex.
+                const auto raw = attribute_raw_dword(*a, e);
+                rendered += raw.has_value() ? hex32(*raw) : "?";
+                break;
+            }
+            }
+        }
+        d.value.text = std::move(rendered);
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
+std::vector<std::string> DatabaseMgr::describe_record_lines(const regenny::DatabaseMgrRecord* record_ptr,
+                                                           size_t max_elements) {
+    std::vector<std::string> out;
+    for (const auto& d : describe_record(record_ptr, max_elements)) {
+        std::string line = d.named() ? *d.name : ("#" + hex32(d.name_hash));
+        line += " t" + std::to_string(d.type);
+        if (d.num_values != 1) {
+            line += "[" + std::to_string(d.num_values) + "]";
+        }
+        line += " = " + d.value.text;
+        if (d.value.truncated) {
+            line += ", ...";
+        }
+        out.push_back(std::move(line));
+    }
+    return out;
+}
+
+DatabaseMgr::DescribeCoverage DatabaseMgr::describe_coverage(const regenny::DatabaseMgrRecord* record_ptr) {
+    DescribeCoverage out;
+    for (const auto& d : describe_record(record_ptr, 1)) {
+        ++out.attributes;
+        if (d.named()) {
+            ++out.named;
+        }
+        if (!d.value.text.empty() && d.value.text != "?") {
+            ++out.valued;
+        }
+    }
+    return out;
+}
+
 } // namespace sdk

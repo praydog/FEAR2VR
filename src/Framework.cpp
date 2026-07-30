@@ -7517,6 +7517,103 @@ std::string build_database_json() {
                         json_escape_append(entry0_json, texts);
                     }
 
+                    // ---- READING Client/Shared THE WAY THE GAME DOES ----
+                    //
+                    // The record CMoveMgr reads its movement tunables from, and the reference's hSharedRecord.
+                    // This is the payoff of the whole database chain: names from the module's literals, values
+                    // decoded by type.
+                    {
+                        auto* shared = sdk::DatabaseMgr::find_category(e->record_a, "Client/Shared");
+                        auto* rec = (shared != nullptr && sdk::DatabaseMgr::record_count(shared) > 0)
+                                        ? sdk::DatabaseMgr::record(shared, 0)
+                                        : nullptr;
+                        const auto cov = sdk::DatabaseMgr::describe_coverage(rec);
+                        entry0_json += ",\"shared_attrs\":" + std::to_string(cov.attributes);
+                        entry0_json += ",\"shared_named\":" + std::to_string(cov.named);
+                        entry0_json += ",\"shared_valued\":" + std::to_string(cov.valued);
+                        // A handful of lines, and specifically the movement ones a VR consumer cares about.
+                        std::string lines;
+                        size_t emitted = 0;
+                        for (const auto& l : sdk::DatabaseMgr::describe_record_lines(rec, 3)) {
+                            const bool interesting =
+                                l.rfind("WaterAffectsSpeed", 0) == 0 || l.rfind("GunLead", 0) == 0 ||
+                                l.rfind("GamePad", 0) == 0 || l.rfind("Gravity", 0) == 0 ||
+                                l.rfind("JumpVel", 0) == 0 || l.rfind("WalkVel", 0) == 0 ||
+                                l.rfind("RunVel", 0) == 0 || l.rfind("CrouchVel", 0) == 0;
+                            if (!interesting || emitted >= 8) {
+                                continue;
+                            }
+                            if (!lines.empty()) {
+                                lines += " | ";
+                            }
+                            lines += l;
+                            ++emitted;
+                        }
+                        entry0_json += ",\"shared_movement\":";
+                        json_escape_append(entry0_json, lines);
+                        // And the first few lines regardless, so the dump is visible even if none of the above
+                        // names exist in this build.
+                        std::string head;
+                        size_t hn = 0;
+                        for (const auto& l : sdk::DatabaseMgr::describe_record_lines(rec, 2)) {
+                            if (hn >= 6) {
+                                break;
+                            }
+                            if (!head.empty()) {
+                                head += " | ";
+                            }
+                            head += l;
+                            ++hn;
+                        }
+                        entry0_json += ",\"shared_head\":";
+                        json_escape_append(entry0_json, head);
+
+                        // ---- FOLLOWING A RECORD LINK, WHICH IS THE WHOLE CHAIN IN ONE STEP ----
+                        //
+                        // GunLead is a type-9 link on Client/Shared. CMoveMgr hashes "GunLead" to reach a
+                        // sub-record and then reads "YawClamp" and "YawBias" from it -- and those two attributes
+                        // were found in _Structures. If following the link lands on a record that HAS them, the
+                        // link semantics, the _Structures pool and CMoveMgr's traversal all agree.
+                        {
+                            std::string linked_desc;
+                            bool has_yaw = false, in_pool = false;
+                            if (rec != nullptr) {
+                                const auto gl = sdk::DatabaseMgr::find_attribute(rec, "GunLead");
+                                if (gl.has_value()) {
+                                    auto* target = sdk::DatabaseMgr::attribute_record(*gl, 0);
+                                    if (target != nullptr) {
+                                        has_yaw = sdk::DatabaseMgr::has_attribute(target, "YawClamp") &&
+                                                  sdk::DatabaseMgr::has_attribute(target, "YawBias");
+                                        // Does it live in the _Structures pool, as the earlier finding implies?
+                                        const auto owner = sdk::mem::read_ptr(
+                                            reinterpret_cast<uintptr_t>(target) + 0x10);
+                                        if (owner.has_value() && *owner != 0) {
+                                            const auto cn = sdk::DatabaseMgr::category_name(
+                                                reinterpret_cast<regenny::DatabaseMgrCategory*>(*owner));
+                                            in_pool = (cn == sdk::DatabaseMgr::kStructurePoolCategory);
+                                        }
+                                        size_t shown = 0;
+                                        for (const auto& l :
+                                             sdk::DatabaseMgr::describe_record_lines(target, 2)) {
+                                            if (shown >= 5) {
+                                                break;
+                                            }
+                                            if (!linked_desc.empty()) {
+                                                linked_desc += " | ";
+                                            }
+                                            linked_desc += l;
+                                            ++shown;
+                                        }
+                                    }
+                                }
+                            }
+                            entry0_json += ",\"link_has_yaw\":" + std::string(has_yaw ? "true" : "false");
+                            entry0_json += ",\"link_in_pool\":" + std::string(in_pool ? "true" : "false");
+                            entry0_json += ",\"link_desc\":";
+                            json_escape_append(entry0_json, linked_desc);
+                        }
+                    }
+
                     // THE CROSS-ROUTE CHECK. These names come from gameclient's CMoveMgr_Init, which reads them
                     // as DATABASE attributes. Their hashes must appear as descriptors somewhere in the database
                     // -- names from one module's code, structures from another's data.

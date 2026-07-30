@@ -538,6 +538,53 @@ public:
     // text is a value to show or a key to look up.
     static std::optional<std::string> attribute_text(const Attribute& attribute, size_t i = 0);
 
+    // ---- READING A WHOLE RECORD THE WAY THE GAME DOES -------------------------------------------
+    //
+    // Three passes built the pieces: find a record by name, enumerate its descriptors, resolve each hash to a
+    // name from the module's own literals, and decode each value by type. This is those pieces joined up, which
+    // is the point at which a consumer can actually USE the database rather than inspect it.
+    //
+    // WHAT IT IS FOR: a mod that wants to know what the game shipped -- and what it may safely change -- needs
+    // the record's contents as names and values, not as hashes and blob offsets. Client/Shared alone is the
+    // record CMoveMgr reads its movement tunables from.
+    struct DescribedValue {
+        std::string text;        // rendered per type; empty when the type has no rendering
+        bool truncated{};        // more elements exist than were rendered
+    };
+
+    struct DescribedAttribute {
+        uint32_t name_hash{};
+        std::optional<std::string> name;  // nullopt when no module literal produces this hash
+        uint8_t type{};
+        uint8_t num_values{};
+        DescribedValue value;
+
+        // A caller displaying this wants to know whether the name is real or a fallback.
+        bool named() const { return name.has_value(); }
+    };
+
+    // Every attribute of a record, named where possible and rendered by type. `max_elements` bounds how many
+    // elements of a multi-valued attribute are rendered -- an attribute can hold hundreds.
+    //
+    // Rendering is deliberately conservative: types whose C meaning is not established render as raw hex rather
+    // than as a guessed interpretation, so nothing in the output claims more than the mapping supports.
+    static std::vector<DescribedAttribute> describe_record(const regenny::DatabaseMgrRecord* record,
+                                                           size_t max_elements = 4);
+
+    // The same, rendered as one line per attribute -- what a consumer logs or dumps.
+    static std::vector<std::string> describe_record_lines(const regenny::DatabaseMgrRecord* record,
+                                                          size_t max_elements = 4);
+
+    // How thoroughly a record can be described: how many of its attributes resolve to a name, and how many
+    // render a value. Exposed because the answer differs per record and a caller should not assume either.
+    struct DescribeCoverage {
+        size_t attributes{};
+        size_t named{};
+        size_t valued{};
+    };
+
+    static DescribeCoverage describe_coverage(const regenny::DatabaseMgrRecord* record);
+
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
 };

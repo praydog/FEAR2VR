@@ -6684,3 +6684,43 @@ class CPlayerCamera 0x18C6 {
 // is_localized_key, and kTypeString / kTypeLocalizedKey replacing the placeholder tag names.
 //
 // 1391 checks, 0 failures.
+
+// ---- THE DATABASE CHAIN, JOINED UP AND READ END TO END -------------------------------------------
+//
+// Four passes built pieces: find a category by name (hash binary search), find a record, enumerate its
+// descriptors, resolve each hash to a name from the module's own literals, decode each value by type. Joining
+// them is the point at which the database is USABLE rather than merely mapped, so this pass reads the record
+// CMoveMgr actually uses -- Client/Shared, the reference's hSharedRecord.
+//
+//     87 attributes    78 resolve to a name (90%)    86 render a value (99%)
+//
+// The 9 unnamed ones are honest: names live in the .gamedb, and only the literals gameclient itself contains are
+// recoverable. They render keyed by hash rather than being dropped, so a partial index never hides data.
+//
+// FOLLOWING A RECORD LINK EXERCISES THE WHOLE CHAIN IN ONE STEP. GunLead is a type-9 link on Client/Shared;
+// CMoveMgr hashes "GunLead" to reach a sub-record and reads "YawClamp" and "YawBias" from it, and those two were
+// found in _Structures two passes ago. Following the link:
+//
+//     GunLead t9 = ->GunLead          resolves to a record NAMED GunLead
+//     that record IS in _Structures   confirming what the pool is FOR
+//     it carries YawClamp and YawBias  as CMoveMgr's traversal requires
+//     #0x14F0A0A3 t2 = 0.3 | PitchClamp t2 = 2 | PitchBias t2 = 0.3 | YawClamp t2 = 6 | #0xB1B7822A t2 = 0.3
+//
+// AND THE STRONGEST CHECK IN THE WHOLE DATABASE EFFORT falls out of it: YawClamp SHIPS AS 6, which is exactly
+// the live console-variable value measured when CMoveMgr_Init's database-driven defaults were mapped -- by a
+// route that shares no code with this one. The database says 6, the cvar reads 6.0, and the two were reached
+// through completely different machinery.
+//
+// > PitchClamp = 2 and PitchBias = 0.3 are new: sibling tunables no earlier pass had seen, and directly relevant
+// > to a VR mod that must decouple view from aim.
+//
+// WaterAffectsSpeed reads false here and CMoveMgr's cached copy at its +521 measured 0 -- the same agreement in
+// the other direction.
+//
+// RENDERING IS DELIBERATELY CONSERVATIVE. Types 7 and 8 render as floats because that was measured; type 6
+// renders as HEX because its components are undecided, and type 3 as hex because "integer by elimination" does
+// not establish signedness. Nothing in the output claims more than the mapping supports.
+//
+// Exposed as sdk::DatabaseMgr::describe_record / describe_record_lines / describe_coverage.
+//
+// 1401 checks, 0 failures.

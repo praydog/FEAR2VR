@@ -7097,6 +7097,45 @@ int main(int argc, char** argv) {
             check(json_has(body, "PlayerName=IDS_PLAYER_NAME"),
                   "an attribute reads as a NAME and a VALUE together -- the hash resolved through the name index "
                   "and the text through the layout");
+
+            // ---- READING Client/Shared THE WAY THE GAME DOES -------------------------------------
+            //
+            // Four passes built the pieces -- find a category by name, find a record, enumerate descriptors,
+            // resolve hashes to names from module literals, decode values by type. This is them joined up on the
+            // record CMoveMgr actually reads, the reference's hSharedRecord.
+            int64_t sh_a = -1, sh_n = -1, sh_v = -1;
+            check(json_int(body, "shared_attrs", sh_a) && sh_a > 50,
+                  "Client/Shared carries dozens of attributes");
+            check(json_int(body, "shared_named", sh_n) && sh_n > sh_a * 3 / 4 && sh_n <= sh_a,
+                  "most resolve to a name from the module's own literals -- most, NOT all, since the names live "
+                  "in the .gamedb and only the code's literals are recoverable");
+            check(json_int(body, "shared_valued", sh_v) && sh_v >= sh_a - 2,
+                  "and nearly every one renders a value through its typed reader");
+            check(json_has(body, "WaterAffectsSpeed t1 = false"),
+                  "WaterAffectsSpeed reads false as a bool -- agreeing with CMoveMgr's cached 0 from an earlier "
+                  "pass, two modules and two routes on one fact");
+            check(json_has(body, "GunLead t9 = ->GunLead"),
+                  "and GunLead reads as a record LINK that resolves to a named record");
+
+            // ---- FOLLOWING THE LINK, WHICH EXERCISES THE WHOLE CHAIN IN ONE STEP ----
+            //
+            // CMoveMgr hashes "GunLead" to reach a sub-record and reads "YawClamp"/"YawBias" from it, and those
+            // were found in _Structures. If the link lands on a record that HAS them and lives there, then the
+            // link semantics, the pool's role and CMoveMgr's traversal all agree.
+            check(json_has(body, "\"link_has_yaw\":true"),
+                  "the linked record carries both YawClamp and YawBias, as CMoveMgr's traversal requires");
+            check(json_has(body, "\"link_in_pool\":true"),
+                  "and it lives in _Structures, confirming that pool is what record links point into");
+            // THE STRONGEST CHECK IN THE CHAIN: the shipped value equals the live console variable measured
+            // several passes ago, by a completely different route.
+            check(json_has(body, "YawClamp t2 = 6"),
+                  "YawClamp ships as 6 -- exactly the live cvar value measured when CMoveMgr_Init's "
+                  "database-driven defaults were mapped, via a route sharing no code with this one");
+            check(json_has(body, "PitchClamp t2 = 2"),
+                  "and the sibling PitchClamp reads 2, a tunable no earlier pass had seen");
+            // UNNAMED ATTRIBUTES MUST STILL RENDER, or a partial name index would hide data.
+            check(json_has(body, "#0x"),
+                  "attributes whose names are not recoverable still render, keyed by hash rather than dropped");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");
