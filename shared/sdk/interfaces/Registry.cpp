@@ -10,6 +10,10 @@
 
 #include "Log.hpp"
 #include "../Modules.hpp"
+#include "../Memory.hpp"
+#include "../Vtables.hpp"
+#include "../regenny/regenny/LTConVar.hpp"
+#include <utility/Module.hpp>
 
 namespace sdk::interfaces {
 
@@ -300,6 +304,94 @@ std::vector<std::string> Registry::names() const {
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
+}
+
+
+std::vector<Registry::GameclientSlot> Registry::gameclient_interface_slots(size_t limit) const {
+    std::vector<GameclientSlot> out;
+    const auto* gc = Modules::get().game_client();
+    const auto* exe = Modules::get().exe();
+    if (gc == nullptr || gc->base == 0 || gc->handle == nullptr || exe == nullptr || exe->base == 0) {
+        return out;
+    }
+    const auto sections = utility::get_module_sections(gc->handle);
+    if (!sections.has_value()) {
+        return out;
+    }
+
+    // What each interface currently resolves to, so a discovered slot can be ACCOUNTED FOR by pointer rather
+    // than guessed at from its class name.
+    std::vector<std::pair<std::string, uintptr_t>> resolved;
+    for (const auto& n : names()) {
+        if (const auto* p = resolve(n.c_str()); p != nullptr) {
+            resolved.emplace_back(n, reinterpret_cast<uintptr_t>(p));
+        }
+    }
+
+    // Is `at` the OWNER word of a cached-console-variable pair? Then the dword before it is an LTConVar. This is
+    // what keeps ~470 cache pairs out of the result.
+    //
+    // THE HEAP TEST IS NOT OPTIONAL. A first version required only that the preceding pointer's name field read
+    // as text, and that silently dropped every interface slot whose NEIGHBOUR is another interface slot -- among
+    // them ILTPhysics, because 0x2041E0 sits beside it and its +0x10 happens to point at something printable.
+    // Console records are HEAP-allocated and interface implementations live in the executable, so requiring the
+    // record to be outside the exe separates them exactly.
+    const auto is_convar_owner_word = [exe](uintptr_t at) {
+        const auto record = mem::read_ptr(at - sizeof(uintptr_t)).value_or(0);
+        if (record == 0) {
+            return false;
+        }
+        if (record >= exe->base && record < exe->base + exe->size) {
+            return false;  // an exe object, so a neighbouring interface pointer rather than a record
+        }
+        const auto name_ptr = mem::read_ptr(record + offsetof(regenny::LTConVar, name)).value_or(0);
+        return name_ptr != 0 && mem::read_name(name_ptr, 96, 3).has_value();
+    };
+
+    for (const auto& sec : *sections) {
+        if (sec.name != ".data") {
+            continue;
+        }
+        const auto lo = sec.virtual_address;
+        const auto hi = lo + sec.virtual_size;
+        for (uintptr_t at = lo; at + sizeof(uintptr_t) <= hi && out.size() < limit; at += sizeof(uintptr_t)) {
+            const auto value = mem::read_ptr(at).value_or(0);
+            if (value < exe->base || value >= exe->base + exe->size) {
+                continue;
+            }
+            const auto cls = Vtables::class_name_of(value);
+            if (!cls.has_value()) {
+                continue;  // not an object of a catalogued class
+            }
+            if (at > lo && is_convar_owner_word(at)) {
+                continue;  // a console-variable cache pair, not an interface slot
+            }
+            GameclientSlot slot;
+            slot.offset = at - gc->base;
+            slot.value = value;
+            slot.class_name = *cls;
+            for (const auto& [name, ptr] : resolved) {
+                if (ptr == value) {
+                    slot.interface_name = name;
+                    break;
+                }
+            }
+            out.push_back(std::move(slot));
+        }
+    }
+    return out;
+}
+
+std::optional<Registry::GameclientSlot> Registry::find_gameclient_slot(std::string_view interface_name) const {
+    if (interface_name.empty()) {
+        return std::nullopt;
+    }
+    for (auto& s : gameclient_interface_slots()) {
+        if (s.interface_name == interface_name) {
+            return s;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace sdk::interfaces

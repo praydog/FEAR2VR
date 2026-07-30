@@ -4710,6 +4710,68 @@ std::string build_shader_params_json() {
                          !sdk::PlayerMgr::movement_controller(9).has_value() &&
                          !sdk::PlayerMgr::movement_controller_owner_agrees(9).has_value());
 
+    // GAMECLIENT'S OWN INTERFACE POINTER GLOBALS. Discovery is by VTABLE and accounting is by POINTER against
+    // the registry, so the two never consult each other. The load-bearing part is the EXCLUSION: without it the
+    // console-variable cache pairs flood the result, so the count itself is the evidence the filter works.
+    const auto slots = sdk::interfaces::Registry::get().gameclient_interface_slots();
+    size_t gs_accounted = 0, gs_distinct_ifaces = 0, gs_distinct_objs = 0;
+    std::vector<std::string> gs_names;
+    std::vector<uintptr_t> gs_objs;
+    for (const auto& sl : slots) {
+        if (!sl.interface_name.empty()) {
+            ++gs_accounted;
+            gs_names.push_back(sl.interface_name);
+        }
+        if (sl.value != 0) { gs_objs.push_back(sl.value); }
+    }
+    std::sort(gs_names.begin(), gs_names.end());
+    gs_distinct_ifaces = static_cast<size_t>(std::unique(gs_names.begin(), gs_names.end()) - gs_names.begin());
+    std::sort(gs_objs.begin(), gs_objs.end());
+    gs_distinct_objs = static_cast<size_t>(std::unique(gs_objs.begin(), gs_objs.end()) - gs_objs.begin());
+    json_append_double(out, "gs_total", static_cast<double>(slots.size()), 0);
+    json_append_double(out, "gs_accounted", static_cast<double>(gs_accounted), 0);
+    json_append_double(out, "gs_distinct_interfaces", static_cast<double>(gs_distinct_ifaces), 0);
+    json_append_double(out, "gs_distinct_objects", static_cast<double>(gs_distinct_objs), 0);
+    // Every slot must name a catalogued implementation class -- that is what discovery selected on.
+    bool gs_all_classed = !slots.empty();
+    for (const auto& sl : slots) {
+        if (sl.class_name.empty()) { gs_all_classed = false; break; }
+    }
+    json_append_bool(out, "gs_all_classed", gs_all_classed);
+    // A specific one a consumer would reach for, and it must hold the same object ILTPhysics resolves to.
+    // NOTE THE NAME: the registry distinguishes ".Client" from ".Default" for the interfaces that have both a
+    // client and a server implementation, so ILTPhysics is published as "ILTPhysics.Client". Looking for
+    // ".Default" finds nothing -- which is how this was noticed.
+    const auto phys_slot = sdk::interfaces::Registry::get().find_gameclient_slot("ILTPhysics.Client");
+    json_append_bool(out, "gs_physics_found",
+                     phys_slot.has_value() && phys_slot->value == sdk::Physics::instance() &&
+                         phys_slot->class_name == "CLTPhysicsClient");
+    // The unaccounted slots are a real state, not a defect: gameclient can hold a pointer the registry does not
+    // currently publish. Report whether the registry even knows a name for that class's interface.
+    {
+        bool knows_gameutil = false;
+        for (const auto& n : sdk::interfaces::Registry::get().names()) {
+            if (n.rfind("ILTGameUtil", 0) == 0) { knows_gameutil = true; break; }
+        }
+        json_append_bool(out, "gs_registry_knows_gameutil", knows_gameutil);
+    }
+    json_append_bool(out, "gs_absent_refused",
+                     !sdk::interfaces::Registry::get().find_gameclient_slot("INoSuchInterface").has_value() &&
+                         !sdk::interfaces::Registry::get().find_gameclient_slot("").has_value());
+    {
+        std::string list;
+        for (const auto& sl : slots) {
+            if (!list.empty()) { list += ';'; }
+            char buf[32]{};
+            std::snprintf(buf, sizeof(buf), "%X|", static_cast<unsigned>(sl.offset));
+            list += buf;
+            list += sl.class_name;
+            list += '|';
+            list += sl.interface_name.empty() ? "-" : sl.interface_name;
+        }
+        json_append_string(out, "gs_list", list.c_str());
+    }
+
     // EVERY CACHED CONSOLE VARIABLE, BY DISCOVERY. The pattern is scanned out of gameclient's .data rather than
     // listed, and the check is that a data scan and a hash-table walk agree: each discovered record must be
     // findable in the console tables BY ITS OWN NAME, at the very address the cache holds.
@@ -4730,6 +4792,9 @@ std::string build_shader_params_json() {
     std::sort(cv_recs.begin(), cv_recs.end());
     cv_distinct_recs = static_cast<size_t>(std::unique(cv_recs.begin(), cv_recs.end()) - cv_recs.begin());
     json_append_double(out, "cv_total", static_cast<double>(disc.size()), 0);
+    // THE EXCLUSION IS LOAD-BEARING: without dropping cache-pair owner words the interface-slot scan would
+    // return these hundreds instead of ~20, so the ratio is the evidence the filter works.
+    json_append_bool(out, "gs_far_fewer_than_cache_pairs", slots.size() * 4 < disc.size());
     json_append_double(out, "cv_named", static_cast<double>(cv_named), 0);
     json_append_double(out, "cv_agree", static_cast<double>(cv_agree), 0);
     json_append_double(out, "cv_distinct_records", static_cast<double>(cv_distinct_recs), 0);

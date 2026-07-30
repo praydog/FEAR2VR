@@ -4610,6 +4610,47 @@ int main(int argc, char** argv) {
             check(json_bool(body, "pe_range_refused", pe_rr) && pe_rr,
                   "an out-of-range slot yields nothing rather than slot zero's answer");
 
+            // ---- GAMECLIENT'S OWN INTERFACE POINTER GLOBALS -----------------------------------------
+            //
+            // A consumer hooking game code wants the interface pointer THE GAME uses. These are found by VTABLE
+            // (against the exe's class catalogue) and then accounted for by POINTER (against what the registry
+            // currently resolves), so discovery and identification never consult each other.
+            //
+            // THE EXCLUSION IS THE HARD PART AND IT FAILED FIRST. Console-variable cache pairs put an ILTClient
+            // pointer in .data every 8 bytes, so they must be filtered out. Requiring only that the preceding
+            // dword look like an LTConVar dropped every interface slot whose NEIGHBOUR is another interface slot
+            // -- including ILTPhysics. Console records are heap-allocated and implementations live in the exe, so
+            // the fix is to require the record to be OUTSIDE the exe. The physics check below is what caught it.
+            double gs_t = -1.0, gs_a = -1.0, gs_di = -1.0, gs_do = -1.0;
+            const bool gsn = json_double(body, "gs_total", gs_t) &&
+                             json_double(body, "gs_accounted", gs_a) &&
+                             json_double(body, "gs_distinct_interfaces", gs_di) &&
+                             json_double(body, "gs_distinct_objects", gs_do);
+            bool gs_ac = false, gs_pf = false, gs_ff = false, gs_ar = false;
+            check(gsn && gs_t > 20.0 && gs_t < 200.0,
+                  "gameclient holds a few dozen interface pointer globals, not hundreds");
+            check(json_bool(body, "gs_all_classed", gs_ac) && gs_ac,
+                  "every slot names a catalogued implementation class");
+            check(gsn && gs_di > 5.0 && gs_di <= gs_do,
+                  "they cover many interfaces, and distinct objects never fewer than distinct interfaces");
+            // Most must be accounted for; a few may not be, and that is a state rather than a fault.
+            check(gsn && gs_a > 0.0 && gs_a <= gs_t && gs_a >= gs_t - 6.0,
+                  "nearly every slot is accounted for by an interface the registry publishes");
+            // THE CROSS-CHECK THAT CAUGHT THE FILTER BUG: the slot found by scanning must be the same object the
+            // Physics class resolves independently through the registry.
+            check(json_bool(body, "gs_physics_found", gs_pf) && gs_pf,
+                  "the ILTPhysics slot holds exactly the object sdk::Physics resolves");
+            check(json_bool(body, "gs_far_fewer_than_cache_pairs", gs_ff) && gs_ff,
+                  "far fewer slots than cache pairs -- the exclusion is doing real work");
+            check(json_bool(body, "gs_absent_refused", gs_ar) && gs_ar,
+                  "an unknown interface name and an empty one are both refused");
+            // WHY SOME ARE UNACCOUNTED, recorded rather than hidden: the registry publishes no ILTGameUtil name
+            // on this build, so gameclient's two CLTGameUtil pointers cannot match anything. If that ever
+            // changes, this flips and the unaccounted count should fall.
+            bool gs_kg = true;
+            check(json_bool(body, "gs_registry_knows_gameutil", gs_kg) && !gs_kg,
+                  "the registry publishes no ILTGameUtil, which is why some slots stay unaccounted");
+
             // ---- EVERY CACHED CONSOLE VARIABLE, FOUND BY DISCOVERY ---------------------------------
             //
             // The camera's 67 tunables turned out not to be special: the whole game DLL caches its console

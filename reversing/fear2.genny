@@ -5507,3 +5507,48 @@ class LTInputDeviceMouse 0x30 {
 // cached_var_owner, reusing the CachedVar struct and read_cached/write_cached from last pass.
 //
 // 1133 checks, 0 failures.
+
+// ---- GAMECLIENT'S INTERFACE SLOTS, AND A FILTER THAT DROPPED THE ONE I WANTED --------------------
+//
+// The scan that accidentally found 474 console-variable caches last pass was originally looking for something
+// else: the GAME DLL's own resolved interface pointers. Finishing that job, 30 of them, in 12 distinct
+// interfaces:
+//
+//     0x1FC160  CWin32CustomRender  ILTCustomRender      0x2041E0  CLTModelClient   ILTModel.Client
+//     0x1FC164  CLTRenderer         ILTRenderer          0x2041E4  CLTPhysicsClient ILTPhysics.Client
+//     0x1FC168  CLTTextureString    ILTTextureString     0x2041E8  CLTClient        ILTClient
+//     0x1FC16C  CD3DDrawPrim        ILTDrawPrim          0x2041EC  CLTCommonClient  ILTCommon.Client
+//     0x1FC170  CLTClient           ILTClient            0x2042F8  CLTServer        ILTServer
+//     0x1FC174  CLTTextureMgr       ILTTextureMgr        + 7 more ILTInput slots, 2 CLTGameUtil
+//
+// DISCOVERY IS BY VTABLE, ACCOUNTING IS BY POINTER, and the two never consult each other: candidates are .data
+// dwords whose target's vtable is in the exe class catalogue, and each is then matched against what the registry
+// CURRENTLY resolves. So a slot the engine has moved on from would show up as unaccounted rather than as agreement.
+//
+// THE EXCLUSION IS THE WHOLE PROBLEM, AND MY FIRST VERSION WAS WRONG. Console-variable caches put an ILTClient
+// pointer in .data every 8 bytes, so they have to be filtered. I required only that the PRECEDING dword look like
+// an LTConVar -- name field pointing at readable text. That silently dropped every interface slot whose NEIGHBOUR
+// is another interface slot, because an interface object's +0x10 can point at something printable too:
+//
+//     dropped: 0x1FC164 ILTRenderer, 0x1FC168 ILTTextureString, 0x1FC16C ILTDrawPrim, and 0x2041E4 ILTPHYSICS
+//
+// > 24 slots came back and the list looked entirely reasonable. What exposed it was a check written for a
+// > different reason -- "the ILTPhysics slot must hold the object sdk::Physics resolves" -- which failed because
+// > the slot was not in the list at all. A count I had no expectation for would have sailed through.
+//
+// THE FIX IS A TYPE DISTINCTION, not a tighter heuristic: LTConVar records are HEAP-allocated and interface
+// implementations live in the EXECUTABLE, so a preceding pointer inside the exe is a neighbouring interface and
+// never a record. 30 slots after the fix, with all four missing ones restored.
+//
+// TWO SLOTS STAY UNACCOUNTED and that is a state rather than a defect: both hold CLTGameUtil, and the registry
+// publishes NO ILTGameUtil name on this build. Asserted as such, so if a future build publishes it the
+// expectation flips instead of quietly passing.
+//
+// ALSO WORTH RECORDING: the registry distinguishes ".Client" from ".Default" for interfaces with both a client
+// and a server implementation -- ILTPhysics.Client, ILTModel.Client, ILTCommon.Client. Looking up
+// "ILTPhysics.Default" finds nothing, which is how this was noticed.
+//
+// NAMED IN IDA: 22 new g_p<Interface> globals (8 were already named). Exposed as
+// sdk::interfaces::Registry::gameclient_interface_slots / find_gameclient_slot.
+//
+// 1141 checks, 0 failures.

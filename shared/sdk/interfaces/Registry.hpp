@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,35 @@ public:
 
     // Distinct interface names, sorted. Diagnostics/tests.
     std::vector<std::string> names() const;
+
+    // ---- WHERE THE GAME DLL KEEPS ITS OWN COPIES -------------------------------------------
+    //
+    // Everything above describes the ENGINE's holders. gameclient.dll keeps its own resolved pointers in .data,
+    // and a consumer hooking game code generally wants the pointer THE GAME uses rather than a freshly resolved
+    // one -- they should be the same object, and when they are not, one of them is stale.
+    //
+    // HOW THESE ARE FOUND, and why the exclusion matters more than the scan: any .data dword pointing at an
+    // object whose vtable is in the exe's catalogue is a candidate. That test alone returns roughly 470 hits on
+    // this build, because the game caches console variables as {LTConVar*, ILTClient*} pairs and every OWNER word
+    // is such a pointer. Those are excluded by looking one dword back: if it holds a readable LTConVar name, the
+    // hit is a cache pair and not an interface slot. What survives is about twenty genuine singletons.
+    //
+    // THE ACCOUNTING IS THE CHECK, and it is not circular. Slots are discovered by VTABLE, then matched to an
+    // interface by POINTER against what the registry currently resolves. A slot holding a catalogued object that
+    // the registry does not resolve to is a copy the engine has moved on from -- detectable precisely because
+    // discovery never consulted the registry.
+    struct GameclientSlot {
+        uintptr_t offset{};          // gameclient-relative address of the pointer variable
+        uintptr_t value{};           // the object it holds
+        std::string class_name;      // implementation class, from the vtable catalogue
+        std::string interface_name;  // registry name whose CURRENT pointer equals value; empty if unaccounted
+    };
+
+    // gameclient's interface pointer globals. Empty when gameclient is not mapped.
+    std::vector<GameclientSlot> gameclient_interface_slots(size_t limit = 256) const;
+
+    // The first slot accounted for by this interface name, e.g. "ILTPhysics.Default".
+    std::optional<GameclientSlot> find_gameclient_slot(std::string_view interface_name) const;
 
 private:
     Registry() = default;
