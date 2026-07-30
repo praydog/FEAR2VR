@@ -1251,4 +1251,53 @@ std::optional<bool> PlayerMgr::player_stats_consistent(unsigned index) {
     return s->consistent();
 }
 
+
+std::optional<bool> PlayerMgr::water_affects_speed(unsigned index) {
+    const auto sub = subsystem_by_name(index, "CMoveMgr");
+    if (!sub.has_value() || sub->object == 0) {
+        return std::nullopt;
+    }
+    const auto v = mem::read<uint8_t>(sub->object + kMoveMgrWaterAffectsSpeed);
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return *v != 0;
+}
+
+std::optional<PlayerMgr::VarCache> PlayerMgr::spectator_speed_mul_cache(unsigned index) {
+    const auto sub = subsystem_by_name(index, "CMoveMgr");
+    if (!sub.has_value() || sub->object == 0) {
+        return std::nullopt;
+    }
+    const auto rec = mem::read_ptr(sub->object + kMoveMgrSpectatorSpeedMulCache);
+    const auto own = mem::read_ptr(sub->object + kMoveMgrSpectatorSpeedMulCache + sizeof(uintptr_t));
+    if (!rec.has_value() || !own.has_value()) {
+        return std::nullopt;
+    }
+    VarCache out;
+    out.record = *rec;
+    out.owner = *own;
+    return out;
+}
+
+std::optional<bool> PlayerMgr::spectator_speed_mul_is_default(unsigned index) {
+    const auto live = spectator_speed_mul(index);
+    if (!live.has_value()) {
+        return std::nullopt;
+    }
+    const auto* def = Engine::registered_default("SpectatorSpeedMul");
+    if (def == nullptr || def->source != Engine::DefaultSource::CodeLiteral) {
+        return std::nullopt;
+    }
+    return *live == def->value;
+}
+
+std::optional<float> PlayerMgr::spectator_speed_mul(unsigned index) {
+    const auto cache = spectator_speed_mul_cache(index);
+    if (!cache.has_value() || !cache->populated()) {
+        return std::nullopt;
+    }
+    return mem::read<float>(cache->record);
+}
+
 }  // namespace sdk

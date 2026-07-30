@@ -283,6 +283,59 @@ public:
     // consistent() over a live read, as one call. nullopt when the stats cannot be read at all.
     static std::optional<bool> player_stats_consistent(unsigned index);
 
+    // ---- CMoveMgr's OWN FIELDS, AND WHY THERE ARE ONLY TWO ---------------------------------
+    //
+    // CMoveMgr_Init reads sixteen console variables, and it caches fifteen of them in GLOBALS -- the
+    // {LTConVar* record, ILTClient* owner} pairs sdk::Engine::cached_console_vars discovers. Only two things
+    // land on the instance:
+    //
+    //     +521   uint8   WaterAffectsSpeed, read from a game database record with the CURRENT field value as
+    //                    the default, so Init is idempotent for it. Live 0.
+    //     +1308  ptr     the {record, owner} cache pair for SpectatorSpeedMul, ON THE INSTANCE rather than in
+    //     +1312  ptr     .data like every other one. Live the record reads 2.0, its registered default.
+    //
+    // THE ANOMALY IS CONFIRMED FROM BOTH SIDES: there is no g_cvar_SpectatorSpeedMul global in gameclient at
+    // all, which is why the instance holds the pair. Every other variable in that function has one.
+    //
+    // A CROSS-CHECK WORTH KEEPING, because it validates the reading of the whole function. The LTConVar records
+    // Init creates are allocated at a 0x48 stride with no gaps, and their addresses run in exactly the order the
+    // decompiled function registers them -- SpectatorSpeedMul, FallDamageDebug, PlayerGravity, TestFireRecoil,
+    // SurfaceSwimHeight, ShowPlayerPos, ShowPlayerVel, YawClamp, YawBias, YawInterp, MouseYawMult,
+    // KeyboardYawMult, GPadTimePastThreshold, SpecialJumpDrawPredict, OnCharacterPush{Directions,Magnitude,Time}.
+    // A source order and a heap layout agreeing across seventeen entries with zero slack.
+    //
+    // (The two loops over 71 items in that function -- 'GunLead' and 'GamePad' -- allocate nothing in this run,
+    // so whatever they build is not a console variable of this shape.)
+    static constexpr uintptr_t kMoveMgrWaterAffectsSpeed = 521;
+    static constexpr uintptr_t kMoveMgrSpectatorSpeedMulCache = 1308;
+
+    // Does water slow the player? The database-driven flag CMoveMgr keeps on itself. nullopt when CMoveMgr
+    // cannot be resolved or the read faults.
+    static std::optional<bool> water_affects_speed(unsigned index);
+
+    // The live SpectatorSpeedMul, read through the cache pair on the CMoveMgr instance rather than through the
+    // global scan -- because for this one variable there is no global. nullopt when the slot is unset.
+    static std::optional<float> spectator_speed_mul(unsigned index);
+
+    // The {record, owner} pair itself, for a consumer that wants to WRITE the value: the record's first float is
+    // what the movement code reads. nullopt when CMoveMgr cannot be resolved.
+    struct VarCache {
+        uintptr_t record{};
+        uintptr_t owner{};
+
+        bool populated() const { return record != 0; }
+    };
+
+    static std::optional<VarCache> spectator_speed_mul_cache(unsigned index);
+
+    // Is SpectatorSpeedMul still its registered default of 2.0? sdk::Engine::is_at_default CANNOT answer this
+    // one -- it works from the discovered globals and this variable has none -- so the question is answered
+    // here, where the instance cache is reachable. nullopt when CMoveMgr or the slot is unavailable.
+    //
+    // Exists because the gap is real rather than theoretical: a consumer asking "has anything touched the
+    // movement tunables" would silently miss this variable otherwise.
+    static std::optional<bool> spectator_speed_mul_is_default(unsigned index);
+
     struct CameraSubObjects {
         uintptr_t controller{};      // player + 236, embedded at player + 0xE88
         uintptr_t player_camera{};   // player + 252

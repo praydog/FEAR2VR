@@ -6351,3 +6351,58 @@ class CPlayerCamera 0x18C6 {
 // noop_commands / unattributed_commands / unregistered_table_commands.
 //
 // 1308 checks, 0 failures.
+
+// ---- WHAT THE VALUES WERE OUT OF THE BOX, AND CMoveMgr'S TWO REAL FIELDS ------------------------
+//
+// CMoveMgr_Init reads sixteen console variables. The expectation going in was a field map -- the technique that
+// worked on CPlayerStats, where each setter named an offset. It gave something different: FIFTEEN OF THE SIXTEEN
+// ARE CACHED IN GLOBALS, the {LTConVar* record, ILTClient* owner} pairs sdk::Engine::cached_console_vars already
+// discovers by scanning .data. Only two things land on the instance.
+//
+// SO THE GAP WAS NOT THE OFFSETS, IT WAS THE DEFAULTS. Engine deliberately refuses to hardcode cache offsets --
+// they are discoverable, so a table would rot. A DEFAULT is the opposite: it exists only as an immediate in the
+// registering function, and once registration has run NOTHING IN MEMORY distinguishes "still stock" from "set to
+// the same number by a config file". It cannot be discovered, so a table is the only possible source.
+//
+//     PlayerGravity -2000     MouseYawMult 10    KeyboardYawMult 10    YawInterp 4
+//     SurfaceSwimHeight 0.5   SpectatorSpeedMul 2                      OnCharacterPushDirections 24
+//     OnCharacterPushMagnitude 500    OnCharacterPushTime 0.5
+//     FallDamageDebug / ShowPlayerPos / ShowPlayerVel / TestFireRecoil / SpecialJumpDrawPredict = 0
+//
+//     YawClamp, YawBias, GPadTimePastThreshold -- FROM A DATABASE RECORD, no literal in the code. Live 6.0,
+//     0.3, 0.1, recorded as OBSERVED values and explicitly not as defaults.
+//
+// AND "DEFAULT" IS PRECISE HERE because of the idiom: SetVariableFloat runs only when FindVariable fails, so an
+// autoexec or saved config naming the variable first wins and the game never overwrites it. D is what the game
+// asks for when nothing else has spoken. All thirteen answerable ones read exactly their D live.
+//
+// THE TWO INSTANCE FIELDS:
+//     CMoveMgr+521        uint8  WaterAffectsSpeed, from a database record whose default argument is the CURRENT
+//                                field value, so the read is idempotent. Live 0.
+//     CMoveMgr+1308/1312  the {record, owner} cache pair for SpectatorSpeedMul, ON THE INSTANCE.
+//
+// THAT ANOMALY IS CONFIRMED FROM BOTH SIDES: there is no g_cvar_SpectatorSpeedMul global anywhere in gameclient,
+// which is exactly why the instance carries the pair, and its owner half is the same ILTClient every discovered
+// pair shares. It also creates a real hole -- Engine::is_at_default works from the globals and cannot answer for
+// this one variable, so PlayerMgr answers it where the instance is reachable. A consumer asking "has anything
+// touched the movement tunables" would have silently skipped it.
+//
+// A CROSS-CHECK THAT VALIDATES THE WHOLE READING OF THE FUNCTION: the LTConVar records it creates are allocated
+// at a 0x48 stride with NO GAPS, and their addresses ascend in exactly the order the decompiled function
+// registers them -- SpectatorSpeedMul, FallDamageDebug, PlayerGravity, TestFireRecoil, SurfaceSwimHeight,
+// ShowPlayerPos, ShowPlayerVel, YawClamp, YawBias, YawInterp, MouseYawMult, KeyboardYawMult,
+// GPadTimePastThreshold, SpecialJumpDrawPredict, OnCharacterPush{Directions,Magnitude,Time}. A source order and
+// a heap layout agreeing across seventeen entries with zero slack.
+//
+// > Also: the cache addresses were GUESSED first, and every one was wrong -- they read 0x006E3138, an exe
+// > address, because the guesses landed on the OWNER halves. The tell was that a "record" pointed into the exe
+// > instead of the heap. Resolve names from the IDB; do not extrapolate an address from a pattern.
+//
+// OPEN, deliberately not guessed: the two loops over 71 items in that function ('GunLead', 'GamePad') allocate
+// nothing in this run, so whatever they build is not a console variable of this shape.
+//
+// Exposed as sdk::Engine::registered_defaults / registered_default / is_at_default /
+// vars_changed_from_default, and sdk::PlayerMgr::water_affects_speed / spectator_speed_mul /
+// spectator_speed_mul_cache / spectator_speed_mul_is_default.
+//
+// 1326 checks, 0 failures.

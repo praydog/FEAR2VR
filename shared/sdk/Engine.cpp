@@ -1,5 +1,7 @@
 #include "Engine.hpp"
 
+#include <iterator>
+
 #include <windows.h>
 
 #include "Memory.hpp"
@@ -543,6 +545,83 @@ std::optional<Engine::CachedVar> Engine::find_cached_var(std::string_view name) 
         }
     }
     return std::nullopt;
+}
+
+
+namespace {
+
+// From CMoveMgr_Init (gameclient 0x10108CD0). The three DatabaseRecord entries are read through the database
+// interface before registration, so the registering code holds no literal for them; live they read 6.0, 0.3 and
+// 0.1 respectively, which are OBSERVED values and not defaults.
+constexpr Engine::VarDefault kVarDefaults[] = {
+    {"PlayerGravity", -2000.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"MouseYawMult", 10.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"KeyboardYawMult", 10.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"YawInterp", 4.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"SurfaceSwimHeight", 0.5f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"SpectatorSpeedMul", 2.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"OnCharacterPushDirections", 24.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"OnCharacterPushMagnitude", 500.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"OnCharacterPushTime", 0.5f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"FallDamageDebug", 0.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"ShowPlayerPos", 0.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"ShowPlayerVel", 0.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"TestFireRecoil", 0.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"SpecialJumpDrawPredict", 0.0f, Engine::DefaultSource::CodeLiteral, "CMoveMgr_Init"},
+    {"YawClamp", 0.0f, Engine::DefaultSource::DatabaseRecord, "CMoveMgr_Init"},
+    {"YawBias", 0.0f, Engine::DefaultSource::DatabaseRecord, "CMoveMgr_Init"},
+    {"GPadTimePastThreshold", 0.0f, Engine::DefaultSource::DatabaseRecord, "CMoveMgr_Init"},
+};
+
+}  // namespace
+
+const Engine::VarDefault* Engine::registered_defaults(size_t& count) {
+    count = std::size(kVarDefaults);
+    return kVarDefaults;
+}
+
+const Engine::VarDefault* Engine::registered_default(std::string_view name) {
+    if (name.empty()) {
+        return nullptr;
+    }
+    for (const auto& d : kVarDefaults) {
+        if (name == d.name) {
+            return &d;
+        }
+    }
+    return nullptr;
+}
+
+std::optional<bool> Engine::is_at_default(std::string_view name) {
+    const auto* def = registered_default(name);
+    if (def == nullptr || def->source != DefaultSource::CodeLiteral) {
+        return std::nullopt;
+    }
+    const auto var = find_cached_var(name);
+    if (!var.has_value() || var->record == 0) {
+        return std::nullopt;
+    }
+    const auto live = read_cached(*var);
+    if (!live.has_value()) {
+        return std::nullopt;
+    }
+    // Exact comparison is right here: the default was STORED as this float, so a value that came from it is
+    // bit-identical. Any tolerance would hide a genuine small change.
+    return *live == def->value;
+}
+
+std::vector<std::string> Engine::vars_changed_from_default() {
+    std::vector<std::string> out;
+    for (const auto& d : kVarDefaults) {
+        if (d.source != DefaultSource::CodeLiteral) {
+            continue;
+        }
+        const auto at = is_at_default(d.name);
+        if (at.has_value() && !*at) {
+            out.emplace_back(d.name);
+        }
+    }
+    return out;
 }
 
 }  // namespace sdk

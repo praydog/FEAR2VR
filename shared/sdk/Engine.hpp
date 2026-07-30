@@ -262,6 +262,59 @@ public:
     // One by exact name, from the discovered set.
     static std::optional<CachedVar> find_cached_var(std::string_view name);
 
+    // ---- WHAT THE VALUE WAS OUT OF THE BOX -----------------------------------------------------
+    //
+    // cached_console_vars() gives the live value and a writable pointer. It cannot give the REGISTERED DEFAULT,
+    // and no runtime scan can: the default appears once, as an immediate operand in the function that registers
+    // the variable, and after registration nothing in memory distinguishes "still stock" from "set to the same
+    // number by a config file".
+    //
+    // So this IS a hardcoded table, unlike the offsets above, and for the opposite reason -- those are
+    // discoverable so hardcoding them would rot, this is not discoverable at all.
+    //
+    // THE REGISTRATION IDIOM, which is what makes "default" precise here:
+    //
+    //     record = FindVariable("X");
+    //     if (!record) { SetVariableFloat("X", D); record = FindVariable("X"); }
+    //
+    // D is applied ONLY when the variable does not already exist. An autoexec or saved config that names X
+    // first wins, and the game never overwrites it. So D is the value the game asks for when nothing else has
+    // spoken, which is what a consumer restoring stock behaviour wants.
+    //
+    // MEASURED: all 13 of CMoveMgr's literal-default variables read exactly their D live, so nothing had been
+    // overridden in the session where these were taken. That is a property of that session, not a guarantee,
+    // which is exactly why is_at_default() is a question a consumer can ask rather than an assumption.
+    enum class DefaultSource {
+        CodeLiteral,     // an immediate in the registering function -- the value below is it
+        DatabaseRecord,  // read from a game database record before registering, so no literal exists
+    };
+
+    struct VarDefault {
+        const char* name;
+        float value;            // meaningless when source is DatabaseRecord
+        DefaultSource source;
+        const char* registrar;  // the function that registers it, for attribution
+    };
+
+    // The defaults recorded so far, all from CMoveMgr_Init. Not the whole game -- this grows as registering
+    // functions are read, and a name absent from it means "not recorded", never "no default".
+    static const VarDefault* registered_defaults(size_t& count);
+
+    // The recorded default for one variable, or nullptr.
+    static const VarDefault* registered_default(std::string_view name);
+
+    // Is the live value still the registered default? nullopt when the default is not recorded, its source is a
+    // database record, the cache slot is unset, or the read faulted -- all cases where the question has no
+    // answer rather than a false one.
+    //
+    // THIS IS THE USEFUL ONE FOR A MOD: it distinguishes a value the game chose from one the user or another
+    // mod already changed, which decides whether overwriting it is safe.
+    static std::optional<bool> is_at_default(std::string_view name);
+
+    // Every recorded variable whose live value differs from its default -- i.e. what this installation has
+    // customised. Database-sourced entries are skipped, since there is nothing to compare against.
+    static std::vector<std::string> vars_changed_from_default();
+
     // The ILTClient every pair's owner word holds, resolved through the registry. 0 when unavailable, which is
     // what makes discovery return nothing rather than scanning for a null.
     static uintptr_t cached_var_owner();

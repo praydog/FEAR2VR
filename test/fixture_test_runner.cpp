@@ -4509,6 +4509,65 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- WHAT THE VALUE WAS OUT OF THE BOX --------------------------------------------------
+            //
+            // cached_console_vars() discovers every cvar cache at runtime and Engine deliberately refuses to
+            // hardcode those offsets. A DEFAULT is the opposite case: it exists only as an immediate in the
+            // registering function, and after registration nothing in memory distinguishes "still stock" from
+            // "set to the same number by a config". So it must be a table, and that is the justification.
+            //
+            // The registration idiom makes "default" precise: SetVariableFloat runs only when FindVariable
+            // fails, so a config naming the variable first wins and the game never overwrites it.
+            double vd_rec = 0.0, vd_lit = 0.0, vd_db = 0.0, vd_ans = 0.0, vd_at = 0.0, vd_ch = 0.0;
+            bool vd_ge = false, vd_lr = false, vd_gr = false;
+            check(json_double(body, "vd_recorded", vd_rec) && vd_rec == 17.0,
+                  "seventeen defaults recorded, all from CMoveMgr_Init");
+            check(json_double(body, "vd_literal", vd_lit) && vd_lit == 14.0, "fourteen are code literals");
+            check(json_double(body, "vd_database", vd_db) && vd_db == 3.0,
+                  "three come from a database record, so no literal exists for them");
+            // A DATABASE-SOURCED entry must yield NO answer rather than a wrong one -- vd_globals_as_expected
+            // fails if any of them pretends to know.
+            check(json_bool(body, "vd_globals_as_expected", vd_ge) && vd_ge,
+                  "every recorded name has a discovered global EXCEPT SpectatorSpeedMul, and the database-sourced "
+                  "ones decline to answer");
+            check(json_double(body, "vd_answerable", vd_ans) && vd_ans == 13.0,
+                  "thirteen of the fourteen literals are answerable -- SpectatorSpeedMul has no global");
+            check(json_double(body, "vd_at_default", vd_at) && vd_at == 13.0,
+                  "and all thirteen read exactly their registered default, so nothing is overridden here");
+            check(json_double(body, "vd_changed", vd_ch) && vd_ch == 0.0,
+                  "which the changed-from-default list agrees with");
+            check(json_bool(body, "vd_gravity_recorded", vd_gr) && vd_gr,
+                  "PlayerGravity's default is exactly -2000");
+            check(json_bool(body, "vd_lookup_refused", vd_lr) && vd_lr,
+                  "an unrecorded name and an empty name are refused rather than defaulted");
+
+            // ---- CMoveMgr'S TWO INSTANCE FIELDS ----
+            //
+            // Sixteen variables, fifteen cached in globals, and exactly two things on the instance. The
+            // SpectatorSpeedMul anomaly is confirmed from both sides: there is no global for it, which is why
+            // the instance holds the pair.
+            bool mm_w = false, mm_cp = false, mm_r = false, mm_os = false, mm_da = false, mm_id = false,
+                 mm_ec = false, mm_rr = false;
+            double mm_v = 0.0;
+            check(json_bool(body, "mm_water_readable", mm_w) && mm_w,
+                  "the WaterAffectsSpeed flag reads off CMoveMgr");
+            check(json_bool(body, "mm_ssm_cache_populated", mm_cp) && mm_cp,
+                  "the instance's SpectatorSpeedMul cache pair is populated");
+            check(json_bool(body, "mm_ssm_readable", mm_r) && mm_r, "and its record's float reads");
+            check(json_double(body, "mm_ssm_value", mm_v) && mm_v == 2.0,
+                  "at exactly 2.0, its registered default");
+            // THE OWNER HALF TIES IT TO THE 474: same ILTClient every discovered pair shares.
+            check(json_bool(body, "mm_ssm_owner_shared", mm_os) && mm_os,
+                  "its owner is the same ILTClient the discovered cache pairs share, so it is the same idiom");
+            // AND THE GAP IS REAL: Engine cannot answer for this variable, PlayerMgr can.
+            check(json_bool(body, "mm_ssm_engine_cannot", mm_ec) && mm_ec,
+                  "Engine::is_at_default declines for it, since it works from globals and this has none");
+            check(json_bool(body, "mm_ssm_default_answerable", mm_da) && mm_da,
+                  "while PlayerMgr answers, because the instance cache is reachable there");
+            check(json_bool(body, "mm_ssm_is_default", mm_id) && mm_id, "and it is at its default");
+            check(json_bool(body, "mm_range_refused", mm_rr) && mm_rr,
+                  "an out-of-range slot yields neither field");
+
             // ---- WHO REGISTERED EACH CONSOLE COMMAND, AND WHICH ONES DO NOTHING ---------------------
             //
             // A live console entry records name, handler and flags but NOT the function that created it, and

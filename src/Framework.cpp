@@ -4195,6 +4195,85 @@ std::string build_shader_params_json() {
     const auto con_stats = sdk::Console::stats();
     const auto con_live = sdk::Console::all();
     const auto con_static = sdk::Console::static_commands();
+    // ---- REGISTERED DEFAULTS, AND CMoveMgr'S TWO INSTANCE FIELDS ----
+    {
+        size_t ndef = 0;
+        const auto* defs = sdk::Engine::registered_defaults(ndef);
+        json_append_double(out, "vd_recorded", static_cast<double>(ndef), 0);
+        size_t literal = 0, dbrec = 0, at_default = 0, answerable = 0;
+        bool all_found = true;
+        for (size_t i = 0; i < ndef; ++i) {
+            if (defs[i].source == sdk::Engine::DefaultSource::CodeLiteral) {
+                ++literal;
+                const auto at = sdk::Engine::is_at_default(defs[i].name);
+                if (at.has_value()) {
+                    ++answerable;
+                    if (*at) {
+                        ++at_default;
+                    }
+                }
+            } else {
+                ++dbrec;
+                // A DATABASE-SOURCED default must yield no answer -- there is no literal to compare against.
+                if (sdk::Engine::is_at_default(defs[i].name).has_value()) {
+                    all_found = false;
+                }
+            }
+            // Every recorded name must exist as a discovered cache pair, EXCEPT SpectatorSpeedMul which has no
+            // global at all -- the reason PlayerMgr exposes it off the instance.
+            const bool is_spectator = std::string_view{defs[i].name} == "SpectatorSpeedMul";
+            const bool found = sdk::Engine::find_cached_var(defs[i].name).has_value();
+            if (found == is_spectator) {
+                all_found = false;
+            }
+        }
+        json_append_double(out, "vd_literal", static_cast<double>(literal), 0);
+        json_append_double(out, "vd_database", static_cast<double>(dbrec), 0);
+        json_append_double(out, "vd_answerable", static_cast<double>(answerable), 0);
+        json_append_double(out, "vd_at_default", static_cast<double>(at_default), 0);
+        json_append_bool(out, "vd_globals_as_expected", all_found);
+        json_append_double(out, "vd_changed",
+                           static_cast<double>(sdk::Engine::vars_changed_from_default().size()), 0);
+        json_append_bool(out, "vd_lookup_refused",
+                         sdk::Engine::registered_default("NoSuchVar") == nullptr &&
+                             sdk::Engine::registered_default("") == nullptr &&
+                             !sdk::Engine::is_at_default("NoSuchVar").has_value());
+        const auto* grav = sdk::Engine::registered_default("PlayerGravity");
+        json_append_bool(out, "vd_gravity_recorded", grav != nullptr && grav->value == -2000.0f);
+
+        // CMoveMgr's own fields.
+        const auto was = sdk::PlayerMgr::water_affects_speed(0);
+        const auto ssm = sdk::PlayerMgr::spectator_speed_mul(0);
+        const auto ssc = sdk::PlayerMgr::spectator_speed_mul_cache(0);
+        json_append_bool(out, "mm_water_readable", was.has_value());
+        json_append_bool(out, "mm_ssm_cache_populated", ssc.has_value() && ssc->populated());
+        json_append_bool(out, "mm_ssm_readable", ssm.has_value());
+        if (ssm.has_value()) {
+            json_append_double(out, "mm_ssm_value", static_cast<double>(*ssm), 3);
+        }
+        // THE OWNER HALF must be the ILTClient every other cache pair shares, which ties the instance pair to
+        // the 474 discovered ones.
+        bool owner_shared = false;
+        if (ssc.has_value()) {
+            for (const auto& v : sdk::Engine::cached_console_vars(64)) {
+                if (v.owner != 0 && v.owner == ssc->owner) {
+                    owner_shared = true;
+                    break;
+                }
+            }
+        }
+        json_append_bool(out, "mm_ssm_owner_shared", owner_shared);
+        // THE HOLE Engine CANNOT COVER, closed where the instance is reachable.
+        json_append_bool(out, "mm_ssm_default_answerable",
+                         sdk::PlayerMgr::spectator_speed_mul_is_default(0).has_value());
+        json_append_bool(out, "mm_ssm_is_default",
+                         sdk::PlayerMgr::spectator_speed_mul_is_default(0).value_or(false));
+        json_append_bool(out, "mm_ssm_engine_cannot",
+                         !sdk::Engine::is_at_default("SpectatorSpeedMul").has_value());
+        json_append_bool(out, "mm_range_refused", !sdk::PlayerMgr::water_affects_speed(9).has_value() &&
+                                                      !sdk::PlayerMgr::spectator_speed_mul(9).has_value());
+    }
+
     // ---- WHO REGISTERED EACH COMMAND, AND WHICH ONES DO NOTHING ----
     {
         size_t nreg = 0;
