@@ -8537,6 +8537,115 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- SNAP TURN: A HEADING, NOT A DELTA ----------------------------------------------
+        //
+        // `send_mouse_look` delivers a delta and the engine's gain is not constant, so "turn 30
+        // degrees" cannot be one call. Every VR turning control needs exactly that, though -- snap
+        // turn is "30 further round", recentre is "face where I am looking" -- so `TurnController`
+        // closes the loop: read the heading, correct, repeat.
+        //
+        // Two things had to be right before it converged, and both are asserted by the residual
+        // below rather than described in a comment: a delta lands a frame after it is queued (so the
+        // loop waits before re-evaluating, or it corrects stale error and oscillates -- measured
+        // hitting the 24-iteration cap every time), and being momentarily in tolerance is not being
+        // finished (a correction can still be in flight, which left turns 2.2 degrees past target).
+        {
+            std::string tb;
+            if (http::get(port, "/vr/turn", resp)) {
+                tb = http::body_of(resp);
+            }
+            bool turn_ok = false;
+            const bool turn_live = json_bool(tb, "ok", turn_ok) && turn_ok;
+            check_gated(turn_live, "turn controller unavailable", g_skipped_world, true,
+                        "the turn controller reports a heading, which is what a snap turn turns FROM");
+            if (turn_live) {
+                auto settle = [&](std::string* body) {
+                    for (int i = 0; i < 60; ++i) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                        if (!http::get(port, "/vr/turn", resp)) {
+                            continue;
+                        }
+                        *body = http::body_of(resp);
+                        bool active = true;
+                        if (json_bool(*body, "active", active) && !active) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                auto snap = [&](int deg, double* residual, double* corrections, bool* converged) {
+                    char url[96];
+                    snprintf(url, sizeof(url), "/vr/turn?by=%d", deg);
+                    if (!http::get(port, url, resp)) {
+                        return false;
+                    }
+                    std::string done;
+                    if (!settle(&done)) {
+                        return false;
+                    }
+                    double yaw = 0.0, target = 0.0;
+                    if (!json_double(done, "yaw_deg", yaw) || !json_double(done, "target_deg", target) ||
+                        !json_double(done, "corrections", *corrections) ||
+                        !json_bool(done, "converged", *converged)) {
+                        return false;
+                    }
+                    double d = yaw - target;
+                    while (d > 180.0) d -= 360.0;
+                    while (d < -180.0) d += 360.0;
+                    *residual = d;
+                    return true;
+                };
+
+                double start_yaw = 0.0;
+                json_double(tb, "yaw_deg", start_yaw);
+
+                double r1 = 0.0, c1 = 0.0, r2 = 0.0, c2 = 0.0;
+                bool k1 = false, k2 = false;
+                const bool ran = snap(30, &r1, &c1, &k1) && snap(-30, &r2, &c2, &k2);
+                check(ran, "a snap turn completes rather than running until its iteration cap");
+                if (ran) {
+                    check(k1 && k2, "and reports CONVERGED, which requires the heading to stay inside "
+                                    "tolerance rather than merely pass through it");
+                    // The residual is what the loop is FOR: an open-loop delta cannot promise it.
+                    // BOUND DERIVED FROM THE MECHANISM, not chosen to pass. The controller
+                    // converges when it OBSERVES the error inside its 0.5 degree tolerance; the
+                    // read here happens afterwards, and the smallest correction it can issue is one
+                    // unit of look input, worth ~0.144 degrees. So 0.5 + one quantum is what the
+                    // design can promise, and asserting 0.5 flat was measuring luck -- live
+                    // residuals reach 0.478.
+                    constexpr double kTurnTolerance = 0.5;   // TurnController's own
+                    constexpr double kOneStep = 0.15;        // one unit of look input, in degrees
+                    check(fabs(r1) < kTurnTolerance + kOneStep && fabs(r2) < kTurnTolerance + kOneStep,
+                          "each turn lands within the controller's tolerance plus one correction "
+                          "quantum of the heading asked for");
+                    // Convergence has to be quick enough to be a control, not a slow drift into
+                    // place -- and the cap is 24, so this also proves it is not just scraping in.
+                    check(c1 > 0.0 && c1 <= 12.0 && c2 > 0.0 && c2 <= 12.0,
+                          "in a handful of corrections, so the loop converges rather than crawling");
+                    printf("[fixture] snap turn: +30 residual %+.3f in %.0f, -30 residual %+.3f in "
+                           "%.0f\n", r1, c1, r2, c2);
+                }
+
+                // BACK TO THE START, driven by the same loop -- which is also the cleanest possible
+                // demonstration that `turn_to` works on an absolute heading.
+                char url[96];
+                snprintf(url, sizeof(url), "/vr/turn?to=%.4f", start_yaw);
+                http::get(port, url, resp);
+                std::string done;
+                if (settle(&done)) {
+                    double yaw_end = 0.0;
+                    if (json_double(done, "yaw_deg", yaw_end)) {
+                        double d = yaw_end - start_yaw;
+                        while (d > 180.0) d -= 360.0;
+                        while (d < -180.0) d += 360.0;
+                        check(fabs(d) < 1.0,
+                              "and an absolute turn puts the player back on their original heading, "
+                              "so the suite leaves them facing where it found them");
+                    }
+                }
+            }
+        }
+
         // ---- TURNING THE PLAYER, WHICH IS WHAT A VR THUMBSTICK DOES -------------------------
         //
         // `HeadTracking` turns the VIEW and leaves the aim alone. A VR mod needs the other motion

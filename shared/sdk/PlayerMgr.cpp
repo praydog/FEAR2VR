@@ -735,6 +735,40 @@ std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_oper
     return out;
 }
 
+std::optional<PlayerMgr::Locomotion> PlayerMgr::locomotion(unsigned index) {
+    const auto ms = movement_state(index);
+    const auto avd = aim_vs_view(index);
+    if (!ms.has_value() || !avd.has_value()) {
+        return std::nullopt;
+    }
+    Locomotion out{};
+    out.velocity = ms->velocity;
+    out.speed = std::sqrt(ms->velocity[0] * ms->velocity[0] + ms->velocity[2] * ms->velocity[2]);
+    // Below this the bearing is numerical noise rather than a direction. 1 unit/second against a
+    // walk of ~312 is comfortably inside the dead zone and well above float jitter at rest.
+    out.moving = out.speed > 1.0f;
+    if (!out.moving) {
+        return out;
+    }
+    out.bearing = std::atan2(ms->velocity[0], ms->velocity[2]);
+
+    auto wrap = [](float a) {
+        constexpr float kPi = 3.14159265358979f;
+        while (a > kPi) {
+            a -= 2.0f * kPi;
+        }
+        while (a < -kPi) {
+            a += 2.0f * kPi;
+        }
+        return a;
+    };
+    const float aim_h = std::atan2(avd->aim_forward[0], avd->aim_forward[2]);
+    const float view_h = std::atan2(avd->view_forward[0], avd->view_forward[2]);
+    out.bearing_to_aim = wrap(out.bearing - aim_h);
+    out.bearing_to_view = wrap(out.bearing - view_h);
+    return out;
+}
+
 std::optional<float> PlayerMgr::aim_yaw(unsigned index) {
     const auto d = aim_vs_view(index);
     if (!d.has_value()) {

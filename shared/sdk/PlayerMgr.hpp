@@ -1380,6 +1380,37 @@ public:
     // that silently mixed the two would be wrong at exactly the moments it mattered.
     static std::optional<float> aim_yaw(unsigned index);
 
+    // ---- WHERE THE PLAYER IS ACTUALLY GOING --------------------------------------------
+    //
+    // MEASURED, and it is the fact a VR locomotion scheme has to start from: movement is
+    // AIM-RELATIVE. Holding forward with the view decoupled by a head pose produces a velocity
+    // whose bearing equals `aim_yaw` to 0.00 degrees -- the player walks where the BODY points, not
+    // where they are looking.
+    //
+    // That is a defensible default (it is body-relative locomotion, which some players prefer) but
+    // it is a CHOICE a mod has to make knowingly, and it cannot make it without these numbers:
+    //
+    //   * `speed` drives a comfort vignette and a locomotion animation blend.
+    //   * `bearing_to_view` is how far the player is walking away from where they are looking --
+    //     the input to "should I recentre" and to a strafing-animation selector.
+    //   * `bearing_to_aim` is ~0 by construction here; it is reported so that a build or a mode
+    //     where that stops being true is visible rather than silently assumed.
+    //
+    // Horizontal only. Vertical velocity is falling and jumping, which no locomotion scheme wants
+    // mixed into a heading.
+    struct Locomotion {
+        float speed{};            // world units/second in the horizontal plane
+        float bearing{};          // radians, atan2(vx, vz) -- same convention as aim_yaw
+        float bearing_to_aim{};   // signed radians from the aim's heading to the velocity's
+        float bearing_to_view{};  // signed radians from the view's heading to the velocity's
+        bool moving{};            // speed above a threshold, so bearing means something
+        std::array<float, 3> velocity{};
+    };
+
+    // nullopt when the movement controller or the camera cannot be read. `moving` false means the
+    // bearings are stale rather than wrong -- a stationary player has no heading of travel.
+    static std::optional<Locomotion> locomotion(unsigned index);
+
     // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
     // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
     // the same algebra and need not round identically.

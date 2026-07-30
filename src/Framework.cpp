@@ -34,6 +34,7 @@
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
 #include "mods/ViewmodelDecouple.hpp"
+#include "mods/TurnController.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -5888,6 +5889,9 @@ std::string build_shader_params_json(bool include_write_probes) {
             return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
         };
         json_append_bool(out, "ms_velocity_finite", finite3(ms->velocity));
+        json_append_double(out, "ms_vel_x", ms->velocity[0], 3);
+        json_append_double(out, "ms_vel_y", ms->velocity[1], 3);
+        json_append_double(out, "ms_vel_z", ms->velocity[2], 3);
         json_append_bool(out, "ms_position_finite", finite3(ms->cached_position));
         // The commit clears the accumulator unconditionally at the end, so after any completed frame it reads
         // zero. Non-zero here would mean the field is not what this claims, or the frame was caught mid-commit.
@@ -9939,6 +9943,8 @@ bool Framework::initialize() {
     Mods::get().add(&BoneControl::get());
     // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
     Mods::get().add(&ViewmodelDecouple::get());
+    // Closed-loop turning: snap turn and recentre, both of which need a heading rather than a delta.
+    Mods::get().add(&TurnController::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -10064,6 +10070,35 @@ bool Framework::initialize() {
             JsonFields jf(out);
             jf.b("ok", node_total > 0).u("node_count", node_total).u("socket_count", socket_total)
               .raw("nodes", nodes).raw("sockets", sockets);
+        }
+        return out;
+    };
+
+    handlers.turn = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& tc = TurnController::get();
+        constexpr double kDeg = 3.14159265358979 / 180.0;
+        if (webapi_query_int(q, "cancel", 0) != 0) {
+            tc.cancel();
+        } else if (webapi_query_int(q, "recentre", 0) != 0 || webapi_query_int(q, "recenter", 0) != 0) {
+            tc.recentre();
+        } else if (q.find("by") != q.end()) {
+            tc.turn_by(static_cast<float>(webapi_query_double(q, "by", 0.0) * kDeg));
+        } else if (q.find("to") != q.end()) {
+            tc.turn_to(static_cast<float>(webapi_query_double(q, "to", 0.0) * kDeg));
+        }
+        const auto o = tc.observed();
+        const auto yaw = sdk::PlayerMgr::aim_yaw(0);
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true).b("active", o.active).b("converged", o.converged)
+              .f("target_deg", o.target * 57.2957795, 4)
+              .f("error_deg", o.error * 57.2957795, 4)
+              .f("yaw_deg", yaw.value_or(0.0f) * 57.2957795, 4)
+              .u("corrections", static_cast<size_t>(o.corrections))
+              .u("completed", static_cast<size_t>(o.completed))
+              .u("abandoned", static_cast<size_t>(o.abandoned));
         }
         return out;
     };

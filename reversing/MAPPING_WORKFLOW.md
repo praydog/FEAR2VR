@@ -5066,3 +5066,56 @@ residual of 1.897 while the turn itself was identical to the millimetre -- the a
 the four waits the block spans. Two fixes applied together: measure the heading (which the
 animation does not move) and gate the block on `world_is_quiescent`, waiting up to four seconds for
 the blocks above it to stop displacing the rig.
+
+## Locomotion: movement is aim-relative, and turning had to become a control loop
+
+With the view decoupled from the aim and the weapon decoupled from the view, the remaining question
+is where the player WALKS. Measured rather than assumed: hold forward with a head pose composed in,
+and the velocity's bearing equals `aim_yaw` to **0.00 degrees** at 312 world units/second. Movement
+follows the BODY, never the view.
+
+That is a defensible default -- it is body-relative locomotion -- but a VR mod has to choose it
+knowingly, so `PlayerMgr::locomotion()` reports speed, bearing, and the bearing relative to BOTH the
+aim and the view. Speed drives a comfort vignette; bearing-to-view is the input to "should I
+recentre".
+
+`CMoveMgr_UpdateInputFlags` / `SetInputDirectionFlags` were already mapped as the INPUT bits; the
+world-space conversion is further down in the physics controller and remains unmapped. It did not
+need to be: since movement follows the aim, "walk where I look" is achieved by turning the BODY,
+not by rewriting the axes.
+
+### TurnController, and the three things wrong with the obvious version
+
+Turning to a heading cannot be one delta -- the engine's look gain is not constant. So the loop
+reads `aim_yaw`, corrects, repeats. Getting it to converge took three fixes, each measured:
+
+**1. A delta lands a frame after it is queued.** Re-evaluating immediately corrects against a STALE
+error and oscillates: every turn hit the 24-iteration cap with residuals bouncing between -1.4 and
++2.0 degrees. Waiting three frames after each correction turned the same arithmetic into a
+convergent loop -- 4 to 6 corrections.
+
+**2. Being momentarily in tolerance is not being finished.** The first version stopped on the first
+small reading, with a correction still in flight, and four turns each landed ~2.2 degrees past
+target while the loop reported an error of 0.2. It now requires two consecutive in-tolerance
+observations.
+
+**3. Do not drive a corpse.** The player died mid-session and the loop burned its entire budget --
+25 corrections with the yaw frozen to the decimal -- because input is still ACCEPTED when the player
+is dead, it just does nothing. Any closed loop against game state needs a liveness gate, or it
+mistakes "cannot move" for "has not moved yet".
+
+Live: snap turns of +/-30 and +/-90 land within 0.5 degrees in 4-6 corrections, and `recentre()`
+turned the body +39.60 degrees to catch a 40 degree head pose.
+
+### The suite bound is derived, not chosen
+
+The controller converges when it OBSERVES the error inside its 0.5 degree tolerance; the test reads
+afterwards, and the smallest correction it can issue is one unit of look input (~0.144 degrees). So
+the assertable bound is `0.5 + one quantum`. Asserting a flat 0.5 was measuring luck -- live
+residuals reach 0.478.
+
+### And the recovery loop earned itself again
+
+The game died mid-session (the player had been turned into a firefight). `tools/resume_game.py` took
+it from a dead process back to an injected, in-world, test-ready session in 71 seconds with no
+human, and the session continued.
