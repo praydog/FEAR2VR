@@ -62,8 +62,8 @@ class CAPIHolder 0xC {
 // only their raw values are recorded (neutral names on purpose).
 class HashEntry 0x8 {
     uint32_t name_hash  @0x00   // CONFIRMED String_HashI of the attribute name; the key DatabaseMgr_FindAttributeByHash binary-searches
-    uint8_t type        @0x04   // CONFIRMED the type tag -- ONLY the low 6 bits (decoder masks & 0x3F). Live values 1..9, never 0. 1=bool(packed bit), 2=float, 9=nested-struct ref [INFERENCE]; 3-8 observed, unidentified
-    uint8_t unk_05      @0x05   // CONFIRMED copied verbatim to the decoded value's +6 by DatabaseMgr_DecodeAttributeValue; its MEANING is still unestablished
+    uint8_t type        @0x04   // CONFIRMED the type tag -- ONLY the low 6 bits (& 0x3F). Live 1..9, never 0. 1=bool(packed bit) 2=float 3=integer-like(not a pointer) 4,5=pointer to {uint32 header, char text[]} 6,7,8=pointer to 8/12/16 bytes 9,10=RECORD LINK (fixed up in place from a packed category/record index pair)
+    uint8_t num_values  @0x05   // CONFIRMED the ELEMENT COUNT: every one of the nine typed getters bounds-checks its value index against it. The reference names the same thing GetNumValues(HATTRIBUTE). Live: 331635 values across 306570 attributes, 8251 multi-valued, 1877 with zero
     uint16_t value_index @0x06  // CONFIRMED index into the record's value_blob, IN DWORDS -- except for type 1 where it is a BIT index (blob + 4*(i>>5), bit i&0x1F). The genny's earlier "small values then constant 0x00" was this little-endian 16-bit field
 }
 
@@ -6553,3 +6553,60 @@ class CPlayerCamera 0x18C6 {
 // attributes_sorted_by_hash / attribute_bit / attribute_dword.
 //
 // 1365 checks, 0 failures.
+
+// ---- ALL NINE TYPED GETTERS, AND ATTRIBUTES TURN OUT TO BE ARRAYS -------------------------------
+//
+// Six of the nine attribute types were "observed but unidentified". gamedatabase.dll has ONE GETTER PER TYPE,
+// each validating the tag before reading, and all nine were read. Two things came out of it, and the first
+// corrects the previous pass.
+//
+// EVERY ATTRIBUTE IS AN ARRAY. Every getter takes a value index and bounds-checks it against descriptor+5 --
+// the byte recorded here as "copied through, meaning unestablished". IT IS THE ELEMENT COUNT, and the reference
+// names the same thing GetNumValues(HATTRIBUTE). DatabaseMgr_DecodeAttributeValue decodes ELEMENT ZERO, so
+// reading only it made attributes look scalar:
+//
+//     element i :  blob dword index = value_index + i
+//     type 1    :  dword = blob + 4*((value_index + i) >> 5),  bit = (value_index + i) & 0x1F
+//
+// Live: 306570 attributes carry 331635 values, 8251 are multi-valued, 1877 declare zero. Every attribute with
+// values addresses its last element and refuses one past it -- asserted as an exact identity against the
+// zero-count population, not as "most of them".
+//
+// THE TYPES, storage established from each getter's own code and the C type claimed only where evidence exists:
+//     1  bool, packed bit
+//     2  float
+//     3  NOT A POINTER -- 400 sampled, only 40 land in committed memory, none dereference to text. A value.
+//   4,5  BOTH point to {uint32 header, char text[]}. Type 4: 400/400 pointers, 293 read as text from offset 0
+//        and 107 have a ZERO header with text at +4 -- 293+107=400 exactly, so it is ONE layout whose header is
+//        sometimes zero. Type 5: 33/33 zero-header, and the sampled one reads "IDS_PLAYER_N..." in
+//        Profile/Multiplayer -- a localization key. WHAT SEPARATES 4 FROM 5 IS NOT ESTABLISHED.
+//   6,7,8  pointer to 8 / 12 / 16 bytes, copied as 2 / 3 / 4 dwords. 12 is the size and shape of an LTVector
+//        and 16 of an LTVector4, though nothing proves the components are floats.
+//  9,10  RECORD LINKS, which CORRECTS the previous pass's "[INFERENCE] nested-structure reference" -- right in
+//        direction, wrong in mechanism. DatabaseMgr_FixupRecordLinks rewrites each element IN PLACE at load time
+//        from a packed {uint16 category_index, uint16 record_index} into a real DatabaseMgrRecord*. Type 10 is
+//        handled by the same fixup but no attribute in the shipped data uses it.
+//        Live: 67495 link attributes, 37361 resolving to a record and the rest left NULL by the fixup -- both
+//        outcomes are real, so a consumer must check.
+//
+// > THE FIXUP CONFIRMS THE CATEGORY AND RECORD LAYOUTS A THIRD TIME -- stride 0x14 and 0x18, num_records at
+// > +0x08, records at +0x0C -- independently of the index accessors and the by-hash searches. AND IT EXPLAINS
+// > _Structures: links are how one record references another, and the sub-records they point at live there,
+// > which is why names repeat (the name is the struct TYPE) and identity comes from the link.
+//
+// A REFUTATION WORTH KEEPING. Type 5 looked like a wide string: all pointers, no ASCII. Inferring "wide" from
+// the ABSENCE of ASCII would have been wrong -- a positive UTF-16 test (printable low bytes, zero high bytes)
+// matched 0 of 33. Dumping the bytes showed why the ASCII test failed: it started at offset 0 and hit the zero
+// header. The shape was found by LOOKING, after two inferences had failed.
+//
+// Named in gamedatabase.dll: IDatabaseMgr_GetBool, IDatabaseMgr_GetFloat, IDatabaseMgr_GetAttributeType3/4/5,
+// IDatabaseMgr_GetAttribute8Bytes/12Bytes/16Bytes, IDatabaseMgr_GetRecordLink, DatabaseMgr_FixupRecordLinks.
+// Exposed as sdk::DatabaseMgr::attribute_bool / attribute_float / attribute_record / attribute_struct /
+// attribute_raw_dword / struct_dword_count / sample_type, with Attribute::num_values, element_address and
+// element_bit.
+//
+// > TWO OF THIS PASS'S OWN CHECKS FAILED FIRST, both mine: an "everything decoded" identity that counted
+// > zero-value links as decoded, and an assertion looking for the ASCII "IDS_PLAYER_N" in a field that emits
+// > HEX. Asserting the wrong artefact is as easy as measuring the wrong thing.
+//
+// 1376 checks, 0 failures.

@@ -479,13 +479,26 @@ bool DatabaseMgr::name_is_unique_key(const regenny::DatabaseMgrCategory* categor
 }
 
 
+size_t DatabaseMgr::struct_dword_count(uint8_t type) {
+    switch (type) {
+    case kType8Bytes:
+        return 2;
+    case kType12Bytes:
+        return 3;
+    case kType16Bytes:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
 size_t DatabaseMgr::attribute_count(const regenny::DatabaseMgrRecord* record_ptr) {
     if (record_ptr == nullptr) {
         return 0;
     }
     const auto n = mem::read<uint32_t>(reinterpret_cast<uintptr_t>(record_ptr) + kRecordAttributeCount);
     if (!n.has_value() || *n > 4096) {
-        return 0;  // a record with thousands of attributes would be a misread, not data
+        return 0;  // thousands of attributes on one record would be a misread, not data
     }
     return *n;
 }
@@ -504,9 +517,9 @@ std::optional<DatabaseMgr::Attribute> DatabaseMgr::attribute_at(const regenny::D
     const auto desc = *array + kAttributeDescriptorSize * index;
     const auto hash = mem::read<uint32_t>(desc);
     const auto raw_type = mem::read<uint8_t>(desc + 4);
-    const auto extra = mem::read<uint8_t>(desc + 5);
+    const auto count = mem::read<uint8_t>(desc + 5);
     const auto vindex = mem::read<uint16_t>(desc + 6);
-    if (!hash.has_value() || !raw_type.has_value() || !extra.has_value() || !vindex.has_value()) {
+    if (!hash.has_value() || !raw_type.has_value() || !count.has_value() || !vindex.has_value()) {
         return std::nullopt;
     }
     Attribute out;
@@ -514,16 +527,9 @@ std::optional<DatabaseMgr::Attribute> DatabaseMgr::attribute_at(const regenny::D
     out.name_hash = *hash;
     out.raw_type = *raw_type;
     out.type = static_cast<uint8_t>(*raw_type & kTypeMask);
-    out.unk_05 = *extra;
+    out.num_values = *count;
     out.value_index = *vindex;
-    // Exactly DatabaseMgr_DecodeAttributeValue's arithmetic.
-    if (out.type == kTypeBit) {
-        out.value = *blob + 4 * (static_cast<uintptr_t>(out.value_index) >> 5);
-        out.bit = static_cast<uint8_t>(out.value_index & 0x1F);
-    } else {
-        out.value = *blob + 4 * static_cast<uintptr_t>(out.value_index);
-        out.bit = 0;
-    }
+    out.blob = *blob;
     return out;
 }
 
@@ -542,8 +548,7 @@ std::optional<DatabaseMgr::Attribute> DatabaseMgr::find_attribute(const regenny:
     if (!hit.has_value()) {
         return std::nullopt;
     }
-    const auto index = (*hit - *array) / kAttributeDescriptorSize;
-    return attribute_at(record_ptr, index);
+    return attribute_at(record_ptr, (*hit - *array) / kAttributeDescriptorSize);
 }
 
 bool DatabaseMgr::has_attribute(const regenny::DatabaseMgrRecord* record_ptr, std::string_view name) {
@@ -568,22 +573,146 @@ bool DatabaseMgr::attributes_sorted_by_hash(const regenny::DatabaseMgrRecord* re
     return true;
 }
 
-std::optional<bool> DatabaseMgr::attribute_bit(const Attribute& attribute) {
-    if (!attribute.is_bit() || attribute.value == 0) {
+std::optional<bool> DatabaseMgr::attribute_bool(const Attribute& attribute, size_t i) {
+    if (!attribute.is_bit()) {
         return std::nullopt;
     }
-    const auto word = mem::read<uint32_t>(attribute.value);
+    const auto at = attribute.element_address(i);
+    if (!at.has_value()) {
+        return std::nullopt;
+    }
+    const auto word = mem::read<uint32_t>(*at);
     if (!word.has_value()) {
         return std::nullopt;
     }
-    return ((*word >> attribute.bit) & 1u) != 0;
+    return ((*word >> attribute.element_bit(i)) & 1u) != 0;
 }
 
-std::optional<uint32_t> DatabaseMgr::attribute_dword(const Attribute& attribute) {
-    if (attribute.is_bit() || attribute.value == 0) {
+std::optional<float> DatabaseMgr::attribute_float(const Attribute& attribute, size_t i) {
+    if (attribute.type != kTypeFloat) {
         return std::nullopt;
     }
-    return mem::read<uint32_t>(attribute.value);
+    const auto at = attribute.element_address(i);
+    if (!at.has_value()) {
+        return std::nullopt;
+    }
+    return mem::read<float>(*at);
+}
+
+regenny::DatabaseMgrRecord* DatabaseMgr::attribute_record(const Attribute& attribute, size_t i) {
+    if (!attribute.is_record_link()) {
+        return nullptr;
+    }
+    const auto at = attribute.element_address(i);
+    if (!at.has_value()) {
+        return nullptr;
+    }
+    const auto p = mem::read_ptr(*at);
+    if (!p.has_value() || *p == 0) {
+        return nullptr;  // the fixup leaves an out-of-range link null
+    }
+    return reinterpret_cast<regenny::DatabaseMgrRecord*>(*p);
+}
+
+std::vector<uint32_t> DatabaseMgr::attribute_struct(const Attribute& attribute, size_t i) {
+    std::vector<uint32_t> out;
+    const auto n = struct_dword_count(attribute.type);
+    if (n == 0) {
+        return out;
+    }
+    const auto at = attribute.element_address(i);
+    if (!at.has_value()) {
+        return out;
+    }
+    const auto ptr = mem::read_ptr(*at);
+    if (!ptr.has_value() || *ptr == 0) {
+        return out;
+    }
+    for (size_t k = 0; k < n; ++k) {
+        const auto d = mem::read<uint32_t>(*ptr + 4 * k);
+        if (!d.has_value()) {
+            return {};
+        }
+        out.push_back(*d);
+    }
+    return out;
+}
+
+std::optional<uint32_t> DatabaseMgr::attribute_raw_dword(const Attribute& attribute, size_t i) {
+    if (attribute.type != kTypeDwordA && attribute.type != kTypeDwordB && attribute.type != kTypeDwordC) {
+        return std::nullopt;
+    }
+    const auto at = attribute.element_address(i);
+    if (!at.has_value()) {
+        return std::nullopt;
+    }
+    return mem::read<uint32_t>(*at);
+}
+
+DatabaseMgr::TypeSample DatabaseMgr::sample_type(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
+                                                size_t limit) {
+    TypeSample out;
+    out.type = type;
+    const auto ncat = category_count(database);
+    for (size_t i = 0; i < ncat && out.sampled < limit; ++i) {
+        const auto* cat = category(database, i);
+        const auto nrec = record_count(cat);
+        for (size_t j = 0; j < nrec && out.sampled < limit; ++j) {
+            const auto* rec = record(cat, j);
+            const auto na = attribute_count(rec);
+            for (size_t k = 0; k < na && out.sampled < limit; ++k) {
+                const auto a = attribute_at(rec, k);
+                if (!a.has_value() || a->type != type) {
+                    continue;
+                }
+                const auto raw = attribute_raw_dword(*a, 0);
+                if (!raw.has_value()) {
+                    continue;
+                }
+                ++out.sampled;
+                // Is it plausibly a pointer, and does it dereference to text? read_name applies the guard and
+                // the printability test, so an unmapped address just yields nothing.
+                if (*raw > 0x10000) {
+                    ++out.pointer_like;
+                    const auto text = mem::read_name(*raw, 64, 2);
+                    if (text.has_value() && !text->empty()) {
+                        ++out.ascii_like;
+                    }
+                    // POSITIVE test for UTF-16 rather than inferring it from the absence of ASCII: read pairs
+                    // and require a printable low byte with a zero high byte, for at least two characters
+                    // followed by a null pair.
+                    size_t wide_chars = 0;
+                    bool wide = true;
+                    for (size_t w = 0; w < 32; ++w) {
+                        const auto unit = mem::read<uint16_t>(*raw + 2 * w);
+                        if (!unit.has_value()) {
+                            wide = false;
+                            break;
+                        }
+                        if (*unit == 0) {
+                            break;
+                        }
+                        if (*unit < 0x20 || *unit > 0x7E) {
+                            wide = false;
+                            break;
+                        }
+                        ++wide_chars;
+                    }
+                    if (wide && wide_chars >= 2) {
+                        ++out.utf16_like;
+                    }
+                    // AND THE SHAPE FOUND BY LOOKING: a zero dword header followed by text. read_name at
+                    // offset 0 stops on that header, which is why an ASCII test starting there reports nothing.
+                    const auto header = mem::read<uint32_t>(*raw);
+                    const auto tail = mem::read_name(*raw + 4, 64, 2);
+                    if (header.has_value() && *header == 0 && tail.has_value() && !tail->empty()) {
+                        ++out.ascii_at_4;
+                    }
+                }
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace sdk

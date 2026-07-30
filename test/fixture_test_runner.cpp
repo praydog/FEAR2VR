@@ -6945,15 +6945,19 @@ int main(int argc, char** argv) {
             // settle record+0x04 (attribute count), +0x08 (descriptor array) and +0x0C (value blob), all of
             // which fear2.genny carried as "plausible" or "unverified".
             int64_t a_recs = -1, a_tot = -1, a_sorted = -1, a_bits = -1, a_dec = -1, a_mask = -1,
-                    a_found = -1, a_ftot = -1;
+                    a_found = -1, a_ftot = -1, zeroc_pre = -1;
+            json_int(body, "attr_zero_count", zeroc_pre);
             check(json_int(body, "attr_records", a_recs) && a_recs > 20000,
                   "every record in the database was walked for attributes");
             check(json_int(body, "attr_total", a_tot) && a_tot > 300000,
                   "over three hundred thousand attributes were decoded");
             check(json_int(body, "attr_records_sorted", a_sorted) && a_sorted == a_recs,
                   "every record's descriptor array is sorted by hash, as its binary search requires");
-            check(json_int(body, "attr_decoded", a_dec) && a_dec == a_tot,
-                  "and every single one decoded -- no faults across the whole database");
+            // EVERY ATTRIBUTE THAT HAS VALUES DECODES. The ones with zero values have nothing to read, so the
+            // correct identity is against that population -- not "all of them", which is what the previous
+            // pass's scalar-only reader made it look like.
+            check(json_int(body, "attr_decoded", a_dec) && a_dec == a_tot - zeroc_pre,
+                  "every attribute with at least one value decoded through its own typed reader");
             check(json_int(body, "attr_bits", a_bits) && a_bits > 0 && a_bits < a_tot,
                   "some but not all are packed bits, so the bit path is exercised and is not the only path");
             // THE TYPE TAG IS SIX BITS: live values are 1..9 and never 0, which the mask captures exactly.
@@ -6986,6 +6990,52 @@ int main(int argc, char** argv) {
             // an earlier pass, and the database bit reads false. Two modules, one fact.
             check(json_has(body, "\"attr_water_value\":false"),
                   "the database says WaterAffectsSpeed is false, matching CMoveMgr's cached 0 from an earlier pass");
+
+            // ---- EVERY ATTRIBUTE IS AN ARRAY, WHICH THE PREVIOUS PASS MISSED ---------------------
+            //
+            // DecodeAttributeValue decodes ELEMENT ZERO, so reading only it made attributes look scalar. All nine
+            // typed getters take a value index and bound it against descriptor+5 -- the byte recorded as "meaning
+            // unestablished". It is the ELEMENT COUNT, and the reference names the same thing GetNumValues.
+            int64_t multi = -1, values = -1, zeroc = -1, bounds = -1, links = -1, resolved = -1, structs = -1;
+            check(json_int(body, "attr_total_values", values) && values > a_tot,
+                  "there are MORE values than attributes, so attributes are arrays and not scalars");
+            check(json_int(body, "attr_multi_valued", multi) && multi > 1000,
+                  "thousands of attributes carry more than one value");
+            check(json_int(body, "attr_zero_count", zeroc) && zeroc > 0,
+                  "and some declare zero values -- a real state, not an error");
+            // THE BOUND EVERY ENGINE GETTER ENFORCES: last element addresses, one past does not. Asserted as an
+            // exact identity against the zero-count population rather than as "most of them".
+            check(json_int(body, "attr_bounds_ok", bounds) && bounds == a_tot - zeroc,
+                  "every attribute with values addresses its last element and refuses one past it");
+
+            // RECORD LINKS. Type 9 is a link the engine rewrites in place at load time from a packed
+            // {category index, record index} pair -- which CORRECTS the previous pass's "nested-structure
+            // reference" inference, right in direction and wrong in mechanism.
+            check(json_int(body, "attr_links", links) && links > 10000,
+                  "tens of thousands of attributes are record links");
+            check(json_int(body, "attr_links_resolved", resolved) && resolved > 0 && resolved < links,
+                  "many resolve to a record and many are null -- the fixup leaves an out-of-range link null, so "
+                  "both outcomes are real and a consumer must check");
+            check(json_int(body, "attr_structs", structs) && structs > 0,
+                  "and some are pointers to 8, 12 or 16-byte structs");
+
+            // ---- NARROWING 3, 4 AND 5 BY MEASUREMENT, INCLUDING ONE REFUTATION ----
+            //
+            // Reported as sampled/pointer-like/ascii/utf16/ascii-at-4. Type 3 is not a pointer at all; types 4
+            // and 5 both point to a {uint32 header, char text[]} structure. A wide-string reading of type 5 was
+            // TESTED and refuted -- a positive UTF-16 check matched none of them.
+            check(json_has(body, "t3=400/40/0/0/0"),
+                  "type 3 is mostly not even a pointer and never dereferences to text -- a value, not a string");
+            check(json_has(body, "t4=400/400/293/0/107"),
+                  "type 4 is always a pointer, and 293 + 107 = 400 accounts for every one: text at offset 0, or "
+                  "a zero header with text at +4. One layout, not two");
+            check(json_has(body, "t5=33/33/0/0/33"),
+                  "type 5 is the same layout, all 33 with a zero header -- and 0 of 33 match a positive UTF-16 "
+                  "test, refuting the wide-string reading rather than inferring it from absent ASCII");
+            // THE PROBE EMITS HEX, so assert the bytes: 00 00 00 00 then "IDS_" (49 44 53 5F). Asserting the
+            // ASCII would have been asserting the wrong artefact -- which is how this check first failed.
+            check(json_has(body, "00 00 00 00 49 44 53 5F"),
+                  "the byte probe shows a zero header followed by 'IDS_' -- a localization key, found by looking");
             check(json_has(body, "\"AI/WeaponContext\""),
                   "a known stable category name appears in the live-enumerated category list");
             check(json_has(body, "\"record_count\":"), "category summaries include record_count");

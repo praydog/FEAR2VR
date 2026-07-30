@@ -7256,6 +7256,8 @@ std::string build_database_json() {
                 // ---- ATTRIBUTES: the third level, and a cross-route name check ----
                 {
                     size_t recs = 0, attrs = 0, sorted_ok = 0, bits = 0, decoded = 0;
+                    size_t multi = 0, total_values = 0, zero_count = 0, bounds_ok = 0;
+                    size_t links = 0, links_resolved = 0, structs = 0;
                     uint32_t type_mask = 0;
                     for (size_t i = 0; i < ncat; ++i) {
                         auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
@@ -7279,13 +7281,45 @@ std::string build_database_json() {
                                 if (a->type < 32) {
                                     type_mask |= (1u << a->type);
                                 }
+                                if (a->num_values == 0) {
+                                    ++zero_count;
+                                }
+                                multi += (a->num_values > 1) ? 1 : 0;
+                                total_values += a->num_values;
                                 if (a->is_bit()) {
                                     ++bits;
-                                    if (sdk::DatabaseMgr::attribute_bit(*a).has_value()) {
+                                    if (sdk::DatabaseMgr::attribute_bool(*a, 0).has_value()) {
                                         ++decoded;
                                     }
-                                } else if (sdk::DatabaseMgr::attribute_dword(*a).has_value()) {
+                                } else if (a->type == sdk::DatabaseMgr::kTypeFloat) {
+                                    if (sdk::DatabaseMgr::attribute_float(*a, 0).has_value()) {
+                                        ++decoded;
+                                    }
+                                } else if (a->is_record_link()) {
+                                    ++links;
+                                    if (sdk::DatabaseMgr::attribute_record(*a, 0) != nullptr) {
+                                        ++links_resolved;
+                                    }
+                                    // A link with no values has nothing to decode; counting it as decoded is
+                                    // what made the "everything decoded" figure disagree with the bounds count.
+                                    if (a->num_values > 0) {
+                                        ++decoded;
+                                    }
+                                } else if (a->is_struct()) {
+                                    ++structs;
+                                    if (sdk::DatabaseMgr::attribute_struct(*a, 0).size() ==
+                                        sdk::DatabaseMgr::struct_dword_count(a->type)) {
+                                        ++decoded;
+                                    }
+                                } else if (sdk::DatabaseMgr::attribute_raw_dword(*a, 0).has_value()) {
                                     ++decoded;
+                                }
+                                // THE LAST ELEMENT MUST ADDRESS, AND ONE PAST IT MUST NOT -- the bound every
+                                // engine getter enforces.
+                                if (a->num_values > 0 &&
+                                    a->element_address(a->num_values - 1).has_value() &&
+                                    !a->element_address(a->num_values).has_value()) {
+                                    ++bounds_ok;
                                 }
                             }
                         }
@@ -7296,6 +7330,62 @@ std::string build_database_json() {
                     entry0_json += ",\"attr_bits\":" + std::to_string(bits);
                     entry0_json += ",\"attr_decoded\":" + std::to_string(decoded);
                     entry0_json += ",\"attr_type_mask\":" + std::to_string(type_mask);
+                    entry0_json += ",\"attr_multi_valued\":" + std::to_string(multi);
+                    entry0_json += ",\"attr_total_values\":" + std::to_string(total_values);
+                    entry0_json += ",\"attr_zero_count\":" + std::to_string(zero_count);
+                    entry0_json += ",\"attr_bounds_ok\":" + std::to_string(bounds_ok);
+                    entry0_json += ",\"attr_links\":" + std::to_string(links);
+                    entry0_json += ",\"attr_links_resolved\":" + std::to_string(links_resolved);
+                    entry0_json += ",\"attr_structs\":" + std::to_string(structs);
+                    // NARROWING TYPES 3/4/5: are their dwords pointers into text?
+                    std::string samples;
+                    for (uint8_t t : {sdk::DatabaseMgr::kTypeDwordA, sdk::DatabaseMgr::kTypeDwordB,
+                                      sdk::DatabaseMgr::kTypeDwordC}) {
+                        const auto smp = sdk::DatabaseMgr::sample_type(e->record_a, t, 400);
+                        if (!samples.empty()) {
+                            samples += ";";
+                        }
+                        samples += "t" + std::to_string(t) + "=" + std::to_string(smp.sampled) + "/" +
+                                   std::to_string(smp.pointer_like) + "/" + std::to_string(smp.ascii_like) +
+                                   "/" + std::to_string(smp.utf16_like) + "/" +
+                                   std::to_string(smp.ascii_at_4);
+                    }
+                    entry0_json += ",\"attr_type_samples\":";
+                    json_escape_append(entry0_json, samples);
+                    // WHAT DO THE 33 TYPE-5 POINTERS TARGET? Neither ASCII nor UTF-16, so dump the first one's
+                    // bytes rather than guess again.
+                    {
+                        std::string dump;
+                        for (size_t i = 0; i < ncat && dump.empty(); ++i) {
+                            auto* cat = sdk::DatabaseMgr::category(e->record_a, i);
+                            const auto nrec = sdk::DatabaseMgr::record_count(cat);
+                            for (size_t j = 0; j < nrec && dump.empty(); ++j) {
+                                auto* rec = sdk::DatabaseMgr::record(cat, j);
+                                const auto na = sdk::DatabaseMgr::attribute_count(rec);
+                                for (size_t k = 0; k < na && dump.empty(); ++k) {
+                                    const auto a = sdk::DatabaseMgr::attribute_at(rec, k);
+                                    if (!a.has_value() || a->type != sdk::DatabaseMgr::kTypeDwordC) {
+                                        continue;
+                                    }
+                                    const auto raw = sdk::DatabaseMgr::attribute_raw_dword(*a, 0);
+                                    if (!raw.has_value() || *raw <= 0x10000) {
+                                        continue;
+                                    }
+                                    char buf[8]{};
+                                    dump = sdk::DatabaseMgr::category_name(cat) + "/" +
+                                           sdk::DatabaseMgr::record_name(rec) + " n=" +
+                                           std::to_string(a->num_values) + " ->";
+                                    for (size_t b = 0; b < 16; ++b) {
+                                        const auto byte = sdk::mem::read<uint8_t>(*raw + b);
+                                        snprintf(buf, sizeof(buf), " %02X", byte.value_or(0));
+                                        dump += buf;
+                                    }
+                                }
+                            }
+                        }
+                        entry0_json += ",\"attr_type5_probe\":";
+                        json_escape_append(entry0_json, dump);
+                    }
 
                     // THE CROSS-ROUTE CHECK. These names come from gameclient's CMoveMgr_Init, which reads them
                     // as DATABASE attributes. Their hashes must appear as descriptors somewhere in the database
@@ -7384,20 +7474,15 @@ std::string build_database_json() {
                             auto* rec = sdk::DatabaseMgr::record(shared, 0);
                             const auto was = sdk::DatabaseMgr::find_attribute(rec, "WaterAffectsSpeed");
                             if (was.has_value()) {
-                                if (was->is_bit()) {
-                                    strict = sdk::DatabaseMgr::attribute_bit(*was).has_value() &&
-                                             !sdk::DatabaseMgr::attribute_dword(*was).has_value();
-                                } else {
-                                    strict = !sdk::DatabaseMgr::attribute_bit(*was).has_value() &&
-                                             sdk::DatabaseMgr::attribute_dword(*was).has_value();
-                                }
+                                strict = sdk::DatabaseMgr::attribute_bool(*was, 0).has_value() &&
+                                         !sdk::DatabaseMgr::attribute_float(*was, 0).has_value() &&
+                                         !sdk::DatabaseMgr::attribute_raw_dword(*was, 0).has_value();
                                 entry0_json += ",\"attr_water_value\":" +
-                                               std::string(was->is_bit()
-                                                               ? (sdk::DatabaseMgr::attribute_bit(*was).value_or(false)
-                                                                      ? "true" : "false")
-                                                               : std::to_string(
-                                                                     sdk::DatabaseMgr::attribute_dword(*was)
-                                                                         .value_or(0)));
+                                               std::string(sdk::DatabaseMgr::attribute_bool(*was, 0)
+                                                                   .value_or(false)
+                                                               ? "true" : "false");
+                                entry0_json += ",\"attr_water_num_values\":" +
+                                               std::to_string(was->num_values);
                             }
                         }
                     }

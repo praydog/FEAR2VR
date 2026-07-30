@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint> // generated regenny headers use uint32_t/etc. without including it themselves -- must precede them
 #include <optional>
+#include <vector>
 #include <string>
 #include <string_view>
 
@@ -271,72 +272,166 @@ public:
     static constexpr uintptr_t kRecordAttributeArray = 0x08;
     static constexpr uintptr_t kRecordValueBlob = 0x0C;
     static constexpr size_t kAttributeDescriptorSize = 8;
+
+    // ---- EVERY ATTRIBUTE IS AN ARRAY, WHICH THE FIRST VERSION OF THIS MISSED --------------------
+    //
+    // DatabaseMgr_DecodeAttributeValue decodes ELEMENT ZERO, and reading only it made attributes look scalar.
+    // The engine's nine typed getters all take a value index and bounds-check it against descriptor+5 -- the
+    // byte recorded here as "meaning unestablished". IT IS THE ELEMENT COUNT, and the reference names the same
+    // thing GetNumValues(HATTRIBUTE).
+    //
+    //     element i of any type :  blob dword index = value_index + i
+    //     type 1 (bit)          :  dword = blob + 4 * ((value_index + i) >> 5),  bit = (value_index + i) & 0x1F
+    //
+    // ---- THE TYPE TAGS ----
+    //
+    // Live the low 6 bits take values 1..9 and never 0. All nine getters were read; the STORAGE of each is
+    // established from its own code, while the C type is only claimed where evidence outside this binary exists.
+    //
+    //   1  BOOL, a packed bit. Two routes: the bit arithmetic, and the reference reading WaterAffectsSpeed
+    //      with GetBool -- which live carries type 1.
+    //   2  FLOAT, read straight from the blob dword. YawClamp and YawBias carry it and CMoveMgr reads floats.
+    //   3  NOT A POINTER. Sampled 400: only 40 land in committed memory and none dereference to text, so the
+    //      dword is a value. Integer-like, and left at that.
+    //   4, 5  BOTH POINT TO A {uint32 header, char text[]} STRUCTURE, measured rather than assumed:
+    //        type 4  400/400 are pointers, and 293 read as text from offset 0 while the other 107 have a ZERO
+    //                header with text at +4. 293 + 107 = 400 exactly, so it is one layout whose header is
+    //                sometimes zero and sometimes not.
+    //        type 5  33/33 have the zero header with text at +4, and the one sampled reads "IDS_PLAYER_N..." --
+    //                a localization key, in Profile/Multiplayer.
+    //      WHAT SEPARATES 4 FROM 5 IS NOT ESTABLISHED. The layout is shared; only the tag and the population
+    //      differ. A wide-string reading of 5 was TESTED AND REFUTED: a positive UTF-16 check (printable low
+    //      bytes, zero high bytes) matched 0 of 33, which is why the check exists instead of inferring "wide"
+    //      from the absence of ASCII.
+    //   6  A POINTER to 8 bytes, copied as two dwords.
+    //   7  A POINTER to 12 bytes. The size and shape of an LTVector, though nothing proves the components are
+    //      floats.
+    //   8  A POINTER to 16 bytes -- an LTVector4 or an LTRotation by size.
+    //   9  A RECORD LINK, and this CORRECTS the previous pass. It was recorded as "[INFERENCE] a nested-structure
+    //      reference"; it is a link to another RECORD. DatabaseMgr_FixupRecordLinks rewrites each element in
+    //      place at load time from a packed {uint16 category_index, uint16 record_index} into a real
+    //      DatabaseMgrRecord*, so a reader gets a usable pointer. The old wording was directionally right and
+    //      wrong in the mechanism.
+    //  10  Also a record link -- the fixup handles 9 AND 10 -- but no attribute in the shipped database uses it,
+    //      so it is defined and unexercised.
+    //
+    // > That fixup confirms the category and record layouts a THIRD time (stride 0x14 / 0x18, num_records at
+    // > +0x08, records at +0x0C), independently of the index accessors and the by-hash searches. And it explains
+    // > the _Structures pool: links are how records reference each other, and the sub-records they point at live
+    // > there -- which is why names repeat (the name is the struct TYPE) and identity comes from the link.
     static constexpr uint8_t kTypeMask = 0x3F;
-
-    // ---- THE TYPE TAGS, pinned where external evidence exists and left open where it does not ----
-    //
-    // Live, the low 6 bits take values 1..9 and never 0 (measured as a bitmask over all 306570 attributes:
-    // 0b1111111110). Three of the nine are established, each by a route outside this binary:
-    //
-    //   1  BOOL, stored as a PACKED BIT. Two independent routes: the decoder's own >>5 / &0x1F arithmetic, and
-    //      the reference source reading WaterAffectsSpeed with GetBool -- which live carries type 1.
-    //   2  FLOAT. YawClamp and YawBias both carry it, and CMoveMgr_Init reads both as floats.
-    //   9  A NESTED-STRUCTURE REFERENCE. [INFERENCE] GunLead and GamePad carry it, and they are exactly the
-    //      names CMoveMgr_Init hashes in order to REACH a record whose own attributes are YawClamp and YawBias
-    //      -- which live in the _Structures pool. So a type-9 attribute names a sub-record rather than holding a
-    //      value. Inferred from that traversal pattern, not from a decoder that proves it.
-    //
-    // 3, 4, 5, 6, 7 and 8 are OBSERVED BUT UNIDENTIFIED and deliberately unnamed. Guessing "probably int32"
-    // from a value's shape is the mistake this project has made and corrected twice.
-    static constexpr uint8_t kTypeBool = 1;   // packed bit
+    static constexpr uint8_t kTypeBool = 1;        // packed bit
     static constexpr uint8_t kTypeFloat = 2;
-    static constexpr uint8_t kTypeStructRef = 9;  // [INFERENCE]
+    static constexpr uint8_t kTypeDwordA = 3;      // storage-identical trio, C type unestablished
+    static constexpr uint8_t kTypeDwordB = 4;
+    static constexpr uint8_t kTypeDwordC = 5;
+    static constexpr uint8_t kType8Bytes = 6;
+    static constexpr uint8_t kType12Bytes = 7;     // LTVector by size
+    static constexpr uint8_t kType16Bytes = 8;     // LTVector4 / LTRotation by size
+    static constexpr uint8_t kTypeRecordLink = 9;
+    static constexpr uint8_t kTypeRecordLinkAlt = 10;  // defined, unused in the shipped data
 
-    // Kept as the historical name; kTypeBool is the same value and says why it is special.
+    // Kept for the historical name; kTypeBool says why it is special.
     static constexpr uint8_t kTypeBit = kTypeBool;
+
+    // How many dwords the pointed-at struct holds, for types 6/7/8; 0 for every other type.
+    static size_t struct_dword_count(uint8_t type);
 
     struct Attribute {
         uintptr_t descriptor{};  // the 8-byte descriptor
         uint32_t name_hash{};
-        uint8_t type{};          // already masked to the low 6 bits
-        uint8_t raw_type{};      // the unmasked byte, so the high 2 bits are not thrown away
-        uint8_t unk_05{};        // meaning unestablished; surfaced rather than hidden
+        uint8_t type{};          // masked to the low 6 bits
+        uint8_t raw_type{};      // unmasked, so the high 2 bits are not discarded
+        uint8_t num_values{};    // descriptor+5 -- the ELEMENT COUNT; the reference's GetNumValues
         uint16_t value_index{};
-        uintptr_t value{};       // decoded address in the blob
-        uint8_t bit{};           // bit index within *value, only meaningful for a bit type
+        uintptr_t blob{};        // the record's value blob, needed to address elements
 
-        bool is_bit() const { return type == kTypeBit; }
+        bool is_bit() const { return type == kTypeBool; }
+        bool is_record_link() const { return type == kTypeRecordLink || type == kTypeRecordLinkAlt; }
+        bool is_struct() const { return struct_dword_count(type) != 0; }
+
+        // The blob address of element `i`, ignoring bit packing. nullopt when i is out of range -- the same
+        // bound every engine getter enforces.
+        std::optional<uintptr_t> element_address(size_t i) const {
+            if (i >= num_values || blob == 0) {
+                return std::nullopt;
+            }
+            if (is_bit()) {
+                return blob + 4 * ((static_cast<uintptr_t>(value_index) + i) >> 5);
+            }
+            return blob + 4 * (static_cast<uintptr_t>(value_index) + i);
+        }
+
+        // Which bit within that dword, for a bit attribute.
+        uint8_t element_bit(size_t i) const {
+            return static_cast<uint8_t>((static_cast<uintptr_t>(value_index) + i) & 0x1F);
+        }
     };
 
     // How many attributes a record declares.
     static size_t attribute_count(const regenny::DatabaseMgrRecord* record);
 
-    // One attribute by index, decoded exactly as DatabaseMgr_DecodeAttributeValue does. nullopt when out of
-    // range or a read faults.
+    // One attribute descriptor by index. nullopt when out of range or a read faults.
     static std::optional<Attribute> attribute_at(const regenny::DatabaseMgrRecord* record, size_t index);
 
     // One attribute by NAME, via the same binary search the engine uses. nullopt when absent.
     //
-    // NOTE THE ASYMMETRY WITH find_record: a descriptor stores only the HASH, never the attribute's name, so
-    // there is nothing to string-compare against and a collision cannot be rejected here the way it can for
-    // categories and records. The hash is all the engine has and all this has.
+    // NOTE THE ASYMMETRY WITH find_record: a descriptor stores only the HASH, never the name, so there is
+    // nothing to string-compare and a collision cannot be rejected here the way it can one level up.
     static std::optional<Attribute> find_attribute(const regenny::DatabaseMgrRecord* record,
                                                    std::string_view name);
 
-    // Does the record have an attribute of this name? The cheap question, without decoding.
+    // Does the record declare this attribute? The cheap question.
     static bool has_attribute(const regenny::DatabaseMgrRecord* record, std::string_view name);
 
-    // Is the descriptor array sorted ascending by hash, as the binary search requires?
+    // Is the descriptor array sorted ascending by hash, as its binary search requires?
     static bool attributes_sorted_by_hash(const regenny::DatabaseMgrRecord* record);
 
-    // The attribute's value as a bool, honouring the bit packing. nullopt when the attribute is not a bit type
-    // or the read faults -- deliberately strict, since reading a bit attribute as anything else is the mistake
-    // this exists to prevent.
-    static std::optional<bool> attribute_bit(const Attribute& attribute);
+    // ---- TYPED READERS, each refusing every type but its own ------------------------------------
+    //
+    // The engine's getters return a FALLBACK on a type or index mismatch, so a caller cannot tell "absent" from
+    // "happens to equal the default". These return nullopt instead, which is the difference between a library a
+    // consumer can trust and one that quietly lies.
 
-    // The whole dword at the attribute's value address, for the non-bit types. nullopt for a bit attribute,
-    // because the dword there holds up to 32 unrelated booleans.
-    static std::optional<uint32_t> attribute_dword(const Attribute& attribute);
+    // Element `i` of a bool attribute. nullopt unless the type really is 1.
+    static std::optional<bool> attribute_bool(const Attribute& attribute, size_t i = 0);
+
+    // Element `i` of a float attribute. nullopt unless the type really is 2.
+    static std::optional<float> attribute_float(const Attribute& attribute, size_t i = 0);
+
+    // Element `i` of a record link, already fixed up by the engine to a record pointer. nullopt unless the type
+    // is a link, or when the link was out of range at load time and left null.
+    static regenny::DatabaseMgrRecord* attribute_record(const Attribute& attribute, size_t i = 0);
+
+    // The dwords of a type 6/7/8 struct element -- 2, 3 or 4 of them. Empty for any other type.
+    static std::vector<uint32_t> attribute_struct(const Attribute& attribute, size_t i = 0);
+
+    // The raw dword of a type 3/4/5 attribute, whose C type is not established. Deliberately NOT called
+    // attribute_int: this hands over the bits and says nothing about what they mean.
+    static std::optional<uint32_t> attribute_raw_dword(const Attribute& attribute, size_t i = 0);
+
+    // ---- NARROWING 3, 4 AND 5 BY MEASUREMENT ---------------------------------------------------
+    //
+    // Those three are storage-identical, and the reference's unaccounted scalar getters are GetInt32, GetString
+    // and GetWString. A string attribute's dword is a POINTER to text, an int32's is a number, so the two are
+    // distinguishable at runtime without guessing: sample the values of one type across the database and ask
+    // what fraction dereference to readable text.
+    //
+    // Reported as a ratio rather than a verdict, because the answer is evidence and the naming decision is a
+    // separate step that belongs in a later pass with the numbers in hand.
+    struct TypeSample {
+        uint8_t type{};
+        size_t sampled{};
+        size_t pointer_like{};  // lands in committed memory
+        size_t ascii_like{};    // dereferences to printable ASCII
+        size_t utf16_like{};    // dereferences to UTF-16: printable low bytes, zero high bytes
+        size_t ascii_at_4{};    // a zero dword then printable ASCII -- the localized-string shape
+
+        // The three are not exclusive by construction, so a caller compares ratios rather than trusting one.
+    };
+
+    static TypeSample sample_type(const regenny::DatabaseMgrSubRecord* database, uint8_t type,
+                                  size_t limit = 400);
 
 private:
     char m_data[sizeof(regenny::DatabaseMgr)];
