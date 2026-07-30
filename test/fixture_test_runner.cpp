@@ -4509,6 +4509,69 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- "POINTS INTO THE MODULE" IS NOT "IS A VTABLE" ---------------------------------------
+            //
+            // A scan of the player for sub-objects tested candidates by asking whether their first dword
+            // pointed into gameclient. It reported 205 slots over 86 objects. 137 of those slots were
+            // FUNCTION POINTERS: two addresses covered 84 of them and their "slot 0" read 0xC7F18B56, which
+            // is not an address but the x86 bytes 56 8B F1 C7 -- a function prologue. With the section test
+            // the real figures are 68 slots over 40 objects.
+            //
+            // So the predicate is asserted in BOTH directions on known addresses, not just where it passes.
+            bool sc_cr = false, sc_dr = false, sc_ci = false, sc_di = false, sc_rej = false, sc_acc = false,
+                 sc_dis = false, sc_out = false, sc_pd = false, sc_pnv = false, sc_shv = false;
+            check(json_bool(body, "sec_code_resolved", sc_cr) && sc_cr, "a .text address resolves to a section");
+            check(json_bool(body, "sec_data_resolved", sc_dr) && sc_dr, "an .rdata address resolves too");
+            check(json_bool(body, "sec_code_is_code", sc_ci) && sc_ci, "the prologue address classifies as CODE");
+            check(json_bool(body, "sec_data_is_data", sc_di) && sc_di, "the vtable address classifies as DATA");
+            check(json_bool(body, "sec_code_rejected", sc_rej) && sc_rej,
+                  "the address that fooled the old rule is refused as a vtable pointer");
+            check(json_bool(body, "sec_data_accepted", sc_acc) && sc_acc,
+                  "a real vtable is still accepted -- the fix is not simply stricter");
+            check(json_bool(body, "sec_disjoint", sc_dis) && sc_dis,
+                  "code ends before data begins, so the test is exact rather than heuristic");
+            check(json_bool(body, "sec_outside_refused", sc_out) && sc_out,
+                  "an address in no module resolves to no section and is no vtable");
+
+            // THE PLAYER HAS NO VTABLE. Delegates.hpp already explains why -- the object opens with 21
+            // delegate channel heads, so its first dword is a link's `prev`. This makes that live.
+            check(json_bool(body, "sec_player_determinable", sc_pd) && sc_pd,
+                  "the player's first dword is readable");
+            check(json_bool(body, "sec_player_has_no_vtable", sc_pnv) && sc_pnv,
+                  "and it is not a vtable pointer, so an object need not begin with one");
+            check(json_bool(body, "sec_subobjects_have_vtables", sc_shv) && sc_shv,
+                  "while all three sub-objects do -- the negative case is not vacuous");
+
+            // ---- WHAT EACH SUB-OBJECT SUBSCRIBES TO -------------------------------------------------
+            //
+            // The dual of the existing subject-side walk: the delegate nodes an object OWNS are the events
+            // it listens to. Counts come from the validated rule (owner at +0x0C, slot 2 == Delegate_Detach),
+            // NOT from the stride-derived rule that first suggested the arrays -- that one was 4 bytes out of
+            // phase, matched the NEXT node's vtable, and therefore missed the last node of each array,
+            // reporting 12 and 13 where there are 13 and 14.
+            double dg_cn = 0.0, dg_pn = 0.0, dg_hn = 0.0, dg_cs = 0.0;
+            bool dg_v = false, dg_c = false, dg_vd = false, dg_id = false, dg_sb = false, dg_er = false;
+            check(json_double(body, "dg_controller_nodes", dg_cn) && dg_cn == 13.0,
+                  "the controller subscribes to 13 events");
+            check(json_double(body, "dg_camera_nodes", dg_pn) && dg_pn == 8.0,
+                  "CPlayerCamera to 8 -- the count its constructor gave an earlier pass, by another route");
+            check(json_double(body, "dg_physics_nodes", dg_hn) && dg_hn == 14.0,
+                  "the physics holder to 14");
+            check(json_bool(body, "dg_all_validated", dg_v) && dg_v,
+                  "every node returned carries the shared detach method, so none is a coincidence");
+            check(json_bool(body, "dg_all_contiguous", dg_c) && dg_c,
+                  "each array is contiguous at the 20-byte stride -- an array, not scattered matches");
+            check(json_bool(body, "dg_camera_vtables_distinct", dg_vd) && dg_vd,
+                  "each node has its own vtable, since each subscribes to a different event");
+            check(json_bool(body, "dg_node_vtables_in_data", dg_id) && dg_id,
+                  "and every node vtable passes the section test, on data this pass did not choose");
+            check(json_double(body, "dg_camera_subjects", dg_cs) && dg_cs == 8.0,
+                  "its 8 nodes are attached to 8 distinct subjects -- one publisher each, none detached");
+            check(json_bool(body, "dg_subjects_bounded", dg_sb) && dg_sb,
+                  "subjects never outnumber nodes, which a double-count would break");
+            check(json_bool(body, "dg_empty_refused", dg_er) && dg_er,
+                  "a null object and a too-small extent both yield nothing");
+
             // ---- THE PLAYER'S THREE CAMERA SUB-OBJECTS ----------------------------------------------
             //
             // Generalising the previous pass's lesson -- establish a pointer's class before reading offsets off it.

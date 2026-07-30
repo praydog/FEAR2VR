@@ -3465,3 +3465,46 @@ Governed by AGENT.MD 5a; the mechanics that trip people up:
   reported twice and any count derived from it varies with core count. Sort +
   unique. (Found by reading kananlib's implementation, which is the general
   lesson: read the primitive before depending on its result shape.)
+
+## Before building it, check whether it is already built
+
+This pass wrote a new `shared/sdk/Delegates.hpp` from scratch to hold a structure it had just discovered. That file
+already existed, held a better-derived version of the same structure, and `write` destroyed it. `git status` showed
+`M` rather than `??`, which is the only reason it was noticed. It was restored from git and the pass continued
+against the real class.
+
+Two separate failures, and the second is the expensive one:
+
+- **`write` on a path you have not read is a destructive operation.** Use `read` or `glob` first. A modified-not-added
+  file in `git status` after "creating" something means you overwrote work.
+- **The structure was already mapped, and mapped better.** The existing class derived the node layout by reading the
+  shared `Delegate_Detach` body -- ground truth, from code. This pass derived it from a 20-byte stride observed in
+  memory, which produced a layout **4 bytes out of phase**: the field matching the object was `owner` (+0x0C), and
+  the "vtable" 8 bytes later was *the next node's*. That error is not cosmetic. It reported array starts of
+  +12/+20/+20 instead of +8/+16/+16 and **missed the last node of every array** -- 12 and 13 where there are 13 and
+  14 -- because the final node has no successor whose vtable it can borrow.
+
+So: `grep` the SDK for the concept before adding a class for it. The cost of the check is one command; the cost of
+skipping it was a destroyed file plus a wrong structure that agreed with itself well enough to look verified.
+
+**And prefer a layout read out of the code that maintains it.** A stride tells you a period, not a phase. The
+function that links, unlinks and zeroes a node states every offset unambiguously, and it took one decompile.
+
+What did survive the correction is the part the existing class did not have: the section test below, and the dual
+question -- an object's *owned* nodes, i.e. what it subscribes to, as against the subject-side walk that was already
+there. Those went into the existing class rather than a new one.
+
+## "Points into the module" is not "is a vtable"
+
+The same scan tested candidate objects by reading the first dword and asking whether it pointed inside gameclient.
+205 pointer slots over 86 objects. **137 of those slots were function pointers.** Two addresses accounted for 84 of
+them, and reading their "slot 0" gave `0xC7F18B56` -- not an address at all, but the x86 bytes `56 8B F1 C7`, a
+function prologue.
+
+A vtable pointer targets initialised read-only data; a function pointer targets code. Those live in different PE
+sections and in gameclient they do not overlap at all -- `.text` ends at `+0x1C1000`, the first vtable sits at
+`+0x1C141C`. So the discriminator is exact rather than heuristic, and it is now
+`sdk::Modules::looks_like_vtable_pointer`, parsed from the mapped section headers so it holds for any module.
+
+Corrected figures: **68 slots over 40 objects**. Two thirds of the original count was noise, and nothing about the
+inflated version looked wrong.

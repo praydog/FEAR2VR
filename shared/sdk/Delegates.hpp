@@ -119,6 +119,46 @@ public:
     // this listener react to on that object".
     static std::vector<uintptr_t> channels_listened_to(uintptr_t object, uintptr_t owner,
                                                        size_t span = 0x100);
+
+    //
+    // THE DUAL QUESTION: WHAT DOES THIS OBJECT SUBSCRIBE TO?
+    //
+    // Everything above looks at a SUBJECT -- who listens to it, which channels it publishes. The opposite
+    // question is what an object LISTENS TO, and answering it needs the nodes the object owns rather than the
+    // lists it heads. Those nodes are embedded in the object: a class that subscribes to twelve events carries
+    // twelve nodes in a contiguous array.
+    //
+    // FOUND THE HARD WAY. A scan of the player for sub-object pointers reported the movement controller
+    // fourteen times, at +236 and then at a 20-byte stride from +3740. Fourteen controllers is absurd, so the
+    // stride was the finding -- those were owner back-pointers from an embedded node array, and the object
+    // count was inflated by them.
+    //
+    // THAT SCAN THEN GOT THE PHASE WRONG, which is why this function exists rather than a new class. Matching
+    // "a field equal to the object, and a data pointer eight bytes later" finds real nodes at the wrong base:
+    // the match is `owner` at +0x0C, and the pointer eight bytes on is THE NEXT NODE'S VTABLE, not this one's.
+    // Reading the layout out of Delegate_Detach, as the top of this file does, is what gets it right; deriving
+    // it from a stride does not.
+    //
+    // So the rule here is the validated one: a node's own vtable must carry the shared detach method. A
+    // coincidence has to fake that, and 329 vtables share it, so the check is cheap and decisive.
+    //
+
+    // Every delegate node OWNED BY `object` within its first `extent` bytes -- i.e. every event it subscribes
+    // to. Four-byte granularity, since the array's phase differs per class. Only nodes whose own vtable passes
+    // is_delegate_vtable are returned, so a result needs no further filtering.
+    //
+    // `extent` should be the class size where known; a constructor's highest touched offset is a lower bound.
+    static std::vector<Listener> owned_nodes(uintptr_t object, size_t extent);
+
+    // Is that array contiguous at the 20-byte stride? A real subscription array is; a scattered set of matches
+    // means the scan found unrelated fields and a caller should distrust it. Exposed because it is the
+    // difference between "found the array" and "found some matches".
+    static bool nodes_are_contiguous(const std::vector<Listener>& nodes);
+
+    // The subjects an object is currently attached to, deduplicated -- the objects publishing the events it
+    // reacts to. A node with a null subject is detached and contributes nothing, which is exactly the
+    // distinction kNodeSubject exists to make.
+    static std::vector<uintptr_t> subscribed_subjects(uintptr_t object, size_t extent);
 };
 
 }  // namespace sdk

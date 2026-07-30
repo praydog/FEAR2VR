@@ -152,4 +152,58 @@ bool Delegates::is_listening(uintptr_t subject_head, uintptr_t owner) {
     return false;
 }
 
+
+std::vector<Delegates::Listener> Delegates::owned_nodes(uintptr_t object, size_t extent) {
+    std::vector<Listener> out;
+    if (object == 0 || extent < kNodeSize) {
+        return out;
+    }
+    for (size_t off = 0; off + kNodeSize <= extent; off += sizeof(uintptr_t)) {
+        const auto node = object + off;
+        // Cheapest discriminator first: the owner field. Most offsets fail here.
+        const auto owner = mem::read<uintptr_t>(node + kNodeOwner);
+        if (!owner.has_value() || *owner != object) {
+            continue;
+        }
+        const auto listener = read_node(node);
+        if (!listener.has_value() || !listener->vtable_valid) {
+            continue;
+        }
+        out.push_back(*listener);
+    }
+    return out;
+}
+
+bool Delegates::nodes_are_contiguous(const std::vector<Listener>& nodes) {
+    if (nodes.size() < 2) {
+        return true;
+    }
+    for (size_t i = 1; i < nodes.size(); ++i) {
+        if (nodes[i].node != nodes[i - 1].node + kNodeSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<uintptr_t> Delegates::subscribed_subjects(uintptr_t object, size_t extent) {
+    std::vector<uintptr_t> out;
+    for (const auto& n : owned_nodes(object, extent)) {
+        if (n.subject == 0) {
+            continue;  // detached
+        }
+        bool seen = false;
+        for (const auto s : out) {
+            if (s == n.subject) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            out.push_back(n.subject);
+        }
+    }
+    return out;
+}
+
 }  // namespace sdk

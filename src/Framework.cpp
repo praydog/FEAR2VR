@@ -4610,6 +4610,98 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE SECTION TEST, and the false positives it removes. A module-range test on the first dword admits
+    // function pointers, which is what over-reported the player's sub-objects by a factor of three.
+    {
+        const auto* gc = sdk::Modules::get().game_client();
+        if (gc != nullptr && gc->base != 0) {
+            // A KNOWN .text ADDRESS and a KNOWN .rdata ADDRESS, so the predicate is tested in both
+            // directions rather than only where it should pass.
+            const auto code_addr = gc->base + 0x2ABA0;    // the prologue bytes that fooled the old rule
+            const auto data_addr = gc->base + 0x1D5B94;   // g_vtbl_CPlayerCamera
+            const auto csec = sdk::Modules::section_of(code_addr);
+            const auto dsec = sdk::Modules::section_of(data_addr);
+            json_append_bool(out, "sec_code_resolved", csec.has_value());
+            json_append_bool(out, "sec_data_resolved", dsec.has_value());
+            json_append_bool(out, "sec_code_is_code",
+                             csec.has_value() && csec->kind == sdk::Modules::SectionKind::Code);
+            json_append_bool(out, "sec_data_is_data",
+                             dsec.has_value() && dsec->kind == sdk::Modules::SectionKind::Data);
+            json_append_bool(out, "sec_code_rejected", !sdk::Modules::looks_like_vtable_pointer(code_addr));
+            json_append_bool(out, "sec_data_accepted", sdk::Modules::looks_like_vtable_pointer(data_addr));
+            json_append_bool(out, "sec_disjoint",
+                             csec.has_value() && dsec.has_value() && csec->end <= dsec->start);
+            json_append_bool(out, "sec_outside_refused", !sdk::Modules::section_of(0x10).has_value() &&
+                                                             !sdk::Modules::looks_like_vtable_pointer(0x10));
+        }
+        // THE PLAYER HAS NO VTABLE -- its first dword is a heap address. An early pass noted it; this makes
+        // it a live assertion, and it is the case a consumer assuming "every object has a vtable" breaks on.
+        if (const auto pp = sdk::PlayerMgr::slot(0); pp.has_value()) {
+            const auto has = sdk::Modules::object_has_vtable(*pp);
+            json_append_bool(out, "sec_player_determinable", has.has_value());
+            json_append_bool(out, "sec_player_has_no_vtable", has.has_value() && !*has);
+        }
+        if (const auto subs = sdk::PlayerMgr::camera_sub_objects(0); subs.has_value()) {
+            const auto a = sdk::Modules::object_has_vtable(subs->controller);
+            const auto b = sdk::Modules::object_has_vtable(subs->player_camera);
+            const auto c = sdk::Modules::object_has_vtable(subs->physics_holder);
+            json_append_bool(out, "sec_subobjects_have_vtables",
+                             a.value_or(false) && b.value_or(false) && c.value_or(false));
+
+            // ---- WHAT EACH SUB-OBJECT SUBSCRIBES TO ----
+            //
+            // Using the established node layout (owner at +0x0C, validated by slot 2 == Delegate_Detach)
+            // rather than the wrong-phase rule a scan suggested. See Delegates.hpp.
+            const auto cs = sdk::Delegates::owned_nodes(subs->controller, 2220);
+            const auto ps = sdk::Delegates::owned_nodes(subs->player_camera, 6342);
+            const auto hs = sdk::Delegates::owned_nodes(subs->physics_holder, 1949);
+            json_append_double(out, "dg_controller_nodes", static_cast<double>(cs.size()), 0);
+            json_append_double(out, "dg_camera_nodes", static_cast<double>(ps.size()), 0);
+            json_append_double(out, "dg_physics_nodes", static_cast<double>(hs.size()), 0);
+            // EVERY node returned is a validated delegate -- owned_nodes filters on the detach method, so
+            // this asserts the filter rather than hoping for it.
+            bool all_valid = !cs.empty() && !ps.empty() && !hs.empty();
+            for (const auto* v : {&cs, &ps, &hs}) {
+                for (const auto& n : *v) {
+                    if (!n.vtable_valid || n.owner == 0) {
+                        all_valid = false;
+                    }
+                }
+            }
+            json_append_bool(out, "dg_all_validated", all_valid);
+            json_append_bool(out, "dg_all_contiguous",
+                             sdk::Delegates::nodes_are_contiguous(cs) &&
+                                 sdk::Delegates::nodes_are_contiguous(ps) &&
+                                 sdk::Delegates::nodes_are_contiguous(hs));
+            // THE VTABLES MUST DIFFER PER NODE: each subscribes to a different event.
+            bool distinct = true;
+            for (size_t i = 0; i < ps.size(); ++i) {
+                for (size_t j = i + 1; j < ps.size(); ++j) {
+                    if (ps[i].vtable == ps[j].vtable) {
+                        distinct = false;
+                    }
+                }
+            }
+            json_append_bool(out, "dg_camera_vtables_distinct", distinct);
+            // AND EVERY NODE VTABLE MUST BE IN A DATA SECTION, which re-tests the new predicate on data
+            // this pass did not pick, while the detach check tests the node independently.
+            bool vt_data = !ps.empty();
+            for (const auto& n : ps) {
+                if (!sdk::Modules::looks_like_vtable_pointer(n.vtable)) {
+                    vt_data = false;
+                }
+            }
+            json_append_bool(out, "dg_node_vtables_in_data", vt_data);
+            // THE SUBJECTS: who publishes what these objects react to.
+            const auto csub = sdk::Delegates::subscribed_subjects(subs->player_camera, 6342);
+            json_append_double(out, "dg_camera_subjects", static_cast<double>(csub.size()), 0);
+            json_append_bool(out, "dg_subjects_bounded", csub.size() <= ps.size());
+            json_append_bool(out, "dg_empty_refused",
+                             sdk::Delegates::owned_nodes(0, 2220).empty() &&
+                                 sdk::Delegates::owned_nodes(subs->controller, 4).empty());
+        }
+    }
+
     // THE PLAYER'S THREE CAMERA SUB-OBJECTS. Generalising last pass's lesson: establish each pointer's class before
     // reading offsets off it, and prefer an exact structural identity where one exists.
     const auto subs = sdk::PlayerMgr::camera_sub_objects(0);

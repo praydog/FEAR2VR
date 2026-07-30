@@ -6098,3 +6098,48 @@ class CPlayerCamera 0x18C6 {
 // controller_class_matches / physics_holder_class_matches.
 //
 // 1234 checks, 0 failures.
+
+// ---- A REDISCOVERY, A DESTROYED FILE, AND ONE REAL FINDING --------------------------------------
+//
+// Scanning the player object for sub-object pointers reported the movement controller FOURTEEN times -- at +236,
+// then at a 20-byte stride from +3740. Fourteen controllers is absurd, so the stride was the finding: those were
+// owner back-pointers from an embedded array of delegate nodes.
+//
+// THAT WAS ALREADY MAPPED. shared/sdk/Delegates.hpp holds it, derived properly by reading the shared
+// Delegate_Detach body (gameclient 0x100EE9F0) rather than from spacing. This pass wrote a new file over it and
+// had to restore it from git. See MAPPING_WORKFLOW.MD; the rule earned is "grep the SDK before adding a class,
+// and never write a path you have not read".
+//
+// AND THE STRIDE-DERIVED LAYOUT WAS 4 BYTES OUT OF PHASE. Matching "a field equal to the object, then a data
+// pointer 8 bytes later" finds real nodes at the wrong base: the match is owner (+0x0C) and the pointer 8 bytes
+// on is THE NEXT NODE'S vtable. Measured consequences:
+//
+//                      stride-derived      validated (slot 2 == Delegate_Detach)
+//     controller       12 nodes, +12       13 nodes, +8..+248
+//     CPlayerCamera     8 nodes, +20        8 nodes, +16..+156
+//     physics holder   13 nodes, +20       14 nodes, +16..+276
+//
+// The last node of each array was missed because it has no successor whose vtable it could borrow. CPlayerCamera
+// agreed by luck -- another data pointer follows its array.
+//
+// > The one genuine cross-validation survives: an early pass read CPlayerCamera's CONSTRUCTOR and counted EIGHT
+// > sinks with secondary vtables at +0x10 and +0x24. The validated live scan finds EIGHT at +16..+156, and +16 is
+// > that +0x10. Two routes, no shared assumptions, one number.
+//
+// All three arrays are fully ATTACHED live (every subject non-null) with all vtables DISTINCT, so the counts are
+// event counts: the controller reacts to 13, CPlayerCamera to 8 from 8 distinct publishers, the holder to 14.
+//
+// THE REAL FINDING OF THE PASS is the predicate the scan lacked. Testing "does the first dword point into
+// gameclient" admits FUNCTION pointers: 137 of the 205 slots were those, 84 of them at two addresses whose
+// "slot 0" read 0xC7F18B56 -- the x86 bytes 56 8B F1 C7, a prologue. Vtables live in data sections, functions in
+// code, and in gameclient the ranges are disjoint (.text ends +0x1C1000, first vtable +0x1C141C). Corrected: 68
+// slots over 40 objects.
+//
+// Added: sdk::Modules::section_of / looks_like_vtable_pointer / object_has_vtable, parsed from mapped PE section
+// headers; and to the EXISTING Delegates class, the dual of its subject-side walk --
+// owned_nodes / nodes_are_contiguous / subscribed_subjects, answering what an object subscribes TO.
+//
+// The player object itself has no vtable, which Delegates.hpp already explained: it opens with 21 channel heads,
+// so its first dword is a link's prev. Now asserted live rather than noted.
+//
+// 1255 checks, 0 failures.
