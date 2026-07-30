@@ -265,6 +265,14 @@ inject → test → uninject with the game never restarting.
      Use it for *what a thing is probably called*. Never for a layout, a size,
      a field order, or a member's existence. When it disagrees with the binary,
      the binary is right and the divergence goes in the `.genny` comment.
+9a. **ReGenny codegen is BROKEN -- do not plan on regenerating.** `regenny.sdk()` (the Lua entry
+    Phase 4 uses) crashes ReGenny with no error, reproducibly, on the unmodified schema; the UI
+    path survives only because `action_generate_sdk` null-checks `m_sdk` and the binding does not.
+    So `shared/sdk/regenny/` is frozen: keep editing `fear2.genny` (it is the evidence record and
+    the source of truth), but do not rename a generated field anything CONSUMES, and declare a
+    genuinely-needed new type in the SDK beside a `static_assert` on its size plus a comment
+    naming the schema class it mirrors (`sdk::NodeControlCell`). Full diagnosis in
+    `reversing/MAPPING_WORKFLOW.MD`.
 10. **Build system is cmkr.** Edit `cmake.toml`, never `CMakeLists.txt`
     (regenerated). cmkr skips regeneration when `CI` is set in the environment;
     `build.bat` clears it — beware when invoking cmake by hand. cmkr expands

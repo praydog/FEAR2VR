@@ -4813,3 +4813,33 @@ and the next skeleton evaluation after unmap calls freed memory. `BoneControl::o
 unlinks it, and the suite now leaves a callback registered ON PURPOSE across the uninject, exactly
 as it already does with a hardware watch. Verified: module unmapped cleanly, game alive, re-inject
 fresh, hand and muzzle back at their original coordinates to the decimal.
+
+## BLOCKED: Phase 4 codegen crashes ReGenny (`regenny.sdk()` has no null guard)
+
+Phase 4 of this document says to run `sdk:generate("shared/sdk/regenny")` in a Lua eval. **That
+call currently takes ReGenny down**, every time, and produces nothing.
+
+Isolated rather than assumed:
+
+- `regenny.sdk` is a FUNCTION, not the `sdk` global the checklist implies -- `sdk:generate(...)`
+  fails with "attempt to index a nil value (global 'sdk')" before anything happens.
+- `regenny.sdk()` **kills the process**. It dies before the next `print` returns, with no Lua
+  error, so the MCP call surfaces only "An error occurred invoking".
+- It is NOT caused by any schema change. Reproduced against the UNMODIFIED schema restored from
+  `git show HEAD:reversing/fear2.genny`, on a freshly launched instance, with no file open and
+  with the file open, with and without `header_extension`/`source_extension` set first.
+- The UI path does not crash because it guards: `ReGenny::action_generate_sdk` opens with
+  `if (m_sdk == nullptr) return;`. The Lua binding has no equivalent.
+
+Consequence, and what to do about it:
+
+- The `.genny` remains the source of truth and keeps being edited -- it is where the evidence
+  lives, and a stale generated header does not make a finding less true.
+- Generated headers under `shared/sdk/regenny/` are FROZEN until this is fixed. A field RENAME in
+  the schema will not reach them, so check whether anything consumes the old name before making
+  one. (`LTModelBlock120.unk_00` -> `node_control_heads` was safe: nothing referenced it.)
+- Anything that genuinely needs a new generated type declares it in the SDK instead, beside a
+  `static_assert` on its size and a comment naming the schema class it mirrors, so the two cannot
+  drift silently. `sdk::NodeControlCell` is the worked example.
+- The fix, for whoever has ReGenny in a debugger: null-check `m_sdk` in the Lua `sdk()` binding the
+  same way the menu action does.
