@@ -583,6 +583,17 @@ public:
         // parent_offset, world_tree_link AND that header field at once, and it
         // needs no recorded baseline -- the engine supplies both sides.
         uintptr_t bsp_root;      // LTWorldClientBSP.world_tree_root, 0 if unavailable
+
+        // WHICH FAILURE, when there was one. The walk used to collapse "the image range is unknown", "a
+        // read faulted" and "the list did not terminate" into a single nullopt, and the test that consumed
+        // it said so out loud: "null == faulted or no exe range". A level where this fires then leaves you
+        // guessing between three unrelated causes. It is one bool and one index to say which.
+        bool completed;          // false when a list spine faulted
+        size_t object_faults;    // objects whose OWN contents faulted and were stepped over
+        uintptr_t first_fault;   // the first such object, so it can be looked at rather than guessed about
+        bool hit_cap;            // the walk stopped on its iteration cap rather than reaching the head
+        size_t faulted_list;     // which object list index stopped it, when !completed
+        size_t lists_walked;     // how many completed before that
         bool root_matches_bsp;   // the climbed root equals it
     };
 

@@ -79,6 +79,17 @@ def inject(injector, wait_s, port):
     return False
 
 
+def is_ready(sp):
+    """Test-ready means the world is up AND TIME IS PASSING.
+
+    `ws_world_ready` alone is not enough, and treating it as enough is what let this script report success
+    while the game sat on the load screen's "press to continue" prompt with the engine clock paused. Every
+    frame-dependent check downstream -- the head-tracking probe, the in-phase samplers, the pass census --
+    measures nothing in that state and fails in ways that look like code faults.
+    """
+    return bool(sp.get("ws_world_ready")) and not sp.get("eng_clock_paused", True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--injector", default="build/bin/injector.exe")
@@ -103,8 +114,8 @@ def main():
             return 1
 
     sp = try_get(args.port, "/sdk/shader-params") or {}
-    if sp.get("ws_world_ready"):
-        print("[resume] already in-world -- nothing to do")
+    if is_ready(sp):
+        print("[resume] already in-world and running -- nothing to do")
         return 0
 
     if not sp.get("ws_world_loaded"):
@@ -131,11 +142,15 @@ def main():
         try_get(args.port, "/input/tap?vk=%d&frames=4" % VK_SPACE)
         time.sleep(2)
         sp = try_get(args.port, "/sdk/shader-params") or {}
-        if sp.get("ws_world_ready"):
-            print("[resume] in-world: %s" % (sp.get("world_name") or "(unnamed)"))
+        if is_ready(sp):
+            print("[resume] in-world and running: %s" % (sp.get("world_name") or "(unnamed)"))
             return 0
 
-    print("[resume] world loaded but never became ready -- check the screen")
+    sp = try_get(args.port, "/sdk/shader-params") or {}
+    if sp.get("ws_world_ready"):
+        print("[resume] FAILED: in-world but the clock is still paused -- the prompt was never dismissed")
+    else:
+        print("[resume] world loaded but never became ready -- check the screen")
     return 1
 
 

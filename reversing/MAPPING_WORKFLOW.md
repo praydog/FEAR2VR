@@ -4658,3 +4658,44 @@ That is the answer to "can the HUD be drawn twice": **not by replaying one call.
 the scene because `DrawScene` is a single entry that can be re-issued; the HUD is a list of elements each
 with its own virtual draw, so duplicating it means driving that list again. Moving the HUD is a different
 question and is already solved.
+
+## A speculative dereference that hid 2065 working objects
+
+A level where the world-tree walk returned `null` looked like a level-specific quirk. The test that consumed
+it said `null == faulted or no exe range` -- three unrelated causes collapsed into one value, which is
+exactly enough ambiguity to make the failure unactionable. Splitting them apart took one bool.
+
+With the reason visible: the walk faulted on **list 0, object 18**, deterministically, after having already
+validated 13 objects AND matched the BSP header's root address by two independent routes. So the mapping was
+right and the walk was fragile.
+
+**The mechanism.** To decide whether a link-list element is an object's `world_tree_link` or the node's own
+head, the only available test is to look where an object's vtable would be -- `0xC4` below the element -- and
+ask whether it points into the exe. When the element really IS a node head, that address is `0xC4` below a
+node. For the node at `root+0x30`, it lands below the tree's allocation and is unmapped. A raw dereference
+faulted; the fault propagated out of the SEH guard wrapping the ENTIRE walk; the whole report was discarded.
+
+Two fixes, both structural:
+
+- **Guard each object's contents separately.** The list spine stays under the outer guard, but one bad object
+  is now counted and stepped over instead of erasing everything gathered before it. Also separates "hit the
+  iteration cap" from "faulted", which were the same `-1`.
+- **Read the speculative candidate with `mem::read` instead of dereferencing it.** An unreadable candidate is
+  not an object -- that is the answer the test wanted, and the guarded read supplies it without faulting.
+
+```
+before   linked 2078   node_found   13   root_reached   13   faults 201   completed false
+after    linked 2078   node_found 2078   root_reached 2078   faults   0   completed true
+```
+
+Every linked object now finds its node, climbs to the same root with `occupied_count` never decreasing, and
+that root is the one the BSP header stores. The strong invariants had been in the suite all along, sitting
+behind a null that never let them run.
+
+## `resume_game.py` reported a state the tests cannot use
+
+The recovery loop printed `in-world` and exited 0 while the engine clock was PAUSED at the load screen's
+"press to continue". Every frame-dependent check downstream -- the head-tracking probe, the in-phase
+samplers, the pass census -- then measured a stopped world and failed in ways that read like code faults.
+`ws_world_ready` is not readiness; readiness is `ws_world_ready AND NOT eng_clock_paused`. The early-exit
+path was the worse half: it skipped the Space tap entirely on the grounds that the world was already up.

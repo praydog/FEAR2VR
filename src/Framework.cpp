@@ -2245,10 +2245,14 @@ std::string build_objects_json() {
                  "{\"objects_seen\":%zu,\"linked\":%zu,\"unlinked\":%zu,\"node_found\":%zu,"
                  "\"root_reached\":%zu,\"counts_monotonic\":%zu,\"root_mismatches\":%zu,"
                  "\"root\":\"0x%08" PRIXPTR "\",\"max_depth\":%zu,"
-                 "\"bsp_root\":\"0x%08" PRIXPTR "\",\"root_matches_bsp\":%s}",
+                 "\"bsp_root\":\"0x%08" PRIXPTR "\",\"root_matches_bsp\":%s,"
+                 "\"completed\":%s,\"faulted_list\":%zu,\"lists_walked\":%zu,"
+                 "\"object_faults\":%zu,\"first_fault\":\"0x%08" PRIXPTR "\",\"hit_cap\":%s}",
                  wt->objects_seen, wt->linked, wt->unlinked, wt->node_found, wt->root_reached,
                  wt->counts_monotonic, wt->root_mismatches, wt->root, wt->max_depth,
-                 wt->bsp_root, wt->root_matches_bsp ? "true" : "false");
+                 wt->bsp_root, wt->root_matches_bsp ? "true" : "false",
+                 wt->completed ? "true" : "false", wt->faulted_list, wt->lists_walked,
+                 wt->object_faults, wt->first_fault, wt->hit_cap ? "true" : "false");
         out += wb;
     } else {
         out += "null";

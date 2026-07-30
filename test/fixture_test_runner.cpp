@@ -2583,7 +2583,10 @@ int main(int argc, char** argv) {
             check(wp != std::string::npos, "objects report includes the world-tree check");
             if (wp != std::string::npos) {
                 if (json_has(body, "\"world_tree\":null")) {
-                    check(false, "world-tree walk completed (null == faulted or no exe range)");
+                    // Now reachable ONLY when the exe image range is unknown. A faulting object no longer
+                    // erases the report: each object's contents are guarded individually, and the walk says
+                    // how many it had to step over.
+                    check(false, "world-tree walk produced a report (null == the exe range is unmapped)");
                 } else {
                     const size_t end = body.find('}', wp);
                     const std::string wb = body.substr(wp, end - wp + 1);
@@ -2599,6 +2602,19 @@ int main(int argc, char** argv) {
                     json_int(wb, "max_depth", depth);
 
                     check(seen > 0, "objects present to walk the world tree from");
+                    // THE WALK FINISHED, which used to be assumed rather than asserted. One object whose
+                    // link chain left readable memory aborted the whole thing and reported nothing, and the
+                    // old message admitted it could not tell that from a missing image range.
+                    bool completed = false, hit_cap = true;
+                    int64_t faults = -1;
+                    check(json_bool(wb, "completed", completed) && completed,
+                          "the walk reached the end of every object list rather than stopping partway");
+                    check(json_int(wb, "object_faults", faults) && faults == 0,
+                          "and no object's link chain had to be stepped over -- a speculative object base "
+                          "computed from a NODE head used to fault here, 201 times in one level");
+                    check(json_bool(wb, "hit_cap", hit_cap) && !hit_cap,
+                          "and it terminated by returning to the list head, not by exhausting its cap");
+
                     // Linked/unlinked is a partition, and BOTH sides must be
                     // populated for the same reason the radius states must be:
                     // a broken link offset would read self-pointing garbage and

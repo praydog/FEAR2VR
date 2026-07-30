@@ -1355,6 +1355,12 @@ int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uint
             if (seen < max) {
                 const auto* o = reinterpret_cast<const regenny::LTObject*>(
                     reinterpret_cast<uintptr_t>(cur) - offsetof(regenny::LTObject, list_link));
+                // PER-OBJECT GUARD. One object whose link chain leaves readable memory used to abort the
+                // whole walk and erase every result with it -- measured: in one level object 18 of list 0
+                // faults, and the report came back empty even though the 17 before it had already agreed
+                // with the BSP header's root. The spine is walked under the outer guard; the CONTENTS of
+                // each object get their own, so a bad one is counted and stepped over.
+                const bool object_ok = sdk::mem::guarded([&] {
                 const auto* link = &o->world_tree_link;
 
                 if (link->next == link) {
@@ -1362,14 +1368,24 @@ int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uint
                 } else {
                     ++out->linked;
                     // Find the node head: the one element that is not <object>+0xC4.
+                    //
+                    // THE CANDIDATE ADDRESS IS SPECULATIVE, and that is the whole difficulty. To ask "is
+                    // this element an object's link or the node's own head?" the only available test is to
+                    // look at where an object's vtable would be -- 0xC4 BELOW the element. When the element
+                    // really is a node head, that address is 0xC4 below a node, and for a node near the
+                    // start of the tree's allocation it is outside it entirely.
+                    //
+                    // Measured: 201 objects in one level link to a node at root+0x30, whose speculative
+                    // object base lands below the root and is unmapped. A raw dereference there faulted and
+                    // (before the per-object guard) took the entire walk with it. A guarded read answers the
+                    // same question and treats an unreadable candidate as what it is: not an object.
                     const regenny::LTWorldTreeLink* e = link->next;
                     const regenny::LTWorldTreeNode* node = nullptr;
                     for (size_t steps = 0; e != link && steps < cap; ++steps) {
                         const auto cand = reinterpret_cast<uintptr_t>(e) -
                                           offsetof(regenny::LTObject, world_tree_link);
-                        const uintptr_t vt =
-                            *reinterpret_cast<const uintptr_t*>(cand); // vtable slot of a candidate
-                        if (vt < img_base || vt >= img_base + img_size) {
+                        const auto vt = sdk::mem::read<uintptr_t>(cand);
+                        if (!vt.has_value() || *vt < img_base || *vt >= img_base + img_size) {
                             node = reinterpret_cast<const regenny::LTWorldTreeNode*>(e);
                             break;
                         }
@@ -1409,12 +1425,24 @@ int64_t seh_check_tree(const regenny::CClientMgrListLink* head, size_t max, uint
                         }
                     }
                 }
+                });
+                if (!object_ok) {
+                    ++out->object_faults;
+                    if (out->first_fault == 0) {
+                        out->first_fault = reinterpret_cast<uintptr_t>(o);
+                    }
+                }
                 ++seen;
             }
             ++n;
             cur = cur->next;
         }
-        result = (cur == head) ? static_cast<int64_t>(seen) : -1;
+        // The cap is non-termination, which is a different fact from a fault and deserves to survive as
+        // one rather than being folded into the same -1.
+        if (cur != head) {
+            out->hit_cap = true;
+        }
+        result = static_cast<int64_t>(seen);
     });
     if (!ok) {
         result = -1;
@@ -1430,12 +1458,18 @@ std::optional<CClientMgr::WorldTreeCheck> CClientMgr::check_world_tree(size_t ma
         return std::nullopt; // cannot classify list elements without the image range
     }
     WorldTreeCheck out{};
+    out.completed = true;
     for (size_t t = 0; t < object_list_count(); ++t) {
         const int64_t n = seh_check_tree(&regenny()->object_lists[t], max_objects, exe->base,
                                         exe->size, &out, max_object_walk);
         if (n < 0) {
-            return std::nullopt;
+            // REPORT the stall rather than erasing the whole result. Everything gathered before this list
+            // is still true, and which list stopped it is the first thing a reader wants.
+            out.completed = false;
+            out.faulted_list = t;
+            break;
         }
+        out.lists_walked = t + 1;
         out.objects_seen += static_cast<size_t>(n);
     }
     // Compare the root we climbed to against the one the engine stores. Two
