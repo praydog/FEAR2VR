@@ -7,9 +7,19 @@
 
 // ILTPhysics, the engine's client-side physics interface -- CLTPhysicsClient, 18 slots, all accounted for.
 //
-// WHY A VR MOD CARES: this is where the player's velocity, acceleration and movement live. Locomotion has
-// to reconcile the headset's motion with the character's, and reading what the engine already thinks the
-// player is doing is the cheapest way in -- far cheaper than hooking the movement code.
+// WHY A VR MOD CARES: this is where objects' velocity, acceleration and movement live, and locomotion has to
+// reconcile the headset's motion with the character's.
+//
+// BUT NOT FOR THE PLAYER, AND THIS HEADER USED TO SAY OTHERWISE. It advised reading what the engine "already
+// thinks the player is doing" as the cheap way in. The engine thinks nothing: gameclient's per-frame player
+// update brackets its seven subsystem updaters with THREE calls that store a ZERO vector --
+// SetAcceleration before, then SetVelocity and SetAcceleration after -- so velocity() and acceleration() on a
+// local player read zero no matter what the player is doing. The stores are unconditional: the caller pushes
+// `fldz` into a stack triple and passes its address, with no branch. See velocity_zeroed_by_game() below and
+// kPlayerUpdateDispatcher for the call site.
+//
+// The game owns the player's motion and drives the object directly; the engine's integrator is deliberately
+// starved for it. A consumer wanting player motion reads the game-side movement state, not this.
 //
 // HOW THE SLOT MAP WAS ESTABLISHED, because half of it is worth more than the other half:
 //
@@ -102,6 +112,21 @@ public:
 
     // LT_OK is 0; the LT_YES/LT_NO pair this build uses for booleans is 0x56/0x57, which is how
     // IsWorldObject reports its answer rather than through a bool return.
+    // ---- IS A VELOCITY READING A MOTION SOURCE? ---------------------------------------
+    //
+    // True when this engine object is a LOCAL PLAYER's, whose velocity and acceleration gameclient zeroes every
+    // frame (see the note at the top of this header). A consumer should ask before believing a zero: for a
+    // player it means "the game drives this", not "it is not moving".
+    //
+    // False for every other object AND when the answer cannot be determined -- gameclient absent, no player
+    // resolved. That direction is deliberate: it never claims an object IS zeroed without having matched it
+    // against a resolved local player.
+    static bool velocity_zeroed_by_game(uintptr_t engine_object);
+
+    // The gameclient-relative dispatcher that does the zeroing, so a consumer can read or hook it. It runs the
+    // player's seven per-frame subsystem updates between the stores.
+    static constexpr uintptr_t kPlayerUpdateDispatcher = 0x10D0A0;
+
     static constexpr int32_t kLtOk = 0;
     static constexpr int32_t kLtYes = 0x56;
     static constexpr int32_t kLtNo = 0x57;

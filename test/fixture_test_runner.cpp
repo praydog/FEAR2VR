@@ -4509,6 +4509,60 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE PLAYER'S PHYSICS TARGET, AND WHY IT IS NOT THE SHELL'S OBJECT -----------------
+            //
+            // gameclient's per-frame player update reaches an LTObject as *(*(player + 260) + 320) and hands it
+            // to ILTPhysics. What LICENSES those offsets is a class-identity invariant, not their plausibility:
+            // the player's movement controller sits at player[59] and points back at its owner at +0x04, which is
+            // how the update path's object is known to be the same class PlayerMgr hands out.
+            bool pe_cr = false, pe_coa = false, pe_res = false, pe_rmg = false;
+            check(json_bool(body, "pe_controller_resolved", pe_cr) && pe_cr,
+                  "the player's movement controller resolves");
+            check(json_bool(body, "pe_controller_owner_agrees", pe_coa) && pe_coa,
+                  "the controller points back at its owner -- the invariant the offsets rest on");
+            check(json_bool(body, "pe_resolved", pe_res) && pe_res,
+                  "the physics target resolves through the game's own two loads");
+            // Raw field reads at +144/+156 must equal what the interface getters return. That is what establishes
+            // those offsets: two paths to the same six floats, one through the engine's vtable.
+            check(json_bool(body, "pe_raw_matches_getters", pe_rmg) && pe_rmg,
+                  "the velocity and acceleration fields agree with the engine's own getters");
+
+            // THE TWO PLAYER OBJECTS ARE DIFFERENT, and this is the fact a consumer most needs. Both are kind 1
+            // with player dims, but the physics target carries NO handle and NO slot index while the shell's
+            // carries both. An unregistered object cannot be passed to any handle-taking ILT* entry point.
+            bool pe_rd = false, pe_reg = false, pe_md = false, pe_shell = false;
+            check(json_bool(body, "pe_registered_determinable", pe_rd) && pe_rd,
+                  "whether the physics target is registered is answerable");
+            check(json_bool(body, "pe_match_determinable", pe_md) && pe_md,
+                  "whether it is the shell's object is answerable");
+            json_bool(body, "pe_is_registered", pe_reg);
+            json_bool(body, "pe_is_shell_object", pe_shell);
+            // THE LOGICAL INVARIANT, not a state lock: the shell's local player comes out of the engine's handle
+            // table, so it is registered by construction. An unregistered physics target therefore CANNOT be it,
+            // and the two independent readings must not contradict each other.
+            check(!(pe_reg == false && pe_shell == true),
+                  "an unregistered physics target is never reported as the shell's registered object");
+            // The current build's measured state, recorded so a change is visible rather than silent. If these
+            // ever coincide, the guidance in PlayerMgr.hpp about which object to use has to change.
+            check(pe_rd && pe_reg == false,
+                  "on this build the physics target carries neither handle nor slot index");
+            check(pe_md && pe_shell == false,
+                  "on this build the physics target and the shell's local player are different objects");
+
+            // THE ZEROING. The update path stores a zero vector into both fields three times a frame,
+            // unconditionally -- so a zero reading on a player means "the game drives this", not "it is still".
+            bool pe_vz = false, pe_az = false, pe_zp = false, pe_pr = false, pe_rr = false;
+            check(json_bool(body, "pe_velocity_zero", pe_vz) && pe_vz,
+                  "the physics target's velocity reads zero, as the unconditional stores require");
+            check(json_bool(body, "pe_acceleration_zero", pe_az) && pe_az,
+                  "its acceleration reads zero for the same reason");
+            check(json_bool(body, "pe_zeroed_predicate", pe_zp) && pe_zp,
+                  "the SDK identifies it as an object whose motion the game zeroes");
+            check(json_bool(body, "pe_predicate_refuses_other", pe_pr) && pe_pr,
+                  "a null and an unmapped address are not claimed to be zeroed players");
+            check(json_bool(body, "pe_range_refused", pe_rr) && pe_rr,
+                  "an out-of-range slot yields nothing rather than slot zero's answer");
+
             // ---- THE CAMERA'S CACHED TUNABLES, AND THE HEAD-BOB GRID -------------------------------
             //
             // The camera resolves 67 console variables once and caches each as a {record, owner} pair, so it

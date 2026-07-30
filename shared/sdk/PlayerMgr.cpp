@@ -6,6 +6,8 @@
 
 #include "Memory.hpp"
 #include "Modules.hpp"
+#include "CClientShell.hpp"
+#include "Object.hpp"
 
 namespace sdk {
 
@@ -323,6 +325,69 @@ std::optional<bool> PlayerMgr::camera_rotation_matches_pose(unsigned index) {
         }
     }
     return true;
+}
+
+
+std::optional<uintptr_t> PlayerMgr::engine_object(unsigned index) {
+    const auto p = slot(index);
+    if (!p.has_value() || *p == 0) {
+        return std::nullopt;
+    }
+    const auto holder = mem::read_ptr(*p + kEngineHolderField);
+    if (!holder.has_value() || *holder == 0) {
+        return std::nullopt;
+    }
+    const auto object = mem::read_ptr(*holder + kEngineObjectField);
+    if (!object.has_value() || *object == 0) {
+        return std::nullopt;
+    }
+    return *object;
+}
+
+std::optional<bool> PlayerMgr::engine_object_is_shell_object(unsigned index) {
+    const auto mine = engine_object(index);
+    const auto theirs = CClientShell::local_player(index);
+    if (!mine.has_value() || !theirs.has_value() || theirs->object == nullptr) {
+        return std::nullopt;
+    }
+    return *mine == reinterpret_cast<uintptr_t>(theirs->object);
+}
+
+std::optional<uintptr_t> PlayerMgr::movement_controller(unsigned index) {
+    const auto p = slot(index);
+    if (!p.has_value() || *p == 0) {
+        return std::nullopt;
+    }
+    const auto ctrl = mem::read_ptr(*p + kControllerField);
+    if (!ctrl.has_value() || *ctrl == 0) {
+        return std::nullopt;
+    }
+    return *ctrl;
+}
+
+std::optional<bool> PlayerMgr::movement_controller_owner_agrees(unsigned index) {
+    const auto p = slot(index);
+    const auto ctrl = movement_controller(index);
+    if (!p.has_value() || !ctrl.has_value()) {
+        return std::nullopt;
+    }
+    const auto back = mem::read_ptr(*ctrl + kControllerOwnerField);
+    if (!back.has_value()) {
+        return std::nullopt;
+    }
+    return *back == *p;
+}
+
+std::optional<bool> PlayerMgr::engine_object_is_registered(unsigned index) {
+    const auto obj = engine_object(index);
+    if (!obj.has_value()) {
+        return std::nullopt;
+    }
+    const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(*obj));
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    return info->handle != 0xFFFF && info->slot_index != 0xFFFFFFFFu;
 }
 
 }  // namespace sdk

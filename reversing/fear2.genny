@@ -5359,3 +5359,63 @@ class LTInputDeviceMouse 0x30 {
 // the WRITE path and restores it, since that is what a comfort layer actually does.
 //
 // 1099 checks, 0 failures.
+
+// ---- THE GAME STARVES THE ENGINE'S PHYSICS FOR THE PLAYER, AND THERE ARE TWO PLAYER OBJECTS -------
+//
+// Continuing the measured-target approach: the second self-naming function from the unnamed-function sweep
+// referenced CameraHeightVelocityDampUp, and following its ONE caller landed on the player's per-frame movement
+// update -- which turned out to say something a consumer must know.
+//
+//     ILTPhysics::SetAcceleration(engine_object, {0,0,0})     <- before
+//     seven subsystem updaters
+//     ILTPhysics::SetVelocity(engine_object, {0,0,0})
+//     ILTPhysics::SetAcceleration(engine_object, {0,0,0})     <- after
+//
+// The zero vector is `fldz` into a stack triple whose address is passed, with NO BRANCH: the stores are
+// unconditional, three per frame. So ILTPhysics::GetVelocity on a player reads zero WHATEVER THE PLAYER IS
+// DOING. The game owns the player's motion and deliberately starves the engine's integrator.
+//
+// THIS CONTRADICTED shared/sdk/Physics.hpp, which advised reading "what the engine already thinks the player is
+// doing" as the cheap way in -- "far cheaper than hooking the movement code". The engine thinks nothing. The
+// header is corrected and points at the call site.
+//
+// WHAT LICENSES THE OFFSETS IS A CLASS-IDENTITY INVARIANT, NOT THEIR PLAUSIBILITY. The update path reads
+// *(*(player + 260) + 320), and I first applied those offsets to PlayerMgr's player object without establishing
+// they were the same class -- exactly the mistake this project keeps paying for. What settles it: the movement
+// controller lives at player[59] and holds a BACK-POINTER to its owner at +0x04.
+//
+//     owner[59] = 0x1C6242C0    *(controller + 4) = 0x1C623438 = PlayerMgr::slot(0)     -- holds live
+//
+// THE CHECK THEN FAILED, AND THE FAILURE WAS THE FINDING. I expected the physics target to be CClientShell's
+// local-player object and asserted so; it is not:
+//
+//                     physics target      CClientShell::local_player(0)
+//     kind            1                   1
+//     dims.y          95.0                95.0
+//     handle          0xFFFF (none)       7394
+//     slot_index      0xFFFFFFFF (none)   3458
+//
+// TWO PLAYER-SHAPED OBJECTS, and the game's is UNREGISTERED -- among the 335 of 3583 that object_info records
+// with neither handle nor slot index. It therefore cannot be passed to any handle-taking ILT* entry point; the
+// update path only ever uses it as a raw LTObject*, which is all SetVelocity needs since it writes fields
+// directly.
+//
+// > A green check would have hidden this. The assertion was written expecting agreement, it disagreed, and the
+// > honest response was to characterise both objects rather than pick the one that made the test pass. What is
+// > asserted now is the LOGICAL invariant -- the shell's object comes from the handle table, so an unregistered
+// > target can never be it -- plus the measured state, so a future coincidence is visible instead of silent.
+//
+// Field offsets established by two paths agreeing: velocity at +144 and acceleration at +156 read raw match what
+// the engine's own vtable getters return, and CLTPhysicsClient_SetVelocity/SetAcceleration are the writers (both
+// also OR 0x20 into the uint16 at +70).
+//
+// NAMED IN IDA: PlayerMovement_UpdateWithPhysicsZeroed, PlayerPhysics_EngineObject,
+// PlayerMovement_UpdateAirAcceleration (from InAirAccelMultiplier) and PlayerMovement_UpdateCameraHeight (from
+// the camera-height damp variables). THE OTHER FIVE UPDATERS ARE COMMENTED BUT NOT RENAMED: they reference no
+// strings and their roles are unestablished, so naming them would be a guess.
+//
+// Exposed as sdk::PlayerMgr::movement_controller / movement_controller_owner_agrees / engine_object /
+// engine_object_is_registered / engine_object_is_shell_object, and sdk::Physics::velocity_zeroed_by_game with
+// kPlayerUpdateDispatcher for the call site.
+//
+// 1113 checks, 0 failures.

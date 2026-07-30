@@ -4548,6 +4548,98 @@ std::string build_shader_params_json() {
     json_append_double(out, "bt_role_game_to_flash", static_cast<double>(bt_role_g2f), 0);
     json_append_double(out, "bt_role_global", static_cast<double>(bt_role_glob), 0);
 
+    // THE BRIDGE FROM THE GAME'S PLAYER TO THE ENGINE'S OBJECT, and the physics state the game starves.
+    //
+    // Two routes that share nothing must name the same LTObject: the game's own two loads out of its player
+    // class, and CClientShell's per-frame resolved array. Then the claim that gameclient ZEROES that object's
+    // velocity and acceleration every frame is checked against the live fields.
+    const auto pe_obj = sdk::PlayerMgr::engine_object(0);
+    const auto pe_match = sdk::PlayerMgr::engine_object_is_shell_object(0);
+    const auto pe_ctrl = sdk::PlayerMgr::movement_controller(0);
+    const auto pe_back = sdk::PlayerMgr::movement_controller_owner_agrees(0);
+    const auto pe_reg = sdk::PlayerMgr::engine_object_is_registered(0);
+    json_append_bool(out, "pe_resolved", pe_obj.has_value() && *pe_obj != 0);
+    json_append_bool(out, "pe_is_shell_object", pe_match.has_value() && *pe_match);
+    json_append_bool(out, "pe_match_determinable", pe_match.has_value());
+    // THE CLASS-IDENTITY INVARIANT that licenses the offsets: the controller must point back at its owner.
+    json_append_bool(out, "pe_controller_resolved", pe_ctrl.has_value() && *pe_ctrl != 0);
+    json_append_bool(out, "pe_controller_owner_agrees", pe_back.has_value() && *pe_back);
+    json_append_bool(out, "pe_registered_determinable", pe_reg.has_value());
+    json_append_bool(out, "pe_is_registered", pe_reg.has_value() && *pe_reg);
+    if (pe_obj.has_value()) {
+        json_append_bool(out, "pe_zeroed_predicate", sdk::Physics::velocity_zeroed_by_game(*pe_obj));
+        // The engine's own getters, through the real vtable slots -- not a raw field read, so a wrong slot
+        // would show up rather than agreeing by construction.
+        const auto vel = sdk::Physics::velocity(*pe_obj);
+        const auto acc = sdk::Physics::acceleration(*pe_obj);
+        json_append_bool(out, "pe_velocity_readable", vel.has_value());
+        json_append_bool(out, "pe_acceleration_readable", acc.has_value());
+        const auto is_zero = [](const std::array<float, 3>& v) {
+            return v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f;
+        };
+        json_append_bool(out, "pe_velocity_zero", vel.has_value() && is_zero(*vel));
+        json_append_bool(out, "pe_acceleration_zero", acc.has_value() && is_zero(*acc));
+        // Reading the raw fields the setters write must agree with the interface getters -- two paths to the
+        // same six floats, which is what establishes the +144/+156 offsets rather than assuming them.
+        std::array<float, 3> raw_v{}, raw_a{};
+        bool raw_ok = true;
+        for (size_t i = 0; i < 3; ++i) {
+            const auto rv = sdk::mem::read<float>(*pe_obj + 144 + i * 4);
+            const auto ra = sdk::mem::read<float>(*pe_obj + 156 + i * 4);
+            if (!rv.has_value() || !ra.has_value()) { raw_ok = false; break; }
+            raw_v[i] = *rv;
+            raw_a[i] = *ra;
+        }
+        json_append_bool(out, "pe_raw_matches_getters",
+                         raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
+    }
+    // THE TWO ROUTES DISAGREE, so characterise both rather than picking one. Each object's kind, handle and
+    // dims say what it is; a consumer needs to know WHICH player object it is holding.
+    if (const auto shell_lp = sdk::CClientShell::local_player(0); shell_lp.has_value()) {
+        json_append_double(out, "pe_shell_object", static_cast<double>(
+                                                      reinterpret_cast<uintptr_t>(shell_lp->object)), 0);
+        json_append_double(out, "pe_shell_handle", static_cast<double>(shell_lp->handle), 0);
+        if (const auto si = sdk::object_info(shell_lp->object); si.has_value()) {
+            json_append_double(out, "pe_shell_kind", static_cast<double>(static_cast<int>(si->kind)), 0);
+            json_append_double(out, "pe_shell_slot_index", static_cast<double>(si->slot_index), 0);
+        }
+        if (const auto sd = sdk::object_dims(shell_lp->object); sd.has_value()) {
+            json_append_double(out, "pe_shell_dim_y", static_cast<double>(sd->y), 3);
+        }
+    }
+    if (pe_obj.has_value()) {
+        json_append_double(out, "pe_game_object", static_cast<double>(*pe_obj), 0);
+        const auto* go = reinterpret_cast<const regenny::LTObject*>(*pe_obj);
+        if (const auto gi = sdk::object_info(go); gi.has_value()) {
+            json_append_double(out, "pe_game_kind", static_cast<double>(static_cast<int>(gi->kind)), 0);
+            json_append_double(out, "pe_game_handle", static_cast<double>(gi->handle), 0);
+            json_append_double(out, "pe_game_slot_index", static_cast<double>(gi->slot_index), 0);
+        }
+        if (const auto gd = sdk::object_dims(go); gd.has_value()) {
+            json_append_double(out, "pe_game_dim_y", static_cast<double>(gd->y), 3);
+        }
+        // Is the game's object zeroed while the shell's is not? That would say the zeroing targets one of them
+        // specifically, which is the fact a consumer needs.
+        if (const auto shell_lp2 = sdk::CClientShell::local_player(0);
+            shell_lp2.has_value() && shell_lp2->object != nullptr) {
+            const auto sv = sdk::Physics::velocity(reinterpret_cast<uintptr_t>(shell_lp2->object));
+            json_append_bool(out, "pe_shell_velocity_zero",
+                             sv.has_value() && (*sv)[0] == 0.0f && (*sv)[1] == 0.0f && (*sv)[2] == 0.0f);
+            json_append_bool(out, "pe_shell_velocity_readable", sv.has_value());
+        }
+    }
+
+    // The predicate must not claim an arbitrary address is a zeroed player.
+    json_append_bool(out, "pe_predicate_refuses_other",
+                     !sdk::Physics::velocity_zeroed_by_game(0) &&
+                         !sdk::Physics::velocity_zeroed_by_game(0xDEAD0000));
+    // An out-of-range slot yields nothing rather than slot 0's answer.
+    json_append_bool(out, "pe_range_refused",
+                     !sdk::PlayerMgr::engine_object(9).has_value() &&
+                         !sdk::PlayerMgr::engine_object_is_shell_object(9).has_value() &&
+                         !sdk::PlayerMgr::movement_controller(9).has_value() &&
+                         !sdk::PlayerMgr::movement_controller_owner_agrees(9).has_value());
+
     // THE CAMERA'S CACHED TUNABLES. The claim under test is the GRID ORDERING, and the check is that a name
     // COMPOSED from (channel, axis, parameter) resolves through the console tables to the very record cached at
     // the slot the grid formula computes. A wrong channel or axis order still composes 60 valid names, so name

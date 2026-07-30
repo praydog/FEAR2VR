@@ -196,6 +196,58 @@ public:
     // field, and a liveness test for a consumer holding a cached camera.
     static std::optional<bool> camera_delegates_consistent(unsigned index);
 
+    // ---- THE PHYSICS TARGET, AND THE CLASS IDENTITY THAT LICENSES IT ----------------------
+    //
+    // Everything above is GAME-side: gameclient.dll's own player class. Its per-frame movement update is driven
+    // through a CONTROLLER held at player[59], and the controller points back at its owner at +0x04. That
+    // back-pointer is what licenses the offsets below: it proves the object this class hands out is the same
+    // class the update code operates on, rather than a plausible pointer the offsets were guessed against.
+    //
+    //     controller = *(player + 236)          and     *(controller + 4) == player
+    //
+    // Live that holds for the occupied slot. movement_controller_owner_agrees() is the check, and it is worth
+    // making before trusting any offset read out of the update path.
+    static constexpr uintptr_t kControllerField = 236;       // player[59]
+    static constexpr uintptr_t kControllerOwnerField = 0x04;  // back-pointer within the controller
+    static constexpr uintptr_t kEngineHolderField = 260;      // player[65]
+    static constexpr uintptr_t kEngineObjectField = 320;      // within that holder
+
+    // The player's movement controller. nullopt for an empty slot or a faulted read.
+    static std::optional<uintptr_t> movement_controller(unsigned index);
+
+    // Does the controller point back at this player? The invariant above, and a liveness check on the pair.
+    static std::optional<bool> movement_controller_owner_agrees(unsigned index);
+
+    // THE LTObject THE GAME PASSES TO ILTPhysics for this player, reached exactly as the update path reaches it:
+    // *(*(player + 260) + 320).
+    //
+    // IT IS NOT CClientShell's LOCAL-PLAYER OBJECT, and that surprised this project. Measured live, side by side:
+    //
+    //                       this route          CClientShell::local_player(0)
+    //     kind              1                   1
+    //     dims.y            95.0                95.0
+    //     handle            0xFFFF  (none)      7394
+    //     slot_index        0xFFFFFFFF (none)   3458
+    //
+    // Two player-shaped objects, and THIS ONE IS UNREGISTERED -- it carries neither an engine handle nor a slot
+    // index, putting it among the 335 of 3583 objects sdk::object_info records that way. So it cannot be used
+    // with any ILT* entry point that takes an HOBJECT; it can only be used as a raw LTObject*, which is exactly
+    // how the update path uses it (ILTPhysics::SetVelocity takes the pointer and writes fields directly).
+    //
+    // WHICH ONE A CONSUMER WANTS depends on the question. To affect what the game's own physics calls affect, or
+    // to read the fields the update path writes, use this. To go through a handle-taking engine API, use the
+    // shell's -- and see engine_object_is_registered() before assuming either.
+    static std::optional<uintptr_t> engine_object(unsigned index);
+
+    // Does the physics target carry an engine handle and slot index? Live this is FALSE, which is the point: a
+    // consumer that assumed otherwise would pass 0xFFFF to a handle-taking API.
+    static std::optional<bool> engine_object_is_registered(unsigned index);
+
+    // Is the physics target the same object CClientShell reports as the local player? Live this is FALSE. Kept as
+    // a question a consumer can ask rather than a fact to assume, because the answer is build- and state-
+    // dependent and getting it wrong silently targets the wrong object. nullopt when either side is unavailable.
+    static std::optional<bool> engine_object_is_shell_object(unsigned index);
+
     // The manager object, or 0 when gameclient.dll is not mapped. This is a POINTER variable in the DLL's
     // data, so the value is the object rather than the global's address.
     static uintptr_t manager();

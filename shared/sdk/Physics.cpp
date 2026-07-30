@@ -5,6 +5,7 @@
 #include "Memory.hpp"
 
 #include "Modules.hpp"
+#include "PlayerMgr.hpp"
 #include "Vtables.hpp"
 #include "interfaces/Registry.hpp"
 
@@ -165,6 +166,20 @@ std::optional<std::array<float, 3>> Physics::acceleration(uintptr_t object) {
 
 std::optional<std::array<float, 3>> Physics::object_dims(uintptr_t object) {
     return query_vector(Slot::GetObjectDims, object);
+}
+
+
+bool Physics::velocity_zeroed_by_game(uintptr_t engine_object) {
+    if (engine_object == 0) {
+        return false;
+    }
+    for (unsigned i = 0; i < PlayerMgr::kSlotCount; ++i) {
+        const auto obj = PlayerMgr::engine_object(i);
+        if (obj.has_value() && *obj == engine_object) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace sdk
