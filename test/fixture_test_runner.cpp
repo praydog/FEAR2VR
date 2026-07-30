@@ -8091,6 +8091,120 @@ int main(int argc, char** argv) {
             check(!json_has(body, "\"armed\":true"), "and no slot remains armed afterwards");
         }
 
+        // ---- THE FRAME BOUNDARY, WHICH IS WHERE A STEREO PATH ATTACHES ----------------------
+        //
+        // Found with an execute watchpoint on d3d9's Present (no player input needed), then read in IDA. These
+        // assert the CONSUMER API -- sdk::Render's named accessors -- rather than any address, because the
+        // addresses are what the mapping produces and the API is what a mod calls.
+        {
+            std::string rb;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                rb = http::body_of(resp);
+            }
+            bool have_device = false;
+            json_bool(rb, "rnd_device_present", have_device);
+            if (have_device) {
+                bool distinct = false, in_exe = false, fns_distinct = false;
+                check(json_bool(rb, "rnd_frame_slots_distinct", distinct) && distinct,
+                      "the device's Present/Reset/BeginScene/EndScene resolve to FOUR DIFFERENT functions -- a "
+                      "vtable read off the wrong base produces duplicates, which no real COM table does");
+                // The engine talks to the REAL runtime, not Steam's proxy. The overlay wraps the d3d9 FACTORY,
+                // so this distinction decides whether a stereo hook lands in front of or behind it.
+                check(json_has(rb, "\"rnd_present_owner\":\"d3d9.dll\""),
+                      "Present is implemented by d3d9.dll rather than an overlay proxy");
+
+                bool ep_ok = false, sb_ok = false, fence_ok = false;
+                check(json_bool(rb, "rnd_engine_present_ok", ep_ok) && ep_ok,
+                      "the ENGINE-side present (LTRenderer_PresentAndSync) resolves by pattern");
+                check(json_bool(rb, "rnd_swap_buffers_ok", sb_ok) && sb_ok,
+                      "CLTRenderer::SwapBuffers resolves -- the gate above it that can skip a frame entirely");
+                // Derived by DECODING the tail jump rather than a second signature, so this also proves that
+                // decode: a wrong displacement lands outside the image and fails the in-exe check below.
+                check(json_bool(rb, "rnd_gpu_fence_ok", fence_ok) && fence_ok,
+                      "the GPU fence wait resolves, decoded from the present function's tail jump");
+                check(json_bool(rb, "rnd_frame_fns_in_exe", in_exe) && in_exe,
+                      "all three engine frame functions lie inside FEAR2.exe's image");
+                check(json_bool(rb, "rnd_frame_fns_distinct", fns_distinct) && fns_distinct,
+                      "and they are three different functions");
+            }
+
+            // ---- THE HOOK ON IT, WHICH IS THE LIVE HALF -------------------------------------
+            //
+            // Static addresses do not prove a hook target is right; frames arriving through it do.
+            bool rh_hooked = false;
+            check(json_bool(rb, "rh_hooked", rh_hooked) && rh_hooked,
+                  "the frame boundary is hooked");
+            if (rh_hooked) {
+                double f1 = -1.0;
+                json_double(rb, "rh_frames", f1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                std::string rb2;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    rb2 = http::body_of(resp);
+                }
+                double f2 = -1.0;
+                json_double(rb2, "rh_frames", f2);
+                check(f2 > f1,
+                      "frames ARRIVE through the hook -- live proof the target is the real present path, which "
+                      "no static address check can give");
+
+                // THE GATE, MEASURED IN PHASE. CLTRenderer::SwapBuffers requires the renderer state to equal 1,
+                // and the detour reads it inside the frame it describes. Out of band the same word reads 4 with
+                // the window focused, which is why this claim can only be made from in there.
+                double not_one = -1.0, at_present = -1.0;
+                json_double(rb2, "rh_state_not_one", not_one);
+                json_double(rb2, "rh_state_at_present", at_present);
+                check(not_one == 0.0,
+                      "EVERY presented frame saw renderer state 1 when sampled inside the detour -- the gate "
+                      "the disassembly promised, measured in phase rather than across threads");
+                check(at_present == 1.0, "and the last sample agrees");
+            }
+
+            // ---- SYNTHETIC INPUT ------------------------------------------------------------
+            //
+            // The path a VR mod needs: controller state arrives from a runtime, not a window. Asserted through
+            // the public API (SyntheticInput::tap + the /input route), not by poking memory from the host.
+            bool si_kb = false, si_poll = false;
+            check(json_bool(rb, "si_keyboard_resolved", si_kb) && si_kb,
+                  "the keyboard device synthetic input targets is resolved");
+            check(json_bool(rb, "si_poll_hooked", si_poll) && si_poll,
+                  "the ILTInput device poll resolves -- the injection point, since Mods::on_frame does NOT run "
+                  "at the main menu while the poll does");
+            if (si_kb && si_poll) {
+                double before = -1.0;
+                json_double(rb, "si_taps_completed", before);
+                // VK_F24: a key no game binds, so the round trip is observable without doing anything.
+                if (http::get(port, "/input/tap?vk=135&frames=2", resp)) {
+                    check(json_has(http::body_of(resp), "\"ok\":true"), "a tap is accepted");
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                std::string rb3;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    rb3 = http::body_of(resp);
+                }
+                double after = -1.0;
+                json_double(rb3, "si_taps_completed", after);
+                check(after > before,
+                      "the tap COMPLETED -- press and release both ran through the engine's own entry points, "
+                      "which only happens if the poll detour is firing");
+
+                // REGRESSION: a latched button. An early version left the left mouse button held down in the
+                // engine's device array, where it survived uninjecting the mod -- and a latched button
+                // suppresses every later press edge. /input/release must clear BOTH banks.
+                if (http::get(port, "/input/release", resp)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                    std::string rb4;
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        rb4 = http::body_of(resp);
+                    }
+                    bool held = true;
+                    check(json_bool(rb4, "input_mouse_btn_l", held) && !held,
+                          "no mouse button is left latched after release -- clearing current alone did not "
+                          "work, because the poll re-shifts a stuck incoming bank every frame");
+                }
+            }
+        }
+
         // ---- THE ENGINE CLOCK, AND WHAT REALLY GATES IT --------------------------------------
         //
         // Mapped by pointing a write watch at the live millisecond field, reading the writer in IDA, and

@@ -124,6 +124,46 @@ public:
 
     static constexpr size_t kKeyStateCount = 256;
 
+    // ---- WRITING KEY STATE: the path that actually reaches this engine ------------------
+    //
+    // Feeding the engine input it did not get from the OS is the whole point of a VR mod -- controller state
+    // arrives from a runtime, not a window -- and on this build there is exactly one path that works.
+    //
+    // NOT the window-message queue. LTInput_QueueKeyDown's queue is only drained when
+    // LTInput_IsBufferedKeyInputActive() is true, and it is FALSE in normal play AND at the main menu
+    // (measured). Writes there accumulate and are never consumed. That is why key_queue_is_drained() exists,
+    // and why synthetic OS input does not drive this game: SendInput moves the cursor, and the menu highlight
+    // follows it, but no button or key ever arrives.
+    //
+    // What works is the DEVICE ARRAY the poll fills -- the same bytes key_is_down() reads.
+    //
+    // TIMING IS THE WHOLE TRICK, and it is already mapped. Per frame CClientMgr::Update polls the device array
+    // (slot 3, at 0x0040B75A) and THEN calls CClientShell::Update (0x0040B7AD). A write issued before the poll
+    // is overwritten by it; a write issued from the CClientShell::Update window survives to whoever reads the
+    // key that frame. So call this from a per-frame hook, not from the IPC thread -- from there it races the
+    // poll and lands about as often as it does not.
+    //
+    // `key_just_pressed(vk)` is current && !previous, so a consumer wanting an EDGE must hold the key for a
+    // frame and release it, which is what SyntheticInput's tap() does.
+    //
+    // Returns false when the keyboard device is not resolved or the write faulted.
+    static bool set_key_down(uint8_t vk, bool down);
+
+    // THE DEVICE POLL ITSELF -- ILTInput slot 3, the function that fills the device array every frame.
+    //
+    // CClientMgr::Update calls it as `(*(vtbl + 12))(g_pILTInput_Default)` at 0x0040B75A, __thiscall with no
+    // arguments, gated on `client_active && !buffered`.
+    //
+    // WHY A CONSUMER WANTS THE ADDRESS. It is the correct place to apply synthetic input: hook it, call the
+    // original, then write. Anything written before it is overwritten by it, and the per-frame mod hook is not
+    // an alternative -- Mods::on_frame runs off CClientShell::Update, which does NOT execute at the main menu
+    // (measured: frame_ticks delta 0 there while the present path ran at 281/s). The poll runs in both states.
+    //
+    // Resolved through the interface registry rather than a byte pattern, and deliberately NOT cached: the
+    // registry clears slots on APIRemoved, so a cached function address could outlive its interface. 0 when
+    // ILTInput is not resolved or the vtable read faulted.
+    static uintptr_t poll_fn();
+
     static std::optional<bool> key_is_down(uint8_t vk);
     static std::optional<bool> key_was_down(uint8_t vk);
     static std::optional<bool> key_just_pressed(uint8_t vk);
@@ -537,6 +577,40 @@ public:
     };
 
     static EntryPoints entry_points();
+
+    // ---- DRIVING THOSE ENTRY POINTS CORRECTLY ------------------------------------------
+    //
+    // The block above hands out addresses and says the SDK does not call them. These two do, because the note
+    // about which base each takes is a footgun with no upside: the button and key writers take a DEVICE while
+    // the move and wheel handlers take the ARRAY, and getting it backwards writes through a wrong base into
+    // live engine memory. A consumer should not have to re-derive that from a comment.
+    //
+    // These write the INCOMING bank -- the same one the real translator writes -- and the device poll shifts
+    // it into current on its next run. That layering is why they are preferable to writing the current state
+    // directly: the poll keeps doing its normal job, edge detection (`current && !previous`) falls out of the
+    // engine's own shift rather than being simulated, and there is no window in the frame where a write has to
+    // land to survive.
+    //
+    // THREAD AFFINITY. Call these from the game's own thread -- a frame hook or the poll detour -- not from
+    // the IPC thread. They mutate device state the engine reads without a lock.
+    //
+    // false when the device is unresolved or the entry point did not resolve.
+    static bool send_key(uint8_t vk, bool down);
+
+    // `button` is the engine's index: 0 left, 1 right, 2 middle -- the three banks at the mouse device's
+    // +0x04, which is what MouseState reports.
+    static bool send_mouse_button(uint8_t button, bool down);
+
+    // WRITES THE CURRENT BUTTON BANK DIRECTLY, bypassing the incoming/shift pipeline.
+    //
+    // send_mouse_button() is the right call for producing input. This one exists for the opposite job:
+    // CLEARING state that got stuck. A synthetic press whose release is lost latches a button down in the
+    // engine's own memory, where it survives uninjecting the mod entirely -- the device array belongs to
+    // FEAR2.exe, not to us -- and a latched button suppresses every later press edge.
+    //
+    // Learned by doing it: an early version of SyntheticInput left the left button held, and it read down
+    // across a fresh injection. Any consumer driving buttons needs a way back out, so it is public.
+    static bool set_mouse_button_state(uint8_t button, bool down);
 
     static std::vector<KeyEvent> pending_key_downs();
     static std::vector<KeyEvent> pending_key_ups();

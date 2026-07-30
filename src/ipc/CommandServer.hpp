@@ -138,6 +138,15 @@ using FocusKeepFn = std::function<std::string(const std::string& request_target)
 // the mod owns its own sub-routing. MUTATES nothing in the game's memory, but it does write the debug registers
 // of every thread, which is why it lives behind an explicit route rather than in a read-only report.
 using WatchFn = std::function<std::string(const std::string& request_target)>;
+
+// SYNTHETIC INPUT -- /input/tap, /input/hold, /input/release. MUTATES: it writes the engine's key state, which
+// is the only path that reaches this game (SendInput does not, and the window-message queue is not drained).
+using InputFn = std::function<std::string(const std::string& request_target)>;
+
+// THE GAME'S OWN CONSOLE -- /console/list and /console/run. MUTATES: run queues a real command handler to be
+// invoked on the game thread. This is the crash-recovery path (relaunch, inject, ask the game to reload)
+// as well as the general "trigger engine behaviour we have not reversed" lever.
+using ConsoleFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -157,6 +166,8 @@ struct Handlers {
     ViewOverrideFn view_override{};  // optional; /view-override 404s without it -- MUTATES the view, bounded
     FocusKeepFn focus_keep{};        // optional; /focus-keep 404s without it -- MUTATES the engine's focus gate
     WatchFn watch{};                 // optional; /watch/* 404s without it -- writes thread debug registers
+    InputFn input{};                 // optional; /input/* 404s without it -- MUTATES engine key state
+    ConsoleFn console{};             // optional; /console/* 404s without it -- MUTATES via command handlers
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

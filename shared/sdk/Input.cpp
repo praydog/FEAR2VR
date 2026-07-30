@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "Memory.hpp"
+#include "interfaces/ILTInput.hpp"
 #include "Modules.hpp"
 
 namespace sdk {
@@ -228,6 +229,74 @@ std::optional<Input::Device> Input::device(DeviceKind kind) {
 }
 
 // ---- keyboard ------------------------------------------------------------------------------------
+
+bool Input::send_key(uint8_t vk, bool down) {
+    const auto dev = device_address(DeviceKind::Keyboard);
+    const auto eps = entry_points();
+    if (!dev.has_value() || eps.keyboard_set_incoming_key == 0) {
+        return false;
+    }
+    // keyboard_set_incoming_key(keyboardDevice, int vk, int isDown, int lparam), __thiscall -> __fastcall with
+    // the edx placeholder. lparam is 0: the engine only uses it for the repeat/scan bits, which synthetic
+    // input has no meaningful value for.
+    using Fn = void(__fastcall*)(uintptr_t, uintptr_t, int, int, int);
+    reinterpret_cast<Fn>(eps.keyboard_set_incoming_key)(*dev, 0, static_cast<int>(vk), down ? 1 : 0, 0);
+    return true;
+}
+
+bool Input::set_mouse_button_state(uint8_t button, bool down) {
+    if (button >= 3) {
+        return false;
+    }
+    const auto dev = device_address(DeviceKind::Mouse);
+    if (!dev.has_value()) {
+        return false;
+    }
+    const uint8_t state = down ? 1 : 0;
+    return mem::store(*dev + kMouseButtons + button, &state, sizeof(state));
+}
+
+bool Input::send_mouse_button(uint8_t button, bool down) {
+    const auto dev = device_address(DeviceKind::Mouse);
+    const auto eps = entry_points();
+    if (!dev.has_value() || eps.mouse_set_incoming_button == 0) {
+        return false;
+    }
+    // mouse_set_incoming_button(mouseDevice, int button, char state) -- the DEVICE, not the array.
+    using Fn = void(__fastcall*)(uintptr_t, uintptr_t, int, char);
+    reinterpret_cast<Fn>(eps.mouse_set_incoming_button)(*dev, 0, static_cast<int>(button),
+                                                        static_cast<char>(down ? 1 : 0));
+    return true;
+}
+
+uintptr_t Input::poll_fn() {
+    auto* iface = interfaces::ILTInput::get();
+    if (iface == nullptr) {
+        return 0;
+    }
+    const auto self = reinterpret_cast<uintptr_t>(iface);
+    const auto vtable = mem::read<uint32_t>(self);
+    if (!vtable.has_value() || *vtable == 0) {
+        return 0;
+    }
+    // Slot 3: CClientMgr::Update reaches it as vtable + 12.
+    const auto entry = mem::read<uint32_t>(static_cast<uintptr_t>(*vtable) + 12);
+    if (!entry.has_value() || *entry == 0) {
+        return 0;
+    }
+    return static_cast<uintptr_t>(*entry);
+}
+
+bool Input::set_key_down(uint8_t vk, bool down) {
+    const auto dev = device_address(DeviceKind::Keyboard);
+    if (!dev.has_value()) {
+        return false;
+    }
+    // 1 rather than any non-zero value: the engine's own getter tests `== 1`, so anything else reads as up
+    // through its API while looking set in memory.
+    const uint8_t state = down ? 1 : 0;
+    return mem::store(*dev + kKbCurrent + vk, &state, sizeof(state));
+}
 
 std::optional<bool> Input::key_is_down(uint8_t vk) {
     const auto dev = device_address(DeviceKind::Keyboard);

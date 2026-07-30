@@ -149,6 +149,66 @@ public:
     // what protection IS, not a guarantee about what it will be.
     static std::optional<bool> device_vtable_writable();
 
+    // ---- THE DEVICE'S METHODS, WHICH IS WHAT A STEREO PATH ACTUALLY HOOKS ------------
+    //
+    // device_vtable() hands out the TABLE; this hands out an entry in it. A VR mod does not want the table
+    // address, it wants "where does Present live so I can intercept the frame boundary" -- and computing that
+    // from the table means every caller re-does the same guarded read with its own idea of the slot index.
+    //
+    // Slot numbers are IDirect3DDevice9's COM layout, which is fixed by the interface and not by this build.
+    // The named accessors below exist so a consumer never writes a bare 17 at a call site: a wrong slot index
+    // is silent -- it yields a real, callable, WRONG function -- and that is the failure this API removes.
+    //
+    // nullopt when there is no device yet or the read faulted. Re-read rather than cache, for the same reason
+    // device_vtable() says so: a device reset can replace the table.
+    static std::optional<uintptr_t> device_method(size_t slot);
+
+    // IDirect3DDevice9 slot 17. THE FRAME BOUNDARY a stereo submit hooks.
+    static std::optional<uintptr_t> present_fn();
+    // Slot 16. A stereo path provokes resets (resolution/mode changes), and a hook on the device must be
+    // reinstated after one -- so a consumer needs to see this call too, not just Present.
+    static std::optional<uintptr_t> reset_fn();
+    // Slots 41 and 42, the scene brackets. Where per-eye render state has to be established.
+    static std::optional<uintptr_t> begin_scene_fn();
+    static std::optional<uintptr_t> end_scene_fn();
+
+    // WHICH MODULE IMPLEMENTS THE FRAME BOUNDARY. Convenience over interface_impl_owner(device(), 17), and the
+    // question a mod asks before installing: measured live it is d3d9.dll rather than the Steam overlay, which
+    // wraps the FACTORY and not the device. If a build ever reports the overlay here, hook ordering matters and
+    // the caller needs to know before patching, not after.
+    static std::optional<std::string> present_impl_owner();
+
+    // ---- THE ENGINE'S OWN FRAME BOUNDARY -------------------------------------------
+    //
+    // Found with an EXECUTE watchpoint on the live d3d9.dll Present entry: the trap's caller candidates named
+    // these, no player input required (Present runs every frame). The chain is
+    //
+    //     CLTRenderer::SwapBuffers   (g_vtbl_CLTRenderer slot 10, gated on a renderer state)
+    //       -> LTRenderer_PresentAndSync
+    //            IDirect3DDevice9::Present(NULL, NULL, NULL, NULL)   [vtable +0x44, slot 17]
+    //            LTRenderer_WaitForGpuFence
+    //
+    // WHY THESE MATTER MORE THAN THE COM VTABLE. device_vtable() can be patched, but that table is heap
+    // storage shared with anything else wrapping the device, and Steam's overlay already proxies the d3d9
+    // FACTORY in this process. These three are ordinary functions in the exe's .text, so an inline hook
+    // brackets the frame without joining a vtable-patching queue whose ordering nobody controls.
+    //
+    // All three return 0 when the pattern did not resolve.
+
+    // Hook target for "do something once per presented frame": calls Present, then waits on the GPU fence.
+    // A stereo submit that needs both eyes finished belongs around this call.
+    static uintptr_t engine_present_fn();
+
+    // The interface entry ABOVE it, which decides whether a frame is presented AT ALL -- it returns early
+    // unless the renderer state equals 1. Hook here instead when the goal is to replace or suppress a frame
+    // rather than to observe one.
+    static uintptr_t renderer_swap_buffers_fn();
+
+    // Where the CPU blocks on the GPU: a D3DQUERYTYPE_EVENT query polled with Sleep(0) for up to a second.
+    // Exposed because it bounds the headroom a second eye's submission has, which is a frame-pacing question
+    // a VR path has to answer rather than discover.
+    static uintptr_t gpu_fence_wait_fn();
+
     static std::optional<std::string> interface_impl_owner(IUnknown* iface,
                                                            size_t method_slot = 2);
 };

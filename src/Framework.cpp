@@ -26,7 +26,10 @@
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Delegates.hpp"
 #include "sdk/Modules.hpp"
+#include "mods/ConsoleRunner.hpp"
 #include "mods/FocusKeeper.hpp"
+#include "mods/RenderHook.hpp"
+#include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
 #include "mods/ViewHook.hpp"
 #include "sdk/Model.hpp"
@@ -37,6 +40,7 @@
 #include "sdk/Input.hpp"
 #include "sdk/Common.hpp"
 #include "sdk/Console.hpp"
+#include "sdk/UiCommands.hpp"
 #include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
 #include "sdk/PlayerMgr.hpp"
@@ -4170,6 +4174,13 @@ std::string build_shader_params_json(bool include_write_probes) {
         json_append_double(out, "input_mouse_screen_y", static_cast<double>(mouse->screen_y), 0);
         json_append_double(out, "input_mouse_look_dx", mouse->look_delta[0], 2);
         json_append_double(out, "input_mouse_look_dy", mouse->look_delta[1], 2);
+        // BUTTON BANKS, current and previous. Published because "is a button down" is a question a consumer
+        // has, and because it is the only way to observe whether a synthetic button reached the device --
+        // position was visible here while button state was not, which hid exactly that.
+        json_append_bool(out, "input_mouse_btn_l", mouse->buttons[0]);
+        json_append_bool(out, "input_mouse_btn_r", mouse->buttons[1]);
+        json_append_bool(out, "input_mouse_btn_m", mouse->buttons[2]);
+        json_append_bool(out, "input_mouse_prev_btn_l", mouse->prev_buttons[0]);
     }
 
     // The queue's two counters and the path selector. The counters are reported, not pinned: they are
@@ -6067,6 +6078,85 @@ std::string build_shader_params_json(bool include_write_probes) {
             json_append_string(out, "eng_clock_seconds_at", tmp);
             snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, ck->milliseconds);
             json_append_string(out, "eng_clock_ms_at", tmp);
+        }
+        // THE FRAME BOUNDARY, published so a consumer (and the fixture) can see where a stereo submit would
+        // attach without recomputing slot arithmetic. Addresses only -- nothing is hooked here.
+        {
+            char tmp[32];
+            const auto pres = sdk::Render::present_fn();
+            const auto rst = sdk::Render::reset_fn();
+            const auto bs = sdk::Render::begin_scene_fn();
+            const auto es = sdk::Render::end_scene_fn();
+            json_append_bool(out, "rnd_device_present", sdk::Render::device() != nullptr);
+            if (pres && rst && bs && es) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *pres);
+                json_append_string(out, "rnd_present_fn", tmp);
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *rst);
+                json_append_string(out, "rnd_reset_fn", tmp);
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *bs);
+                json_append_string(out, "rnd_begin_scene_fn", tmp);
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *es);
+                json_append_string(out, "rnd_end_scene_fn", tmp);
+                // Four DISTINCT entries. A vtable read landing on the wrong base, or a table of stubs, shows
+                // up here as duplicates -- which no correct COM vtable produces.
+                const bool distinct = *pres != *rst && *pres != *bs && *pres != *es &&
+                                      *rst != *bs && *rst != *es && *bs != *es;
+                json_append_bool(out, "rnd_frame_slots_distinct", distinct);
+            }
+            // THE ENGINE-SIDE frame boundary, which is the hook target a stereo path wants in preference to
+            // the COM vtable. Static addresses so they can be pasted into the exe's IDB directly.
+            const uintptr_t eng_present = sdk::Render::engine_present_fn();
+            const uintptr_t swap = sdk::Render::renderer_swap_buffers_fn();
+            const uintptr_t fence = sdk::Render::gpu_fence_wait_fn();
+            json_append_bool(out, "rnd_engine_present_ok", eng_present != 0);
+            json_append_bool(out, "rnd_swap_buffers_ok", swap != 0);
+            json_append_bool(out, "rnd_gpu_fence_ok", fence != 0);
+            if (eng_present != 0) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, eng_present);
+                json_append_string(out, "rnd_engine_present_fn", tmp);
+            }
+            if (swap != 0) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, swap);
+                json_append_string(out, "rnd_swap_buffers_fn", tmp);
+            }
+            if (fence != 0) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, fence);
+                json_append_string(out, "rnd_gpu_fence_fn", tmp);
+            }
+            // ALL THREE INSIDE THE EXE, and distinct. A pattern that matched the wrong place, or a decoded
+            // jump landing outside the image, shows up here rather than as a mystery crash at hook time.
+            if (const auto* exe = sdk::Modules::get().exe()) {
+                const auto in_exe = [&](uintptr_t a) {
+                    return a != 0 && a >= exe->base && a < exe->base + exe->size;
+                };
+                json_append_bool(out, "rnd_frame_fns_in_exe",
+                                 in_exe(eng_present) && in_exe(swap) && in_exe(fence));
+                json_append_bool(out, "rnd_frame_fns_distinct",
+                                 eng_present != swap && swap != fence && eng_present != fence);
+            }
+            {
+                const auto si = SyntheticInput::get().state();
+                json_append_bool(out, "si_keyboard_resolved", si.keyboard_resolved);
+                json_append_double(out, "si_writes", static_cast<double>(si.writes), 0);
+                json_append_double(out, "si_taps_completed", static_cast<double>(si.taps_completed), 0);
+                json_append_double(out, "si_active_taps", static_cast<double>(si.active_taps), 0);
+                json_append_double(out, "si_held_keys", static_cast<double>(si.held_keys), 0);
+                json_append_bool(out, "si_poll_hooked", sdk::Input::poll_fn() != 0);
+            }
+            {
+                const auto rh = RenderHook::get().stats();
+                json_append_bool(out, "rh_hooked", rh.hooked);
+                json_append_double(out, "rh_frames", static_cast<double>(rh.frames), 0);
+                json_append_double(out, "rh_mean_interval_ms", rh.mean_interval_ms, 3);
+                json_append_double(out, "rh_samples", static_cast<double>(rh.samples), 0);
+                json_append_double(out, "rh_state_at_present",
+                                   static_cast<double>(rh.state_at_present), 0);
+                json_append_double(out, "rh_state_not_one", static_cast<double>(rh.state_not_one), 0);
+                json_append_double(out, "rh_callbacks", static_cast<double>(rh.callbacks), 0);
+            }
+            if (const auto owner = sdk::Render::present_impl_owner()) {
+                json_append_string(out, "rnd_present_owner", owner->c_str());
+            }
         }
         if (const auto cs = sdk::Engine::clock_state()) {
             json_append_bool(out, "eng_clock_paused", cs->paused);
@@ -9608,6 +9698,14 @@ bool Framework::initialize() {
     Mods::get().add(&FocusKeeper::get());
     // Hardware data breakpoints. Registered last so its on_shutdown -- which clears every thread's debug
     // registers and unregisters the vectored handler -- runs while the rest of the mod state is still intact.
+    // The frame boundary. Registered before Watchpoints so its hook is installed while the mod list is still
+    // being built; retirement order is Hooks::retire()'s problem, not registration order's.
+    // Synthetic input. Registered before RenderHook so its on_frame runs in the same post-poll window the
+    // whole mechanism depends on -- see SyntheticInput.hpp.
+    Mods::get().add(&SyntheticInput::get());
+    Mods::get().add(&RenderHook::get());
+    // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
+    Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
     Mods::get().on_initialize();
 
@@ -9623,6 +9721,144 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.console = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const size_t qpos = request_target.find('?');
+        const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
+
+        if (route == "/console/ui") {
+            std::string items = "[";
+            size_t n = 0;
+            for (const auto& c : sdk::UiCommands::all()) {
+                if (n++ != 0) { items += ','; }
+                std::string one;
+                {
+                    JsonFields jf(one);
+                    jf.s("name", c.name).hex("handler", c.handler).u("flag", c.flag).hex("entry", c.entry);
+                }
+                items += one;
+            }
+            items += ']';
+            std::string out;
+            {
+                JsonFields jf(out);
+                jf.b("ok", n > 0).hex("table", sdk::UiCommands::table_address())
+                  .u("count", n).raw("commands", items);
+            }
+            return out;
+        }
+
+        if (route == "/console/list") {
+            const std::string filter = webapi_query_string(q, "filter");
+            std::string items = "[";
+            size_t n = 0;
+            for (const auto& cmd : sdk::Console::all()) {
+                if (!filter.empty()) {
+                    std::string lower_name = cmd.name;
+                    std::string lower_filter = filter;
+                    for (auto& ch : lower_name) { ch = static_cast<char>(tolower(ch)); }
+                    for (auto& ch : lower_filter) { ch = static_cast<char>(tolower(ch)); }
+                    if (lower_name.find(lower_filter) == std::string::npos) {
+                        continue;
+                    }
+                }
+                if (n++ != 0) { items += ','; }
+                std::string one;
+                {
+                    JsonFields jf(one);
+                    jf.s("name", cmd.name).hex("handler", cmd.handler).s("module", cmd.module)
+                      .b("from_exe", cmd.from_exe).b("runtime_registered", cmd.registered_at_runtime());
+                }
+                items += one;
+            }
+            items += ']';
+            std::string out;
+            {
+                JsonFields jf(out);
+                jf.b("ok", true).u("count", n).raw("commands", items);
+            }
+            return out;
+        }
+
+        if (route == "/console/run") {
+            const std::string cmd = webapi_query_string(q, "cmd");
+            const bool queued = ConsoleRunner::get().queue(cmd);
+            const auto st = ConsoleRunner::get().state();
+            std::string out;
+            {
+                JsonFields jf(out);
+                jf.b("ok", queued);
+                if (!queued) {
+                    jf.s("error", cmd.empty() ? "cmd is required" : "queue full or command too long");
+                }
+                jf.b("callback_registered", st.callback_registered)
+                  .u("pending", st.pending)
+                  .u("executed", static_cast<size_t>(st.executed))
+                  .s("last_command", st.last_command);
+                const char* outcome = "none";
+                switch (st.last) {
+                    case ConsoleRunner::Outcome::Ran: outcome = "ran"; break;
+                    case ConsoleRunner::Outcome::NotFound: outcome = "not_found"; break;
+                    case ConsoleRunner::Outcome::NoHandler: outcome = "no_handler"; break;
+                    default: break;
+                }
+                jf.s("last_outcome", outcome);
+            }
+            return out;
+        }
+
+        return std::string{"{\"ok\":false,\"error\":\"unknown /console route\"}"};
+    };
+
+    handlers.input = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const size_t qpos = request_target.find('?');
+        const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
+        auto& si = SyntheticInput::get();
+
+        std::string err;
+        if (route == "/input/tap") {
+            // uint32, not uint8: mouse buttons are encoded above the virtual-key range
+            // (SyntheticInput::kMouseButton + n), and truncating here turned 0x100 into 0.
+            const auto vk = static_cast<uint32_t>(webapi_query_int(q, "vk", 0));
+            const auto frames = static_cast<uint32_t>(webapi_query_int(q, "frames", 2));
+            if (!si.tap(vk, frames)) {
+                err = vk == 0 ? "vk is required" : "no free key slot";
+            }
+        } else if (route == "/input/hold") {
+            const auto vk = static_cast<uint32_t>(webapi_query_int(q, "vk", 0));
+            si.hold(vk, webapi_query_int(q, "down", 1) != 0);
+        } else if (route == "/input/release") {
+            si.release_all();
+            // BOTH BANKS, in that order. release_all() only touches slots it still owns, so a button latched
+            // by an earlier session has nothing to release. Clearing CURRENT alone is not enough either: the
+            // poll shifts INCOMING into current every frame, so a stuck incoming re-latches it immediately.
+            // That is exactly the state this recovered from -- current read down again within one frame.
+            for (uint8_t b = 0; b < 3; ++b) {
+                sdk::Input::send_mouse_button(b, false);
+                sdk::Input::set_mouse_button_state(b, false);
+            }
+        } else {
+            err = "unknown /input route";
+        }
+
+        const auto st = si.state();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", err.empty());
+            if (!err.empty()) {
+                jf.s("error", err);
+            }
+            jf.b("keyboard_resolved", st.keyboard_resolved)
+              .u("active_taps", st.active_taps)
+              .u("held_keys", st.held_keys)
+              .u("writes", static_cast<size_t>(st.writes))
+              .u("taps_completed", static_cast<size_t>(st.taps_completed));
+        }
+        return out;
+    };
+
     handlers.watch = build_watch_json;
     handlers.focus_keep = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);

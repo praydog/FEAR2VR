@@ -13,7 +13,10 @@ namespace {
 
 constexpr const char* kHookName = "ILTTimer::SetPaused";
 
-std::atomic<bool> g_enabled{false};
+// ON BY DEFAULT. This is not a debug convenience: a headset does not care whether the desktop window has
+// focus, and a VR mod whose world freezes the moment the user looks at another monitor is broken. The desktop
+// game's alt-tab pause is the behaviour that is wrong here, not the override.
+std::atomic<bool> g_enabled{true};
 std::atomic<uint64_t> g_requests{0};
 std::atomic<uint64_t> g_suppressed{0};
 std::atomic<uint64_t> g_passed{0};
@@ -46,7 +49,42 @@ int __stdcall set_paused_detour(void* timer, char paused) {
     if (hook == nullptr) {
         return 0;
     }
-    return hook->call<int, void*, char>(timer, paused);
+    // original<Fn*>() with the REAL convention -- see RenderHook.cpp for what call<> costs. ILTTimer::SetPaused
+    // is __stdcall(handle, bool) and ends in `retn 8`, so calling it as __cdecl leaks 8 bytes of stack on every
+    // pass-through. It survived testing only because the measured path refuses and returns early; the pause
+    // MENU takes this branch, and it would have drifted the stack once per pause.
+    return hook->original<int(__stdcall*)(void*, char)>()(timer, paused);
+}
+
+
+// CLEARS A PAUSE THAT IS ALREADY IN EFFECT, which refusing future requests cannot do.
+//
+// Measured the hard way: switching the refusal on while alt-tabbed reported 0 pause requests and a clock still
+// frozen, because the pause had been set BEFORE the detour existed. A hook only sees calls that happen after
+// it; the byte was already 1. Needed at initialize() too -- the payload is routinely injected while the window
+// is NOT focused, since that is exactly when a tester is reading output in another window.
+//
+// Only acts when the engine's own latch says focus was lost. Doing this with the window focused and the game
+// paused would unpause the pause MENU, which is a behaviour change nobody asked for.
+void clear_existing_focus_pause() {
+    const auto focus = sdk::Input::focus();
+    if (!focus.has_value() || !focus->lost_focus) {
+        return;
+    }
+    const auto clock = sdk::Engine::clock_state();
+    if (!clock.has_value() || !clock->paused) {
+        return;
+    }
+    const auto addrs = sdk::Engine::client_time_addresses();
+    auto* hook = Hooks::get().find(kHookName);
+    if (!addrs.has_value() || hook == nullptr) {
+        return;
+    }
+    // Through the engine's OWN API rather than by poking the byte: the handle it takes IS the timer node, and
+    // going through the trampoline means whatever else that function does stays done.
+    const int rc = hook->original<int(__stdcall*)(void*, char)>()(
+        reinterpret_cast<void*>(addrs->owner), 0);
+    LOGX("[focuskeeper] cleared an existing focus pause on timer 0x%08" PRIXPTR " (rc %d)", addrs->owner, rc);
 }
 
 }  // namespace
@@ -67,7 +105,11 @@ std::optional<std::string> FocusKeeper::on_initialize() {
                               reinterpret_cast<void*>(&set_paused_detour))) {
         return std::string{"failed to hook ILTTimer::SetPaused"};
     }
-    LOGX("[focuskeeper] hooked ILTTimer::SetPaused at 0x%08" PRIXPTR " (disabled until asked)", fn);
+    LOGX("[focuskeeper] hooked ILTTimer::SetPaused at 0x%08" PRIXPTR " -- refusing focus-loss pauses", fn);
+    // Also clear a pause that is ALREADY in effect: the mod is commonly injected while the window is not
+    // focused (that is exactly when a tester is reading output), and a detour cannot see a call that already
+    // happened. Same one-shot clear keep_running() performs, for the same measured reason.
+    clear_existing_focus_pause();
     return std::nullopt;
 }
 
@@ -83,32 +125,7 @@ void FocusKeeper::keep_running(bool on) {
     if (!on) {
         return;
     }
-
-    // CLEARING A PAUSE THAT IS ALREADY IN EFFECT, which refusing future requests cannot do.
-    //
-    // Measured the hard way: enabling while alt-tabbed reported 0 pause requests and a clock still frozen,
-    // because the pause had been set BEFORE the hook was asked to refuse anything. A detour only sees calls
-    // that happen after it; the byte was already 1.
-    //
-    // Only when the engine's own latch says focus was lost. Enabling with the window focused and the game
-    // paused is the pause MENU, and unpausing that would be a behaviour change nobody asked for.
-    const auto focus = sdk::Input::focus();
-    if (!focus.has_value() || !focus->lost_focus) {
-        return;
-    }
-    const auto clock = sdk::Engine::clock_state();
-    if (!clock.has_value() || !clock->paused) {
-        return;
-    }
-    const auto addrs = sdk::Engine::client_time_addresses();
-    auto* hook = Hooks::get().find(kHookName);
-    if (!addrs.has_value() || hook == nullptr) {
-        return;
-    }
-    // Through the engine's OWN API rather than by poking the byte: the handle it takes IS the timer node, and
-    // going through the trampoline means whatever else that function does stays done.
-    const int rc = hook->call<int, void*, char>(reinterpret_cast<void*>(addrs->owner), 0);
-    LOGX("[focuskeeper] cleared an existing focus pause on timer 0x%08" PRIXPTR " (rc %d)", addrs->owner, rc);
+    clear_existing_focus_pause();
 }
 
 FocusKeeper::State FocusKeeper::state() const {

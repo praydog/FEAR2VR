@@ -366,6 +366,24 @@ bin\injector.exe --status                   # module/IPC snapshot
 ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```
 
+**After a crash, `python tools/resume_game.py`.** It relaunches through Steam if the
+process is gone, injects, and puts the game back in-world -- unattended and idempotent.
+
+The menu cannot be driven by synthetic input, and that is measured rather than assumed:
+`SendInput` moves the cursor and the highlight follows it but nothing activates; the
+window-message key queue is not drained (buffered input reads false at the menu); and a
+press written into the engine's own device array -- visible in its MouseState as a clean
+press and release -- is ignored by Scaleform. What works is the game's own UI command
+table, `sdk::UiCommands`, which is where a menu click dispatches anyway:
+`Menu.StartCheckpoint` is "Continue From Last Saved Point".
+
+Once a world is loaded synthetic input DOES work, because the game consumes it rather
+than the front end -- so the load screen's "press to continue" is a synthetic Space.
+
+Beware the console command that looks equivalent: `LoadCheckpoint` reaches the same
+dispatcher with a different mode and refuses outside a loaded world, printing "You can
+only reload a checkpoint from within the world". At the menu it runs and does nothing.
+
 **`build.bat` unloads the payload before building.** A resident `fear2vr.dll`
 holds its own file open, so relinking it fails with `LNK1104: cannot open file
 ...\fear2vr.dll` — an error that names a file rather than the cause, so it reads
