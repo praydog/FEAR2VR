@@ -4390,3 +4390,34 @@ now reports the live distances instead, so the next session can see them move ra
 The tell, in hindsight, is in the header's own words: "live-measured from one player instance" plus "no IDA
 evidence exists". That is the description of a coincidence, and it was written down as a constant.
 
+## Two suite reds that were the SUITE being wrong, each with a different shape
+
+**1. A clamp that needed no correction was reported as a violation.** The pitch check asserted
+`never_engaged || (corrected && correction_inward)` -- which demands that an engaged clamp actually CHANGED
+something. `PlayerMgr.hpp` documents the missing case in as many words: "Equal values mean the last violation
+happened to need no correction on one bound". Live, the record read non-zero with `before == after`, and the
+suite called a correctly-behaving clamp a failure.
+
+The invariant was already asserted one line above (`pitch_correction_inward`, which is true both when the
+correction moved inward AND when none was needed), so the disjunction was redundant as well as wrong. It is
+now a COVERAGE REPORT naming which of the three states the run exercised, which is the only thing it was ever
+adding.
+
+**2. Two frame counts compared across different windows.** The probe guard asserted that the probe's own
+frame observation and the standalone liveness reading AGREE about whether the render path is advancing. They
+are not computed over the same population -- each probe runs a short loop inside the request while
+`fa_distinct_frames` samples the whole of it. Four consecutive requests on a running game:
+
+    cro_probe_frames 1..2     cro_object_probe_frames 1..2     fa_distinct_frames 4..5
+
+A probe window shorter than a ~3 ms frame sees ONE distinct value while the path is plainly advancing, so the
+check passed or failed on whether the loop happened to straddle a frame boundary. This is the aggregate-
+population trap already recorded in TESTING.MD, arrived at from a new direction.
+
+The sound direction survives: if the SHORT window saw the path move, the longer one containing it must have
+too. The converse says nothing, and is now reported rather than asserted -- the implication pattern this file
+already prescribes for `renderable`/`linked`.
+
+Both were found by running the suite against a genuinely in-world session rather than a menu, which is the
+argument for `tools/resume_game.py` existing.
+

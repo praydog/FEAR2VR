@@ -5038,9 +5038,20 @@ int main(int argc, char** argv) {
             // So the check becomes the INVARIANT, true in both states: either the clamp has not engaged, or it
             // has and its recorded correction moved the pitch inward. That is what the code guarantees; whether
             // anyone happened to look up is not.
-            check(pi_ne || (pi_c && pi_ci),
-                  "either the clamp has not engaged, or it has and its correction moved the pitch inward -- the "
-                  "invariant, rather than the previous pass's assertion about this particular session");
+            // THE THIRD STATE THIS USED TO REJECT. The check was `pi_ne || (pi_c && pi_ci)`, which demands
+            // that an engaged clamp actually CORRECTED something. PlayerMgr.hpp documents the case it misses
+            // in as many words: "Equal values mean the last violation happened to need no correction on one
+            // bound". Live, the suite hit exactly that -- a non-zero record with before == after -- and
+            // reported a violation for a clamp behaving correctly.
+            //
+            // The invariant is already asserted above (pitch_correction_inward, which is true both when the
+            // correction moved inward and when none was needed). So what is left here is not another
+            // assertion but the COVERAGE report: which of the three states this run exercised, so a reader
+            // can tell a real validation from a vacuous one.
+            printf("[fixture] pitch clamp record: %s\n",
+                   pi_ne ? "never engaged (range check is vacuous -- zero is inside every clamp)"
+                         : (pi_c ? "engaged AND corrected -- the range comparison is real"
+                                 : "engaged, no correction needed on this bound (before == after)"));
             // AND THE RANGE CHECK IS NO LONGER VACUOUS: with a non-zero record it is a real comparison. Asserted
             // as a conditional so it stays meaningful whichever state the game is in.
             check(pi_ne || json_has(body, "\"pitch_within_active\":true"),
@@ -5864,10 +5875,28 @@ int main(int argc, char** argv) {
                   "the operand probe reports Inconclusive exactly when no frame was rendered");
             check(guard && ((fr_c <= 1.0) == (vd_c == 0.0)),
                   "the camera-object probe reports Inconclusive exactly when no frame was rendered");
-            // TWO INDEPENDENT SAMPLINGS of the same signal must agree about whether it is advancing: the probes
-            // sample it inside their loops, frames_advanced() on its own.
-            check(guard && ((fa_n <= 1.0) == (fr_c <= 1.0)),
-                  "the probe's own frame observation agrees with the standalone liveness reading");
+            // TWO SAMPLINGS OVER DIFFERENT WINDOWS, so only ONE DIRECTION is sound.
+            //
+            // This asserted a biconditional -- that the probe's own frame count and the standalone reading
+            // agree about whether the path is advancing. They are not computed over the same population: each
+            // probe runs a short loop inside the request while fa_distinct_frames samples the whole of it.
+            // Measured across four consecutive requests on a running game:
+            //
+            //     cro_probe_frames  1..2      cro_object_probe_frames  1..2      fa_distinct_frames  4..5
+            //
+            // A probe window shorter than a ~3 ms frame observes ONE distinct value while the path is plainly
+            // advancing, so the biconditional failed or passed depending on whether the loop happened to
+            // straddle a frame boundary. That is the aggregate-population trap this file already documents.
+            //
+            // The implication holds and is worth keeping: if the SHORT window saw the path move, the longer
+            // one that contains it must have seen it move too. The converse says nothing.
+            check(guard && (fr_c <= 1.0 || fa_n > 1.0),
+                  "when the probe's own window saw the render path advance, the standalone reading agrees -- "
+                  "the sound direction, since the probe's window is the shorter of the two");
+            printf("[fixture] frame observation windows: operand probe %lld, object probe %lld, standalone "
+                   "%lld distinct\n",
+                   static_cast<long long>(fr_o), static_cast<long long>(fr_c),
+                   static_cast<long long>(fa_n));
             // AND THE POINT OF THE WHOLE GUARD: with the path frozen, a value surviving every sample must NOT be
             // reported as Held. That is the misreading the verdict exists to prevent.
             check(guard && !(fr_o <= 1.0 && vd_o == 2.0),
