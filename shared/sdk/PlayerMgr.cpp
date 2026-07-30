@@ -1080,4 +1080,119 @@ std::optional<bool> PlayerMgr::physics_holder_class_matches(unsigned index) {
     return vtable_is(subs->physics_holder, kPhysicsHolderVtable);
 }
 
+
+namespace {
+
+// The table as recorded from IDA: offset -> {ctor (gameclient-relative), size lower bound, name}.
+// Nineteen entries carry no name on purpose; see the header.
+struct SubsystemRecord {
+    uintptr_t offset;
+    uintptr_t ctor;
+    uint32_t size;
+    const char* name;
+};
+
+constexpr SubsystemRecord kSubsystemRecords[] = {
+    {228, 0x0F3B70, 156, nullptr},
+    {232, 0x0EF8F0, 836, nullptr},
+    {236, 0x10B390, 2220, "movement controller"},
+    {240, 0x0FB470, 95, nullptr},
+    {244, 0x137B10, 536, nullptr},
+    {248, 0x1179C0, 360, nullptr},
+    {252, 0x0E3F80, 6345, "CPlayerCamera"},
+    {256, 0x0D0D70, 352, nullptr},
+    {260, 0x0DBDA0, 1949, "physics holder"},
+    {264, 0x0F9BC0, 84, nullptr},
+    {268, 0x0CF780, 19, nullptr},
+    {272, 0x0EDD30, 149, nullptr},
+    {276, 0x110CA0, 396, nullptr},
+    {280, 0x114110, 412, nullptr},
+    {284, 0x0EBA50, 500, nullptr},
+    {288, 0, 0, nullptr},  // not a class instance -- a node table
+    {292, 0x100400, 228, nullptr},
+    {296, 0x0B8070, 48, nullptr},
+    {300, 0x0F5870, 109, nullptr},
+    {304, 0x0F80A0, 4, nullptr},
+    {308, 0x055FA0, 141, nullptr},
+    {312, 0x11C680, 1896, nullptr},  // real class; its +4 is a link, not the owner
+    {316, 0x127E40, 274, nullptr},
+    {320, 0x1265D0, 17, nullptr},
+};
+
+}  // namespace
+
+std::vector<PlayerMgr::Subsystem> PlayerMgr::subsystem_slots(unsigned index) {
+    std::vector<Subsystem> out;
+    const auto p = slot(index);
+    if (!p.has_value() || *p == 0) {
+        return out;
+    }
+    out.reserve(std::size(kSubsystemRecords));
+    for (const auto& rec : kSubsystemRecords) {
+        Subsystem s;
+        s.offset = rec.offset;
+        s.ctor = rec.ctor;
+        s.size_lower_bound = rec.size;
+        s.name = rec.name;
+        const auto obj = mem::read_ptr(*p + rec.offset);
+        if (!obj.has_value()) {
+            out.push_back(s);
+            continue;
+        }
+        s.object = *obj;
+        if (s.object != 0) {
+            if (const auto vt = mem::read_ptr(s.object); vt.has_value()) {
+                s.vtable = *vt;
+                s.is_class_instance = Modules::looks_like_vtable_pointer(*vt);
+            }
+            if (const auto owner = mem::read_ptr(s.object + kOwnerBackPointer); owner.has_value()) {
+                s.owner_is_player = (*owner == *p);
+            }
+        }
+        out.push_back(s);
+    }
+    return out;
+}
+
+std::optional<PlayerMgr::Subsystem> PlayerMgr::subsystem_at(unsigned index, uintptr_t offset) {
+    for (const auto& s : subsystem_slots(index)) {
+        if (s.offset == offset) {
+            return s;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> PlayerMgr::subsystem_count(unsigned index) {
+    const auto slots = subsystem_slots(index);
+    if (slots.empty()) {
+        return std::nullopt;
+    }
+    size_t n = 0;
+    for (const auto& s : slots) {
+        if (s.is_class_instance) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+std::optional<bool> PlayerMgr::subsystem_vtables_distinct(unsigned index) {
+    const auto slots = subsystem_slots(index);
+    if (slots.empty()) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < slots.size(); ++i) {
+        if (!slots[i].is_class_instance) {
+            continue;
+        }
+        for (size_t j = i + 1; j < slots.size(); ++j) {
+            if (slots[j].is_class_instance && slots[i].vtable == slots[j].vtable) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 }  // namespace sdk

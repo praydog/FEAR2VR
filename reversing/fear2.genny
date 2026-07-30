@@ -6143,3 +6143,49 @@ class CPlayerCamera 0x18C6 {
 // so its first dword is a link's prev. Now asserted live rather than noted.
 //
 // 1255 checks, 0 failures.
+
+// ---- THE PLAYER'S SUBSYSTEM TABLE, AND A RETRACTION ---------------------------------------------
+//
+// Three passes mapped three objects hanging off the player -- the movement controller at +236, CPlayerCamera at
+// +252, the physics holder at +260 -- one at a time, each time noting they share a constructor. They are slots
+// in a CONTIGUOUS TABLE of 24 four-byte slots at player+228..+320, and CPlayerCameraOwner_ctor builds all of it.
+//
+//     24 slots        every one holds a non-null pointer
+//     23 instances    first dword lands in a data section
+//     23 vtables      all DISTINCT -- 23 separate classes, no aliasing
+//     22 owners       carry this player at their +4
+//
+// SO THE PREVIOUS PASS'S CLAIM IS RETRACTED. It found owner-at-+4 on three sub-objects and wrote that it "is a
+// convention shared by all three, which makes it a uniform validity test for any of them". Over 23 instances it
+// holds for 22. The exception is +312, a perfectly valid class whose +4 is a LINK field: its +4 and +8 are 0x14
+// apart and its +16/+20 are a self-linked pair. A consumer using the back-pointer as a guard must accept that.
+//
+// > Second time in three passes that a property measured on three samples turned out to be a property of three
+// > samples. The table was enumerable both times.
+//
+// THE OTHER NON-SUBSYSTEM is +288, whose pointer has a HEAP address as its first dword. Its fields step by 0x14
+// -- the delegate node size -- so it points at a node table. Only the section test distinguishes it; a
+// module-range test would have called it a class.
+//
+// SIZES, from each constructor's highest touched offset, cross-checked against an independent measurement: every
+// recorded size contains the whole delegate node array found inside that object. A size too small would cut an
+// array short, so the two derivations constrain each other.
+//
+//     +228  156     +232  836     +236 2220*    +240   95     +244  536     +248  360
+//     +252 6345*    +256  352     +260 1949*    +264   84     +268   19     +272  149
+//     +276  396     +280  412     +284  500     +288    -     +292  228     +296   48
+//     +300  109     +304    4     +308  141     +312 1896     +316  274     +320   17
+//                                                        (* = role established)
+//
+// TWENTY ROLES ARE NOT ESTABLISHED AND THE CLASSES ARE NOT NAMED FOR WHAT THEY DO. Their constructors reference
+// no strings and no console variables -- pure field initialisation -- so identifying one needs its METHODS read.
+// They are named PlayerSubsystem_<offset>_ctor in IDA: the slot is a fact, the role is not, and inventing names
+// from position would be the guess this project keeps refusing to make.
+//
+// Exposed as sdk::PlayerMgr::subsystem_slots / subsystem_at / subsystem_count / subsystem_vtables_distinct.
+//
+// > Counted wrong once en route: the live scan printed 23 instances and 22 owner matches, and reading those as
+// > one number gave "22 subsystems", which went into the header before the endpoint disagreed with it. Two
+// > figures one apart are easy to conflate; the suite is what caught it.
+//
+// 1266 checks, 0 failures.

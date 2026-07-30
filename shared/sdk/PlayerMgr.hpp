@@ -109,33 +109,74 @@ public:
     // generations existing, but WHICH member is which is NOT pinned here -- the names below describe what was
     // measured (one matches the engine object, one does not) rather than asserting the reference's mapping.
     //
-    // ---- THE PLAYER'S THREE CAMERA SUB-OBJECTS, AND ONE CONVENTION ACROSS ALL OF THEM -------
+    // ---- THE PLAYER'S SUBSYSTEM TABLE ------------------------------------------------------
     //
-    // Last pass learned that establishing a pointer's CLASS costs one load, after twelve passes of mapping fields
-    // without doing it. Applying that to the other three objects this class hands out offsets into:
+    // The player does not hold three camera sub-objects, it holds TWENTY-THREE SUBSYSTEMS in a contiguous
+    // table, and CPlayerCameraOwner_ctor -- the constructor of the object this class calls "the player" --
+    // builds every one of them. The three that earlier passes mapped are slots in it:
     //
-    //     +236  movement controller   4-slot vtable at gameclient +0x1D87CC, ctor 0x1010B390 (dtor 0x1010D610)
-    //     +252  CPlayerCamera         4-slot vtable at gameclient +0x1D5B94
-    //     +260  physics holder        4-slot vtable at gameclient +0x1D582C, ctor 0x100DBDA0 (dtor 0x100DB390)
+    //     +228 .. +320, four-byte stride, 24 slots of which 23 are class instances
     //
-    // ALL THREE ARE CONSTRUCTED BY ONE FUNCTION, CPlayerCameraOwner_ctor -- which is the constructor of the object
-    // this class calls "the player". So the player object is that class, and the three are its parts.
+    // (Counted wrong once on the way here: the live scan reported 23 instances and 22 carrying the owner
+    // back-pointer, and reading those two numbers as one gave "22 subsystems". The endpoint disagreed with the
+    // header, which is the only reason it was caught -- two numbers that differ by one are easy to conflate.)
     //
-    // AND ALL THREE CARRY owner AT +4, pointing back at the player. That was verified for the controller several
-    // passes ago and treated as a controller quirk; it is a convention shared by all three, which makes it a
-    // uniform validity test for any of them.
+    //     +236  movement controller   vtable +0x1D87CC  ctor 0x1010B390  >= 2220 bytes  (embedded, see below)
+    //     +252  CPlayerCamera         vtable +0x1D5B94  ctor 0x100E3F80  >= 6345 bytes
+    //     +260  physics holder        vtable +0x1D582C  ctor 0x100DBDA0  >= 1949 bytes
     //
-    // THE CONTROLLER IS EMBEDDED, the other two are not. *(player + 236) equals player + 0xE88 exactly, so the
-    // pointer is the address of a member rather than a separate allocation -- while the pose and physics holders sit
-    // over a megabyte away in the heap. That gives the controller a STRONGER check than a vtable comparison: an
-    // exact structural identity that no unrelated pointer satisfies.
+    // The other TWENTY have a vtable, a constructor and a measured size, and NO ESTABLISHED ROLE. They are
+    // deliberately left unnamed: their constructors reference no strings and no console variables, so naming
+    // them needs each class's METHODS read, which is per-subsystem work. subsystem_slots() lists them so that
+    // work has somewhere to land.
     //
-    // Class sizes, from the constructors' highest touched offsets: the controller is at least 2220 bytes and the
-    // physics holder at least 1949. (CPlayerCamera is at least 6342, established earlier the same way.)
+    // TWO SLOTS IN THE SPAN ARE NOT SUBSYSTEMS, and both were found by the checks below failing:
+    //
+    //   +288  its first dword is 0x1C48429C -- a HEAP address, so not a vtable. Its fields step by 0x14,
+    //         the delegate node size, so it points at a node table rather than being a class instance.
+    //   +312  a real class (vtable +0x1D91A4, ctor 0x1011C680) whose +4 is NOT the player. Its +4 and +8 are
+    //         0x14 apart and its +16/+20 are a self-linked pair -- +4 is a LINK field for this class.
+    //
+    // WHICH CORRECTS THE PREVIOUS PASS. That pass found owner-at-+4 on three sub-objects and called it "a
+    // convention shared by all three, which makes it a uniform validity test". Over the 23 class instances it
+    // holds for 22. It is a strong heuristic with one known exception, not an invariant, and a consumer using
+    // it as a guard must accept that the +312 subsystem fails it while being perfectly valid.
+    //
+    // > The general lesson, since this is the second time in three passes: a property measured on three
+    // > samples is a property of three samples. The table was there to be enumerated both times.
+    static constexpr uintptr_t kSubsystemTableFirst = 228;
+    static constexpr uintptr_t kSubsystemTableLast = 320;
     static constexpr uintptr_t kControllerEmbeddedOffset = 0xE88;
     static constexpr uintptr_t kOwnerBackPointer = 0x04;
     static constexpr uintptr_t kControllerVtable = 0x1D87CC;   // gameclient-relative
     static constexpr uintptr_t kPhysicsHolderVtable = 0x1D582C;
+
+    // One slot of the table. `is_class_instance` is the section test on the first dword: false for +288.
+    struct Subsystem {
+        uintptr_t offset{};           // byte offset within the player
+        uintptr_t object{};           // the pointer stored there
+        uintptr_t vtable{};           // its first dword, whatever that is
+        uintptr_t ctor{};             // gameclient-relative constructor, 0 when unrecorded
+        uint32_t size_lower_bound{};  // from the ctor's highest touched offset; 0 when unrecorded
+        const char* name{};           // nullptr when the role is not established -- most of them
+        bool is_class_instance{};     // first dword lands in a data section
+        bool owner_is_player{};       // +4 holds the player: true for 22 of the 23
+    };
+
+    // Every slot of the table, read live. Empty when the player cannot be resolved. Always the full span,
+    // including the two non-subsystem slots, because a consumer walking the table needs to see them rather
+    // than have them silently dropped.
+    static std::vector<Subsystem> subsystem_slots(unsigned index);
+
+    // One slot by its byte offset. nullopt when the offset is outside the table or the read faults.
+    static std::optional<Subsystem> subsystem_at(unsigned index, uintptr_t offset);
+
+    // How many slots in the span are validated class instances -- 23 of 24 live.
+    static std::optional<size_t> subsystem_count(unsigned index);
+
+    // Every subsystem's vtable is distinct: 23 different classes, no aliasing. A repeat would mean the table
+    // holds the same subsystem twice, which would invalidate reading them as separate objects.
+    static std::optional<bool> subsystem_vtables_distinct(unsigned index);
 
     struct CameraSubObjects {
         uintptr_t controller{};      // player + 236, embedded at player + 0xE88
@@ -145,8 +186,9 @@ public:
 
     static std::optional<CameraSubObjects> camera_sub_objects(unsigned index);
 
-    // Does every one of the three name the player as its owner at +4? The convention above, as one test. nullopt
-    // when the player or any sub-object pointer cannot be read.
+    // Does every one of the three name the player as its owner at +4? True live, but see the table above: the
+    // property holds for 21 of the 22 subsystems, not all, so this is a check on THESE THREE rather than a
+    // general validity test. nullopt when the player or any sub-object pointer cannot be read.
     static std::optional<bool> sub_objects_own_player(unsigned index);
 
     // Is the controller exactly the embedded member it should be -- *(player + 236) == player + 0xE88? An exact

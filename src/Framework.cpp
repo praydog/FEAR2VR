@@ -4610,6 +4610,68 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE PLAYER'S SUBSYSTEM TABLE. 24 slots at +228..+320; 22 are class instances built by one constructor.
+    {
+        const auto slots = sdk::PlayerMgr::subsystem_slots(0);
+        const auto n = sdk::PlayerMgr::subsystem_count(0);
+        const auto dist = sdk::PlayerMgr::subsystem_vtables_distinct(0);
+        json_append_double(out, "ss_slots", static_cast<double>(slots.size()), 0);
+        json_append_double(out, "ss_instances", static_cast<double>(n.value_or(0)), 0);
+        json_append_bool(out, "ss_vtables_distinct", dist.value_or(false));
+        // EVERY SLOT HOLDS A NON-NULL POINTER, including the two that are not class instances.
+        bool all_nonnull = !slots.empty();
+        // THE TWO KNOWN EXCEPTIONS, asserted as exceptions rather than tolerated silently.
+        bool k288_not_instance = false, k312_is_instance = false, k312_owner_differs = false;
+        size_t owner_agrees = 0;
+        for (const auto& e : slots) {
+            if (e.object == 0) {
+                all_nonnull = false;
+            }
+            if (e.is_class_instance && e.owner_is_player) {
+                ++owner_agrees;
+            }
+            if (e.offset == 288) {
+                k288_not_instance = !e.is_class_instance;
+            }
+            if (e.offset == 312) {
+                k312_is_instance = e.is_class_instance;
+                k312_owner_differs = !e.owner_is_player;
+            }
+        }
+        json_append_bool(out, "ss_all_nonnull", all_nonnull);
+        json_append_double(out, "ss_owner_agrees", static_cast<double>(owner_agrees), 0);
+        json_append_bool(out, "ss_288_not_instance", k288_not_instance);
+        json_append_bool(out, "ss_312_is_instance", k312_is_instance);
+        json_append_bool(out, "ss_312_owner_differs", k312_owner_differs);
+        // THE THREE NAMED SLOTS MUST STILL BE WHAT EARLIER PASSES ESTABLISHED -- the table is a superset of
+        // that work, so if it disagrees, one of the two is wrong.
+        const auto s236 = sdk::PlayerMgr::subsystem_at(0, 236);
+        const auto s252 = sdk::PlayerMgr::subsystem_at(0, 252);
+        const auto s260 = sdk::PlayerMgr::subsystem_at(0, 260);
+        const auto subs = sdk::PlayerMgr::camera_sub_objects(0);
+        json_append_bool(out, "ss_agrees_with_earlier",
+                         s236.has_value() && s252.has_value() && s260.has_value() && subs.has_value() &&
+                             s236->object == subs->controller && s252->object == subs->player_camera &&
+                             s260->object == subs->physics_holder);
+        // AND THE RECORDED SIZES MUST BOUND THE DELEGATE ARRAYS FOUND INSIDE THEM: a node array ending past
+        // the recorded size would mean the size is too small.
+        bool sizes_bound_nodes = false;
+        if (s236.has_value() && s252.has_value() && s260.has_value()) {
+            const auto fits = [](const sdk::PlayerMgr::Subsystem& e) {
+                const auto nodes = sdk::Delegates::owned_nodes(e.object, e.size_lower_bound);
+                return !nodes.empty() &&
+                       (nodes.back().node - e.object) + sdk::Delegates::kNodeSize <= e.size_lower_bound;
+            };
+            sizes_bound_nodes = fits(*s236) && fits(*s252) && fits(*s260);
+        }
+        json_append_bool(out, "ss_sizes_bound_nodes", sizes_bound_nodes);
+        json_append_bool(out, "ss_lookup_refused",
+                         !sdk::PlayerMgr::subsystem_at(0, 224).has_value() &&
+                             !sdk::PlayerMgr::subsystem_at(0, 324).has_value() &&
+                             sdk::PlayerMgr::subsystem_slots(9).empty() &&
+                             !sdk::PlayerMgr::subsystem_count(9).has_value());
+    }
+
     // THE SECTION TEST, and the false positives it removes. A module-range test on the first dword admits
     // function pointers, which is what over-reported the player's sub-objects by a factor of three.
     {

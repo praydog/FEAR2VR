@@ -4509,6 +4509,44 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE PLAYER'S SUBSYSTEM TABLE -------------------------------------------------------
+            //
+            // The player holds 23 subsystems in a contiguous table at +228..+320, all built by one
+            // constructor. Three were mapped individually over earlier passes; the table was there to be
+            // enumerated the whole time, which is the second such case in three passes.
+            double ss_s = 0.0, ss_i = 0.0, ss_o = 0.0;
+            bool ss_vd = false, ss_nn = false, ss_ae = false, ss_sb = false, ss_lr = false,
+                 ss_288 = false, ss_312i = false, ss_312o = false;
+            check(json_double(body, "ss_slots", ss_s) && ss_s == 24.0, "the table spans 24 four-byte slots");
+            check(json_double(body, "ss_instances", ss_i) && ss_i == 23.0,
+                  "23 of them hold validated class instances");
+            check(json_double(body, "ss_owner_agrees", ss_o) && ss_o == 22.0,
+                  "22 carry the owner back-pointer -- NOT all 23, which retracts the previous pass's claim");
+            check(json_bool(body, "ss_all_nonnull", ss_nn) && ss_nn,
+                  "every slot in the span holds a non-null pointer");
+            check(json_bool(body, "ss_vtables_distinct", ss_vd) && ss_vd,
+                  "no two subsystems share a vtable, so they are 23 distinct classes");
+
+            // THE TWO EXCEPTIONS, asserted as exceptions. Tolerating them silently would let the table's
+            // shape drift without any test noticing.
+            check(json_bool(body, "ss_288_not_instance", ss_288) && ss_288,
+                  "+288 is not a class instance -- its first dword is a heap address");
+            check(json_bool(body, "ss_312_is_instance", ss_312i) && ss_312i,
+                  "+312 IS a class instance");
+            check(json_bool(body, "ss_312_owner_differs", ss_312o) && ss_312o,
+                  "yet its +4 is not the player, which is why the back-pointer is a heuristic");
+
+            // THE TABLE MUST AGREE WITH THE INDIVIDUAL MAPPING that preceded it. Two records of the same
+            // three objects, and a disagreement means one of them is wrong.
+            check(json_bool(body, "ss_agrees_with_earlier", ss_ae) && ss_ae,
+                  "the table's +236/+252/+260 are the same objects camera_sub_objects returns");
+            // AND THE RECORDED SIZES MUST CONTAIN THE DELEGATE ARRAYS. A size too small would cut an array
+            // short, so this cross-checks the ctor-derived sizes against an independent measurement.
+            check(json_bool(body, "ss_sizes_bound_nodes", ss_sb) && ss_sb,
+                  "each recorded size lower bound contains that object's whole delegate node array");
+            check(json_bool(body, "ss_lookup_refused", ss_lr) && ss_lr,
+                  "offsets outside the span and an out-of-range slot are all refused");
+
             // ---- "POINTS INTO THE MODULE" IS NOT "IS A VTABLE" ---------------------------------------
             //
             // A scan of the player for sub-objects tested candidates by asking whether their first dword
