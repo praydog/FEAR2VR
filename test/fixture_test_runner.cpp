@@ -8333,6 +8333,8 @@ int main(int argc, char** argv) {
                     const double mid = full_l + (full_r - full_l) * 0.5;
                     // Rounded to whole pixels by the engine (+0.5 then truncate), so allow one pixel rather
                     // than inventing a wider window.
+                    printf("[fixture] split viewports: full [%.0f..%.0f] left [%.0f..%.0f] "
+                           "right [%.0f..%.0f] mid %.1f\n", full_l, full_r, ll, lr, rl, rr2, mid);
                     check(ll == full_l && lr > mid - 1.5 && lr < mid + 1.5,
                           "a left-eye split yields the LEFT half of the target in pixels");
                     check(rr2 == full_r && rl > mid - 1.5 && rl < mid + 1.5,
@@ -8471,6 +8473,9 @@ int main(int argc, char** argv) {
                 check(chk >= (reb1 - reb0) - 1.0,
                       "every rebuild in the window was verified, so the zero-inconsistency count covers them "
                       "rather than a sample");
+                printf("[fixture] frustum centre: requested 0.12, record holds %.5f "
+                       "(rebuilds %.0f->%.0f, checked %.0f, inconsistent %.0f)\n",
+                       applied, reb0, reb1, chk, bad);
                 check(applied > 0.11 && applied < 0.13,
                       "the record holds the centre that was asked for");
                 check(w2s,
@@ -8488,6 +8493,89 @@ int main(int argc, char** argv) {
                 double eye_now = -1.0;
                 check(json_double(pb4, "cp_eye", eye_now) && eye_now == 0.0,
                       "and the override releases, so the suite leaves the view as it found it");
+            }
+        }
+
+        // ---- PER-PIECE VISIBILITY, AND THE CAVEAT IT RETIRES --------------------------------
+        //
+        // `model_piece_hidden`'s own comment said the reader was "trustworthy in mechanism and
+        // untested in the field": every hide bit was clear on all 215 models, so the live data
+        // could not corroborate it. A field nothing ever sets is a mapping nobody has checked.
+        //
+        // Setting one checks it, and does so with no baseline: the WRITER is ILTModel slot 9,
+        // which computes `object + 4*(piece>>5) + 268` -- and 268 is 0x10C, the same offset the
+        // READER at slot 8 tests. Two independent engine functions, one field, a round trip that
+        // must agree. That is the strongest form available here, and it is why this is asserted
+        // through the engine's getter rather than by reading the mask ourselves.
+        //
+        // FOR VR this is how the player's own head and duplicate arms come off the screen while
+        // their sockets and animation carry on, so a weapon on a hidden arm still tracks.
+        {
+            std::string pb;
+            if (http::get(port, "/sdk/piece", resp)) {
+                pb = http::body_of(resp);
+            }
+            bool piece_ok = false;
+            double piece_count = -1.0, hidden0 = -1.0;
+            const bool have = json_bool(pb, "ok", piece_ok) && piece_ok &&
+                              json_double(pb, "piece_count", piece_count) &&
+                              json_double(pb, "hidden", hidden0);
+            if (have && piece_count > 0.0) {
+                check(true, "the player's model enumerates pieces, so per-piece visibility has "
+                            "something to act on");
+                check(hidden0 == 0.0,
+                      "and none of them starts hidden, so a hide below is a state CHANGE rather "
+                      "than a reading of what was already true");
+
+                // Pick a piece by name from the report rather than hardcoding one: piece
+                // numbering and naming are per-asset, and this suite must not encode this
+                // character's art.
+                std::string first_name;
+                const size_t np = pb.find("\"name\":\"");
+                if (np != std::string::npos) {
+                    const size_t b = np + 8;
+                    const size_t e = pb.find('"', b);
+                    if (e != std::string::npos) {
+                        first_name = pb.substr(b, e - b);
+                    }
+                }
+                check(!first_name.empty(), "a piece reports a name, which is what a mod hides by");
+
+                if (!first_name.empty()) {
+                    char url[256];
+                    snprintf(url, sizeof(url), "/sdk/piece?name=%s&hide=1", first_name.c_str());
+                    http::get(port, url, resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    std::string hb;
+                    if (http::get(port, "/sdk/piece", resp)) {
+                        hb = http::body_of(resp);
+                    }
+                    double hidden1 = -1.0;
+                    check(json_double(hb, "hidden", hidden1) && hidden1 == 1.0,
+                          "hiding a piece through ILTModel's setter reads back as hidden through "
+                          "its GETTER -- writer and reader agree on the field, which is what the "
+                          "'untested in the field' caveat was waiting for");
+
+                    // AND IT COMES BACK OFF. Hidden pieces are engine state that outlives this
+                    // process, so a mod that hides something must be able to restore it -- and a
+                    // suite that hides the player's head and leaves it hidden has mutated the
+                    // fixture for every later check and for the player.
+                    if (http::get(port, "/sdk/piece?unhide_all=1", resp)) {
+                        const std::string ub = http::body_of(resp);
+                        double changed = -1.0;
+                        check(json_double(ub, "changed", changed) && changed == 1.0,
+                              "unhiding reports exactly the one piece it changed, so the count "
+                              "reflects real transitions rather than a blanket write");
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    std::string rb2;
+                    if (http::get(port, "/sdk/piece", resp)) {
+                        rb2 = http::body_of(resp);
+                    }
+                    double hidden2 = -1.0;
+                    check(json_double(rb2, "hidden", hidden2) && hidden2 == 0.0,
+                          "and the model is left exactly as it was found, with nothing hidden");
+                }
             }
         }
 
@@ -8576,6 +8664,28 @@ int main(int argc, char** argv) {
                         const std::string tb = http::body_of(resp);
                         return json_vec3(tb, "rhand", h) && json_vec3(tb, "muzzle", m);
                     };
+                    // THE ARM IS ANIMATED, so a bare before/after comparison measures the idle
+                    // sway as much as the override. The first version of this asserted the hand
+                    // returned to its exact world position after release and failed once in four
+                    // runs for exactly that reason -- the same "two values sampled at different
+                    // times" trap this suite has already been bitten by twice.
+                    //
+                    // So the animation's OWN drift over the same interval is measured first, with
+                    // no override active, and every comparison below is judged against it. A real
+                    // fault is wrong by units; sway is wrong by whatever sway is, and saying so
+                    // out loud is what makes the tight bounds legitimate.
+                    double hd0[3], md0[3], hd1[3], md1[3];
+                    double drift_h = 0.0, drift_m = 0.0;
+                    if (hand_muzzle(hd0, md0)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                        if (hand_muzzle(hd1, md1)) {
+                            drift_h = dist3(hd0, hd1);
+                            drift_m = dist3(md0, md1);
+                        }
+                    }
+                    printf("[fixture] idle drift over the comparison window: hand %.4f muzzle %.4f\n",
+                           drift_h, drift_m);
+
                     double h0[3], m0[3], h1[3], m1[3], h2[3], m2[3];
                     const bool base_ok = hand_muzzle(h0, m0);
                     http::get(port, "/vr/bone?x=30&y=0&z=0", resp);
@@ -8586,9 +8696,12 @@ int main(int argc, char** argv) {
                     if (base_ok && moved_ok) {
                         const double dh = dist3(h0, h1);
                         const double dm = dist3(m0, m1);
-                        check(fabs(dh - 30.0) < 0.5,
+                        // Bound = the measured sway plus a little, never a number picked to pass.
+                        // At 30 units of commanded displacement the sway is ~0.01, so this stays a
+                        // tight check rather than a widened one.
+                        check(fabs(dh - 30.0) <= drift_h + 0.5,
                               "displacing the bone by 30 moves the hand socket by 30 in world space");
-                        check(fabs(dm - 30.0) < 0.5,
+                        check(fabs(dm - 30.0) <= drift_m + 0.5,
                               "and moves the WEAPON's muzzle by the same 30 -- the attachment follows the "
                               "bone, which is the whole mechanism a VR hand needs");
                     }
@@ -8598,8 +8711,15 @@ int main(int argc, char** argv) {
                     http::get(port, "/vr/bone?x=0&y=0&z=0", resp);
                     std::this_thread::sleep_for(std::chrono::milliseconds(600));
                     if (base_ok && hand_muzzle(h2, m2)) {
-                        check(dist3(h0, h2) < 0.01 && dist3(m0, m2) < 0.01,
-                              "releasing the offset puts hand and muzzle back exactly where they were");
+                        // Judged against the drift measured above, doubled because two intervals
+                        // have elapsed since the baseline. What this still catches is the failure
+                        // that matters: an override that does not come off leaves 30 units behind,
+                        // which no amount of idle sway accounts for.
+                        const double back_h = dist3(h0, h2);
+                        const double back_m = dist3(m0, m2);
+                        check(back_h <= 2.0 * drift_h + 0.05 && back_m <= 2.0 * drift_m + 0.05,
+                              "releasing the offset puts hand and muzzle back where the animation "
+                              "would have had them, so nothing of the override is left behind");
                     }
                 }
 

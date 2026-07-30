@@ -1338,6 +1338,49 @@ constexpr uintptr_t kGetSocketTransformRva = 0x42B775 - 0x400000;
 // count, which `retn 10h` had already pinned at four dwords.
 using GetSocketTransformFn = int(__stdcall*)(const void*, uint32_t, float*, int);
 
+// ---- ILTModel SLOT 9: SetPieceHideStatus -------------------------------------------------
+//
+//     int __stdcall (HOBJECT obj, unsigned piece, char hidden)
+//
+// Read off 0x42B518. It validates the object (`type == OT_MODEL`), returns 70 (LT_NOCHANGE)
+// when the bit already holds the requested value, and otherwise flips one bit in the mask at
+// object + 268 -- which is 0x10C, i.e. exactly `piece_hide_bits` in the schema. That the WRITER
+// lands on the same offset the READER tests is what turns this field from a one-function
+// inference into a two-function fact.
+//
+// Slot 9 is named ServerModelLT_SetPieceHideStatus in the IDB; the client and server model
+// interfaces share the implementation, and it is reached here through ILTModel.Client.
+constexpr size_t kSlotSetPieceHideStatus = 9;
+constexpr uintptr_t kSetPieceHideStatusRva = 0x42B518 - 0x400000;
+using SetPieceHideFn = int(__stdcall*)(const void*, uint32_t, char);
+
+// LT_OK and LT_NOCHANGE. The second is a success for a caller who asked for a state the model
+// is already in -- refusing it would make "hide this" fail on a piece that is already hidden.
+constexpr int kLtOkPiece = 0;
+constexpr int kLtNoChange = 70;
+
+SetPieceHideFn resolve_set_piece_hidden() {
+    auto* iface = interfaces::ILTModel::get_client();
+    const auto* exe = Modules::get().exe();
+    if (iface == nullptr || exe == nullptr) {
+        return nullptr;
+    }
+    void* const* vt = nullptr;
+    if (!sdk::mem::copy(&vt, reinterpret_cast<uintptr_t>(iface), sizeof(vt)) || vt == nullptr) {
+        return nullptr;
+    }
+    void* entry_ptr = nullptr;
+    if (!sdk::mem::copy(&entry_ptr, reinterpret_cast<uintptr_t>(&vt[kSlotSetPieceHideStatus]),
+                        sizeof(entry_ptr))) {
+        return nullptr;
+    }
+    const auto entry = reinterpret_cast<uintptr_t>(entry_ptr);
+    if (entry - exe->base != kSetPieceHideStatusRva) {
+        return nullptr;
+    }
+    return reinterpret_cast<SetPieceHideFn>(entry);
+}
+
 // Verifies the slot and returns the entry, or nullptr.
 GetSocketTransformFn resolve_get_socket_transform() {
     auto* iface = interfaces::ILTModel::get_client();
@@ -1403,6 +1446,48 @@ int64_t seh_call_get_socket_transform(GetSocketTransformFn fn, const void* obj,
 }
 
 }  // namespace
+
+bool model_set_piece_hidden(const regenny::LTObject* obj, size_t index, bool hidden) {
+    if (obj == nullptr) {
+        return false;
+    }
+    const auto count = model_piece_count(obj);
+    if (!count.has_value() || index >= *count) {
+        return false;
+    }
+    auto* fn = resolve_set_piece_hidden();
+    if (fn == nullptr) {
+        return false;
+    }
+    const int rc = fn(obj, static_cast<uint32_t>(index), hidden ? 1 : 0);
+    return rc == kLtOkPiece || rc == kLtNoChange;
+}
+
+bool model_set_piece_hidden(const regenny::LTObject* obj, const char* name, bool hidden) {
+    const auto idx = model_find_piece(obj, name);
+    if (!idx.has_value()) {
+        return false;
+    }
+    return model_set_piece_hidden(obj, *idx, hidden);
+}
+
+size_t model_unhide_all_pieces(const regenny::LTObject* obj) {
+    const auto count = model_piece_count(obj);
+    if (!count.has_value()) {
+        return 0;
+    }
+    size_t changed = 0;
+    for (size_t i = 0; i < *count; ++i) {
+        // Only count the ones that were actually hidden: the engine's own NOCHANGE return is
+        // folded into success above, so asking it is the only way to know.
+        const auto was = model_piece_hidden(obj, i);
+        if (was.has_value() && *was && model_set_piece_hidden(obj, i, false)) {
+            ++changed;
+        }
+    }
+    return changed;
+}
+
 
 // DIAGNOSTIC: the engine's own return code from the last call, and the byte its wrapper gates
 // on. "The call failed" is not actionable; the code it returned names the reason.

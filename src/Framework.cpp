@@ -9916,6 +9916,69 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.piece = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const auto player = sdk::CClientShell::local_player(0);
+        const regenny::LTObject* obj = player.has_value() ? player->object : nullptr;
+
+        // Which model: the player by default, or any loaded model matched by path substring,
+        // because "hide the arms" usually means the viewmodel rather than the player capsule.
+        const std::string mdl = webapi_query_string(q, "model");
+        if (!mdl.empty()) {
+            const auto found = sdk::find_models(mdl, 1);
+            obj = found.empty() ? nullptr : found.front().object;
+        }
+
+        size_t changed = 0;
+        bool acted = false;
+        if (obj != nullptr) {
+            if (webapi_query_int(q, "unhide_all", 0) != 0) {
+                changed = sdk::model_unhide_all_pieces(obj);
+                acted = true;
+            } else {
+                const std::string name = webapi_query_string(q, "name");
+                const bool hide = webapi_query_int(q, "hide", 1) != 0;
+                if (!name.empty()) {
+                    acted = sdk::model_set_piece_hidden(obj, name.c_str(), hide);
+                } else if (q.find("index") != q.end()) {
+                    acted = sdk::model_set_piece_hidden(
+                        obj, static_cast<size_t>(webapi_query_int(q, "index", 0)), hide);
+                }
+            }
+        }
+
+        // Report every piece with its name and CURRENT hidden state, read back through the
+        // engine's own getter -- which is what makes the write verifiable rather than assumed.
+        std::string pieces = "[";
+        size_t total = 0, hidden_now = 0;
+        if (obj != nullptr) {
+            total = sdk::model_piece_count(obj).value_or(0);
+            for (size_t i = 0; i < total; ++i) {
+                const auto nm = sdk::model_piece_name(obj, i);
+                const auto hid = sdk::model_piece_hidden(obj, i);
+                if (hid.value_or(false)) {
+                    ++hidden_now;
+                }
+                char one[224];
+                snprintf(one, sizeof(one), "%s{\"i\":%zu,\"name\":\"%s\",\"hidden\":%s}",
+                         pieces.size() > 1 ? "," : "", i,
+                         nm.has_value() ? nm->c_str() : "?",
+                         hid.value_or(false) ? "true" : "false");
+                pieces += one;
+            }
+        }
+        pieces += "]";
+
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", obj != nullptr).b("acted", acted)
+              .u("piece_count", total).u("hidden", hidden_now).u("changed", changed)
+              .raw("pieces", pieces);
+        }
+        return out;
+    };
+
     handlers.skeleton = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         const std::string filter = webapi_query_string(q, "filter");

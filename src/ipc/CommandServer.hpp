@@ -167,6 +167,11 @@ using BoneFn = std::function<std::string(const std::string& request_target)>;
 // THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
 // pick from when it wants to drive "the right hand" rather than "node 37".
 using SkeletonFn = std::function<std::string(const std::string& request_target)>;
+
+// PER-PIECE VISIBILITY -- /sdk/piece. MUTATES the model: hiding a piece suppresses its draw
+// while the geometry, its sockets and its animation carry on, which is how a VR mod removes a
+// duplicate arm or the player's own head without disturbing anything mounted on them.
+using PieceFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -193,6 +198,7 @@ struct Handlers {
     HudFn hud{};                     // optional; /vr/hud 404s without it -- MUTATES where the HUD lands
     BoneFn bone{};                   // optional; /vr/bone 404s without it -- MUTATES the skeleton
     SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
+    PieceFn piece{};                 // optional; /sdk/piece 404s without it -- MUTATES visibility
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

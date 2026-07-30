@@ -779,6 +779,38 @@ std::optional<size_t> model_piece_count(const regenny::LTObject* obj);
 // elsewhere). nullopt when no piece matches.
 std::optional<size_t> model_find_piece(const regenny::LTObject* obj, const char* name);
 
+// ---- HIDING A PIECE, WHICH IS WHAT THE READER ABOVE WAS FOR -----------------------
+//
+// Sets or clears the engine's per-piece visibility bit by calling ILTModel's OWN entry
+// (vtable slot 9), not by writing the mask. That matters even though the entry's body is
+// three instructions: calling it keeps any future side effect, and it means a consumer is
+// exercising the same path the game does rather than a parallel one.
+//
+// THIS IS THE ANSWER TO THE `model_piece_hidden` CAVEAT. That comment says the field is
+// unexercised in the sampled scene, so the reader is "trustworthy in mechanism and untested
+// in the field". Setting a bit and reading it back through the engine's getter tests it: two
+// independent engine functions, one field, and a round trip that must agree.
+//
+// FOR VR this is how the player's own head, body or duplicate arms come off the screen while
+// the rest of the model keeps animating and keeps its sockets -- geometry stays, only the
+// draw is suppressed, so a weapon mounted on a hidden arm still tracks.
+//
+// Returns false when the object is not a model, the index is out of range, or the engine
+// rejected the call. NOTE the engine reports LT_NOCHANGE (70) when the bit already holds the
+// requested value; that is treated as SUCCESS here, since the caller's intent is satisfied.
+bool model_set_piece_hidden(const regenny::LTObject* obj, size_t index, bool hidden);
+
+// The same, by piece NAME -- "the head", not "piece 4". Resolves through model_find_piece,
+// so it is case-insensitive and follows whatever the live asset defines.
+bool model_set_piece_hidden(const regenny::LTObject* obj, const char* name, bool hidden);
+
+// Clear every piece's hide bit on a model. The teardown a mod needs: a hidden piece is
+// engine state that OUTLIVES the mod, so anything that hides something must be able to put
+// the model back, and a per-piece loop at each call site is how one gets missed.
+//
+// Returns the number of pieces whose state actually changed.
+size_t model_unhide_all_pieces(const regenny::LTObject* obj);
+
 
 // How a mod finds the object it cares about.
 //

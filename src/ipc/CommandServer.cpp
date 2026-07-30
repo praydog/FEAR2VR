@@ -138,6 +138,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 10, "/sdk/piece") == 0) {
+        if (!g_handlers.piece) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no piece handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.piece(path));
+        return;
+    }
+
     if (path.compare(0, 13, "/sdk/skeleton") == 0) {
         if (!g_handlers.skeleton) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no skeleton handler registered\"}");

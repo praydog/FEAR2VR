@@ -4843,3 +4843,47 @@ Consequence, and what to do about it:
   drift silently. `sdk::NodeControlCell` is the worked example.
 - The fix, for whoever has ReGenny in a debugger: null-check `m_sdk` in the Lua `sdk()` binding the
   same way the menu action does.
+
+## Per-piece visibility, and the caveat it retires
+
+`model_piece_hidden`'s own comment said the reader was "trustworthy in mechanism and untested in
+the field": every hide bit was clear on all 215 models, so nothing in the scene could corroborate
+it. A field nothing ever sets is a mapping nobody has checked.
+
+ILTModel slot 9 (`ServerModelLT_SetPieceHideStatus`, 0x42B518) is the writer, and it settles the
+question without a baseline:
+
+```c
+if ((hide != 0) == GetPieceHideBit(obj, piece)) return 70;   // LT_NOCHANGE
+v3 = 1 << (piece & 0x1F);
+v4 = (DWORD*)(obj + 4*(piece >> 5) + 268);                   // 268 == 0x10C == piece_hide_bits
+if (hide) *v4 |= v3; else *v4 &= ~v3;
+```
+
+The WRITER computes the same offset the READER (slot 8) tests. Two independent engine functions,
+one field. Live round trip on the player: hide `arms` -> getter reports hidden, hide
+`Phead_Group` -> two hidden, `unhide_all` -> changed 2, nothing hidden. The caveat is retired.
+
+Live the player model has 11 pieces, and they are exactly what a VR mod wants to switch off:
+`Phead_Group`, `Phair_Group`, `Pglasses_Group`, `arms`, `arms_shadow`, `body`, `head_shadow`,
+`pistol_Group`.
+
+**Limits, stated rather than left implied.** Only dword 0 of the two-dword mask is exercised --
+no sampled asset has 32+ pieces, so the `piece >> 5` path is unverified. And the VISUAL effect is
+NOT confirmed: the desktop capture in this session returns a black frame while the engine reports
+a live world and a climbing pass count, so a screenshot cannot presently corroborate anything.
+What is proven is the engine's own state, through the engine's own getter.
+
+## A comparison against an ANIMATED value needs the animation measured first
+
+The bone-override test asserted that releasing the offset returned the hand to its exact world
+position. It failed once in four runs, and it was wrong in the same way the weapon-socket check
+was wrong: the arm is animated, so a before/after comparison across a second of wall clock
+measures idle sway as much as it measures the override.
+
+The fix is the one that file already prescribes -- publish the scale the residual must be judged
+against. The suite now samples the hand and muzzle twice over the SAME interval with no override
+active, prints the drift, and judges every later comparison against it. In a settled world the
+drift is 0.0000, so the check is exactly as tight as before; when the player is moving it widens
+by precisely as much as the world moved and no more. What it still catches is the failure that
+matters -- an override that does not come off leaves 30 units behind, which no sway explains.
