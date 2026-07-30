@@ -4236,3 +4236,51 @@ delta was `0 - 0` on an absent key; and `fk_writes` only counts while FocusKeepe
 it was not. `/health` showed `frame_ticks: 19988`. Absent-key arithmetic read as a measurement -- the same
 shape as the `armor is 147` class of error, and the reason a missing key must never read as a value.
 
+## Alt-tab does not pause the game through the focus flags. It pauses the TIMER.
+
+Chased the focus flags for most of a session and got it wrong twice. The watchpoint settled it in minutes.
+
+Measured while alt-tabbed, payload injected and reporting:
+
+    client_active      True     <- the engine still considers itself ACTIVE
+    lost_focus         True     <- main loop takes Sleep(5): ~118/s instead of ~300/s
+    eng_clock_paused   TRUE     <- scale 0.0, millisecond accumulator flat over 2 seconds
+    UpdateViewPose     0 calls
+    frame hook         236 ticks in 2s -- running the whole time
+
+So the world stops because THE GAME PAUSES THE ENGINE TIMER, not because the engine thinks it is inactive.
+
+**Found by trapping, not scanning.** `Engine::client_time_addresses()` publishes the clock's address by
+walking the same pointer chain the engine's accessor walks. A write watch on it named the store -- `add
+[esi+30h], eax` -- and the stack named `CClientMgr__Update -> CLTTimer_AdvanceByWallClock ->
+CLTTimer_TickChildren`. Decompiling the innermost writer gave the whole node:
+
+    +0x28 last applied step   +0x30 ms accumulator   +0x38 double seconds
+    +0x48/+0x4C rational time SCALE                  +0x50/+0x54 step clamps (min 0, max 100 ms)
+    +0x58 PAUSED byte -- when set, the tick multiplies its delta by 0.0
+
+A second watch, on that pause byte, named `ILTTimer::SetPaused` (slot 20 of `g_vtbl_CLTTimer`,
+`CLTTimerClient`, `CLTTimerServer`) with **gameclient.dll** frames above it. The pause policy is the GAME's.
+
+**The fix is a hook on that one function**, refusing the request while the engine's own latch says focus was
+lost, plus a one-shot clear of a pause that was already in effect when the mod was switched on. Both halves
+were needed and each was proven separately: enabling while already paused reported `0 pause requests` and a
+still-frozen clock until the clear was added, and the game then re-requests the pause repeatedly -- 24 requests,
+24 refused -- so the clear alone would have been undone.
+
+Verified: `clock advancing True`, 3371 ms per 3 s wall, while alt-tabbed.
+
+**What is deliberately NOT done.** `lost_focus` is left alone even though clearing it would remove the
+main-loop `Sleep(5)` and restore full rate: the same flag gates cursor centring, so clearing it warps the mouse
+into whatever window the user is actually working in. ~118 iterations a second is plenty for a world to tick.
+A pause requested while the window IS focused -- the pause menu -- passes through untouched.
+
+**Why the earlier attempt failed, kept as the lesson.** Forcing `g_ClientGlob_bClientActive` true from the
+per-frame hook was measured useless AND dangerous: 2473 re-asserts over 18 s, the flag never once observed
+cleared, the clock advancing 0.000 -- then the process hung, because holding it true runs the DirectInput poll
+and the render path against an unfocused window every iteration. Same lesson as the camera rotation: when an
+owner rewrites a value, fighting the store loses. Intercept the call that DECIDES.
+
+**Still suspended while unfocused:** `UpdateViewPose` and the renderer (`renderer_state` 1 rather than 4). Time
+runs; the view and render path do not. That is a separate gate and remains unmapped.
+

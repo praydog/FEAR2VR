@@ -127,6 +127,70 @@ Rename the function/globals in IDA via MCP. For the full mechanics (IDA →
 ReGenny live-verify → `.genny` authoring → codegen), see
 `reversing/MAPPING_WORKFLOW.md`.
 
+### 1b. Don't know where it's read or written? Trap it — `/watch/*`
+
+Before reasoning about *who* touches a field, measure it. The mod exposes hardware
+data breakpoints (DR0–DR3 + a vectored exception handler, four slots, byte-exact):
+
+```
+/watch/arm?addr=0x02938740&size=4&type=write|rw|exec&max_hits=4000
+/watch/report      -> accessors, registers, value at trap, caller candidates
+/watch/clear?all=1
+```
+
+Each hit reports `module + offset + static`, so it goes straight into the right IDB,
+plus `ecx` separately (`__thiscall`'s `this` — the difference between *"writes +144
+on something"* and *"writes +144 on THE camera"*).
+
+**Use this instead of scanning the binary for stores to an offset.** That scan
+answers a different question than you asked and has produced a plausible wrong
+answer every time it was tried in this project — 67 unrelated functions, in the case
+that established the rule. `reversing/MAPPING_WORKFLOW.MD` records each instance.
+
+**The loop is: trap → read in IDA → walk up → hook the decider.**
+
+The engine clock is the worked example, and it ends in a shipped fix:
+
+1. Publish the address (`Engine::client_time_addresses()` walks the same pointer
+   chain the engine's own accessor does).
+2. `/watch/arm` a **write** watch on it → the store is `add [esi+30h], eax`, and the
+   caller candidates are `CClientMgr__Update`, `CLTTimer_AdvanceByWallClock`,
+   `CLTTimer_TickChildren`.
+3. Decompile the innermost writer → the whole timer-node layout falls out,
+   including a **pause byte** at `+0x58` and a rational **time scale** at
+   `+0x48/+0x4C`.
+4. Watch the *pause byte* → its writer is `ILTTimer::SetPaused`, and the stack above
+   it names **gameclient.dll** frames: the pause policy is the game's, not the
+   engine's.
+5. Hook that one function and refuse the request while the window is unfocused →
+   the world no longer freezes on alt-tab. Measured: 24 pause requests, 24 refused,
+   clock advancing 3371 ms per 3 s while alt-tabbed.
+
+That chain replaced an earlier guess — that the *focus flags* stopped the world —
+which was wrong, and which cost a hung game to disprove.
+
+**Two hardware facts the suite asserts rather than trusting memory:**
+
+- A **data** watch is a TRAP: the reported address is the instruction *after* the
+  accessor, hence the field name `eip_after`. An **execute** watch is a FAULT and
+  reports the instruction itself (`is_fault`), and it requires `EFlags.RF` or the
+  game locks up re-faulting forever.
+- x86 has **no read-only data breakpoint**. A read request is served by
+  read-or-write, and the reply says so instead of pretending.
+
+**Watch targets in tests must not need a human.** A check that only fires when
+somebody moves the mouse is a coincidence detector. The suite watches
+`g_ClientGlob_bClientActive` (read ~480×/s at rest) and `LTClient_IsClientActive`
+(executed ~380×/s) — no world, no player, no input. The first version of that test
+watched the camera's rotation and passed only by accident: the engine *elides* that
+write when the view doesn't change (0 hits idle, 957 with the mouse moving).
+
+**Arming across an uninject is deliberate.** Debug registers live in every thread's
+context and the handler lives in code about to be unmapped, so the suite leaves a
+watch armed on purpose before `/unload`. The existing "game process survived"
+assertion is what covers the teardown ordering, and it only means something if
+something was armed.
+
 ### 2. Write the SDK surface
 Class-based, REFramework convention: resolution lives in the accessor itself
 (function-local statics), ownership lives in the class that owns the concept

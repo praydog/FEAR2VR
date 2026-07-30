@@ -52,6 +52,73 @@ public:
     // nullopt when either accessor could not be located or the call faulted.
     static std::optional<ClientTime> client_time();
 
+    // WHERE THE CLOCK LIVES, so a consumer can put a hardware watchpoint on it.
+    //
+    // Exposed for one reason: "what updates this, and what stops it" is a question about the WRITER, and the
+    // only honest way to find a writer is to trap the store. Handing out a value cannot answer it; handing out
+    // the address can. See reversing/MAPPING_WORKFLOW.MD -- scanning for stores to a struct offset has produced
+    // a plausible wrong answer every time it was tried in this project.
+    //
+    // Both fields live on one object reached through the same chain the engine's own accessors walk:
+    // *(*(global) + 0x13F4), then +0x38 for the float seconds and +0x30 for the millisecond dword. Resolved
+    // live, because the intermediate pointers are runtime values.
+    struct ClockAddresses {
+        uintptr_t seconds{};       // float
+        uintptr_t milliseconds{};  // uint32
+        uintptr_t owner{};         // the object holding both, for identifying it in a report
+    };
+    static std::optional<ClockAddresses> client_time_addresses();
+
+    // THE TIMER NODE BEHIND THE CLOCK, and the answer to "what stops engine time".
+    //
+    // Found the way AGENT.MD prescribes: a hardware write watch on the live millisecond field named the store
+    // (0x00415A1A), the stack named its callers, and the decompiled function gave the layout. No offset
+    // scanning, no guessing -- see reversing/MAPPING_WORKFLOW.MD for why that distinction is load-bearing here.
+    //
+    // The engine keeps a TREE of timer nodes; a parent's scale multiplies down it. Time stops when `paused` is
+    // set or the scale numerator is zero -- NOT when the window loses focus. The focus flags gate the simulation
+    // steps and the main-loop sleep; they do not touch this. A clock frozen while our frame hook still ran at
+    // ~137/s was this, and attributing it to alt-tab was wrong.
+    //
+    // For VR the interesting fields are the two clamps: max_step is the frame-delta cap, and a headset that
+    // misses frames is exactly the case that hits it.
+    struct ClockState {
+        bool paused{};             // +0x58
+        int32_t scale_numerator{}; // +0x48
+        int32_t scale_denominator{};
+        int32_t min_step_ms{};     // +0x50 -- a short frame is clamped UP to this
+        int32_t max_step_ms{};     // +0x54 -- a long frame is clamped DOWN to this
+        int32_t last_step_ms{};    // +0x28 -- what the previous tick actually applied
+        int32_t milliseconds{};    // +0x30 -- the accumulator itself
+        double seconds{};          // +0x38
+
+        // Whether time is currently advancing at all, which is the question a consumer has.
+        bool advancing() const { return !paused && scale_numerator != 0 && scale_denominator != 0; }
+        // 1.0 at normal speed. 0 when paused, because that is what the tick computes.
+        double scale() const {
+            if (paused || scale_denominator == 0) {
+                return 0.0;
+            }
+            return static_cast<double>(scale_numerator) / static_cast<double>(scale_denominator);
+        }
+    };
+
+    // nullopt when the accessor could not be located or the pointer chain faulted.
+    static std::optional<ClockState> clock_state();
+
+    // ILTTimer::SetPaused(HLTTIMER, bool) -- slot 20 of g_vtbl_CLTTimer / CLTTimerClient /
+    // CLTTimerServer, __stdcall, writes the node's +0x58 byte and returns LT error 60 on a null handle.
+    //
+    // THIS IS WHAT PAUSES THE GAME ON ALT-TAB, established by a hardware write watch on the live pause byte:
+    // the store was here and the stack named gameclient.dll frames above it, so the policy belongs to the GAME
+    // rather than the engine. Handed out for interception, because a mod that wants the world to keep running
+    // while the desktop window is inactive must refuse the request at its choke point -- writing the byte back
+    // every frame would fight a writer instead of answering it, which this project has already measured to be
+    // both ineffective and unsafe on the focus flags.
+    //
+    // 0 when the pattern did not resolve.
+    static uintptr_t timer_set_paused_fn();
+
     // The engine's GLOBAL FORCE vector, copied out by the engine's own getter (dump
     // 0x405C39, __stdcall(float* out), reading CClientMgr+0x1440).
     //

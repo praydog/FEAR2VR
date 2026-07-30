@@ -8091,6 +8091,75 @@ int main(int argc, char** argv) {
             check(!json_has(body, "\"armed\":true"), "and no slot remains armed afterwards");
         }
 
+        // ---- THE ENGINE CLOCK, AND WHAT REALLY GATES IT --------------------------------------
+        //
+        // Mapped by pointing a write watch at the live millisecond field, reading the writer in IDA, and
+        // decoding the timer node from it. The checks below are the ones that would fail if any of those
+        // offsets were wrong, and the cross-check against the engine's OWN accessor is the load-bearing one:
+        // our fields and its return value are two independent routes to the same number.
+        {
+            std::string cb;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                cb = http::body_of(resp);
+            }
+            bool paused = false, advancing = false;
+            const bool have_clock = json_bool(cb, "eng_clock_paused", paused) &&
+                                    json_bool(cb, "eng_clock_advancing", advancing);
+            check(have_clock, "the engine timer node resolved through its own accessor's pointer chain");
+            if (have_clock) {
+                double scale = -1.0, lo = -1.0, hi = -1.0, ms = -1.0, secs = -1.0, own_secs = -1.0;
+                json_double(cb, "eng_clock_scale", scale);
+                json_double(cb, "eng_clock_min_step_ms", lo);
+                json_double(cb, "eng_clock_max_step_ms", hi);
+                json_double(cb, "eng_clock_ms", ms);
+                json_double(cb, "eng_clock_seconds", secs);
+                json_double(cb, "engine_seconds", own_secs);
+
+                // advancing is DERIVED from paused and the scale, so a disagreement means the derivation or
+                // one of the two offsets is wrong.
+                check(advancing == (!paused && scale > 0.0),
+                      "the clock's advancing verdict agrees with its own pause flag and time scale");
+                check(lo >= 0.0 && hi > 0.0 && lo <= hi,
+                      "the timer's step clamps are ordered -- min <= max, both non-negative");
+                check(ms > 0.0 && secs > 0.0,
+                      "the millisecond accumulator and the seconds field both read as live values");
+
+                // THE CROSS-VALIDATION. `engine_seconds` comes from calling the engine's own
+                // ClientTime_GetSeconds; `eng_clock_seconds` is our read of the field at node+0x38. They are
+                // sampled a request apart, so a small drift is expected and a large one means wrong offsets.
+                if (own_secs > 0.0) {
+                    const double drift = secs > own_secs ? secs - own_secs : own_secs - secs;
+                    check(drift < 2.0,
+                          "our timer-node seconds field agrees with the value the ENGINE'S OWN accessor "
+                          "returns -- two independent routes to one number, so the offset is right");
+                }
+                // Not asserted as a constant: it is a shipped tunable, and recording a value as an invariant
+                // is the `armor is 147` mistake this project has made four times. Its SHAPE is the claim.
+                printf("[fixture] engine timer: paused=%s scale=%.2f step clamp %.0f..%.0f ms\n",
+                       paused ? "YES" : "no", scale, lo, hi);
+            }
+
+            // ---- THE ALT-TAB PAUSE HOOK ------------------------------------------------------
+            //
+            // Never ENABLED here: it changes engine behaviour, and a suite that silently leaves the game
+            // unable to pause would be mutating the fixture. What is checked is that the choke point resolved
+            // and that its bookkeeping is coherent.
+            bool fk_hook = false, fk_on = true;
+            check(json_bool(cb, "fk_hook_installed", fk_hook) && fk_hook,
+                  "ILTTimer::SetPaused resolved and is hooked -- the choke point that freezes the world on "
+                  "alt-tab, found by watching its pause byte");
+            json_bool(cb, "fk_enabled", fk_on);
+            double req = -1.0, sup = -1.0, pass = -1.0;
+            if (json_double(cb, "fk_pause_requests", req) && json_double(cb, "fk_suppressed", sup) &&
+                json_double(cb, "fk_passed_through", pass)) {
+                check(req == sup + pass,
+                      "every pause request the detour saw was either refused or passed through -- the "
+                      "accounting closes exactly rather than approximately");
+                check(sup == 0.0 || fk_on,
+                      "nothing was refused unless refusing was switched on");
+            }
+        }
+
         // DOES IT ACTUALLY CATCH AN ACCESS? Two watches, both on things the engine touches CONTINUOUSLY WITH NO
         // PLAYER INPUT, because a check that needs a human to move the mouse is not a check -- it is a
         // coincidence detector. This block's first version depended on the camera's rotation being written every

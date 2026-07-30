@@ -30,6 +30,12 @@ static constexpr const char* kGetEngineHook =
 // double, `mov eax, [eax+30h]` (8B 40 30) for the millisecond count. The global's
 // address is wildcarded; the +0x13F4 displacement is not, because that is the field
 // identifying which manager member is being followed.
+// ILTTimer::SetPaused. A 25-byte leaf with no relocations, so the signature is fully literal:
+//   mov eax,[esp+4] / test eax,eax / jnz / push 3Ch / pop eax / jmp / mov cl,[esp+8] / mov [eax+58h],cl /
+//   xor eax,eax / retn 8
+static constexpr const char* kTimerSetPaused =
+    "8B 44 24 04 85 C0 75 05 6A 3C 58 EB 09 8A 4C 24 08 88 48 58 33 C0 C2 08 00";
+
 static constexpr const char* kClientTimeSeconds =
     "A1 ? ? ? ? 8B 80 F4 13 00 00 DD 40 38 C3";
 static constexpr const char* kClientTimeMillis =
@@ -139,6 +145,71 @@ std::optional<Engine::ClientTime> Engine::client_time() {
         return std::nullopt;
     }
     return out;
+}
+
+std::optional<Engine::ClockAddresses> Engine::client_time_addresses() {
+    // Walks the SAME chain the engine's getter walks, decoded from the accessor rather than assumed:
+    //   A1 <imm32>            mov eax, [global]        -- imm32 at +1
+    //   8B 80 F4 13 00 00     mov eax, [eax+0x13F4]
+    //   DD 40 38              fld dword ptr [eax+0x38]
+    static const uintptr_t s_sec = Modules::get().scan_exe(kClientTimeSeconds, "ClientTime_GetSeconds");
+    if (s_sec == 0) {
+        return std::nullopt;
+    }
+    // scan_exe returns a live address, and `mov eax, [imm32]` uses absolute addressing in 32-bit, so the
+    // operand IS the global's runtime address -- no rebasing arithmetic.
+    const auto global_slot = sdk::mem::read<uint32_t>(s_sec + 1);
+    if (!global_slot.has_value() || *global_slot == 0) {
+        return std::nullopt;
+    }
+    const auto manager = sdk::mem::read<uint32_t>(static_cast<uintptr_t>(*global_slot));
+    if (!manager.has_value() || *manager == 0) {
+        return std::nullopt;
+    }
+    const auto owner = sdk::mem::read<uint32_t>(static_cast<uintptr_t>(*manager) + 0x13F4);
+    if (!owner.has_value() || *owner == 0) {
+        return std::nullopt;
+    }
+    ClockAddresses out{};
+    out.owner = static_cast<uintptr_t>(*owner);
+    out.seconds = out.owner + 0x38;
+    out.milliseconds = out.owner + 0x30;
+    return out;
+}
+
+std::optional<Engine::ClockState> Engine::clock_state() {
+    const auto addrs = client_time_addresses();
+    if (!addrs.has_value()) {
+        return std::nullopt;
+    }
+    const uintptr_t node = addrs->owner;
+    ClockState out{};
+    const auto paused = sdk::mem::read<uint8_t>(node + 0x58);
+    const auto num = sdk::mem::read<int32_t>(node + 0x48);
+    const auto den = sdk::mem::read<int32_t>(node + 0x4C);
+    const auto lo = sdk::mem::read<int32_t>(node + 0x50);
+    const auto hi = sdk::mem::read<int32_t>(node + 0x54);
+    const auto last = sdk::mem::read<int32_t>(node + 0x28);
+    const auto ms = sdk::mem::read<int32_t>(node + 0x30);
+    const auto sec = sdk::mem::read<double>(node + 0x38);
+    // Fail closed: a partial read would hand back a plausible-looking node that is not one.
+    if (!paused || !num || !den || !lo || !hi || !last || !ms || !sec) {
+        return std::nullopt;
+    }
+    out.paused = *paused != 0;
+    out.scale_numerator = *num;
+    out.scale_denominator = *den;
+    out.min_step_ms = *lo;
+    out.max_step_ms = *hi;
+    out.last_step_ms = *last;
+    out.milliseconds = *ms;
+    out.seconds = *sec;
+    return out;
+}
+
+uintptr_t Engine::timer_set_paused_fn() {
+    static const uintptr_t s_fn = Modules::get().scan_exe(kTimerSetPaused, "ILTTimer::SetPaused");
+    return s_fn;
 }
 
 std::optional<Engine::ForceVector> Engine::global_force() {

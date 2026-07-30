@@ -6057,17 +6057,38 @@ std::string build_shader_params_json(bool include_write_probes) {
         // exact bob detector, and checks affected by bob can be mode-aware instead of the suite dictating a
         // graphics setting. Forcing it off would mean only ever testing a mode no player uses, and bob-on is
         // what exposed four real defects.
+        // THE CLOCK'S ADDRESS, published so a watchpoint can be pointed at it. This is the workflow AGENT.MD
+        // prescribes for "what updates X": publish the address, trap the store, then read the writer in IDA.
+        if (const auto ck = sdk::Engine::client_time_addresses()) {
+            char tmp[32];
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, ck->owner);
+            json_append_string(out, "eng_clock_owner", tmp);
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, ck->seconds);
+            json_append_string(out, "eng_clock_seconds_at", tmp);
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, ck->milliseconds);
+            json_append_string(out, "eng_clock_ms_at", tmp);
+        }
+        if (const auto cs = sdk::Engine::clock_state()) {
+            json_append_bool(out, "eng_clock_paused", cs->paused);
+            json_append_bool(out, "eng_clock_advancing", cs->advancing());
+            json_append_double(out, "eng_clock_scale", cs->scale(), 4);
+            json_append_double(out, "eng_clock_min_step_ms", static_cast<double>(cs->min_step_ms), 0);
+            json_append_double(out, "eng_clock_max_step_ms", static_cast<double>(cs->max_step_ms), 0);
+            json_append_double(out, "eng_clock_last_step_ms", static_cast<double>(cs->last_step_ms), 0);
+            json_append_double(out, "eng_clock_ms", static_cast<double>(cs->milliseconds), 0);
+            json_append_double(out, "eng_clock_seconds", cs->seconds, 3);
+        }
         json_append_bool(out, "ws_bob_active",
                          sdk::PlayerMgr::pose_generations_differ(0).value_or(false));
         {
             const auto fk = FocusKeeper::get().state();
-            json_append_bool(out, "fk_holding", fk.holding);
-            json_append_bool(out, "fk_flag_resolved", fk.flag_resolved);
+            json_append_bool(out, "fk_enabled", fk.enabled);
+            json_append_bool(out, "fk_hook_installed", fk.hook_installed);
             json_append_bool(out, "fk_window_active", fk.window_active);
-            json_append_double(out, "fk_writes", static_cast<double>(fk.writes), 0);
-            json_append_double(out, "fk_observed_cleared", static_cast<double>(fk.observed_cleared), 0);
-            json_append_double(out, "fk_input_while_inactive",
-                               static_cast<double>(fk.input_while_inactive), 0);
+            json_append_bool(out, "fk_lost_focus", fk.lost_focus);
+            json_append_double(out, "fk_pause_requests", static_cast<double>(fk.pause_requests), 0);
+            json_append_double(out, "fk_suppressed", static_cast<double>(fk.suppressed), 0);
+            json_append_double(out, "fk_passed_through", static_cast<double>(fk.passed_through), 0);
             // THE REST OF THE FOCUS STATE, because holding the client-active flag proved NECESSARY BUT NOT
             // SUFFICIENT: 2473 re-asserts over 18 seconds with the flag never observed cleared, and the engine
             // clock did not advance by a single millisecond. Something upstream of that flag also stops, and our
@@ -9606,15 +9627,16 @@ bool Framework::initialize() {
     handlers.focus_keep = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         const bool on = webapi_query_int(q, "on", 1) != 0;
-        FocusKeeper::get().hold(on);
+        FocusKeeper::get().keep_running(on);
         const auto st = FocusKeeper::get().state();
         std::string out;
         {
             JsonFields jf(out);
-            jf.b("ok", st.flag_resolved);
-            jf.b("holding", st.holding);
-            jf.hex("flag", st.flag_address);
+            jf.b("ok", st.hook_installed);
+            jf.b("enabled", st.enabled);
+            jf.hex("set_paused_fn", st.set_paused_fn);
             jf.b("window_active", st.window_active);
+            jf.b("lost_focus", st.lost_focus);
         }
         return out;
     };

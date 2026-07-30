@@ -37,7 +37,42 @@ inject → test → uninject with the game never restarting.
    - Naming: snake_case methods/functions, PascalCase types/files, `m_`
      members, `g_` globals, `s_` statics. Errors as
      `std::optional<std::string>` (empty = success).
-5. **SDK = class-per-concept with function-local static resolution.**
+5. **Unknown reader or writer? Use `/watch/*`, never an offset scan.** The mod
+   exposes HARDWARE data breakpoints — DR0-DR3 plus a vectored exception handler,
+   four slots, byte-exact:
+
+   ```
+   /watch/arm?addr=0x02938740&size=4&type=write|rw|exec&max_hits=4000
+   /watch/report      -> accessors, registers, value at trap, caller candidates
+   /watch/clear?all=1
+   ```
+
+   Every hit resolves to `module + offset + static`, so it pastes straight into
+   the right IDB. `ecx` is reported separately because `__thiscall` puts `this`
+   there — which is how you tell *"writes +144 on something"* from *"writes +144
+   on THE camera"*.
+
+   **This is mandatory for "what touches X".** Scanning the binary for stores to
+   a struct OFFSET answers a different question than the one you asked (67
+   functions across unrelated classes, in the case that established this rule)
+   and has produced a plausible WRONG answer every single time it was tried
+   here. See `reversing/MAPPING_WORKFLOW.MD`.
+
+   **The workflow is: trap it, then read it.** Arm the watch, take the reported
+   static address and caller candidates into IDA, decompile the writer, walk the
+   stack upward until you find the function that *decides* — then hook THAT.
+   Worked example, end to end: the engine clock's address was published, a write
+   watch named the store (`add [esi+30h], eax` in `CLTTimer_TickNode`), the
+   stack gave `CClientMgr__Update -> CLTTimer_AdvanceByWallClock ->
+   CLTTimer_TickChildren`, and the decompiled tick gave the whole timer-node
+   layout including the pause byte and rational time scale that turned out to be
+   what alt-tab actually freezes. Two hardware semantics matter and are asserted
+   in the suite rather than remembered: a data watch is a TRAP, so the reported
+   address is the instruction *after* the accessor (`eip_after`), while an
+   execute watch is a FAULT and reports the instruction itself; and x86 has no
+   read-only data breakpoint, so a read request is served by read-or-write.
+
+6. **SDK = class-per-concept with function-local static resolution.**
    `shared/sdk/` has one class per engine concept (`sdk::CClientMgr`,
    `sdk::CClientShell`, `sdk::Engine`, `sdk::DatabaseMgr`, `sdk::Modules`).
    Each class *owns* its patterns and derivation logic in its own .cpp;
@@ -314,6 +349,9 @@ reversing/                    -- fear2.genny (ground truth), MAPPING_WORKFLOW.md
                                  (the mapping recipe), DatabaseMgrDump.lua, dump artifacts
 src/                          -- Main.cpp (DllMain), AgentRuntime, Framework,
                                  Hooks, Mod/Mods, ipc/CommandServer
+src/mods/                     -- ViewHook (the view override), Watchpoints (hardware data
+                                 breakpoints, /watch/*), FocusKeeper (keeps the world
+                                 running while the window is not focused)
 injector/                     -- LoadLibrary injector (inject/unload/reload/status)
 test/                         -- command_server_tests (Tier-1), fixture_test_runner (Tier-2)
 TESTING.MD                    -- the testing contract (rigor, evidence rules)

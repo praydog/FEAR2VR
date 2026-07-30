@@ -7,30 +7,45 @@
 
 #include "../Mod.hpp"
 
-// HOLDS SIMULATION ON WHILE THE DESKTOP WINDOW IS NOT ACTIVE.
+// KEEPS THE WORLD RUNNING WHILE THE DESKTOP WINDOW IS NOT ACTIVE.
 //
-// This engine stops simulating when it loses focus, and `g_ClientGlob_bClientActive` is the single flag that
-// does it. CClientShell::Update reads it three times -- an idle flag it passes on, then two branches that SKIP
-// the simulation step and the transform interpolation -- while the IClientShell Pre/Update/Post callbacks run
-// unconditionally. CClientMgr::Update separately gates the ILTInput poll on `active && !buffered`.
+// ---- WHAT ACTUALLY FREEZES, MEASURED RATHER THAN ASSUMED --------------------------------------------------
 //
-// That asymmetry is why a frame hook keeps firing at ~170 Hz against a frozen world, and it is a practical
-// problem for this project rather than a curiosity: every measurement taken while the tester reads output in
-// another window is taken against a stopped game. Half the "inconclusive" results in this project's history are
-// that.
+// Alt-tabbed, with the payload injected and reporting:
 //
-// IT MUST BE RE-ASSERTED, NOT SET ONCE. LTClient_WndProc's WM_ACTIVATEAPP handler clears the flag whenever it
-// arrives while minimised or with a lost device, so a one-shot write is undone by the next message. Writing it
-// from the per-frame hook wins because our hook runs on the pumping thread whether or not the world ticks.
+//     client_active      True     <- the engine still considers itself ACTIVE
+//     lost_focus         True     <- main loop takes Sleep(5), so it runs ~118/s instead of ~300/s
+//     eng_clock_paused   TRUE     <- scale 0.0, millisecond accumulator dead flat over 2 seconds
+//     UpdateViewPose     0 calls  <- nothing drives the view, because nothing drives time
+//     frame hook         236 ticks in 2s -- still running the whole time
 //
-// FOR VR THIS IS NOT A TEST CONVENIENCE. A headset does not care whether the desktop window has focus, and a
-// mod that lets the engine stop simulating on focus loss is a mod that freezes the moment the user looks at
-// something else on their desktop.
+// So the world does not stop because the engine thinks it is inactive. It stops because THE GAME PAUSES THE
+// ENGINE'S TIMER. `ILTTimer::SetPaused` writes a pause byte on the timer node; the tick then multiplies its
+// delta by a scale of zero and the clock stands still. A hardware write watch on that live byte named the
+// store, and the stack above it named gameclient.dll frames -- the policy is the game DLL's.
 //
-// KNOWN HAZARD, deliberately not hidden: the same flag gates the input poll, so holding it true can let the
-// engine read the keyboard and mouse while another window has focus. Whether it actually does depends on how
-// the device backend handles a non-foreground window, and the honest answer is a measurement rather than a
-// guess -- input_leaked() reports whether look input arrived while the window was NOT active.
+// ---- WHY THIS HOOKS AN API INSTEAD OF WRITING A FLAG ------------------------------------------------------
+//
+// The first attempt forced `g_ClientGlob_bClientActive` true from the per-frame hook. That was measured to be
+// both useless and dangerous: 2473 re-asserts across 18 seconds, the flag never once observed cleared, the
+// engine clock advancing by 0.000 -- and then the process HUNG, because holding it true runs the DirectInput
+// poll and the render path against a window that does not have focus, every iteration.
+//
+// The lesson is the one already recorded for the camera rotation in reversing/MAPPING_WORKFLOW.MD: when a
+// value is recomputed or rewritten by an owner, fighting the store loses. Intercept the CALL that decides.
+// So this refuses the pause request at `ILTTimer::SetPaused`, which is one function, the engine's own API, and
+// the exact point where the decision becomes a memory write.
+//
+// ---- WHAT IS DELIBERATELY LEFT ALONE ---------------------------------------------------------------------
+//
+// `lost_focus` is NOT cleared, though clearing it would remove the main loop's Sleep(5) and restore the full
+// ~300/s. Two reasons: the same flag gates cursor centring, so clearing it warps the mouse into whatever
+// window the user is actually working in; and ~118 iterations a second is far more than enough for a world to
+// tick. Losing frame rate while alt-tabbed is not a problem worth creating a cursor-stealing bug to solve.
+//
+// A pause requested while the window IS focused -- the pause menu -- is passed through untouched. Suppressing
+// that would be a behaviour change nobody asked for, and the discriminator is free: the engine already
+// publishes its own focus latch.
 class FocusKeeper final : public Mod {
 public:
     static FocusKeeper& get();
@@ -38,27 +53,22 @@ public:
     std::string_view get_name() const override { return "FocusKeeper"; }
 
     std::optional<std::string> on_initialize() override;
-
-    // Re-asserts the flag when held. Runs on the engine's pumping thread, which continues while the world does
-    // not -- that is precisely why this works.
-    void on_frame() override;
-
+    void on_frame() override {}
     void on_shutdown() override {}
 
-    // Start or stop holding. Idempotent; `false` restores nothing because there is nothing to restore -- the
-    // engine's own WndProc owns the flag again the moment we stop writing it.
-    void hold(bool on);
+    // Start or stop refusing focus-loss pauses. Idempotent. Off by default: this changes engine behaviour, and
+    // AGENT.MD's rule is that a mutation is opt-in and visible.
+    void keep_running(bool on);
 
     struct State {
-        bool holding{};
-        bool flag_resolved{};
-        uintptr_t flag_address{};
-        uint64_t writes{};          // frames we re-asserted the flag
-        uint64_t observed_cleared{};// frames we found it CLEARED and had to put it back
-        bool window_active{};       // the engine's own view of focus, unmodified
-        // Look events that arrived while the window was NOT active. Non-zero means holding the flag also let
-        // input through, which a tester needs to know before trusting a session.
-        uint64_t input_while_inactive{};
+        bool enabled{};
+        bool hook_installed{};
+        uintptr_t set_paused_fn{};
+        uint64_t pause_requests{};    // every SetPaused(true) that reached the detour
+        uint64_t suppressed{};        // those refused because the window was not focused
+        uint64_t passed_through{};    // those honoured, i.e. a real in-game pause
+        bool window_active{};         // the engine's own flag, unmodified
+        bool lost_focus{};            // the latch this decision reads
     };
 
     State state() const;
