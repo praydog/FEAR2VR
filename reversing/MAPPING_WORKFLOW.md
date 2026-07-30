@@ -3728,3 +3728,23 @@ away for a frame on each poll -- 171 times during one coverage run. They now liv
 The old comment called the write "harmless for the frames it lasts"; harmless and invisible are different
 claims, and only one of them was tested.
 
+### Retraction: `build.bat` does propagate a failed link
+
+A commit message in this session recorded that "build.bat exits 0 even when one project fails to link, so
+`build.bat && run` did NOT gate". **That is wrong**, and it was published without testing it. Measured
+directly, twice, by injecting the payload to lock the DLL and forcing a relink:
+
+```
+FEAR2VR_NO_UNLOAD=1 build.bat   ->  LNK1104, rc=1     (the gate works)
+build.bat                       ->  unloads first, rc=0, fear2vr.dll relinked
+```
+
+`cmake --build ... || exit /b 1` does what it looks like it does. What actually happened in the run that
+misled me: only `test/fixture_test_runner.cpp` had changed, so `fear2vr.dll` never relinked, no LNK1104
+occurred in THAT build, and the `&&` fired correctly. The stale-DLL symptom was real; the explanation was
+invented to fit it.
+
+The lesson is the one this file keeps relearning from the other direction: a plausible mechanism assembled
+around a real symptom is still a guess, and "the build system swallowed an error" is exactly the sort of
+claim that is cheap to test and expensive to leave standing. It took one injected DLL and one touched file.
+

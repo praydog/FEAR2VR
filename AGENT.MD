@@ -322,11 +322,22 @@ TESTING.MD                    -- the testing contract (rigor, evidence rules)
 ## Iteration loop
 
 ```
-build.bat                                   # configure + build (Win32)
+build.bat                                   # unload, then configure + build (Win32)
 bin\injector.exe --reload                   # hot-swap into the running game
 bin\injector.exe --status                   # module/IPC snapshot
 ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ```
+
+**`build.bat` unloads the payload before building.** A resident `fear2vr.dll`
+holds its own file open, so relinking it fails with `LNK1104: cannot open file
+...\fear2vr.dll` — an error that names a file rather than the cause, so it reads
+as a broken build instead of "the game still has the last one loaded". Since the
+whole point of this project is inject → test → uninject without restarting the
+game, the DLL is resident most of the time and that was the NORMAL case. The
+unload is a no-op when nothing is resident (exit 0), so it runs unconditionally;
+`FEAR2VR_NO_UNLOAD=1` opts out. It is deliberately not gated on success — a
+payload that cannot unload goes dormant on purpose, and then the right outcome is
+a loud link failure with the injector's own explanation directly above it.
 
 **Gate the test run on the compiler's verdict, not on your own echo.** Filtering
 build output through `grep` and then printing a cheerful marker discards the exit
