@@ -254,6 +254,28 @@ function renderLiveState(data) {
 
   const m = data.movement || {};
   $("live-move-flags").textContent = typeof m.flags === "number" ? "0x" + (m.flags >>> 0).toString(16).padStart(8, "0") : dash(m.flags);
+  // The DLL owns the bit map; the UI shows what it decoded. Unmapped bits get warn styling when non-zero:
+  // the producer sets bits this mapping has not established (0x4 and 0x8 among them), and letting a partial
+  // decode look complete is how the next reader inherits a wrong assumption.
+  $("live-move-decoded").textContent =
+    m.flags_decoded ? m.flags_decoded : (m.flags === 0 ? "(idle)" : "\u2014");
+  const mvUn = $("live-move-unmapped");
+  mvUn.textContent = typeof m.flags_unmapped === "number"
+    ? "0x" + (m.flags_unmapped >>> 0).toString(16).padStart(8, "0") : "\u2014";
+  mvUn.classList.toggle("warn", typeof m.flags_unmapped === "number" && m.flags_unmapped !== 0);
+  const mvDir = $("live-move-dir");
+  // Zero means genuinely no input on that axis -- the encoder sets neither bit of a pair for exact zero.
+  // {strafe, forward} in the PLAYER's frame, so +1 forward reads as forward even though the raw input axis
+  // is negated for it. Words as well as numbers, since "(0, 1)" alone invites the reader to guess a frame.
+  const dirWords = [];
+  if (m.forward) dirWords.push("fwd");
+  if (m.backward) dirWords.push("back");
+  if (m.left) dirWords.push("left");
+  if (m.right) dirWords.push("right");
+  mvDir.textContent = Array.isArray(m.input_dir)
+    ? `(${m.input_dir[0]}, ${m.input_dir[1]})` + (dirWords.length ? "  " + dirWords.join("+") : "")
+    : "\u2014";
+  mvDir.classList.toggle("warn", m.input_dir_contradicts === true);
   $("live-crouching").textContent = fmtBool(m.crouching);
   $("live-moving").textContent = fmtBool(m.moving);
   $("live-speed").textContent = fmtNum(m.speed, 2);

@@ -7040,6 +7040,55 @@ class CPlayerCamera 0x18C6 {
 // zoom_fraction / aim_object.
 //
 // SIZE IS A LOWER BOUND: 0x174 is the highest field reached here, not a measured allocation size.
+
+// ---- THE CMoveMgr MOVEMENT FLAGS, BIT BY BIT ----------------------------------------------------
+//
+// CMoveMgr + 296, produced by CMoveMgr_UpdateInputFlags (gameclient 0x10104BA0) -- 41 instructions in that
+// one function touch this dword. The map below is pinned from two directions: the code that sets or tests
+// each bit, and live play with a human naming one action at a time.
+//
+//     0x00001  FORWARD          CMoveMgr_SetInputDirectionFlags, axis 1 NEGATIVE
+//     0x00002  BACKWARD         axis 1 positive
+//     0x00020  crouching        tested 4x in the producer; 17 live transitions
+//     0x00080  LEFT             axis 0 negative
+//     0x00100  RIGHT            axis 0 positive
+//     0x00200  normal walking speed -- see below
+//     0x00800  counts as moving -- read by CMoveMgr_IsMoving
+//     0x04000  melee            ORd once, EDGE TRIGGERED (holding does not repeat)
+//     0x20000  grenade held     live only; no immediate in code
+//     0x40000  sprinting        live only; likewise
+//
+// THE FORWARD AXIS IS NEGATED. The encoder sets 0x2 for a POSITIVE axis-1 value, and live play shows 0x1 is
+// forward -- so positive input on that axis means BACKWARD. Anything feeding synthetic input must respect
+// that sign. Measured one direction at a time: 0xA01 forward, 0xA02 back, 0xA80 left, 0xB00 right.
+//
+// EXACTLY ZERO SETS NEITHER BIT OF A PAIR, so "no input on this axis" is distinguishable from either
+// direction. Two bits per axis, not a sign flag -- the same shape as the camera clamp record, which stores
+// two positive magnitudes and lets the consumer build the signed range.
+//
+// THE PAIRS ARE INDEPENDENT AXES, proved by a diagonal: walking back-and-right live reads 0xB02, which is
+// 0x100 (right) and 0x002 (backward) set at once. A single direction enum could not produce that, and neither
+// could a four-value field -- so the four bits really are two signed axes. Decoded live as
+// "moving|normal_speed|backward|right" with no unmapped remainder.
+//
+// 0x200 IS NOT "not sprinting". It marks the UNMODIFIED gait and is cleared by any speed modifier:
+//     forward        0xA01    set
+//     forward + ADS  0x801    CLEARED
+//     sprinting      0x40801  CLEARED
+// The only code that reads it is PlayerMovement_UpdateAirAcceleration, which fits -- air control depends on
+// the gait you left the ground in.
+//
+// REFUTED: a reading of 0x1 as "on ground", which the composites 0xA01 and 0xB00 invite. The encoder proves
+// it is an axis component.
+//
+// STILL UNESTABLISHED: 0x4 and 0x8 are ORd by the producer and nothing here explains them. 0x20000 and
+// 0x40000 appear with no immediate anywhere -- they are ORd from registers, so that mapping is data driven.
+// MovementFlags::unmapped() reports whatever is outside the named set rather than implying completeness.
+//
+// Named in IDA: CMoveMgr_UpdateInputFlags, CMoveMgr_SetInputDirectionFlags, Input_GetActionAxis (66 callers,
+// reads an action's axis through ILTInput slot 20).
+// Exposed as sdk::PlayerMgr::movement_flags / MoveFlag / movement_flag_names.
+
 namespace regenny {
 
 class PlayerZoom 0x174 {

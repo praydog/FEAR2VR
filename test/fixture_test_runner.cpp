@@ -4781,6 +4781,51 @@ int main(int argc, char** argv) {
                  mv_sk = false, mv_rr = false, mv_moving_now2 = false;
             json_bool(body, "mv_moving", mv_moving_now2);
             check(json_bool(body, "mv_flags_readable", mv_fr) && mv_fr, "CMoveMgr's flags dword reads");
+            // ---- THE DECODED MOVEMENT FLAGS ----------------------------------------------------
+            //
+            // NO BIT VALUES APPEAR HERE. The bit map lives in PlayerMgr::MoveFlag and the DLL decodes it, so
+            // what the host can legitimately check is that the decode is SELF-CONSISTENT and agrees with the
+            // accessors that were mapped independently of it. A literal 0x40000 in this file would restate the
+            // schema as a magic value and rot the moment the mapping changed.
+            {
+                std::string mv_dec;
+                bool mv_has_dec = json_str(body, "mv_decoded", mv_dec);
+                double mv_raw = -1.0, mv_unmapped = -1.0;
+                const bool mv_nums = json_double(body, "mv_flags", mv_raw) &&
+                                     json_double(body, "mv_unmapped", mv_unmapped);
+                check(mv_has_dec && mv_nums, "the movement flags are reported raw AND decoded");
+                // THE DECODE IS EMPTY EXACTLY WHEN NO NAMED BIT IS SET. Both directions matter: a decoder that
+                // always returned "" would pass a non-empty check only by luck, and one that always named
+                // something would pass an emptiness check the same way.
+                bool mv_any = false;
+                for (const char* k : {"mv_f_sprinting", "mv_f_melee", "mv_f_grenade",
+                                      "mv_f_normal_speed", "mv_f_moving", "mv_f_crouching", "mv_f_forward",
+                                      "mv_f_backward", "mv_f_left", "mv_f_right"}) {
+                    bool v = false;
+                    if (json_bool(body, k, v) && v) { mv_any = true; }
+                }
+                check(mv_nums && (mv_any == !mv_dec.empty()),
+                      "the decoded string is non-empty exactly when some named predicate is true");
+                // UNMAPPED BITS ARE A SUBSET OF THE RAW WORD -- if the mask were wrong this would exceed it.
+                check(mv_nums && mv_unmapped >= 0.0 && mv_unmapped <= mv_raw,
+                      "the unmapped bits are a subset of the raw flags word");
+                // THE TWO PATHS TO CROUCH MUST AGREE: is_crouching() was mapped and asserted before this
+                // decoder existed, so it is an independent statement about the same bit.
+                bool mv_dc = false, mv_dcr = false;
+                if (json_bool(body, "mv_f_crouching", mv_dc) && json_bool(body, "mv_crouching", mv_dcr)) {
+                    check(mv_dc == mv_dcr, "the decoder and is_crouching() agree about crouching");
+                }
+                // A DIRECTION PAIR CANNOT HOLD BOTH BITS -- the encoder writes at most one per axis.
+                bool mv_contra = true;
+                check(json_bool(body, "mv_dir_contradicts", mv_contra) && !mv_contra,
+                      "no direction pair holds both of its bits -- the encoder writes at most one per axis");
+                if (mv_unmapped > 0.0) {
+                    printf("[fixture] NOTE: movement flags carry 0x%llX unmapped bit(s) -- the producer sets "
+                           "bits this mapping has not established.\n",
+                           static_cast<unsigned long long>(mv_unmapped));
+                }
+            }
+
             check(json_bool(body, "mv_crouch_determinable", mv_cd) && mv_cd,
                   "the crouch bit is testable");
             check(json_bool(body, "mv_velocity_readable", mv_vr) && mv_vr,

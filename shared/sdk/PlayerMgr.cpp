@@ -1203,6 +1203,60 @@ std::optional<uintptr_t> PlayerMgr::aim_object(unsigned index) {
     return static_cast<uintptr_t>(*sub);
 }
 
+namespace {
+
+// The named bits, paired with the word a consumer would use. Order is the order they print in.
+struct MoveFlagName {
+    PlayerMgr::MoveFlag flag;
+    const char* name;
+};
+
+constexpr MoveFlagName kMoveFlagNames[] = {
+    {PlayerMgr::MoveFlag::Sprinting, "sprinting"},
+    {PlayerMgr::MoveFlag::CountsAsMoving, "moving"},
+    {PlayerMgr::MoveFlag::NormalSpeed, "normal_speed"},
+    {PlayerMgr::MoveFlag::Crouching, "crouching"},
+    {PlayerMgr::MoveFlag::Melee, "melee"},
+    {PlayerMgr::MoveFlag::GrenadeHeld, "grenade_held"},
+    {PlayerMgr::MoveFlag::Forward, "forward"},
+    {PlayerMgr::MoveFlag::Backward, "backward"},
+    {PlayerMgr::MoveFlag::Left, "left"},
+    {PlayerMgr::MoveFlag::Right, "right"},
+};
+
+}  // namespace
+
+uint32_t PlayerMgr::MovementFlags::unmapped() const {
+    uint32_t named = 0;
+    for (const auto& e : kMoveFlagNames) {
+        named |= static_cast<uint32_t>(e.flag);
+    }
+    return raw & ~named;
+}
+
+std::string PlayerMgr::movement_flag_names(uint32_t raw) {
+    std::string out;
+    for (const auto& e : kMoveFlagNames) {
+        if ((raw & static_cast<uint32_t>(e.flag)) != 0) {
+            if (!out.empty()) {
+                out += '|';
+            }
+            out += e.name;
+        }
+    }
+    return out;
+}
+
+std::optional<PlayerMgr::MovementFlags> PlayerMgr::movement_flags(unsigned index) {
+    const auto raw = move_mgr_flags(index);
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    MovementFlags out;
+    out.raw = *raw;
+    return out;
+}
+
 std::optional<bool> PlayerMgr::aim_object_owns_player(unsigned index) {
     const auto p = slot(index);
     const auto a = aim_object(index);

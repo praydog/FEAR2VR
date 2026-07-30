@@ -4905,6 +4905,24 @@ std::string build_shader_params_json(bool include_write_probes) {
             if (flags.has_value()) {
                 json_append_double(out, "mv_flags", static_cast<double>(*flags), 0);
             }
+            // THE DECODE ON THE ASSERTION SURFACE. /api/state carries the same thing for the browser; both
+            // call PlayerMgr::movement_flags, so there is one bit map and two reporters.
+            if (const auto mfd = sdk::PlayerMgr::movement_flags(0)) {
+                json_append_string(out, "mv_decoded",
+                                   sdk::PlayerMgr::movement_flag_names(mfd->raw).c_str());
+                json_append_double(out, "mv_unmapped", static_cast<double>(mfd->unmapped()), 0);
+                json_append_bool(out, "mv_dir_contradicts", mfd->direction_contradicts());
+                json_append_bool(out, "mv_f_sprinting", mfd->sprinting());
+                json_append_bool(out, "mv_f_melee", mfd->melee());
+                json_append_bool(out, "mv_f_grenade", mfd->grenade_held());
+                json_append_bool(out, "mv_f_normal_speed", mfd->normal_speed());
+                json_append_bool(out, "mv_f_moving", mfd->counts_as_moving());
+                json_append_bool(out, "mv_f_crouching", mfd->crouching());
+                json_append_bool(out, "mv_f_forward", mfd->forward());
+                json_append_bool(out, "mv_f_backward", mfd->backward());
+                json_append_bool(out, "mv_f_left", mfd->left());
+                json_append_bool(out, "mv_f_right", mfd->right());
+            }
             json_append_bool(out, "mv_crouch_determinable", crouch.has_value());
             json_append_bool(out, "mv_crouching", crouch.value_or(false));
             json_append_bool(out, "mv_velocity_readable", vel.has_value());
@@ -8435,6 +8453,25 @@ std::string build_api_state_json() {
         {
             JsonFields jf(obj);
             if (flags.has_value()) { jf.u("flags", *flags); } else { jf.n("flags"); }
+            // DECODED, because a raw dword tells a reader nothing. The bit map is established in
+            // PlayerMgr::MoveFlag; unmapped is reported rather than hidden, since the producer also sets bits
+            // this mapping has not accounted for (0x4 and 0x8 among them).
+            if (const auto mf = sdk::PlayerMgr::movement_flags(0)) {
+                jf.s("flags_decoded", sdk::PlayerMgr::movement_flag_names(mf->raw));
+                jf.u("flags_unmapped", mf->unmapped());
+                jf.b("sprinting", mf->sprinting());
+                jf.b("melee", mf->melee());
+                jf.b("grenade_held", mf->grenade_held());
+                jf.b("normal_speed", mf->normal_speed());
+                jf.b("counts_as_moving", mf->counts_as_moving());
+                jf.b("forward", mf->forward()).b("backward", mf->backward());
+                jf.b("left", mf->left()).b("right", mf->right());
+                const auto d = mf->input_direction();
+                jf.raw("input_dir", webapi_float_array({static_cast<float>(d[0]), static_cast<float>(d[1])}, 0));
+                jf.b("input_dir_contradicts", mf->direction_contradicts());
+            } else {
+                jf.n("flags_decoded").n("flags_unmapped");
+            }
             if (crouching.has_value()) { jf.b("crouching", *crouching); } else { jf.n("crouching"); }
             if (moving.has_value()) { jf.b("moving", *moving); } else { jf.n("moving"); }
             if (velocity.has_value()) {

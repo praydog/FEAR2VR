@@ -433,6 +433,93 @@ public:
 
     static std::optional<bool> is_crouching(unsigned index);
 
+    // ---- THE MOVEMENT FLAGS, DECODED ------------------------------------------------------------
+    //
+    // CMoveMgr + 296. CMoveMgr_UpdateInputFlags (gameclient 0x10104BA0) is its producer -- 41 instructions in
+    // that one function touch it -- and the bits below are established from two directions: the code that sets
+    // or tests each one, and live play with a human naming what they were doing.
+    //
+    // The four DIRECTION bits are a signed-axis pair encoding, from CMoveMgr_SetInputDirectionFlags:
+    // exactly-zero input sets NEITHER bit of a pair, so "no input on this axis" is distinguishable from either
+    // direction. That is the same shape as the camera clamp record, which also stores two positive magnitudes
+    // and lets the consumer build the signed range.
+    //
+    // 0x1 IS NOT "on ground", which was the natural guess from the composites -- the encoder proves it is an
+    // axis component. Live 0xA01 (moving) and 0xB00 only make sense that way.
+    enum class MoveFlag : uint32_t {
+        // THE FORWARD AXIS IS NEGATED, which matters to anything feeding synthetic input. The encoder sets
+        // 0x2 for a POSITIVE axis-1 value and 0x1 for a negative one, and live play shows 0x1 is FORWARD --
+        // so positive input on that axis means backward. Named for the direction the player moves, not for
+        // the sign of the raw axis, because the direction is what a consumer means.
+        Forward            = 0x00001,  // CMoveMgr_SetInputDirectionFlags, axis 1 negative
+        Backward           = 0x00002,  // axis 1 positive
+        Crouching          = 0x00020,  // tested 4x in the producer; 17 live transitions while crouching
+        Left               = 0x00080,  // axis 0 negative
+        Right              = 0x00100,  // axis 0 positive
+        // NORMAL WALKING SPEED -- cleared by ANY speed modifier, not just one. Live:
+        //     forward           0xA01   normal speed set
+        //     forward + ADS     0x801   CLEARED
+        //     sprinting         0x40801 CLEARED
+        // So it is not "sprinting inverted"; it marks the unmodified gait. That the only code reading it is
+        // PlayerMovement_UpdateAirAcceleration fits -- air control depends on the gait you left the ground in.
+        NormalSpeed        = 0x00200,
+        // Read by CMoveMgr_IsMoving, so it makes the engine treat the player as moving. A jump sets it with
+        // zero ground speed, which is what that is for.
+        CountsAsMoving     = 0x00800,
+        // ORd in exactly one place and EDGE TRIGGERED: holding the key does not re-set it.
+        Melee              = 0x04000,
+        GrenadeHeld        = 0x20000,  // live observation; no immediate in code (ORd from a register)
+        Sprinting          = 0x40000,  // live observation; likewise register-sourced
+    };
+
+    struct MovementFlags {
+        uint32_t raw{};
+
+        bool has(MoveFlag f) const { return (raw & static_cast<uint32_t>(f)) != 0; }
+
+        bool crouching() const { return has(MoveFlag::Crouching); }
+        bool forward() const { return has(MoveFlag::Forward); }
+        bool backward() const { return has(MoveFlag::Backward); }
+        bool left() const { return has(MoveFlag::Left); }
+        bool right() const { return has(MoveFlag::Right); }
+        bool counts_as_moving() const { return has(MoveFlag::CountsAsMoving); }
+        bool normal_speed() const { return has(MoveFlag::NormalSpeed); }
+        bool sprinting() const { return has(MoveFlag::Sprinting); }
+        bool melee() const { return has(MoveFlag::Melee); }
+        bool grenade_held() const { return has(MoveFlag::GrenadeHeld); }
+
+        // {strafe, forward} as -1, 0 or +1, in the PLAYER's frame: +1 strafe is right, +1 forward is
+        // forward. Zero means genuinely no input on that axis -- the encoder sets neither bit of a pair for
+        // an exactly-zero value, so it is distinguishable from a direction rather than defaulted.
+        //
+        // Note the forward component is the NEGATION of the raw axis; see MoveFlag::Forward.
+        std::array<int, 2> input_direction() const {
+            std::array<int, 2> d{0, 0};
+            if (has(MoveFlag::Right)) { d[0] = 1; }
+            else if (has(MoveFlag::Left)) { d[0] = -1; }
+            if (has(MoveFlag::Forward)) { d[1] = 1; }
+            else if (has(MoveFlag::Backward)) { d[1] = -1; }
+            return d;
+        }
+
+        // BOTH BITS OF A PAIR SET is contradictory -- the encoder writes at most one per axis. Reported so a
+        // consumer can tell a stale read from a live one instead of silently preferring positive.
+        bool direction_contradicts() const {
+            return (has(MoveFlag::Right) && has(MoveFlag::Left)) ||
+                   (has(MoveFlag::Forward) && has(MoveFlag::Backward));
+        }
+
+        // THE BITS THIS MAPPING DOES NOT NAME. Non-zero is expected, not a failure: the producer also ORs
+        // 0x4 and 0x8, which nothing here has established. Exposed so a consumer sees what is unaccounted
+        // for rather than assuming the named set is complete.
+        uint32_t unmapped() const;
+    };
+
+    static std::optional<MovementFlags> movement_flags(unsigned index);
+
+    // "sprinting|moving|crouching|+x|-y", or "" for zero. Named bits only; see MovementFlags::unmapped.
+    static std::string movement_flag_names(uint32_t raw);
+
     // The engine's live physics velocity for the player, via ILTPhysics GetVelocity -- NOT CMoveMgr's cached
     // copy at +1412, which can disagree.
     static std::optional<std::array<float, 3>> physics_velocity(unsigned index);
