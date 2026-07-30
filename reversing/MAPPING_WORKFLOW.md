@@ -3640,3 +3640,25 @@ nothing this run. Stand still to exercise them.
 Same discipline as the render-path probes: a check that cannot discriminate says so instead of
 returning a comfortable answer.
 
+## Measuring which states a play session actually exercised
+
+`tools/coverage/sample.py` polls the live payload and reports, per tracked state, whether it was ever
+observed. It exists because a fixture run samples each field once and a conditional check passes for free on
+its permissive branch -- indistinguishable from a verified one.
+
+Run against an unfocused, frozen-mid-motion game, **8 of 12 tracked states were never exercised**:
+
+```
+  [+] player MOVING              [-] player STATIONARY        [-] player CROUCHING
+  [+] aim flag CLEAR             [-] aim flag SET (ADS)       [-] engine clock ADVANCING
+  [+] clamp ENGAGED              [-] renderer state NON-ZERO  [-] camera pose MATCHES object
+  [+] clamp recovery ACTIVE      [-] cached position MATCHES   [-] physics velocity READS ZERO
+
+  camera states observed   : [0]        clamp records observed : ['Default']
+  renderer states observed : [0]        peak speed             : 437.9
+```
+
+Also added `aim_flag_value` to the endpoint. The selector at `+224` was read for its READABILITY only, never
+its value -- so the "zoomed" reading rested entirely on 65 being tighter than 70. Aiming down sights must
+flip it, which is evidence no amount of static reading supplies.
+

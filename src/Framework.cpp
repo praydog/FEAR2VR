@@ -4959,6 +4959,13 @@ std::string build_shader_params_json() {
                 json_append_bool(out, "aim_limits_differ", *aim.normal_degrees != *aim.zoomed_degrees);
             }
             json_append_bool(out, "aim_flag_readable", aflag.has_value());
+            // THE FLAG'S VALUE, not just its readability. The zoomed limit is the tighter of the two (65 vs 70
+            // degrees), and that inequality is the ONLY thing supporting the "zoomed" reading of this selector.
+            // Reporting the live value lets a consumer -- or a play session -- settle it: aim down sights and the
+            // flag must flip, which is direct evidence no amount of static reading can supply.
+            if (aflag.has_value()) {
+                json_append_bool(out, "aim_flag_value", *aflag);
+            }
             json_append_bool(out, "aim_range_refused",
                              !sdk::PlayerMgr::pitch_recovery_timer(9).has_value() &&
                                  !sdk::PlayerMgr::aim_tracking_flag(9).has_value());
