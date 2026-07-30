@@ -4122,3 +4122,50 @@ condition, measured and reported, with the skips tallied.
 
 Worth stating: 146 red at a menu is not 146 bugs. It is one missing gate, counted 146 times.
 
+## View bob was the "lag", and it was passing two checks by accident
+
+A player asked whether the residual instability came from view bob -- their character sways slightly while
+standing still. It did, and the answer retracts an earlier finding in this file.
+
+Controlled A/B, standing still, identical 12-second windows:
+
+```
+                              bob ON        bob OFF
+same-phase pose vs object     2 eq / 45 df  46 eq / 0 df
+camera object vs +244         0 eq / 16 df  16 eq / 0 df
+camera object vs +324        16 eq /  0 df  16 eq / 0 df
+```
+
+**RETRACTED: "the camera object still holds the previous pose when UpdateViewPose returns, and something later
+in the frame propagates it."** There is no lag. With view bob disabled the applied pose is bit-identical to the
+camera object, every sample. The divergence was the bob OFFSET being applied to the pose, and the elaborate
+propagation story was built to explain a graphics setting.
+
+### The control read is what kept this honest
+
+The toggle did NOT change the cvars that look like the mechanism:
+
+```
+CameraSwayXSpeed   3.0  unchanged      HeadBobSpeedScale  1.0  unchanged
+CameraSwayXFreq   13.0  unchanged
+```
+
+So the options switch sets some other enable flag, and those 64 `HeadBob*` / `CameraSway*` variables are
+parameters rather than the switch. Reading the supposed input BEFORE interpreting the output is the only reason
+the mechanism was not mis-attributed to the first plausible cvar; finding the real flag is the next step, and it
+matters for VR because a head-tracked view must disable bob.
+
+### Two more checks were passing because of a setting
+
+* "the camera's other position generation is NOT the same value" -- asserted that two pose generations differ.
+  They differ ONLY while bob is on. Their difference was the bob offset, not evidence of two generations.
+* "every catalogued tunable still holds the value the catalogue records" -- failed the instant a graphics option
+  changed. The catalogue's purpose is the grid MAPPING (a composed name resolves to the computed record), which
+  is asserted separately and does not care about values.
+
+Same defect as `armor == 147`: a value recorded as a constant instead of a relationship. That is now four
+distinct instances in this project, all found by somebody actually using the game.
+
+With both corrected the suite passes twice consecutively -- 1477 and 1484 checks, zero failures -- where it had
+been intermittently red.
+

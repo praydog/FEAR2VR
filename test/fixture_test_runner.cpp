@@ -4578,8 +4578,19 @@ int main(int argc, char** argv) {
             check(true,
                   "the applied pose never DIFFERS from the camera object's own transform -- same double-read "
                   "verdict, so a frame landing mid-comparison is reported rather than failed");
-            check(json_bool(body, "pmgr_pose_generations_differ", pm_gens) && pm_gens,
-                  "and the camera's other position generation is NOT the same value");
+            // THIS CHECK WAS PASSING BECAUSE OF VIEW BOB, which is a graphics setting and not structure.
+            //
+            // It asserted the camera's two position generations hold DIFFERENT values. A player turned view bob
+            // off and it failed immediately: with bob disabled the two are bit-identical, and every same-phase
+            // sample went from 2 equal / 45 differ to 46 equal / 0 differ.
+            //
+            // So their difference is the bob OFFSET, not evidence that two distinct generations exist. What is
+            // invariant is that both are readable and usable; whether they differ is a user setting, and it is
+            // reported. See MAPPING_WORKFLOW.md -- this also retracts the "the object lags the pose within the
+            // frame" reading, which was bob all along.
+            json_bool(body, "pmgr_pose_generations_differ", pm_gens);
+            printf("[fixture] camera pose generations %s -- they diverge only while view bob is enabled\n",
+                   pm_gens ? "DIFFER (view bob on)" : "are identical (view bob off)");
             check(json_bool(body, "pmgr_applied_rot_unit", pm_arot) && pm_arot,
                   "the applied pose carries a unit quaternion too");
 
@@ -6643,8 +6654,20 @@ int main(int argc, char** argv) {
             check(tn && tun_total > 10.0, "the camera tunable catalogue is populated");
             check(tn && tun_found == tun_total,
                   "every catalogued camera tunable resolves in the live console");
-            check(tn && tun_def == tun_total,
-                  "every catalogued tunable still holds the value the catalogue records");
+            // THE CATALOGUE RECORDS VALUES, AND VALUES ARE USER SETTINGS. This asserted that every catalogued
+            // camera tunable still holds the number a previous session wrote down, and it failed the moment a
+            // player changed a graphics option -- the same defect as asserting `armor == 147`.
+            //
+            // What the catalogue is FOR is the grid mapping: that a name composed from (channel, axis,
+            // parameter) resolves to the record the formula computes. That is asserted above by tun_found ==
+            // tun_total and does not care what the values are. The agreement count is reported.
+            check(tn && tun_def >= 0.0 && tun_def <= tun_total,
+                  "the count of tunables still at their catalogued value is a subset of the catalogue");
+            if (tn && tun_def != tun_total) {
+                printf("[fixture] %.0f of %.0f camera tunables differ from the catalogue -- settings change, "
+                       "and the catalogue records values rather than invariants\n",
+                       tun_total - tun_def, tun_total);
+            }
 
             // FovY is the field of view -- a game-side console variable, not an engine field, which is why
             // earlier passes found no FOV anywhere in the executable. A plausible value, not just presence.
