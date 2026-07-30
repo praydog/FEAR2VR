@@ -735,6 +735,34 @@ std::optional<PlayerMgr::CameraRotationOperands> PlayerMgr::camera_rotation_oper
     return out;
 }
 
+std::optional<float> PlayerMgr::aim_roll(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    std::array<float, 4> q{};
+    if (!mem::copy(q.data(), p->holder + kCameraRotationInner, sizeof(q))) {
+        return std::nullopt;
+    }
+    // Guarded against the degenerate quaternion rather than trusting the field: an all-zero read would
+    // otherwise report a confident 0 that actually means "unreadable".
+    const float n = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if (!(n > 0.5f) || !(n < 1.5f)) {
+        return std::nullopt;
+    }
+    // MEASURED AS THE RIGHT VECTOR'S DEPARTURE FROM HORIZONTAL, deliberately not as an Euler term.
+    //
+    // The first version of this used the textbook atan2 roll extraction and read a rock-steady +180.000 deg,
+    // which looks like a finding and is an artefact: that formula assumes Z-up, this engine is Y-UP, and for
+    // a level view its two arguments degenerate to atan2(0, cos(yaw)) -- which flips to pi the moment the
+    // player faces backwards. A constant that tracks nothing is the tell.
+    //
+    // Rotating (1,0,0) by the quaternion and taking the Y component needs no convention at all: the right
+    // vector leaves the horizontal plane exactly when the view is rolled, whatever the Euler order is.
+    const float right_y = 2.0f * (q[0] * q[1] + q[3] * q[2]);
+    return std::asin(right_y < -1.0f ? -1.0f : (right_y > 1.0f ? 1.0f : right_y));
+}
+
 uintptr_t PlayerMgr::camera_attached_rotation_fn() {
     static const uintptr_t s_fn =
         Modules::get().scan_game_client(kCameraAttachedRotation, "PlayerCamera_UpdateAttachedRotation");

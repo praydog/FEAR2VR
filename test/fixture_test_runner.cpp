@@ -8624,6 +8624,73 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // ---- WHICH AXIS IS WHICH, AND THE AIM STAYING LEVEL ---------------
+                //
+                // The euler convenience on this route put pitch in the quaternion's X term and so applied
+                // ROLL whenever a caller asked to look up or down. It survived because only yaw had ever
+                // been exercised, and yaw was right. These three checks are what would have caught it.
+                //
+                // The roll bound is GEOMETRIC rather than a tolerance: a point at screen radius r rotated by
+                // theta about the view axis moves along a chord of exactly 2*r*sin(theta/2). Asserting the
+                // predicted chord tests the composition, not merely that something moved.
+                if (cam_ok) {
+                    // Same construction as above; yaw0 there is scoped to that block.
+                    const double yaw_now = 2.0 * atan2(qy, qw);
+                    char pt2[192];
+                    snprintf(pt2, sizeof(pt2), "px=%.1f&py=%.1f&pz=%.1f", cx + 400.0 * sin(yaw_now),
+                             cy + 150.0, cz + 400.0 * cos(yaw_now));
+                    auto pixel_of = [&](const char* q, double& x, double& y) {
+                        char url[320];
+                        snprintf(url, sizeof(url), "/vr/head?%s&%s", q, pt2);
+                        if (!http::get(port, url, resp)) {
+                            return false;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                        if (!http::get(port, "/vr/head", resp)) {
+                            return false;
+                        }
+                        const std::string b = http::body_of(resp);
+                        bool ok2 = false;
+                        return json_bool(b, "projected", ok2) && ok2 && json_double(b, "proj_x", x) &&
+                               json_double(b, "proj_y", y);
+                    };
+                    double ax = 0, ay = 0, yx = 0, yy = 0, px2 = 0, py2 = 0, rx = 0, ry = 0;
+                    const bool axes = pixel_of("clear=1", ax, ay) && pixel_of("yaw=20", yx, yy) &&
+                                      pixel_of("clear=1", px2, py2) && pixel_of("pitch=20", px2, py2) &&
+                                      pixel_of("clear=1", rx, ry) && pixel_of("roll=20", rx, ry);
+                    check(axes, "each of yaw, pitch and roll produces a measurable pixel displacement");
+                    if (axes) {
+                        check(fabs(yx - ax) > 200.0 && fabs(yy - ay) < 100.0,
+                              "YAW moves a fixed point horizontally and leaves its height alone");
+                        check(fabs(px2 - ax) < 20.0 && fabs(py2 - ay) > 200.0,
+                              "PITCH moves it vertically and leaves its column alone -- the check that the "
+                              "euler mapping puts pitch on the right axis");
+                        // r is the point's distance from screen centre; the target is 2560x1440.
+                        const double r = sqrt((ax - 1280.0) * (ax - 1280.0) + (ay - 720.0) * (ay - 720.0));
+                        const double chord = 2.0 * r * sin(20.0 * 3.14159265358979 / 360.0);
+                        const double moved = sqrt((rx - ax) * (rx - ax) + (ry - ay) * (ry - ay));
+                        check(r > 100.0, "the probe point is off-centre, so a roll can move it at all");
+                        check(fabs(moved - chord) < 0.05 * chord,
+                              "ROLL moves it along the arc a rotation about the view axis predicts, within "
+                              "5% of the exact chord");
+                    }
+
+                    // AND THE AIM NEVER TILTS. PlayerCamera_CancelAimRoll rebuilds the aim quaternion as
+                    // FromEuler(pitch, yaw, 0) about 28 times a second, so head tilt cannot be stored there
+                    // -- which is the reason the head pose goes in the outer operand instead.
+                    std::string rb;
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        rb = http::body_of(resp);
+                    }
+                    double aim_roll = 999.0;
+                    bool roll_readable = false;
+                    check(json_bool(rb, "aim_roll_readable", roll_readable) && roll_readable,
+                          "the player's aim quaternion is readable, so its roll can be judged");
+                    check(json_double(rb, "aim_roll_deg", aim_roll) && fabs(aim_roll) < 0.01,
+                          "and the aim stays LEVEL while the head is rolled -- the engine cancels roll "
+                          "there, so a head-tracked view must not put tilt in it");
+                }
+
                 // OFF AGAIN, unconditionally -- same reason as the eye offset above.
                 http::get(port, "/vr/head?clear=1", resp);
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -1285,6 +1285,24 @@ public:
     // resolves and this one deliberately does not.
     static std::optional<CameraRotationOperands> camera_rotation_operands_from_holder(uintptr_t holder);
 
+    // ---- THE ENGINE CANCELS ROLL ON THE AIM, AND A VR MOD HAS TO KNOW IT --------------
+    //
+    // `PlayerCamera_CancelAimRoll` (gameclient +0xDF500, __thiscall, `this` IS the holder) runs ~28x/sec off
+    // the view-pose path. It reads the aim quaternion at +324, converts it to Euler, and rebuilds it as
+    //
+    //     Quaternion_FromEuler(pitch, yaw, 0.0f)
+    //
+    // -- the roll term is a literal zero. So any head tilt written into the AIM is erased within a frame,
+    // by design, and this is the mechanism behind the earlier observation that writes to +324 do not stick.
+    //
+    // It is also why a head orientation belongs in the OUTER operand at +552: nothing strips that one, so a
+    // head-tracked view keeps its roll while the player's aim stays level, which is what both want.
+    //
+    // Roll of the aim quaternion in RADIANS, measured as the camera right vector's departure from the
+    // horizontal plane -- convention-free, unlike an Euler term. Live this reads ~0 always; a non-zero
+    // reading means the canceller did not run, not that roll is supported.
+    static std::optional<float> aim_roll(unsigned index);
+
     // Does the product of the two stored quaternions equal the camera object's rotation? Compared with a
     // tolerance rather than bitwise, because the engine's multiply and this SDK's are separate implementations of
     // the same algebra and need not round identically.

@@ -5675,9 +5675,12 @@ std::string build_shader_params_json(bool include_write_probes) {
     // the camera object, so recomputing the product here and comparing against what the object carries
     // establishes BOTH operands AND the multiplication order in one measurement.
     const auto cro = sdk::PlayerMgr::camera_rotation_operands(0);
+    const auto aim_roll = sdk::PlayerMgr::aim_roll(0);
     const auto cro_ok = sdk::PlayerMgr::camera_rotation_is_composed(0);
     json_append_bool(out, "cro_resolved", cro.has_value());
     json_append_bool(out, "cro_determinable", cro_ok.has_value());
+    json_append_bool(out, "aim_roll_readable", aim_roll.has_value());
+    json_append_double(out, "aim_roll_deg", aim_roll.value_or(0.0f) * 57.2957795, 5);
     json_append_bool(out, "cro_composed_matches", cro_ok.has_value() && *cro_ok);
     if (cro.has_value()) {
         const auto unit = [](const std::array<float, 4>& q) {
@@ -9965,7 +9968,8 @@ bool Framework::initialize() {
         auto& ht = HeadTracking::get();
         if (webapi_query_int(q, "clear", 0) != 0) {
             ht.clear();
-        } else if (q.find("yaw") != q.end() || q.find("pitch") != q.end() || q.find("w") != q.end()) {
+        } else if (q.find("yaw") != q.end() || q.find("pitch") != q.end() ||
+                   q.find("roll") != q.end() || q.find("w") != q.end()) {
             // A quaternion is the honest interface -- a runtime hands you one -- but yaw/pitch in DEGREES is
             // what a person testing by hand can reason about, so both are accepted.
             if (q.find("w") != q.end()) {
@@ -9974,12 +9978,24 @@ bool Framework::initialize() {
                                       static_cast<float>(webapi_query_double(q, "z", 0.0)),
                                       static_cast<float>(webapi_query_double(q, "w", 1.0))});
             } else {
+                // AXES MEASURED, NOT ASSUMED: x = roll, y = yaw, z = pitch, established by rotating one
+                // component at a time and watching where a fixed world point lands. The first version of
+                // this put pitch in x and so applied ROLL whenever a caller asked to look up or down -- it
+                // went unnoticed because only yaw had ever been tested, and yaw was right.
+                //
+                // q = q_yaw * q_pitch, expanded rather than composed at runtime.
                 const double yaw = webapi_query_double(q, "yaw", 0.0) * 3.14159265358979 / 180.0;
                 const double pitch = webapi_query_double(q, "pitch", 0.0) * 3.14159265358979 / 180.0;
+                const double roll = webapi_query_double(q, "roll", 0.0) * 3.14159265358979 / 180.0;
                 const double cy = cos(yaw * 0.5), sy = sin(yaw * 0.5);
                 const double cp = cos(pitch * 0.5), sp = sin(pitch * 0.5);
-                ht.set_head_rotation({static_cast<float>(sp * cy), static_cast<float>(cp * sy),
-                                      static_cast<float>(-sp * sy), static_cast<float>(cp * cy)});
+                const double cr = cos(roll * 0.5), sr = sin(roll * 0.5);
+                // yaw*pitch first, then roll about the resulting forward axis.
+                const double qx = sy * sp, qy = sy * cp, qz = cy * sp, qw = cy * cp;
+                ht.set_head_rotation({static_cast<float>(qw * sr + qx * cr),
+                                      static_cast<float>(qy * cr + qz * sr),
+                                      static_cast<float>(qz * cr - qy * sr),
+                                      static_cast<float>(qw * cr - qx * sr)});
             }
         }
         const auto st = ht.state();

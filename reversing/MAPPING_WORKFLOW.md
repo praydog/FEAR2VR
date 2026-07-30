@@ -4699,3 +4699,42 @@ The recovery loop printed `in-world` and exited 0 while the engine clock was PAU
 samplers, the pass census -- then measured a stopped world and failed in ways that read like code faults.
 `ws_world_ready` is not readiness; readiness is `ws_world_ready AND NOT eng_clock_paused`. The early-exit
 path was the worse half: it skipped the Space tap entirely on the grounds that the world was already up.
+
+## The engine cancels roll on the player's aim, and that is why head tracking works where it does
+
+A write watchpoint on `holder+324` found exactly ONE writer at gameclient +0xDF579, ~28 hits/sec, inside a
+0x9C function now named **`PlayerCamera_CancelAimRoll`** (+0xDF500, `__thiscall`, `this` IS the holder). It
+reads the aim quaternion, converts it to Euler, and rebuilds it as
+
+```c
+Quaternion_FromEuler(pitch, yaw, 0.0f);   // the roll term is a literal zero
+```
+
+So the player's aim is forced level every update. That is the mechanism behind the long-standing observation
+that writes to +324 never survive a frame -- and it retroactively justifies putting the head pose in the
+OUTER operand at +552, where nothing strips it. Head tilt and a level aim are not in conflict; they live in
+different operands, by the engine's own design.
+
+Verified live: with a 20 deg head roll applied, `aim_roll()` reads 0.00000 deg throughout.
+
+### Two bugs this found in our own code
+
+**The roll measurement.** The first `aim_roll()` used the textbook `atan2` extraction and read a rock-steady
+`+180.00000` deg. That formula assumes Z-up; this engine is Y-UP, and for a level view its arguments
+degenerate to `atan2(0, cos(yaw))`, which flips to pi as soon as the player faces backwards. **A constant
+that tracks nothing is the tell.** Rotating (1,0,0) by the quaternion and taking the Y component needs no
+convention: the right vector leaves the horizontal plane exactly when the view is rolled.
+
+**The euler convenience.** `/vr/head?pitch=` put pitch in the quaternion's X term -- which is ROLL. Only yaw
+had ever been tested, and yaw was correct, so the defect sat in a "working" API. Measured one component at a
+time against a fixed world point:
+
+```
+x = ROLL    delta (+179, +40)   |move| 183.4   predicted chord 183.4
+y = YAW     delta (-538, -44)
+z = PITCH   delta (  +0, +537)
+```
+
+The roll identification is quantitative, not a guess: a point at screen radius r rotated by theta moves along a
+chord of `2*r*sin(theta/2)`, and 183.4 measured against 183.4 predicted is the whole argument. The suite now
+asserts that chord rather than "something moved".
