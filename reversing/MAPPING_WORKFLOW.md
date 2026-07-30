@@ -5119,3 +5119,59 @@ residuals reach 0.478.
 The game died mid-session (the player had been turned into a firefight). `tools/resume_game.py` took
 it from a dead process back to an injected, in-world, test-ready session in 71 seconds with no
 human, and the session continued.
+
+## View-motion comfort: the switches exist, and bob is already off
+
+Head bob, camera sway and camera shake are the standard VR nausea sources, and this engine exposes
+all three as its OWN console variables -- so suppressing them puts the game in a state it already
+supports rather than one a mod invented:
+
+```
+HeadBobSpeedScale    1.0 -> 0     CameraSwayXSpeed   3.0 -> 0
+DisableCameraShake   0.0 -> 1     CameraSwayYSpeed   1.0 -> 0
+```
+
+`Comfort` captures the originals, writes the suppressed values, and restores on release AND on
+shutdown -- a console variable is ENGINE state that outlives the DLL, the same hazard as a hidden
+model piece or a latched mouse button, both of which this project has shipped once.
+
+### The honest half: suppressing bob changes nothing here
+
+Every one of the 24 `HeadBob*Wave*` variables and every `*Amp` reads **0.0**. `HeadBobSpeedScale` is
+1.0, but it scales a wave with no amplitude, so the bob system runs -- `bob_active` is true while
+walking -- and displaces nothing. Measured in phase over ~100 render passes on a fixed path:
+peak-to-peak height 3.4592 with bob on, 3.4592 with it off, to four decimals. That number is the
+TERRAIN of the path.
+
+So the suite asserts what is established (the variables resolve, the write lands, the originals come
+back exactly) and REPORTS the excursion, rather than asserting a visual improvement that does not
+occur on this build.
+
+### The instrument had to be fixed before the negative result meant anything
+
+A first attempt sampled the published camera position from the IPC thread and produced
+byte-identical "measurements" for two different walks. That value is a snapshot of the LAST render
+pass, so reads faster than the pass rate repeat -- sampling an oscillation that way ALIASES it.
+
+`CameraPassHook` now accumulates min/max of the camera's Y inside the pass, one sample per pass, with
+`reset_height_excursion()` to start a window. Only after that was the "bob changes nothing" result
+worth believing, because only then could the instrument have detected it if it had.
+
+An earlier note in this session claimed "walking moves the camera Y over a 13.48 unit range" as
+evidence of bob. It was terrain, measured with the aliased instrument. Retracted.
+
+## The ctest transient, investigated and still unreproduced
+
+Twice this project has seen ctest's fixture-test fail on the first invocation after a standalone run
+loop and pass immediately after. TESTING.MD says a red is information, never "flaky", so this pass
+tried to reproduce it: one standalone run then ctest, one standalone run then ctest with no gap, and
+three standalone runs then ctest -- **four ctest invocations, all green**, plus two more during the
+session.
+
+State was checked at each boundary: a fixture-test run leaves the DLL UNLOADED and the IPC down, so
+ctest always starts clean. That rules out the obvious hypothesis (ctest injecting over a resident
+payload).
+
+Unreproduced is not resolved. What is now different is that the next occurrence will be diagnosable:
+capture ctest output to a file rather than reading its tail, since `--output-on-failure` prints the
+failing checks and the earlier two occurrences were greped away.

@@ -117,6 +117,10 @@ public:
     // GAME THREAD ONLY, and only between a BeginRenderTarget and its EndRenderTarget: it moves the renderer's
     // state machine. Returns false when the hook is not installed.
     // Name the world point that gets projected every main-view pass. Off until a point is set.
+    // Start a fresh height-excursion window. A consumer measuring an oscillation resets, waits,
+    // and reads -- the accumulation happens on the render thread in between.
+    void reset_height_excursion();
+
     void set_probe_point(float x, float y, float z);
     void clear_probe_point();
 
@@ -202,6 +206,21 @@ public:
         // world point projects to roughly itself and says nothing about where the view is looking. Measured
         // here, a stationary world point sliding across the screen is direct evidence the rendered view
         // turned, with no screenshot involved.
+        // ---- CAMERA HEIGHT EXCURSION, ACCUMULATED IN PHASE -------------------------
+        //
+        // WHY THIS EXISTS: the published `camera_position` is a snapshot of the LAST pass, and the
+        // pass runs on the render thread's schedule. Sampling it from the IPC thread to measure an
+        // OSCILLATION -- head bob, for instance -- aliases it: reads faster than the pass rate
+        // return the same value repeatedly, and two different walks produced byte-identical
+        // "measurements" that way. Amplitude has to be accumulated where the samples are.
+        //
+        // Tracks the min and max of the camera's Y across every main-view pass since the last
+        // reset, so peak-to-peak is a real excursion over the window rather than the difference
+        // between two arbitrary snapshots.
+        float height_min{};
+        float height_max{};
+        uint32_t height_samples{};
+
         bool probe_projected{};
         std::array<float, 3> probe_point{};
         std::array<float, 2> probe_pixel{};

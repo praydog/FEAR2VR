@@ -8537,6 +8537,86 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- VIEW-MOTION SUPPRESSION, AND WHAT IT DOES NOT PROVE ----------------------------
+        //
+        // Head bob, camera sway and shake are the standard VR nausea sources, and this engine
+        // exposes all three as its OWN console variables -- so suppressing them puts the game in a
+        // state it already supports rather than one this mod invented.
+        //
+        // WHAT IS ASSERTED: the variables resolve, the write lands, and the ORIGINALS COME BACK.
+        // That last one is the part that matters most and is easiest to get wrong -- a console
+        // variable is engine state that OUTLIVES this DLL, so a mod that suppresses bob and unloads
+        // has silently changed the player's game with nothing left to explain why.
+        //
+        // WHAT IS NOT ASSERTED, and this is the honest half: that suppression changes the picture.
+        // It does not, on this build -- every one of the 24 HeadBob wave variables and every
+        // amplitude reads 0.0, so `HeadBobSpeedScale` is scaling a wave with no amplitude. Measured
+        // in phase across ~100 render passes, the camera's height excursion while walking is
+        // 3.4592 with bob on and 3.4592 with it off, to four decimals: that number is the TERRAIN
+        // of the path walked, not bob. An earlier reading of "13.48 units of bob" was the same
+        // mistake made with a coarser instrument.
+        {
+            std::string cb;
+            if (http::get(port, "/vr/comfort", resp)) {
+                cb = http::body_of(resp);
+            }
+            bool comfort_ok = false;
+            double known = 0.0;
+            const bool live = json_bool(cb, "ok", comfort_ok) && comfort_ok &&
+                              json_double(cb, "known", known) && known > 0.0;
+            check_gated(live, "comfort vars unavailable", g_skipped_world, true,
+                        "the view-motion variables the engine exposes are enumerable");
+            if (live) {
+                double scale0 = -1.0;
+                bool readable0 = false;
+                check(json_bool(cb, "bob_scale_readable", readable0) && readable0 &&
+                          json_double(cb, "bob_scale", scale0),
+                      "the head-bob scale is readable before anything touches it");
+
+                http::get(port, "/vr/comfort?on=1", resp);
+                const std::string sb = http::body_of(resp);
+                double found = 0.0, applied = 0.0, scale1 = -1.0;
+                bool supp = false;
+                const bool armed = json_bool(sb, "suppressed", supp) && supp &&
+                                   json_double(sb, "found", found) &&
+                                   json_double(sb, "applied", applied) &&
+                                   json_double(sb, "bob_scale", scale1);
+                check(armed && found == known && applied == found,
+                      "every view-motion variable this build has is found and written");
+                check(armed && scale1 == 0.0,
+                      "and the engine's OWN stored value reads back as suppressed -- our write and "
+                      "its record agree, which is what makes this more than a hopeful poke");
+
+                http::get(port, "/vr/comfort?on=0", resp);
+                const std::string rb = http::body_of(resp);
+                double restored = 0.0, scale2 = -1.0;
+                bool supp2 = true;
+                check(json_bool(rb, "suppressed", supp2) && !supp2 &&
+                          json_double(rb, "restored", restored) && restored == found,
+                      "releasing writes every captured original back");
+                check(json_double(rb, "bob_scale", scale2) && scale2 == scale0,
+                      "and the value is the one it started with -- engine state outlives this DLL, "
+                      "so restoring it EXACTLY is the whole contract");
+
+                // THE IN-PHASE INSTRUMENT ITSELF, which is what makes the negative result above
+                // trustworthy. A snapshot read from this thread aliases an oscillation the render
+                // thread produces; accumulating min/max inside the pass does not.
+                http::get(port, "/vr/comfort?reset=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                std::string hb;
+                if (http::get(port, "/vr/comfort", resp)) {
+                    hb = http::body_of(resp);
+                }
+                double samples = 0.0, pp = -1.0;
+                check(json_double(hb, "height_samples", samples) && samples > 10.0 &&
+                          json_double(hb, "height_pp", pp) && pp >= 0.0,
+                      "the camera-height excursion accumulates a sample per render pass, so an "
+                      "oscillation could be measured rather than aliased away");
+                printf("[fixture] comfort: %.0f vars, bob scale %.1f -> 0 -> %.1f; height excursion "
+                       "%.4f over %.0f passes\n", found, scale0, scale2, pp, samples);
+            }
+        }
+
         // ---- SNAP TURN: A HEADING, NOT A DELTA ----------------------------------------------
         //
         // `send_mouse_look` delivers a delta and the engine's gain is not constant, so "turn 30

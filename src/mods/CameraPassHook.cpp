@@ -16,6 +16,10 @@ namespace {
 constexpr const char* kHookName = "CLTRenderer::SetupPassPerspective";
 
 std::atomic<uint64_t> g_passes{0};
+std::atomic<float> g_h_min{0.0f};
+std::atomic<float> g_h_max{0.0f};
+std::atomic<uint32_t> g_h_samples{0};
+
 std::atomic<bool> g_probe_on{false};
 std::atomic<float> g_probe_pt[3]{{0.0f}, {0.0f}, {0.0f}};
 std::atomic<float> g_probe_px{0.0f};
@@ -166,6 +170,26 @@ void apply_frustum_centre(CameraPassHook::Eye eye) {
 // Reads the pixel viewport the engine just derived from the rect it was handed.
 // Project the caller's world point through the record THAT THIS PASS JUST CONFIGURED. Only meaningful while
 // a perspective pass is live, which is why it runs here rather than off an IPC read.
+// Accumulate the camera height for THIS pass. In phase by construction: it runs inside the pass
+// entry, so every pass contributes exactly one sample and nothing is aliased away.
+void accumulate_height(bool is_main_view, const regenny::LTNodeTransform* camera) {
+    if (!is_main_view || camera == nullptr) {
+        return;
+    }
+    const float y = camera->position.y;
+    if (g_h_samples.fetch_add(1, std::memory_order_relaxed) == 0) {
+        g_h_min.store(y, std::memory_order_relaxed);
+        g_h_max.store(y, std::memory_order_relaxed);
+        return;
+    }
+    float lo = g_h_min.load(std::memory_order_relaxed);
+    while (y < lo && !g_h_min.compare_exchange_weak(lo, y, std::memory_order_relaxed)) {
+    }
+    float hi = g_h_max.load(std::memory_order_relaxed);
+    while (y > hi && !g_h_max.compare_exchange_weak(hi, y, std::memory_order_relaxed)) {
+    }
+}
+
 void project_probe(bool is_main_view) {
     if (!is_main_view || !g_probe_on.load(std::memory_order_relaxed)) {
         return;
@@ -271,6 +295,8 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
         const char r = original(camera, fov, rect, depth_min, depth_max);
         capture_viewport();
         project_probe(is_main_view);
+    accumulate_height(is_main_view, camera);
+        accumulate_height(is_main_view, camera);
         record_pass(camera, fov, rect, depth_min, depth_max);
         return r;
     }
@@ -521,6 +547,10 @@ uint32_t CameraPassHook::max_passes_in_a_frame() const {
     return g_max_passes.load(std::memory_order_relaxed);
 }
 
+void CameraPassHook::reset_height_excursion() {
+    g_h_samples.store(0, std::memory_order_relaxed);
+}
+
 void CameraPassHook::set_probe_point(float x, float y, float z) {
     g_probe_pt[0].store(x, std::memory_order_relaxed);
     g_probe_pt[1].store(y, std::memory_order_relaxed);
@@ -573,6 +603,9 @@ CameraPassHook::Observed CameraPassHook::observed() const {
     out.centre_inconsistent = g_centre_inconsistent.load(std::memory_order_relaxed);
     out.second_eye_draws = g_second_draws.load(std::memory_order_relaxed);
     out.draw_calls = g_draw_calls.load(std::memory_order_relaxed);
+    out.height_min = g_h_min.load(std::memory_order_relaxed);
+    out.height_max = g_h_max.load(std::memory_order_relaxed);
+    out.height_samples = g_h_samples.load(std::memory_order_relaxed);
     out.probe_projected = g_probe_ok.load(std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
         out.probe_point[i] = g_probe_pt[i].load(std::memory_order_relaxed);

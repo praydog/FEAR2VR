@@ -35,6 +35,7 @@
 #include "mods/BoneControl.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
+#include "mods/Comfort.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -9945,6 +9946,8 @@ bool Framework::initialize() {
     Mods::get().add(&ViewmodelDecouple::get());
     // Closed-loop turning: snap turn and recentre, both of which need a heading rather than a delta.
     Mods::get().add(&TurnController::get());
+    // Suppresses head bob, camera sway and shake -- the view motion a headset cannot tolerate.
+    Mods::get().add(&Comfort::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -10070,6 +10073,36 @@ bool Framework::initialize() {
             JsonFields jf(out);
             jf.b("ok", node_total > 0).u("node_count", node_total).u("socket_count", socket_total)
               .raw("nodes", nodes).raw("sockets", sockets);
+        }
+        return out;
+    };
+
+    handlers.comfort = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& cf = Comfort::get();
+        if (q.find("on") != q.end()) {
+            cf.set_suppressed(webapi_query_int(q, "on", 0) != 0);
+        }
+        if (webapi_query_int(q, "reset", 0) != 0) {
+            CameraPassHook::get().reset_height_excursion();
+        }
+        const auto o = cf.observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", o.found > 0 || !o.suppressed).b("suppressed", o.suppressed)
+              .u("known", static_cast<size_t>(o.known)).u("found", static_cast<size_t>(o.found))
+              .u("missing", static_cast<size_t>(o.missing))
+              .u("applied", static_cast<size_t>(o.applied))
+              .u("restored", static_cast<size_t>(o.restored))
+              .b("bob_scale_readable", o.bob_scale_readable)
+              .f("bob_scale", o.bob_scale, 4);
+            // The camera's height excursion, accumulated IN PHASE by CameraPassHook -- the only
+            // honest way to measure an oscillation the render thread produces.
+            const auto cp = CameraPassHook::get().observed();
+            jf.f("height_min", cp.height_min, 4).f("height_max", cp.height_max, 4)
+              .f("height_pp", cp.height_max - cp.height_min, 4)
+              .u("height_samples", static_cast<size_t>(cp.height_samples));
         }
         return out;
     };

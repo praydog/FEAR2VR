@@ -173,6 +173,10 @@ using ViewmodelFn = std::function<std::string(const std::string& request_target)
 // (`to`) and recentre-to-view, each driven to a measured heading rather than an open-loop delta.
 using TurnFn = std::function<std::string(const std::string& request_target)>;
 
+// VIEW-MOTION SUPPRESSION -- /vr/comfort. MUTATES ENGINE SETTINGS (console variables), which outlive
+// this DLL, so the mod captures the originals and restores them on release and on shutdown.
+using ComfortFn = std::function<std::string(const std::string& request_target)>;
+
 // THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
 // pick from when it wants to drive "the right hand" rather than "node 37".
 using SkeletonFn = std::function<std::string(const std::string& request_target)>;
@@ -208,6 +212,7 @@ struct Handlers {
     BoneFn bone{};                   // optional; /vr/bone 404s without it -- MUTATES the skeleton
     ViewmodelFn viewmodel{};         // optional; /vr/viewmodel 404s without it -- MUTATES the rig
     TurnFn turn{};                   // optional; /vr/turn 404s without it -- MUTATES the heading
+    ComfortFn comfort{};             // optional; /vr/comfort 404s without it -- MUTATES engine cvars
     SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
     PieceFn piece{};                 // optional; /sdk/piece 404s without it -- MUTATES visibility
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
