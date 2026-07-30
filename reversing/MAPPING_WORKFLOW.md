@@ -4738,3 +4738,78 @@ z = PITCH   delta (  +0, +537)
 The roll identification is quantitative, not a guess: a point at screen radius r rotated by theta moves along a
 chord of `2*r*sin(theta/2)`, and 183.4 measured against 183.4 predicted is the whole argument. The suite now
 asserts that chord rather than "something moved".
+
+## Driving a skeleton node, which is the mechanism VR hands and weapons ride on
+
+`Model.hpp` had mapped ILTModel's four node-control slots (23-26) and deliberately stopped there,
+on the grounds that registration lifetime is a consumer's problem. That left the single most
+useful VR primitive in the engine documented and unreachable. This pass built the consumer.
+
+### The ABI, which had to be read rather than guessed
+
+The Add entries validate the object (`type == OT_MODEL`) and then **drop it**, calling on with just
+`(node, fn, userdata)`. The object is not lost -- the thunk is `add ecx, 120h; jmp ...`, so
+registration targets the sub-object at `LTObject + 0x120`, already in the schema as
+`LTModelBlock120`. That one instruction is what ties the whole API to that block.
+
+`LTModelNodeBlock_Init` then gives the block's entire layout, and it upgrades a field that had sat
+as "a heap pointer unique to each model":
+
+```
++0x00  node_control_heads  alloc(4 * node_count), zeroed   <- per-node callback list heads
++0x04  node_dirty_stride2  alloc(2 * node_count), {1,0}
++0x08  node_transforms     28 bytes each                    <- 0x1C == LTNodeTransform
++0x0C  asset               node_count at +0x20
+```
+
+The invoker is `LTModelObject_EvaluateSkeleton` at 0x428AA0, and the call site gives the signature
+outright -- `fn(record, userdata)`, `__cdecl`, two pushes and two pops -- walking 12-byte cells of
+`{fn, userdata, next}`.
+
+### The record's fields are CHECKED, not read off the decompiler
+
+The decompiler said the record's fourth dword is `node_transforms + 28*node`. That is a claim, and
+it is checkable from inside the callback against the model's own array -- both sides derived from
+the generated schema, so nothing restates an offset. `NodeControl::record_is_consistent` does
+exactly that and the callback counts the verdicts.
+
+**Live: 172 consistent, 0 inconsistent.** The naming is a measurement.
+
+### What it does, measured
+
+```
+offset x=30   hand socket moved 29.99   muzzle moved 30.00
+offset x=60   hand socket moved 59.99   muzzle moved 59.99
+released      hand 0.000 from baseline  muzzle 0.000
+```
+
+Both the socket and the WEAPON follow, because the engine composes attachments from this transform
+afterwards. The magnitude equality is an invariant rather than a tolerance: a rigid transform
+preserves length, so a local displacement of d must appear as d in world space whatever the bone's
+orientation.
+
+A 35 deg rotation cross-checks the composition geometrically. Chord `= 2r sin(17.5 deg) = 0.601r`:
+
+```
+hand   moved 11.42  ->  r = 19.0
+muzzle moved 34.71  ->  r = 57.7
+difference 38.7  ~=  the measured hand->muzzle distance 39.49
+```
+
+Two radii differing by exactly the lever arm between them is not something a wrong composition
+produces.
+
+### Two traps worth carrying
+
+**"RightHand" is a SOCKET, not a node.** The obvious lookup fails, correctly: this skeleton has 65
+nodes (Pelvis, L_Hand, Head, ...) and 19 sockets (RightHand@38, camera@64, eyes@13, ...). Sockets
+are the art's named attach points; nodes are the bones under them. Driving a socket means driving
+its OWNING node, which is why `attach_to_player_socket` exists beside the node form and why
+`/sdk/skeleton` now lists both with the node each socket rides.
+
+**The registration outlives the DLL unless something removes it.** `Hooks::retire()` only knows
+about safetyhook, so a live cell holding a pointer into this image is invisible to teardown --
+and the next skeleton evaluation after unmap calls freed memory. `BoneControl::on_shutdown`
+unlinks it, and the suite now leaves a callback registered ON PURPOSE across the uninject, exactly
+as it already does with a hardware watch. Verified: module unmapped cleanly, game alive, re-inject
+fresh, hand and muzzle back at their original coordinates to the decimal.

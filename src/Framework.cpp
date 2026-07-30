@@ -32,6 +32,7 @@
 #include "mods/HeadTracking.hpp"
 #include "mods/WeaponAgreement.hpp"
 #include "mods/HudPassHook.hpp"
+#include "mods/BoneControl.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -9896,6 +9897,8 @@ bool Framework::initialize() {
     Mods::get().add(&HeadTracking::get());
     Mods::get().add(&WeaponAgreement::get());
     Mods::get().add(&HudPassHook::get());
+    // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
+    Mods::get().add(&BoneControl::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
     Mods::get().add(&Watchpoints::get());
@@ -9913,6 +9916,108 @@ bool Framework::initialize() {
     handlers.write_probe = [] { return build_shader_params_json(true); };
     // THE VIEW OVERRIDE, and it MUTATES. Bounded by a frame countdown inside the mod, so the view returns to
     // the engine on its own; there is nothing to restore because the pose is recomputed every frame.
+    handlers.skeleton = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const std::string filter = webapi_query_string(q, "filter");
+        std::string nodes = "[";
+        std::string sockets = "[";
+        size_t node_total = 0, socket_total = 0;
+        const auto player = sdk::CClientShell::local_player(0);
+        if (player.has_value()) {
+            if (const auto sk = sdk::ModelSkeleton::from_object(player->object)) {
+                node_total = sk->node_count();
+                socket_total = sk->socket_count();
+                for (size_t i = 0; i < node_total; ++i) {
+                    const auto n = sk->node_name(i);
+                    if (!n.has_value()) {
+                        continue;
+                    }
+                    if (!filter.empty() && n->find(filter) == std::string::npos) {
+                        continue;
+                    }
+                    char one[192];
+                    snprintf(one, sizeof(one), "%s{\"i\":%zu,\"name\":\"%s\"}",
+                             nodes.size() > 1 ? "," : "", i, n->c_str());
+                    nodes += one;
+                }
+                for (size_t i = 0; i < socket_total; ++i) {
+                    const auto so = sk->socket(i);
+                    if (!so.has_value()) {
+                        continue;
+                    }
+                    // Report the socket's OWNING NODE too: that is the index a mod drives when
+                    // it wants the thing riding this socket to move.
+                    char one[256];
+                    snprintf(one, sizeof(one), "%s{\"i\":%zu,\"name\":\"%s\",\"node\":%zu}",
+                             sockets.size() > 1 ? "," : "", i, so->name.c_str(), so->node_index);
+                    sockets += one;
+                }
+            }
+        }
+        nodes += "]";
+        sockets += "]";
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", node_total > 0).u("node_count", node_total).u("socket_count", socket_total)
+              .raw("nodes", nodes).raw("sockets", sockets);
+        }
+        return out;
+    };
+
+    handlers.bone = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& bc = BoneControl::get();
+        if (webapi_query_int(q, "detach", 0) != 0) {
+            bc.detach();
+            bc.clear_offset();
+            bc.clear_rotation();
+        } else {
+            // `socket=` is the form a consumer usually wants ("RightHand"); `name=` is a NODE.
+            const std::string socket = webapi_query_string(q, "socket");
+            const std::string name = webapi_query_string(q, "name");
+            if (!socket.empty()) {
+                bc.attach_to_player_socket(socket.c_str());
+            } else if (!name.empty()) {
+                bc.attach_to_player_node(name.c_str());
+            } else if (q.find("node") != q.end()) {
+                bc.attach_to_player_node(static_cast<uint32_t>(webapi_query_int(q, "node", 0)));
+            }
+            if (q.find("x") != q.end() || q.find("y") != q.end() || q.find("z") != q.end()) {
+                bc.set_offset(static_cast<float>(webapi_query_double(q, "x", 0.0)),
+                              static_cast<float>(webapi_query_double(q, "y", 0.0)),
+                              static_cast<float>(webapi_query_double(q, "z", 0.0)));
+            }
+            if (q.find("qw") != q.end()) {
+                bc.set_rotation(static_cast<float>(webapi_query_double(q, "qx", 0.0)),
+                                static_cast<float>(webapi_query_double(q, "qy", 0.0)),
+                                static_cast<float>(webapi_query_double(q, "qz", 0.0)),
+                                static_cast<float>(webapi_query_double(q, "qw", 1.0)));
+            }
+        }
+        const auto o = bc.observed();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", o.available).b("attached", o.attached).b("want_attached", o.want_attached)
+              .u("node", static_cast<size_t>(o.node))
+              .u("calls", static_cast<size_t>(o.calls))
+              .u("writes", static_cast<size_t>(o.writes))
+              .u("record_consistent", static_cast<size_t>(o.record_consistent))
+              .u("record_inconsistent", static_cast<size_t>(o.record_inconsistent))
+              .u("callback_thread", static_cast<size_t>(o.callback_thread))
+              .u("frame_thread", static_cast<size_t>(o.frame_thread))
+              .b("same_thread", o.same_thread)
+              .b("readback_matches", o.readback_matches)
+              .u("engine_registered", static_cast<size_t>(o.engine_registered))
+              .f("seen_x", o.last_seen_position[0], 4).f("seen_y", o.last_seen_position[1], 4)
+              .f("seen_z", o.last_seen_position[2], 4)
+              .f("wrote_x", o.last_written_position[0], 4).f("wrote_y", o.last_written_position[1], 4)
+              .f("wrote_z", o.last_written_position[2], 4);
+        }
+        return out;
+    };
+
     handlers.hud = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         if (webapi_query_int(q, "clear", 0) != 0) {

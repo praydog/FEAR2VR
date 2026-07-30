@@ -237,6 +237,32 @@ bool json_double(const std::string& body, const char* key, double& out) {
     return true;
 }
 
+// A three-element JSON array, e.g. "rhand":[2162.26,2354.96,-7850.36]. Parsing, which this
+// runner already owns for every other shape -- not a reimplementation of anything the SDK does.
+bool json_vec3(const std::string& body, const char* key, double* out) {
+    const std::string needle = std::string{"\""} + key + "\":[";
+    const size_t p = body.find(needle);
+    if (p == std::string::npos) return false;
+    const char* cur = body.c_str() + p + needle.size();
+    for (int i = 0; i < 3; ++i) {
+        char* endp = nullptr;
+        const double v = strtod(cur, &endp);
+        if (endp == cur) return false;
+        out[i] = v;
+        cur = endp;
+        while (*cur == ',' || *cur == ' ') ++cur;
+    }
+    return true;
+}
+
+// Distance between two reported points. An INVARIANT check between independently-produced
+// values, which is what the host is for -- a rigid transform preserves length, so a local
+// displacement of d must appear as a world displacement of d whatever the bone's orientation.
+double dist3(const double* a, const double* b) {
+    const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 // ---- remote module inspection ----------------------------------------------
 
 struct RemoteModule {
@@ -8465,6 +8491,135 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- DRIVING A SKELETON NODE, WHICH IS HOW A HAND OR WEAPON GETS INTO VR ------------
+        //
+        // The engine calls a registered function during skeleton evaluation and hands it the node's
+        // own writable transform. That is a better mechanism than hooking anything: it runs inside
+        // the evaluation, so there is no race against the animation system, and everything socketed
+        // to the node follows because the engine composes those afterwards.
+        //
+        // These assert the CONSUMER surface -- `sdk::NodeControl` and `BoneControl` -- and every
+        // number is read back from the engine's own structures rather than from what the mod thinks
+        // it did.
+        {
+            std::string bb;
+            if (http::get(port, "/vr/bone", resp)) {
+                bb = http::body_of(resp);
+            }
+            bool bone_ok = false;
+            if (json_bool(bb, "ok", bone_ok) && bone_ok) {
+                check(true, "the node-control mechanism resolves: ILTModel is live and the catalogue "
+                            "supplies its add/remove slots");
+
+                // SOCKET vs NODE, cross-checked between two independent SDK routes. "RightHand" is a
+                // SOCKET on this skeleton riding a node, and there is NO node of that name -- so a
+                // consumer reaching for the obvious name needs the socket path. The skeleton listing
+                // and the mod's own resolution must name the same node.
+                std::string sb;
+                double sk_node = -1.0;
+                if (http::get(port, "/sdk/skeleton", resp)) {
+                    sb = http::body_of(resp);
+                    const size_t at = sb.find("\"name\":\"RightHand\",\"node\":");
+                    if (at != std::string::npos) {
+                        sk_node = atof(sb.c_str() + at + 26);
+                    }
+                }
+                check(sk_node >= 0.0, "the skeleton listing names the RightHand socket and the node it "
+                                      "rides, which is what a mod has to drive");
+
+                http::get(port, "/vr/bone?socket=RightHand&x=0&y=0&z=0", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(900));
+                std::string ab;
+                if (http::get(port, "/vr/bone", resp)) {
+                    ab = http::body_of(resp);
+                }
+                bool attached = false, same_thread = false;
+                double node = -1.0, calls = -1.0, consistent = -1.0, inconsistent = -1.0, engine_reg = -1.0;
+                const bool got = json_bool(ab, "attached", attached) && json_double(ab, "node", node) &&
+                                 json_double(ab, "calls", calls) &&
+                                 json_double(ab, "record_consistent", consistent) &&
+                                 json_double(ab, "record_inconsistent", inconsistent) &&
+                                 json_double(ab, "engine_registered", engine_reg) &&
+                                 json_bool(ab, "same_thread", same_thread);
+                check(got && attached, "registering a node-control callback on the player's model succeeds");
+                if (got && attached) {
+                    check(node == sk_node,
+                          "and it drives the node the skeleton listing named for that socket -- two "
+                          "independent routes to one index");
+                    // THE ENGINE'S OWN LIST, not our bookkeeping. This is the difference between
+                    // "we called add" and "the engine will call us".
+                    check(engine_reg == 1.0,
+                          "the model's own callback list reports exactly one registration on that node");
+                    check(calls > 0.0, "and the engine actually invokes it during skeleton evaluation");
+
+                    // THE RECORD LAYOUT, VERIFIED IN PHASE. The callback's writable transform must be
+                    // exactly the model's own node_transforms[node_index] -- both sides derived from
+                    // the generated schema. Checked on every single call, so a misread field is a
+                    // counter rather than a mystery.
+                    check(consistent > 0.0 && inconsistent == 0.0,
+                          "every invocation's record agrees with the model's own node-transform array, "
+                          "so the field naming is measured rather than read off a decompiler");
+                    check(same_thread,
+                          "the engine calls back on the same thread that runs the frame hook -- which is "
+                          "why registration is done there and not from the IPC thread");
+
+                    // ---- THE OVERRIDE ITSELF -----------------------------------------------
+                    //
+                    // Displacing the bone must move BOTH the hand socket and the weapon's muzzle,
+                    // and by the SAME distance: a rigid transform preserves length, so a local
+                    // displacement of d shows up as a world displacement of d whatever the bone's
+                    // orientation. That is an invariant, not a tolerance chosen to pass.
+                    auto hand_muzzle = [&](double* h, double* m) {
+                        if (!http::get(port, "/sdk/targets", resp)) {
+                            return false;
+                        }
+                        const std::string tb = http::body_of(resp);
+                        return json_vec3(tb, "rhand", h) && json_vec3(tb, "muzzle", m);
+                    };
+                    double h0[3], m0[3], h1[3], m1[3], h2[3], m2[3];
+                    const bool base_ok = hand_muzzle(h0, m0);
+                    http::get(port, "/vr/bone?x=30&y=0&z=0", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                    const bool moved_ok = hand_muzzle(h1, m1);
+                    check(base_ok && moved_ok, "the hand socket and the muzzle are readable before and "
+                                               "after the override");
+                    if (base_ok && moved_ok) {
+                        const double dh = dist3(h0, h1);
+                        const double dm = dist3(m0, m1);
+                        check(fabs(dh - 30.0) < 0.5,
+                              "displacing the bone by 30 moves the hand socket by 30 in world space");
+                        check(fabs(dm - 30.0) < 0.5,
+                              "and moves the WEAPON's muzzle by the same 30 -- the attachment follows the "
+                              "bone, which is the whole mechanism a VR hand needs");
+                    }
+
+                    // RELEASE, and it must be exact: the override adds to what the animation produced
+                    // rather than replacing it, so removing it restores the original pose bit for bit.
+                    http::get(port, "/vr/bone?x=0&y=0&z=0", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                    if (base_ok && hand_muzzle(h2, m2)) {
+                        check(dist3(h0, h2) < 0.01 && dist3(m0, m2) < 0.01,
+                              "releasing the offset puts hand and muzzle back exactly where they were");
+                    }
+                }
+
+                // DETACH, and verify against the ENGINE's list rather than our flag -- a remove that
+                // silently did nothing looks identical from this side otherwise.
+                http::get(port, "/vr/bone?detach=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                std::string db;
+                if (http::get(port, "/vr/bone", resp)) {
+                    db = http::body_of(resp);
+                }
+                double reg_after = -1.0;
+                bool attached_after = true;
+                check(json_bool(db, "attached", attached_after) && !attached_after &&
+                          json_double(db, "engine_registered", reg_after) && reg_after == 0.0,
+                      "detaching removes the cell from the model's own list, so the engine stops calling "
+                      "into this DLL");
+            }
+        }
+
         // ---- THE 2D PASS, WHICH IS WHERE THE HUD IS PAINTED ---------------------------------
         //
         // Established by hooking BOTH candidate slots rather than reasoning about them: slot 16
@@ -8979,6 +9134,34 @@ int main(int argc, char** argv) {
             check(http::get(port, q, resp) && json_has(http::body_of(resp), "\"ok\":true"),
                   "a watch is armed on purpose across the uninject that follows -- teardown order is the test");
         }
+    }
+
+    // 5c. AND A NODE-CONTROL CALLBACK, LEFT REGISTERED ON PURPOSE.
+    //
+    // Same reasoning as the armed watch above, different mechanism and a nastier failure. A
+    // registration hands the ENGINE a raw pointer to a function in this image, and `Hooks::retire()`
+    // does not know it exists -- it only covers safetyhook. If `BoneControl::on_shutdown` fails to
+    // unlink the cell, the next skeleton evaluation calls into unmapped memory, which is not a
+    // recoverable state.
+    //
+    // Step 6's "game process survived uninjection" is the assertion; this is what gives it teeth.
+    // The player's hand is evaluated every frame, so the window between unmap and the fatal call is
+    // about one frame wide.
+    {
+        std::string resp;
+        std::string ab;
+        if (http::get(port, "/vr/bone?socket=RightHand&x=0&y=0&z=0", resp)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+            if (http::get(port, "/vr/bone", resp)) {
+                ab = http::body_of(resp);
+            }
+        }
+        double reg = -1.0;
+        // Offset deliberately ZERO: the point is to leave a live callback across the teardown, not
+        // to leave the player's arm displaced if the run stops here.
+        check(json_double(ab, "engine_registered", reg) && reg == 1.0,
+              "a node-control callback is registered on purpose across the uninject that follows -- "
+              "the engine holds a pointer into this image and teardown has to take it back");
     }
 
     // 6. Graceful unload proof: module vanishes, game keeps running.

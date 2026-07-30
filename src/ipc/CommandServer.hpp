@@ -159,6 +159,14 @@ using HeadFn = std::function<std::string(const std::string& request_target)>;
 // THE 2D PASS VIEWPORT OFFSET -- /vr/hud. MUTATES what the HUD is painted over: the engine adds this pair to
 // every edge of the screen-space pass, which is how the HUD reaches one eye's half.
 using HudFn = std::function<std::string(const std::string& request_target)>;
+
+// SKELETON NODE OVERRIDE -- /vr/bone. MUTATES the player's pose: it displaces a bone inside the
+// engine's own animation evaluation, so anything socketed to that bone moves with it.
+using BoneFn = std::function<std::string(const std::string& request_target)>;
+
+// THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
+// pick from when it wants to drive "the right hand" rather than "node 37".
+using SkeletonFn = std::function<std::string(const std::string& request_target)>;
 using EngineHookFn = std::function<std::string(const std::string& name)>; // full JSON body (with envelope)
 using ApiFn = std::function<std::string(const std::string& request_target)>; // full JSON body; request_target
                                                                               // is the raw "/api/..." path plus
@@ -183,6 +191,8 @@ struct Handlers {
     StereoFn stereo{};               // optional; /stereo/* 404s without it -- MUTATES the rendered view
     HeadFn head{};                   // optional; /vr/head 404s without it -- MUTATES the view orientation
     HudFn hud{};                     // optional; /vr/hud 404s without it -- MUTATES where the HUD lands
+    BoneFn bone{};                   // optional; /vr/bone 404s without it -- MUTATES the skeleton
+    SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it
     ApiFn api{};                 // optional; /api/* 404s without it -- see Framework.cpp's build_api_json
 };

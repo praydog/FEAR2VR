@@ -3129,34 +3129,11 @@ class LTNodeTransform 0x1C {
     LTRotation rotation @0x0C   // CONFIRMED a UNIT quaternion on 2222/2222 slots -- notably unit even where the position is stale garbage, so the rotation alone is NOT a validity test
 }
 
-// THE NODE-CONTROL CALLBACK CELL. LTModel_NodeControlList_Add (0x428B85) allocates
-// exactly LTMem_Alloc(0xC) and fills all three words, so the size is the allocator's
-// own number rather than an inference from adjacency:
-//
-//     v6 = LTMem_Alloc(0xC);
-//     *v6     = fn;                        // +0x00
-//     v6[1]   = userdata;                  // +0x04
-//     v6[2]   = heads[node];               // +0x08  -- old head becomes our next
-//     heads[node] = v6;
-//
-// The REMOVER (LTModel_NodeControlList_Remove, 0x428C74) matches on `fn` and treats a
-// userdata of 0 as a wildcard -- `a3 == cell->fn && (!a4 || a4 == cell->userdata)` --
-// which is a real hazard for a consumer that registers several callbacks sharing one
-// function pointer and expects to remove them individually.
-//
-// The INVOKER is LTModelObject_EvaluateSkeleton at 0x428AA0, which calls
-// `fn(record, userdata)` __cdecl, once per cell, per node, per evaluation.
-class LTNodeControlCell 0xC {
-    void* fn                @0x00   // CONFIRMED: called through as `(*(void(__cdecl**)(void*, void*))cell)(record, cell->userdata)`
-    void* userdata          @0x04   // CONFIRMED: pushed as the callback's second argument, unexamined by the engine
-    LTNodeControlCell* next @0x08   // CONFIRMED: the walk is `cell = cell->next` until null
-}
-
 // The sub-object OT_MODEL_ctor builds at LTModelObject+0x120 (ctor 0x4257CE,
 // which zeroes four dwords; dtor 0x428CAC). Its span is pinned by adjacency at
 // both ends: four dwords is 0x10, and the next sub-object starts at 0x130.
 class LTModelBlock120 0x10 {
-    LTNodeControlCell** node_control_heads @0x00   // CONFIRMED the per-node NODE-CONTROL CALLBACK LIST HEADS, one pointer per node. Was "a heap pointer unique to each model", which it is; this names it. THE ALLOCATOR: LTModelNodeBlock_Init does `*this = LTLinearAlloc_Alloc(arena, 4 * node_count)` and then zeroes every entry -- 4 bytes per node, i.e. an array of list heads, initially empty. THE WRITER: LTModel_NodeControlList_Add (0x428B85) allocates a 12-byte cell and links it head-first with `cell->next = heads[node]; heads[node] = cell;`, having first bounds-checked the index with LTModel_NodeControl_IsValidNode against asset->node_count. THE READER: LTModelObject_EvaluateSkeleton walks `heads[node]` once per node per evaluation and calls each cell's function. The two ILTModel Add/Remove entry points reach this block by `add ecx, 120h`, which is what ties the registration API to THIS sub-object rather than to the model as a whole. Live it is null-per-node until something registers, so a walk normally finds an empty list -- absence here is the ordinary state, not a fault.
+    void* unk_00          @0x00   // live a heap pointer unique to each model (215 distinct, none null)
     uint8_t* node_dirty_stride2 @0x04   // CONFIRMED a per-node DIRTY-FLAG array, stride 2, and now by TWO functions rather than one indexing site. LTModelObject_MarkNodeSubtreeDirty (0x4290A8) writes `*(base + 2*node) = 1` walking the skeleton; LTModelObject_GetNodeTransform READS `base[2*node]` and, when it is non-zero, recomputes the transform instead of trusting the cache. So the element's meaning -- which an earlier pass left unmapped -- is "this node's cached transform is stale". Live 215/215 non-null. Only the FIRST of the two bytes is proven; the second is untouched by both functions.
     LTNodeTransform* node_transforms @0x08   // CONFIRMED the per-node TRANSFORM CACHE this block's dirty array guards, used when the model's mode selector (+0x156) is ZERO: GetNodeTransform reads `base + 28*node`. Live non-null on 215/215, rotations unit throughout, positions meaningful only where the dirty byte is clear. // IN MODEL SPACE, and that is NOT shared with block130's array: of the 297 clean slots on selector==0 models, ALL sit nearer the model origin than the object's position, and a root node reads exactly (0,0,0) while its object is thousands of units away. A consumer MUST compose the object's transform onto these to get world space.
     LTModelAsset* asset   @0x0C   // CONFIRMED equal to the owning model's record.asset on 215/215 -- the THIRD offset that reaches the same pointer (record.asset at 0xEC, here at 0x12C, and LTModelBlock130.asset at 0x130)

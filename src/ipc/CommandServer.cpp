@@ -138,6 +138,24 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 13, "/sdk/skeleton") == 0) {
+        if (!g_handlers.skeleton) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no skeleton handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.skeleton(path));
+        return;
+    }
+
+    if (path.rfind("/vr/bone", 0) == 0) {
+        if (!g_handlers.bone) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no bone handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.bone(path));
+        return;
+    }
+
     if (path.rfind("/vr/hud", 0) == 0) {
         if (!g_handlers.hud) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no hud handler registered\"}");
