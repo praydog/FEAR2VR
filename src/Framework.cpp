@@ -8534,6 +8534,30 @@ std::string build_api_state_json() {
         {
             const auto aim = sdk::PlayerMgr::aim_tracking_limits();
             const auto aim_flag = sdk::PlayerMgr::ads_fov_active(0);
+            // THE AIM STATE MACHINE AND THE LIMIT ACTUALLY IN FORCE.
+            //
+            // This block used to carry normal_deg, zoomed_deg and a bare "flag" -- a name inherited from a
+            // mapping that has since been refuted, and which said nothing about what the flag does. Neither the
+            // four-state machine nor the zoom fraction was reachable here at all, which made the one subsystem
+            // most relevant to a head-tracked view invisible to anything reading this API.
+            //
+            // limit_deg is the consumer's actual question: not "what are the two limits" but "which one is
+            // clamping me right now". It is computed the same way ApplyLookDelta picks it.
+            const auto aim_state = sdk::PlayerMgr::aim_state_raw(0);
+            const auto aim_zoomed = sdk::PlayerMgr::uses_zoomed_aim_limit(0);
+            const auto aim_clk = sdk::Engine::client_time();
+            const auto aim_frac =
+                sdk::PlayerMgr::zoom_fraction(0, aim_clk.has_value() ? aim_clk->seconds : 0.0);
+            const char* aim_state_name = "unknown";
+            if (aim_state.has_value()) {
+                switch (*aim_state) {
+                case 0: aim_state_name = "entering_ads"; break;
+                case 1: aim_state_name = "ads"; break;
+                case 2: aim_state_name = "leaving_ads"; break;
+                case 3: aim_state_name = "hip"; break;
+                default: break;
+                }
+            }
             std::string aobj;
             {
                 JsonFields ajf(aobj);
@@ -8541,9 +8565,69 @@ std::string build_api_state_json() {
                 else { ajf.n("normal_deg"); }
                 if (aim.zoomed_degrees.has_value()) { ajf.f("zoomed_deg", *aim.zoomed_degrees, 4); }
                 else { ajf.n("zoomed_deg"); }
-                if (aim_flag.has_value()) { ajf.b("flag", *aim_flag); } else { ajf.n("flag"); }
+                // Renamed from "flag": it is the FOV lever specifically. Freezing it stops the zoom while
+                // recoil stays ADS-light, which is what separates it from the state below.
+                if (aim_flag.has_value()) { ajf.b("fov_flag", *aim_flag); } else { ajf.n("fov_flag"); }
+                if (aim_state.has_value()) { ajf.u("state", *aim_state); } else { ajf.n("state"); }
+                ajf.s("state_name", aim_state_name);
+                if (aim_zoomed.has_value()) { ajf.b("uses_zoomed_limit", *aim_zoomed); }
+                else { ajf.n("uses_zoomed_limit"); }
+                if (aim_frac.has_value()) { ajf.f("zoom_fraction", static_cast<double>(*aim_frac), 4); }
+                else { ajf.n("zoom_fraction"); }
+                // WHICH LIMIT IS IN FORCE, by the engine's own test.
+                if (aim_zoomed.has_value()) {
+                    const auto in_force = *aim_zoomed ? aim.zoomed_degrees : aim.normal_degrees;
+                    if (in_force.has_value()) { ajf.f("limit_deg", static_cast<double>(*in_force), 4); }
+                    else { ajf.n("limit_deg"); }
+                } else {
+                    ajf.n("limit_deg");
+                }
             }
-            jf.raw("aim_tracking", aobj);
+            jf.raw("aim", aobj);
+        }
+
+        // ---- THE RENDER / VIEW BLOCK ------------------------------------------------------------
+        //
+        // The single most VR-relevant thing the SDK maps, and it was reachable only as a raw dump: the live
+        // FOV pair, the render rect and the cinematic flag. A mod that fights a scripted camera or writes a
+        // projection needs all three, and a human diagnosing "why is the view wrong" needs them first.
+        //
+        // The DERIVATION IS CARRIED AS A FLAG rather than hidden. camera_fov() reads a float pair off the pose
+        // holder; fov_{x,y}_matches_projection() independently derives the same angles from the projection
+        // matrix by walking the shader-parameter list. Live those two do NOT agree, so the pair is reported
+        // with fov_cross_checked = false. Presenting the numbers without that would turn an open question into
+        // an apparent fact, which is exactly how the aim selector got mis-mapped in the first place.
+        {
+            const auto cfv = sdk::PlayerMgr::camera_fov(0);
+            const auto fy = sdk::PlayerMgr::fov_y_matches_projection(0);
+            const auto fx = sdk::PlayerMgr::fov_x_matches_projection(0);
+            const auto ar = sdk::PlayerMgr::aspect_ratio(0);
+            const auto vr = sdk::PlayerMgr::viewport_rect(0);
+            const auto cin = sdk::PlayerMgr::cinematic_active(0);
+            std::string robj;
+            {
+                JsonFields rjf(robj);
+                constexpr double kRad2Deg = 57.29577951;
+                if (cfv.has_value()) {
+                    rjf.f("fov_y_deg", static_cast<double>(cfv->fov_y) * kRad2Deg, 3);
+                    rjf.f("fov_x_deg", static_cast<double>(cfv->fov_x) * kRad2Deg, 3);
+                } else {
+                    rjf.n("fov_y_deg").n("fov_x_deg");
+                }
+                // TRUE only when BOTH independent derivations agree with the read pair.
+                rjf.b("fov_cross_checked",
+                      fy.has_value() && *fy && fx.has_value() && *fx);
+                if (ar.has_value()) { rjf.f("aspect", static_cast<double>(*ar), 4); } else { rjf.n("aspect"); }
+                if (vr.has_value()) {
+                    rjf.u("rect_w", static_cast<size_t>(vr->width));
+                    rjf.u("rect_h", static_cast<size_t>(vr->height));
+                } else {
+                    rjf.n("rect_w").n("rect_h");
+                }
+                // A SCRIPTED VIEW IS NOT A BUG BUT IT IS NOT YOURS EITHER -- a VR consumer must not fight it.
+                if (cin.has_value()) { rjf.b("cinematic_active", *cin); } else { rjf.n("cinematic_active"); }
+            }
+            jf.raw("render", robj);
         }
 
         }

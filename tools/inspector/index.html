@@ -109,11 +109,32 @@
         <div class="stat-row"><label>Timer Source</label><span id="live-timer-source" class="stat-value">&mdash;</span></div>
       </div>
 
-      <h3>Aim Tracking Limits</h3>
+      <h3>Aim / ADS</h3>
       <div class="stat-rows stat-rows-wide">
+        <!-- The state machine first: it is what selects the limit, and the two below are only
+             meaningful once you know which one is in force. -->
+        <div class="stat-row"><label>State</label><span id="live-aim-state" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Zoom fraction</label><span id="live-aim-fraction" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Limit in force</label><span id="live-aim-limit" class="stat-value">&mdash;</span></div>
         <div class="stat-row"><label>Normal</label><span id="live-aim-normal" class="stat-value">&mdash;</span></div>
         <div class="stat-row"><label>Zoomed</label><span id="live-aim-zoomed" class="stat-value">&mdash;</span></div>
-        <div class="stat-row"><label>Flag</label><span id="live-aim-flag" class="stat-value">&mdash;</span></div>
+        <!-- The FOV lever, distinct from the state: freezing this stops the zoom but leaves recoil
+             ADS-light, while freezing the state does the opposite. -->
+        <div class="stat-row"><label>FOV flag</label><span id="live-aim-flag" class="stat-value">&mdash;</span></div>
+      </div>
+    </section>
+
+    <!-- RENDER / VIEW. The FOV pair is shown with a cross-check marker: the SDK reads it off the pose
+         holder and independently derives it from the projection matrix, and live those disagree. Showing
+         the numbers without saying so would present an open question as a fact. -->
+    <section class="panel">
+      <h3>Render / View</h3>
+      <div class="stat-rows stat-rows-wide">
+        <div class="stat-row"><label>FOV (v / h)</label><span id="live-render-fov" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Cross-checked</label><span id="live-render-fovck" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Render rect</label><span id="live-render-rect" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Aspect</label><span id="live-render-aspect" class="stat-value">&mdash;</span></div>
+        <div class="stat-row"><label>Cinematic</label><span id="live-render-cine" class="stat-value">&mdash;</span></div>
       </div>
     </section>
   </section>

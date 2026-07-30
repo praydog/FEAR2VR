@@ -285,10 +285,43 @@ function renderLiveState(data) {
     $("live-timer-source").textContent = timer.use_cached === null || timer.use_cached === undefined ? "\u2014" : timer.use_cached ? "cached" : "live";
   }
 
-  const aim = cam.aim_tracking || {};
+  const aim = cam.aim || {};
+  // The state carries its own name from the DLL, so the UI does not restate the mapping. Showing the
+  // raw value beside it because that is what somebody watching this in Cheat Engine sees.
+  $("live-aim-state").textContent =
+    typeof aim.state === "number" ? `${aim.state_name || "?"} (${aim.state})` : "\u2014";
+  $("live-aim-fraction").textContent =
+    typeof aim.zoom_fraction === "number" ? fmtNum(aim.zoom_fraction, 3) : "\u2014";
+  // WHICH limit is clamping right now, marked so the two rows below read as context rather than as
+  // competing answers.
+  $("live-aim-limit").textContent =
+    typeof aim.limit_deg === "number"
+      ? fmtNum(aim.limit_deg, 2) + "\u00b0" + (aim.uses_zoomed_limit ? " (zoomed)" : " (normal)")
+      : "\u2014";
   $("live-aim-normal").textContent = typeof aim.normal_deg === "number" ? fmtNum(aim.normal_deg, 2) + "\u00b0" : "\u2014";
   $("live-aim-zoomed").textContent = typeof aim.zoomed_deg === "number" ? fmtNum(aim.zoomed_deg, 2) + "\u00b0" : "\u2014";
-  $("live-aim-flag").textContent = fmtBool(aim.flag);
+  $("live-aim-flag").textContent = fmtBool(aim.fov_flag);
+
+  // RENDER / VIEW. fov_cross_checked is displayed rather than folded into the numbers: the DLL reads the
+  // pair off the pose holder and derives it again from the projection matrix, and when those disagree the
+  // pair is a reading, not an established value. Marked so nobody builds on it by mistake.
+  // Nested under camera, not top level: the FOV pair, the render rect and the cinematic flag are all
+  // properties of the camera the engine is rendering from.
+  const rnd = cam.render || {};
+  $("live-render-fov").textContent =
+    typeof rnd.fov_y_deg === "number" && typeof rnd.fov_x_deg === "number"
+      ? `${fmtNum(rnd.fov_y_deg, 2)}\u00b0 / ${fmtNum(rnd.fov_x_deg, 2)}\u00b0`
+      : "\u2014";
+  const ck = $("live-render-fovck");
+  ck.textContent = rnd.fov_cross_checked === true ? "yes" : "NO \u2014 derivation disagrees";
+  ck.classList.toggle("warn", rnd.fov_cross_checked !== true);
+  $("live-render-rect").textContent =
+    typeof rnd.rect_w === "number" && typeof rnd.rect_h === "number" ? `${rnd.rect_w} \u00d7 ${rnd.rect_h}` : "\u2014";
+  $("live-render-aspect").textContent = typeof rnd.aspect === "number" ? fmtNum(rnd.aspect, 4) : "\u2014";
+  const cine = $("live-render-cine");
+  cine.textContent = fmtBool(rnd.cinematic_active);
+  // A scripted view is not a bug, but a VR consumer must not fight it -- so it is flagged when active.
+  cine.classList.toggle("warn", rnd.cinematic_active === true);
 }
 
 function renderClampsTable(clamps, predicted) {
