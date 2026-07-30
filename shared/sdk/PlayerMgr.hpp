@@ -281,6 +281,73 @@ public:
         std::array<float, 3> external_delta{};
     };
 
+    // ---- THE GAME-SIDE FIELD OF VIEW, AND THE CINEMATIC CAMERA THAT OVERRIDES IT ------------
+    //
+    // PlayerCamera_UpdateCinematicCamera walks a vector of cinematic camera descriptors on the player manager and,
+    // when one is active, writes a PAIR OF FLOATS onto the pose holder from that descriptor's FOV in DEGREES times
+    // pi/180 and an aspect ratio. Those two floats are the game's own field of view.
+    //
+    // +296 IS THE VERTICAL FOV IN RADIANS, on three pieces of evidence -- none of which is a live cross-check
+    // against the renderer, and it is worth being exact about that:
+    //
+    //   1. THE PRODUCER converts DEGREES to radians, multiplying the descriptor's FOV by 0.01745329 before
+    //      storing the pair. So one of the two fields is an angle in radians by construction.
+    //   2. IT READS 1.1344640, which is 65.0000 degrees to four decimals. A wrong offset landing on exactly a
+    //      round degree value is unlikely; this is the strongest evidence available without frames.
+    //   3. It sits in the plausible band for a vertical FOV, which +292 does not.
+    //
+    // THE CROSS-CHECK EXISTS BUT COULD NOT BE RUN. sdk::SceneCamera's projection-derived fov_y_radians() is gated
+    // on the current pass being perspective, and with the render path frozen the engine's last record is its
+    // SCREEN ORTHOGRAPHIC pass -- so it correctly refuses rather than comparing against a stale matrix.
+    // fov_y_matches_projection() therefore returns nullopt today and becomes meaningful the moment the game
+    // renders; the suite asserts it conditionally so it upgrades itself rather than being deleted.
+    //
+    // AN EARLIER DRAFT OF THIS COMMENT claimed agreement to 4e-5 with the projection. That number came from a
+    // SYNTHETIC round-trip self-test in the shader-parameter suite -- a matrix this SDK built from a chosen FOV
+    // and read back -- not from the live camera. Comparing a game field against our own test fixture and calling
+    // it independent corroboration is precisely the mistake this file keeps recording.
+    //
+    // +292 IS ITS PAIR AND ITS MEANING IS NOT ESTABLISHED. It reads 2.3101103, which as an angle is 132.36 degrees
+    // -- implausible as a horizontal FOV beside a 65-degree vertical one, and inconsistent with any ordinary
+    // aspect ratio (it would need about 3.56). fov_x_matches_projection() tests it against the projection's own
+    // horizontal FOV so the question is answered by measurement; until it passes, the field is exposed under a
+    // name that claims nothing.
+    //
+    // THE CINEMATIC FLAG MATTERS TO A VR CONSUMER independently of the FOV: while a cinematic camera is driving
+    // the view, overriding the pose fights the script. cinematic_active() is the cheap test, and the descriptor
+    // count says how many the level registered at all.
+    static constexpr uintptr_t kCameraFovPair = 292;      // +292 unknown, +296 vertical FOV in radians
+    static constexpr uintptr_t kCinematicActiveFlag = 1006;
+    static constexpr uintptr_t kSavedNearZ = 6336;
+    static constexpr uintptr_t kCinematicVectorBegin = 4660;  // on the MANAGER, not the holder
+    static constexpr uintptr_t kCinematicVectorEnd = 4664;
+
+    struct CameraFov {
+        float unknown_a{};  // +292, paired output of the same producer; meaning NOT established
+        float fov_y{};      // +296, vertical FOV in radians -- agrees with the projection
+    };
+
+    static std::optional<CameraFov> camera_fov(unsigned index);
+
+    // Does the holder's vertical FOV still match the one derived from the renderer's projection? The cross-check
+    // that establishes the field, and a staleness test for a consumer that cached either.
+    static std::optional<bool> fov_y_matches_projection(unsigned index, float tolerance = 0.01f);
+
+    // The same question for +292 against the projection's HORIZONTAL FOV. Expected to be false on this build --
+    // it is here so the field's meaning is decided by measurement rather than by its position beside fov_y.
+    static std::optional<bool> fov_x_matches_projection(unsigned index, float tolerance = 0.01f);
+
+    // Is a cinematic camera currently driving the view? While it is, the pose comes from the descriptor's own
+    // object and NearZ is overridden, with the previous value parked at kSavedNearZ until the cinematic ends.
+    static std::optional<bool> cinematic_active(unsigned index);
+
+    // The NearZ the cinematic path saved so it can restore it. Only meaningful while cinematic_active().
+    static std::optional<float> saved_near_z(unsigned index);
+
+    // How many cinematic camera descriptors this level registered, from the manager's vector bounds. nullopt when
+    // the manager is absent or the bounds are not a sane pointer pair.
+    static std::optional<size_t> cinematic_camera_count();
+
     // ---- WHERE THE CAMERA POSE COMES FROM: A MODEL SOCKET, PLUS THREE TUNABLE FLOATS -------
     //
     // The base pose is not computed from player state at all -- it is READ OFF THE MODEL. Per frame,

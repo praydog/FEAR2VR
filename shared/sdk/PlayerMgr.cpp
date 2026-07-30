@@ -14,6 +14,7 @@
 #include "Engine.hpp"
 #include "Model.hpp"
 #include "Object.hpp"
+#include "SceneCamera.hpp"
 #include "ShaderParams.hpp"
 
 namespace sdk {
@@ -757,6 +758,97 @@ std::optional<size_t> PlayerMgr::camera_socket_index(unsigned index, const char*
         return std::nullopt;
     }
     return skel->find_socket(name);
+}
+
+
+std::optional<PlayerMgr::CameraFov> PlayerMgr::camera_fov(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto a = mem::read<float>(p->holder + kCameraFovPair);
+    const auto b = mem::read<float>(p->holder + kCameraFovPair + sizeof(float));
+    if (!a.has_value() || !b.has_value()) {
+        return std::nullopt;
+    }
+    CameraFov out;
+    out.unknown_a = *a;
+    out.fov_y = *b;
+    return out;
+}
+
+namespace {
+
+std::optional<bool> compare_fov_against_projection(std::optional<float> field, bool horizontal, float tolerance) {
+    if (!field.has_value() || !std::isfinite(tolerance) || tolerance < 0.0f) {
+        return std::nullopt;
+    }
+    const auto snap = SceneCamera::snapshot();
+    if (!snap.has_value()) {
+        return std::nullopt;
+    }
+    const auto proj = horizontal ? snap->fov_x_radians() : snap->fov_y_radians();
+    if (!proj.has_value()) {
+        return std::nullopt;  // not a perspective pass, so there is nothing to compare against
+    }
+    return std::fabs(*field - *proj) <= tolerance;
+}
+
+}  // namespace
+
+std::optional<bool> PlayerMgr::fov_y_matches_projection(unsigned index, float tolerance) {
+    const auto fov = camera_fov(index);
+    if (!fov.has_value()) {
+        return std::nullopt;
+    }
+    return compare_fov_against_projection(fov->fov_y, false, tolerance);
+}
+
+std::optional<bool> PlayerMgr::fov_x_matches_projection(unsigned index, float tolerance) {
+    const auto fov = camera_fov(index);
+    if (!fov.has_value()) {
+        return std::nullopt;
+    }
+    return compare_fov_against_projection(fov->unknown_a, true, tolerance);
+}
+
+std::optional<bool> PlayerMgr::cinematic_active(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    const auto flag = mem::read<uint8_t>(p->holder + kCinematicActiveFlag);
+    if (!flag.has_value()) {
+        return std::nullopt;
+    }
+    return *flag != 0;
+}
+
+std::optional<float> PlayerMgr::saved_near_z(unsigned index) {
+    const auto p = player(index);
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+    return mem::read<float>(p->holder + kSavedNearZ);
+}
+
+std::optional<size_t> PlayerMgr::cinematic_camera_count() {
+    const auto mgr = manager();
+    if (mgr == 0) {
+        return std::nullopt;
+    }
+    const auto begin = mem::read_ptr(mgr + kCinematicVectorBegin);
+    const auto end = mem::read_ptr(mgr + kCinematicVectorEnd);
+    if (!begin.has_value() || !end.has_value() || *begin == 0 || *end < *begin) {
+        return std::nullopt;
+    }
+    const auto span = *end - *begin;
+    // A vector of pointers, so the span must divide evenly and stay within reason -- a garbage pair would
+    // otherwise report a plausible count.
+    if (span % sizeof(uintptr_t) != 0 || span > 0x10000) {
+        return std::nullopt;
+    }
+    return span / sizeof(uintptr_t);
 }
 
 }  // namespace sdk

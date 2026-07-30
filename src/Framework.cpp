@@ -4610,6 +4610,45 @@ std::string build_shader_params_json() {
         json_append_bool(out, "pe_raw_matches_getters",
                          raw_ok && vel.has_value() && acc.has_value() && raw_v == *vel && raw_a == *acc);
     }
+    // THE GAME-SIDE FOV, cross-checked against the renderer's projection. Two mappings sharing no offsets: a
+    // float field on the pose holder against a value derived from the projection matrix by walking the
+    // shader-parameter list.
+    const auto cfv = sdk::PlayerMgr::camera_fov(0);
+    const auto fy = sdk::PlayerMgr::fov_y_matches_projection(0);
+    const auto fx = sdk::PlayerMgr::fov_x_matches_projection(0);
+    json_append_bool(out, "cf_readable", cfv.has_value());
+    if (cfv.has_value()) {
+        json_append_double(out, "cf_fov_y", static_cast<double>(cfv->fov_y), 6);
+        json_append_double(out, "cf_unknown_a", static_cast<double>(cfv->unknown_a), 6);
+        json_append_double(out, "cf_fov_y_degrees", static_cast<double>(cfv->fov_y * 57.29577951f), 4);
+        // A vertical FOV has to be a plausible angle; a wrong offset would not land in this band.
+        json_append_bool(out, "cf_fov_y_plausible", cfv->fov_y > 0.3f && cfv->fov_y < 2.5f);
+    }
+    json_append_bool(out, "cf_fov_y_determinable", fy.has_value());
+    json_append_bool(out, "cf_fov_y_matches", fy.has_value() && *fy);
+    // THE HONEST PART: +292 is tested against the projection's horizontal FOV rather than assumed to be it.
+    json_append_bool(out, "cf_fov_x_determinable", fx.has_value());
+    json_append_bool(out, "cf_fov_x_matches", fx.has_value() && *fx);
+
+    // THE CINEMATIC CAMERA. A VR consumer must not fight a scripted view, so the flag matters on its own.
+    const auto cin = sdk::PlayerMgr::cinematic_active(0);
+    const auto cin_n = sdk::PlayerMgr::cinematic_camera_count();
+    const auto nz = sdk::PlayerMgr::saved_near_z(0);
+    json_append_bool(out, "cf_cine_determinable", cin.has_value());
+    json_append_bool(out, "cf_cine_active", cin.has_value() && *cin);
+    json_append_bool(out, "cf_cine_count_available", cin_n.has_value());
+    json_append_double(out, "cf_cine_count", static_cast<double>(cin_n.value_or(0)), 0);
+    json_append_bool(out, "cf_saved_nearz_readable", nz.has_value());
+    // WHILE NO CINEMATIC IS ACTIVE the saved NearZ is not a live value -- the path only fills it on entry, so it
+    // should read as the zero it was constructed with. Asserted as a consistency pair, not as a magic number.
+    json_append_bool(out, "cf_nearz_idle_consistent",
+                     cin.has_value() && nz.has_value() && (*cin || *nz == 0.0f));
+    json_append_bool(out, "cf_range_refused",
+                     !sdk::PlayerMgr::camera_fov(9).has_value() &&
+                         !sdk::PlayerMgr::cinematic_active(9).has_value() &&
+                         !sdk::PlayerMgr::saved_near_z(9).has_value() &&
+                         !sdk::PlayerMgr::fov_y_matches_projection(9).has_value());
+
     // WHERE THE CAMERA POSE COMES FROM: a model socket named in gameclient's code, plus three tunable floats.
     // The socket name is the cross-check -- a string literal in the DLL against the model ASSET's own socket table,
     // two independent artefacts that must agree.

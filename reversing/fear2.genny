@@ -5812,3 +5812,45 @@ class LTInputDeviceMouse 0x30 {
 // kCameraSocketName and kCameraDeadSocketName as the names to look up.
 //
 // 1189 checks, 0 failures.
+
+// ---- THE CINEMATIC CAMERA, THE GAME-SIDE FOV, AND A CORROBORATION THAT WAS MY OWN FIXTURE -------
+//
+// PlayerCamera_UpdateCinematicCamera walks a std::vector of descriptors on the player manager -- begin at
+// g_pPlayerMgr+4660, end at +4664, live 33 entries -- and takes the first whose ILTCommon flags carry bit 0x10.
+// It owns both transitions:
+//
+//     on entry   saves the NearZ console variable into holder[+6336]
+//     each frame calls the nine-state machine with holder[+688] or 2   <- where that machine's mode argument
+//                                                                        comes from, a loose end now closed
+//                copies the descriptor object's pose onto the CAMERA OBJECT (slot 22 -> slot 24)
+//                sets NearZ from the descriptor, and writes an FOV pair to holder[+292]/[+296]
+//                     fov_y = descriptor_fov_degrees * 0.01745329
+//     on exit    clears holder[+1006] and RESTORES NearZ from holder[+6336]
+//
+// SO holder[+1006] IS "A SCRIPTED VIEW IS DRIVING THE CAMERA", which a VR consumer needs before overriding
+// anything, and holder[+296] IS THE GAME'S VERTICAL FOV IN RADIANS.
+//
+// THE EVIDENCE FOR +296, stated exactly because the strongest piece is missing: the producer converts DEGREES, the
+// field reads 1.1344640 which is 65.0000 degrees to four decimals, and it sits in the plausible band while its
+// partner +292 does not. A wrong offset landing on a round degree value is unlikely. That is three pieces of
+// circumstantial evidence and no live cross-check.
+//
+// AND THE CROSS-CHECK I THOUGHT I HAD WAS MY OWN TEST FIXTURE. I compared +296 against a 1.134506 that appears in
+// this project's shader-parameter output and called it independent corroboration to 4e-5. That number is from a
+// SYNTHETIC ROUND TRIP -- a projection matrix the SDK builds from a chosen FOV and reads back -- not from the live
+// camera. The real accessor, SceneCamera's projection-derived fov_y_radians(), REFUSED: it is gated on a
+// perspective pass and with rendering stopped the engine's last record is its screen orthographic one.
+//
+// > Comparing a game field against a value my own suite produced, and reporting the agreement as two independent
+// > mappings, is the same error as reading equality for causality -- with the added twist that the SDK's own guard
+// > was already refusing the honest comparison while I quoted a number from the fixture beside it.
+//
+// The predicate is kept and asserted CONDITIONALLY -- undeterminable means the projection refused, determinable
+// means it must agree -- plus an explicit assertion that an unavailable comparison is never reported as a match.
+// +292 is left deliberately half-named: 2.31 rad is 132 degrees, which no ordinary aspect produces beside a
+// 65-degree vertical, so fov_x_matches_projection() exists to decide it by measurement later.
+//
+// Exposed as sdk::PlayerMgr::camera_fov / fov_y_matches_projection / fov_x_matches_projection /
+// cinematic_active / saved_near_z / cinematic_camera_count.
+//
+// 1201 checks, 0 failures.

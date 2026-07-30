@@ -4509,6 +4509,61 @@ int main(int argc, char** argv) {
             check(json_bool(body, "bt_absent_refused", bt_abs) && bt_abs,
                   "an unknown panel and an unobserved kind are both refused");
 
+            // ---- THE GAME-SIDE FIELD OF VIEW, AND THE CINEMATIC CAMERA ------------------------------
+            //
+            // The cinematic path writes a pair of floats onto the pose holder from a descriptor's FOV in DEGREES
+            // times pi/180. +296 reads 1.134464 rad = 65.0000 degrees exactly, which is the strongest evidence
+            // available while the render path is frozen: the producer converts degrees, and a wrong offset landing
+            // on a round degree value is unlikely.
+            //
+            // THE LIVE CROSS-CHECK CANNOT RUN TODAY. SceneCamera's projection-derived FOV is gated on a perspective
+            // pass, and with rendering stopped the engine's last record is its screen orthographic pass, so it
+            // refuses rather than comparing against a stale matrix. That refusal is asserted as such, and the
+            // comparison is asserted CONDITIONALLY so it starts biting the moment the game renders.
+            bool cfv_r = false, cfv_p = false, cfv_yd = false, cfv_ym = false, cfv_xd = false, cfv_xm = false;
+            double cfv_y = -1.0, cfv_deg = -1.0, cfv_a = -1.0;
+            check(json_bool(body, "cf_readable", cfv_r) && cfv_r, "the holder's FOV pair reads");
+            check(json_double(body, "cf_fov_y", cfv_y) && json_double(body, "cf_fov_y_degrees", cfv_deg) &&
+                      json_double(body, "cf_unknown_a", cfv_a),
+                  "both components of the pair are reported");
+            check(json_bool(body, "cf_fov_y_plausible", cfv_p) && cfv_p,
+                  "the vertical FOV is in a plausible band for an angle in radians");
+            // THE ROUNDNESS IS THE EVIDENCE: 65.0000 degrees to four decimals.
+            check(cfv_deg > 0.0 && std::fabs(cfv_deg - std::round(cfv_deg)) < 0.001,
+                  "the vertical FOV is a round number of degrees, as a converted setting should be");
+            // AND +292 IS NOT ASSUMED TO BE THE HORIZONTAL FOV. It is 2.31 rad = 132 degrees, which no ordinary
+            // aspect ratio produces beside a 65-degree vertical, so the pair is deliberately left half-named.
+            check(cfv_a > 0.0 && std::fabs(cfv_a - cfv_y) > 0.5,
+                  "the pair's other component is a distinctly different value, not a duplicate of the FOV");
+
+            const bool fov_y_known = json_bool(body, "cf_fov_y_determinable", cfv_yd);
+            json_bool(body, "cf_fov_y_matches", cfv_ym);
+            json_bool(body, "cf_fov_x_determinable", cfv_xd);
+            json_bool(body, "cf_fov_x_matches", cfv_xm);
+            // CONDITIONAL, valid in both states: undeterminable means the projection refused (no perspective pass);
+            // determinable means the vertical FOV must agree with it.
+            check(fov_y_known && (!cfv_yd || cfv_ym),
+                  "when the projection can be read, the holder's vertical FOV agrees with it");
+            // A comparison that could not be made must never be reported as a match.
+            check(!(cfv_yd == false && cfv_ym == true) && !(cfv_xd == false && cfv_xm == true),
+                  "an unavailable comparison is never reported as agreement");
+
+            bool cin_d = false, cin_a = false, cin_ca = false, cin_nz = false, cin_ic = false, cf_rr = false;
+            double cin_n = -1.0;
+            check(json_bool(body, "cf_cine_determinable", cin_d) && cin_d,
+                  "whether a cinematic camera is driving the view is answerable");
+            json_bool(body, "cf_cine_active", cin_a);
+            check(json_bool(body, "cf_cine_count_available", cin_ca) && cin_ca &&
+                      json_double(body, "cf_cine_count", cin_n) && cin_n > 0.0 && cin_n < 4096.0,
+                  "the level registered a sane number of cinematic camera descriptors");
+            check(json_bool(body, "cf_saved_nearz_readable", cin_nz) && cin_nz,
+                  "the parked NearZ reads");
+            // The saved NearZ is only filled on entering a cinematic, so idle it must still be its constructed zero.
+            check(json_bool(body, "cf_nearz_idle_consistent", cin_ic) && cin_ic,
+                  "with no cinematic active the parked NearZ is untouched");
+            check(json_bool(body, "cf_range_refused", cf_rr) && cf_rr,
+                  "an out-of-range slot yields no FOV, no cinematic state and no comparison");
+
             // ---- THE CAMERA POSE'S ORIGIN: A NAMED MODEL SOCKET -------------------------------------
             //
             // The base pose is not computed from player state -- it is read off the model. gameclient asks ILTModel
