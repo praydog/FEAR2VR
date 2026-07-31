@@ -4814,7 +4814,60 @@ unlinks it, and the suite now leaves a callback registered ON PURPOSE across the
 as it already does with a hardware watch. Verified: module unmapped cleanly, game alive, re-inject
 fresh, hand and muzzle back at their original coordinates to the decimal.
 
-## BLOCKED: Phase 4 codegen crashes ReGenny (`regenny.sdk()` has no null guard)
+## RETRACTED: Phase 4 codegen is NOT blocked (re-tested with a debugger attached)
+
+The section below concluded that `regenny.sdk()` takes ReGenny down "every time". **It does not.**
+Re-tested 2026-07 on the live instance, schema open and parsing clean:
+
+    regenny:sdk()                      -> sol.sdkgenny::Sdk*: 3266CC70
+    s:generate('<tmp>')                -> 62 headers written, no crash
+
+What was right in the diagnosis was the MECHANISM -- the Lua binding has no `m_sdk` null check
+while `ReGenny::action_generate_sdk` does. What was wrong was the CONDITION. `m_sdk` is null only
+on an instance where no schema has ever parsed, which is exactly the state those earlier sessions
+called it in. Two further facts, measured now:
+
+- **A failed parse does NOT null it.** Deliberately opened a syntactically invalid `.genny`; the
+  parse errored (`Can't find type with name 'this'`) and `sdk_loaded` stayed **true**, because
+  ReGenny keeps the last good SDK. So the safe recipe is: open the schema, check
+  `parse_status == ok`, then generate.
+- **`open_file` silently DETACHES from the target process.** `attached` went false and
+  `process_id` to 0 without any error. Re-attach afterwards or every subsequent read fails for a
+  reason that looks like the schema.
+
+The generalisable error: "it crashed three times, therefore it is broken" skipped the step of
+finding WHICH state it crashes in. The null-check hypothesis was actually written down at the time
+and not tested against a non-null case -- and a hypothesis that explains the failures also predicts
+the successes, which is the half that was never checked. It cost several sessions of hand-declaring
+types (`sdk::NodeControlCell`) that codegen would have emitted.
+
+### What the freeze has cost, measured
+
+Diffing a fresh generation against `shared/sdk/regenny/`: 50 files identical, **5 drifted**, and
+**7 never generated at all**.
+
+The drift is entirely field RENAMES that never reached the headers -- the exact hazard the freeze
+rule warned about, accumulated because the rule said "do not regenerate" rather than "regenerate
+and migrate":
+
+| header | schema now says | headers still say |
+|---|---|---|
+| `HashEntry` | `name_hash`, `type`, `num_values` | `hash`, `unk_04`, `unk_05` |
+| `DatabaseMgrRecord` | `num_attributes`, `attributes`, `value_blob`, `name_hash` | `unk_04`, `unk_08`, `unk_0C`, `unk_14` |
+| `DatabaseMgrCategory` | `name_hash` | `unk_10` |
+| `LTModelAsset` | `physics_node_count`, `weight_set_count`, `child_model_count` | `region_count_a`, (padding), `unk_52` |
+| `LTModelBlock120` | references `LTNodeControlCell` | forward-decl absent |
+
+Never generated: `CPlayerCamera`, `CLTInput`, `GameTimer`, `LTInputDeviceMouse`,
+`LTInputDeviceKeyboard`, `LTNodeControlCell`, `PlayerZoom`.
+
+`Primitives.hpp` is correctly absent from generated output -- it is the hand-written shim and stays
+hand-written.
+
+Cost to unfreeze: ~17 callsites, all mechanical renames, and they make the SDK read in real names
+instead of `unk_*`. Do it as one commit with the regeneration and run the suite.
+
+## (superseded) BLOCKED: Phase 4 codegen crashes ReGenny (`regenny.sdk()` has no null guard)
 
 Phase 4 of this document says to run `sdk:generate("shared/sdk/regenny")` in a Lua eval. **That
 call currently takes ReGenny down**, every time, and produces nothing.

@@ -265,13 +265,26 @@ inject → test → uninject with the game never restarting.
      Use it for *what a thing is probably called*. Never for a layout, a size,
      a field order, or a member's existence. When it disagrees with the binary,
      the binary is right and the divergence goes in the `.genny` comment.
-9a. **ReGenny codegen is BROKEN -- do not plan on regenerating.** `regenny.sdk()` (the Lua entry
-    Phase 4 uses) crashes ReGenny with no error, reproducibly, on the unmodified schema; the UI
-    path survives only because `action_generate_sdk` null-checks `m_sdk` and the binding does not.
-    So `shared/sdk/regenny/` is frozen: keep editing `fear2.genny` (it is the evidence record and
-    the source of truth), but do not rename a generated field anything CONSUMES, and declare a
-    genuinely-needed new type in the SDK beside a `static_assert` on its size plus a comment
-    naming the schema class it mirrors (`sdk::NodeControlCell`). Full diagnosis in
+9a. **ReGenny codegen WORKS -- the earlier "BROKEN" rule was over-general and is retracted.**
+    Re-tested 2026-07 with a debugger attached: `regenny:sdk()` returned a live
+    `sol.sdkgenny::Sdk*` and `s:generate(dir)` produced 62 headers, no crash.
+    - The crash is real but CONDITIONAL: the binding does not null-check `m_sdk` (the UI's
+      `action_generate_sdk` does), so it faults only when there is no SDK yet -- a freshly
+      launched instance on which no schema has ever parsed. That is what earlier sessions hit,
+      because they called it before opening the file.
+    - A FAILED PARSE DOES NOT null it: induced one deliberately and `sdk_loaded` stayed true,
+      because ReGenny retains the last good SDK. So "open the schema, confirm it parsed, then
+      generate" is safe.
+    - Use `regenny:sdk()`. There is no `sdk` global -- it is nil, which is why the checklist's
+      `sdk:generate(...)` fails with "attempt to index a nil value".
+    - GOTCHA: `open_file` silently DETACHES from the target process. Re-attach afterwards.
+    `shared/sdk/regenny/` is nonetheless still hand-frozen for now, and unfreezing is a decision
+    with a measured cost rather than a formality -- the schema has drifted ahead of the headers by
+    5 files of pure field RENAMES (`unk_14`->`name_hash`, `region_count_a`->`physics_node_count`,
+    `unk_04`->`num_attributes`, ...) touching ~17 callsites, plus 7 types that have never been
+    generated at all (`CPlayerCamera`, `CLTInput`, `GameTimer`, `LTInputDeviceMouse`,
+    `LTInputDeviceKeyboard`, `LTNodeControlCell`, `PlayerZoom`). Regenerate deliberately, migrate
+    the callsites in the same commit, and run the suite. Full record in
     `reversing/MAPPING_WORKFLOW.MD`.
 10. **Build system is cmkr.** Edit `cmake.toml`, never `CMakeLists.txt`
     (regenerated). cmkr skips regeneration when `CI` is set in the environment;
