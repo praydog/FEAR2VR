@@ -80,6 +80,7 @@ public:
         Off,        // pass the client's own direction through untouched
         Absolute,   // replace it with a fixed world-space direction (set_direction)
         Reverse,    // negate whatever the client was about to send
+        Weapon,     // aim along the WEAPON's own muzzle -- i.e. where the gun points
     };
 
     // REVERSE is not a novelty: it is the only redirection whose effect a HUMAN can
@@ -92,6 +93,19 @@ public:
     // It also works from any orientation with no host-side arithmetic, because the
     // negation happens inside the hook against the value the client actually built.
     void set_mode(Mode mode);
+
+    // WEAPON MODE IS THE VR FEATURE. `BoneControl` already drives the weapon's bone
+    // from the controller, so once the shot follows the muzzle the gun genuinely
+    // points where your hand does -- rather than the shot following the view while
+    // the model merely looks aimed.
+    //
+    // The muzzle direction is sampled on the GAME THREAD in on_frame and cached,
+    // not read inside the hook: resolving a socket can evaluate a dirty skeleton,
+    // and doing that from inside the fire path would mutate engine state in the
+    // middle of the engine's own call. One frame of staleness is the price, and it
+    // is the same age as the pose the player is looking at.
+    std::array<float, 3> weapon_forward() const;
+    bool weapon_forward_valid() const { return m_weapon_ok.load(std::memory_order_relaxed); }
     Mode mode() const { return m_mode.load(std::memory_order_relaxed); }
 
     // Hold-to-apply. While a hotkey is set, redirection only happens for shots taken
@@ -166,6 +180,8 @@ private:
     std::atomic<Mode> m_mode{Mode::Off};
     std::atomic<int> m_hotkey{0};
     std::atomic<bool> m_hotkey_held{false};
+    std::atomic<bool> m_weapon_ok{false};
+    std::atomic<float> m_weapon_fwd[3]{};
     std::atomic<bool> m_hooked{false};
     std::atomic<uintptr_t> m_target{0};
     std::atomic<uintptr_t> m_last_desc{0};

@@ -10338,6 +10338,17 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/fire-weapon") {
+            // SHOTS FOLLOW THE GUN. With BoneControl driving the weapon bone from the
+            // controller this is hand-aimed shooting: the muzzle points where the hand
+            // does, and the shot now goes there too instead of following the view.
+            auto& fr = FireRedirect::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                fr.set_mode(FireRedirect::Mode::Off);
+            } else {
+                fr.set_hotkey(webapi_query_int(q, "vk", 0));
+                fr.set_mode(FireRedirect::Mode::Weapon);
+            }
         } else if (route == "/xr/fire-reverse") {
             // HOLD-TO-SHOOT-BACKWARDS. The one experiment that can tell whether the
             // direction in the client's fire message decides where a shot lands:
@@ -10498,6 +10509,10 @@ bool Framework::initialize() {
               .i("fr_hotkey", FireRedirect::get().hotkey())
               .b("fr_hotkey_held", FireRedirect::get().hotkey_held())
               .u("fr_redirected_shots", FireRedirect::get().redirected_shots())
+              .b("fr_weapon_valid", FireRedirect::get().weapon_forward_valid())
+              .f("fr_weapon_fx", FireRedirect::get().weapon_forward()[0], 4)
+              .f("fr_weapon_fy", FireRedirect::get().weapon_forward()[1], 4)
+              .f("fr_weapon_fz", FireRedirect::get().weapon_forward()[2], 4)
               .b("ak_enabled", AmmoKeeper::get().enabled())
               .b("ak_floor_refused", ammo_floor_refused)
               .i("ak_floor", AmmoKeeper::get().floor())

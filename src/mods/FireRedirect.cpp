@@ -9,7 +9,11 @@
 #include "../Hooks.hpp"
 #include "Log.hpp"
 #include "sdk/Memory.hpp"
+#include "sdk/CClientShell.hpp"
+#include "sdk/Model.hpp"
 #include "sdk/Modules.hpp"
+#include "sdk/Object.hpp"
+#include "sdk/PlayerMgr.hpp"
 
 namespace {
 // Weapon_TraceShot (sub_1014F4D0) prologue, gameserver.dll.
@@ -109,6 +113,8 @@ FireRedirect& FireRedirect::get() {
     return instance;
 }
 
+std::array<float, 3> FireRedirect::weapon_forward() const { return load3(m_weapon_fwd); }
+
 std::array<float, 3> FireRedirect::last_sent_dir() const { return load3(m_sent_dir); }
 std::array<float, 3> FireRedirect::last_sent_origin() const { return load3(m_sent_origin); }
 
@@ -146,11 +152,11 @@ void FireRedirect::set_mode(Mode mode) {
     // so it arms itself. Off disarms both so nothing can be left applying.
     if (mode == Mode::Off) {
         m_armed.store(false, std::memory_order_release);
-    } else if (mode == Mode::Reverse) {
+    } else if (mode == Mode::Reverse || mode == Mode::Weapon) {
         m_armed.store(true, std::memory_order_release);
     }
     LOGX("[fire] redirect mode = %s (hotkey 0x%02X)",
-         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : "absolute"),
+         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : (mode == Mode::Weapon ? "WEAPON" : "absolute")),
          m_hotkey.load(std::memory_order_relaxed));
 }
 
@@ -199,7 +205,15 @@ void FireRedirect::on_send_fire(SafetyHookContext& ctx) {
     }
 
     std::array<float, 3> dir{};
-    if (self.m_mode.load(std::memory_order_acquire) == Mode::Reverse) {
+    const Mode mode = self.m_mode.load(std::memory_order_acquire);
+    if (mode == Mode::Weapon) {
+        // Refusing beats aiming with a stale muzzle: a shot that goes where the player
+        // pointed last frame is worse than one that goes where the game intended.
+        if (!self.m_weapon_ok.load(std::memory_order_relaxed)) {
+            return;
+        }
+        dir = load3(self.m_weapon_fwd);
+    } else if (mode == Mode::Reverse) {
         // Negate what the client built, in place. Done here rather than host-side so
         // it holds whichever way the player happens to be facing.
         const auto cur = sdk::mem::read<std::array<float, 3>>(dir_ptr);
@@ -313,6 +327,28 @@ void FireRedirect::on_frame() {
     // physical key state, so it works while the game has focus and needs no hook
     // into the engine's input path -- which matters because this must not perturb
     // the very input the player is using to run the experiment.
+    // Sample where the WEAPON points, on the thread allowed to resolve it. Only when
+    // something will consume it -- this walks a socket chain and there is no reason
+    // to pay for it every frame of normal play.
+    if (m_mode.load(std::memory_order_relaxed) == Mode::Weapon) {
+        bool ok = false;
+        if (const auto player = sdk::CClientShell::local_player(0); player.has_value()) {
+            if (const auto muzzle = sdk::attached_socket(player->object, "flash"); muzzle.has_value()) {
+                // A stale socket is built on a stale bone, so its direction is last
+                // frame's at best and garbage at worst -- refuse rather than aim with it.
+                if (!muzzle->transform.stale) {
+                    const auto fwd = sdk::forward_of(muzzle->transform.rotation);
+                    const float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                    if (std::isfinite(len) && len > 0.9f && len < 1.1f) {
+                        store3(m_weapon_fwd, fwd.x / len, fwd.y / len, fwd.z / len);
+                        ok = true;
+                    }
+                }
+            }
+        }
+        m_weapon_ok.store(ok, std::memory_order_relaxed);
+    }
+
     if (const int vk = m_hotkey.load(std::memory_order_relaxed); vk != 0) {
         m_hotkey_held.store((GetAsyncKeyState(vk) & 0x8000) != 0, std::memory_order_relaxed);
     } else {

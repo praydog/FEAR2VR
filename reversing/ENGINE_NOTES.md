@@ -1220,6 +1220,75 @@ never once been evidence** -- only the impact bearing has.
 What remains unexplained is where the trace actually gets its direction. The server has the player's
 replicated rotation independently of the message, and that is the next candidate.
 
+### RETRACTED AND REVERSED: the redirect WORKS. Damage follows it; only the effects do not
+
+**The section below is wrong, and the section above it is wrong, and this one supersedes both.**
+They are kept because the mistake is the lesson.
+
+The test that settled it needed a human and a live enemy. Hold the reverse key, aim at an enemy,
+fire:
+
+    key held   : the enemy takes NO DAMAGE -- but blood and impact effects still appear ON them
+    key released: damage resumes immediately
+
+Two facts fall out of that single observation, and they explain every earlier result:
+
+1. **The direction in the client's fire message IS what the server traces.** Damage is
+   server-authoritative, it stopped when the direction was reversed, and it came back when the
+   reversal stopped. Hand-aimed shooting is therefore reachable through this one hook.
+2. **Impact effects are CLIENT-PREDICTED from the client's own aim.** Blood appeared on a target the
+   server never traced. So the effects are drawn from the aim the player is holding, independently
+   of what the server does with the shot.
+
+### Hand-aimed shooting, which this unlocks
+
+`FireRedirect::Mode::Weapon` takes the direction from the WEAPON's own muzzle -- the `flash` socket's
+forward -- instead of the view. `BoneControl` already drives the weapon's bone from the controller,
+so the chain is complete: hand turns the bone, bone turns the muzzle, muzzle aims the shot.
+
+Live: 9 shots, 9 redirected, with the muzzle pointing **19.38 degrees** away from the view aim at the
+time -- so the divergence is real and visible rather than a rounding difference.
+
+Two design points, both learned the hard way elsewhere in this file:
+
+- **The muzzle is sampled on the GAME THREAD in `on_frame` and cached**, never resolved inside the
+  hook. Resolving a socket can evaluate a dirty skeleton, and doing that from inside the engine's own
+  fire call would mutate engine state mid-call. One frame of staleness is the price, and it is the
+  same age as the pose the player is already looking at.
+- **A stale socket is refused, not used.** A shot going where the player pointed last frame is worse
+  than one going where the game intended, so `Mode::Weapon` passes the shot through untouched rather
+  than aiming with a transform built on a stale bone.
+
+Route: `/xr/fire-weapon?on=1`, optionally `&vk=<key>` to make it hold-to-apply.
+
+### Why the instrument lied, which is the part worth keeping
+
+Every "the bullets do not follow" measurement in this file was taken with `/sdk/spawns` -- newly
+appeared objects in the CLIENT's object manager. Those are the predicted effects. The instrument was
+measuring the client's guess about its own shot and could not see the server's trace at all.
+
+The two-cluster test below is the clearest example. It concluded "no second cluster, therefore the
+server does not redirect", and the premise was sound: if the server traced elsewhere AND spawned
+impacts there, a second cluster would appear. What was false is the unstated half -- that impacts
+are produced by the server's trace. They are not.
+
+**The caveat had been written down.** The section below says, in as many words, that entirely
+client-predicted effects would hide a server-side trace and that damage on a live enemy is the test
+that would close it. The gap was left open and a negative conclusion published beside it anyway.
+When a stated limitation would overturn the finding if it held, the finding is not ready.
+
+Also now explained: `dominant_bearing` was a good instrument for "where is the player aiming" and was
+never an instrument for "where did the shot go". Every fire-ray conclusion built on it is a claim
+about the CLIENT's aim, including "THE SHOT FOLLOWS THE VIEW" -- which survives, because the client
+builds the message direction from the same aim it predicts effects from, but which rested on weaker
+evidence than it appeared to.
+
+### What is NOT settled
+
+The three SERVER-side hook points -- `Weapon_FireServer`, `Weapon_FireHitscanVector`,
+`Weapon_TraceShot` -- were judged inert by the same broken instrument, so their negative results are
+withdrawn rather than confirmed. They may well work. Nobody has checked them against damage.
+
 ### "Redirected on the server, just not drawn" -- tested, and NO
 
 The obvious reading of the result above is that the server does fire where we asked and the client
