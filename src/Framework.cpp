@@ -10512,6 +10512,11 @@ bool Framework::initialize() {
                 // is inject / test / unload / rebuild, so an unguarded load costs a game restart
                 // per edit. Bring-up belongs in build/bin/xr-probe.exe, which is a throwaway
                 // process; `load=1` exists for the eventual real session and nothing else.
+                // Discovery ALWAYS runs: a registry read and a small file parse, no library
+                // touched, nothing started. It answers "is there VR software on this machine",
+                // which is what a mod needs before it offers a VR mode at all.
+                xr.discover();
+
                 if (webapi_query_int(q, "load", 0) != 0 && xr.load()) {
                     std::vector<std::string> exts;
                     xr.enumerate_extensions(exts);

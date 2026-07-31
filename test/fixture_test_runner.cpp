@@ -12141,6 +12141,47 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- AND THE GAME CAN SEE A HEADSET RUNTIME ---------------------------------
+    //
+    // The bitness matters more than anything else here: the runtime a 32-bit process resolves is
+    // NOT the one a 64-bit tool sees. On this machine the 64-bit active runtime is the Meta XR
+    // Simulator, which is x64-only and can never serve FEAR2, so a host-side check would report a
+    // runtime the game cannot use. Only the game's own view is worth asserting.
+    //
+    // Deliberately DISCOVERY ONLY. Loading a runtime pins this DLL -- none of them support
+    // FreeLibrary -- and would end the inject/unload loop this suite depends on. Bring-up beyond
+    // this point lives in the separate xr-probe process.
+    {
+        std::string r;
+        bool discovered = false, loaded = false;
+        long long available = -1;
+        std::string manifest, library;
+
+        if (http::get(port, "/xr/runtime", r)) {
+            const std::string b = http::body_of(r);
+            json_bool(b, "xr_rt_discovered", discovered);
+            json_bool(b, "xr_rt_loaded", loaded);
+            json_int(b, "xr_rt_available", available);
+            manifest = json_string(b, "xr_rt_manifest");
+            library = json_string(b, "xr_rt_library");
+        }
+
+        printf("[fixture] openxr: %lld runtime(s) registered, active %s\n", available,
+               manifest.empty() ? "(none)" : manifest.c_str());
+
+        check_gated(available > 0, "no OpenXR runtime registered for 32-bit on this machine",
+                    g_skipped_motion, discovered && !manifest.empty(),
+                    "the game resolves the 32-bit active OpenXR runtime from inside its own "
+                    "process, which is the only view that can be acted on");
+        check_gated(discovered, "no runtime discovered", g_skipped_motion,
+                    library.find(':') != std::string::npos,
+                    "and resolves its manifest to an absolute library path, so it does not depend "
+                    "on the working directory the game happened to start in");
+        check(!loaded,
+              "and loads NOTHING while doing it -- a load would pin this DLL and cost a game "
+              "restart per edit for the rest of the session");
+    }
+
     // ---- AND IT CAN STAY ON THE GPU ---------------------------------------------
     //
     // The pair verified below exists in SYSTEM MEMORY, which costs milliseconds and is useless for
