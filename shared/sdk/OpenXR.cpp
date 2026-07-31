@@ -1,5 +1,7 @@
 #include "OpenXR.hpp"
 
+#include "xr/Fear2XrApi.h"
+
 #include <windows.h>
 
 #include <cstring>
@@ -360,7 +362,108 @@ bool OpenXR::load() {
     return true;
 }
 
+bool OpenXR::attach_proxy(const char* proxy_path) {
+    if (m_proxy != nullptr) {
+        return true;
+    }
+
+    m_error.clear();
+    m_crashed = false;
+    m_faulted = false;
+
+    std::string path = proxy_path == nullptr ? "fear2xr.dll" : proxy_path;
+
+    if (path.find('\\') == std::string::npos && path.find('/') == std::string::npos) {
+        // Next to THIS module. A bare name would otherwise be resolved against the game's working
+        // directory, which is not where the build puts anything.
+        HMODULE self = nullptr;
+
+        if (::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 reinterpret_cast<LPCSTR>(&extract_library_path), &self) != 0) {
+            char buf[MAX_PATH]{};
+
+            if (::GetModuleFileNameA(self, buf, sizeof(buf)) != 0) {
+                path = directory_of(buf) + "\\" + path;
+            }
+        }
+    }
+
+    HMODULE mod = ::LoadLibraryA(path.c_str());
+
+    if (mod == nullptr) {
+        m_error = "proxy not loadable (" + std::to_string(::GetLastError()) + "): " + path;
+        return false;
+    }
+
+    auto get_api = reinterpret_cast<PFN_fear2xr_get_api>(::GetProcAddress(mod, "fear2xr_get_api"));
+
+    if (get_api == nullptr) {
+        m_error = "proxy exports no fear2xr_get_api: " + path;
+        return false;
+    }
+
+    const Fear2XrApi* api = get_api(FEAR2XR_API_VERSION);
+
+    // A resident proxy from an EARLIER build cannot be replaced without restarting the game, so a
+    // version or layout mismatch has to be reported plainly rather than papered over -- calling
+    // through a struct shorter than we expect would read past its end.
+    if (api == nullptr || api->struct_size != sizeof(Fear2XrApi) ||
+        api->version != FEAR2XR_API_VERSION) {
+        m_error = "resident proxy is a different build -- restart the game to replace it";
+        return false;
+    }
+
+    m_proxy = api;
+    return true;
+}
+
+bool OpenXR::load_via_proxy(const char* proxy_path) {
+    if (!attach_proxy(proxy_path)) {
+        return false;
+    }
+
+    const auto* api = static_cast<const Fear2XrApi*>(m_proxy);
+    api->ensure_runtime();
+
+    m_library = api->runtime_library();
+    m_discovered = !m_library.empty();
+    m_crashed = api->runtime_crashed() != 0;
+
+    if (api->runtime_loaded() == 0 || api->get_instance_proc_addr == nullptr) {
+        m_error = api->last_error();
+        return false;
+    }
+
+    m_get_proc = api->get_instance_proc_addr;
+    m_interface_version = api->interface_version();
+    m_api_version = (static_cast<uint64_t>(api->api_major()) << 48) |
+                    (static_cast<uint64_t>(api->api_minor()) << 32);
+    return true;
+}
+
+bool OpenXR::persist_handle(const char* key, XrHandle value) {
+    if (m_proxy == nullptr || key == nullptr) {
+        return false;
+    }
+
+    static_cast<const Fear2XrApi*>(m_proxy)->store_handle(key, value);
+    return true;
+}
+
+OpenXR::XrHandle OpenXR::persisted_handle(const char* key) const {
+    if (m_proxy == nullptr || key == nullptr) {
+        return 0;
+    }
+
+    return static_cast<const Fear2XrApi*>(m_proxy)->load_handle(key);
+}
+
 void OpenXR::unload() {
+    // In proxy mode the runtime is NOT ours to free -- it belongs to a module that stays. Detach
+    // and leave it running, which is exactly the point: the next mod load finds it ready.
+    m_proxy = nullptr;
+
     if (m_module != nullptr) {
         ::FreeLibrary(static_cast<HMODULE>(m_module));
         m_module = nullptr;

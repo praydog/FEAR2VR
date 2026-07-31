@@ -160,6 +160,19 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 # --- ctest headless unit runner (Tier-1) -------------------------------------
 # Black-box tests the CommandServer over localhost HTTP in-process -- NO game,
 # NO GPU -- so it ALWAYS runs and must pass on any CI. No SKIP_RETURN_CODE.
+[target.fear2xr]
+type = "shared"
+sources = ["src/xr/Proxy.cpp", "shared/sdk/OpenXR.cpp"]
+include-directories = ["shared"]
+compile-features = ["cxx_std_23"]
+compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
+
+[target.fear2xr.properties]
+OUTPUT_NAME = "fear2xr"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
+RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
+
 [target.xr-probe]
 type = "executable"
 sources = ["test/xr_probe.cpp", "shared/sdk/OpenXR.cpp"]

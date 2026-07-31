@@ -12141,6 +12141,55 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- THE RESIDENT PROXY, WHICH IS WHAT KEEPS THIS SUITE POSSIBLE ------------
+    //
+    // Loading an OpenXR runtime into the mod strands its threads in our module, and the unload
+    // path's quiescence check -- correctly -- then refuses to unmap us for the rest of the session.
+    // That was observed as a link failure: fear2vr.dll stayed locked and the next build could not
+    // overwrite it. Since this suite runs inject / test / unload on every invocation, the proxy is
+    // load-bearing for the harness itself, not just for the mod.
+    //
+    // Note what is NOT done here: no runtime is loaded. Attaching must be free, because merely
+    // asking whether a proxy exists should never start a vendor's VR service.
+    {
+        std::string r;
+        bool attached = false, loaded_after_attach = true;
+        long long round_trip = -1;
+
+        if (http::get(port, "/xr/runtime", r)) {
+            const std::string b = http::body_of(r);
+            json_bool(b, "xr_rt_proxy", attached);
+            json_bool(b, "xr_rt_loaded", loaded_after_attach);
+        }
+
+        // A value with no meaning to the proxy on purpose -- it stores handles without knowing what
+        // they are, which is what lets the mod's XR semantics be rewritten without a game restart.
+        http::get(port, "/xr/runtime?store=fixture_probe&value=305419896", r);
+
+        if (http::get(port, "/xr/runtime?fetch=fixture_probe", r)) {
+            json_int(http::body_of(r), "xr_rt_handle", round_trip);
+        }
+
+        long long absent = -1;
+
+        if (http::get(port, "/xr/runtime?fetch=fixture_never_stored", r)) {
+            json_int(http::body_of(r), "xr_rt_handle", absent);
+        }
+
+        printf("[fixture] xr proxy: attached=%d round-trip=%lld unknown-key=%lld\n",
+               static_cast<int>(attached), round_trip, absent);
+
+        check(attached, "the mod reaches the resident OpenXR proxy, which is the module that may "
+                        "hold a runtime without pinning this one");
+        check(!loaded_after_attach,
+              "and attaching starts NOTHING -- no runtime, no vendor service, because asking "
+              "whether VR is available must not switch a headset on");
+        check(round_trip == 305419896,
+              "state parked in the proxy reads back, which is how an XrInstance and XrSession "
+              "survive a mod reload instead of being rebuilt each time");
+        check(absent == 0, "and an unknown key reads 0 rather than whatever was last stored");
+    }
+
     // ---- AND THE GAME CAN SEE A HEADSET RUNTIME ---------------------------------
     //
     // The bitness matters more than anything else here: the runtime a 32-bit process resolves is

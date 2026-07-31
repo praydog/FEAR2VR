@@ -972,6 +972,45 @@ runtime. Also: resolving `xrGetInstanceProcAddr` through a NULL instance returns
 (XR_ERROR_HANDLE_INVALID) and that is the runtime being CORRECT -- a null instance may serve only the
 globals. An early probe read the refusal as a fault.
 
+### The resident proxy: how the runtime stays without pinning the mod
+
+The door is no longer one-way. `fear2xr.dll` loads the OpenXR runtime and never leaves; the mod
+talks to it through a C ABI and stays freely unloadable.
+
+**Why it works.** The mod's unload is fail-closed: `prove_quiescent` suspends every other thread and
+refuses to unmap if any thread's `Eip` is inside our module, or if any thread cannot be inspected at
+all. An OpenXR runtime spawns threads on load, so after one the mod can never prove itself quiet --
+which is the correct behaviour of a check worth keeping. Moving the runtime into a module that stays
+puts those threads outside the range the check cares about. Verified directly: runtime loaded
+in-game, `injector --unload`, DLL writable, rebuild clean.
+
+**And it buys more than it costs: XR STATE OUTLIVES THE MOD.** The proxy holds a dumb key/value
+store of handles -- dumb because it must not know what an XrSession is, which is exactly what lets
+the mod's XR semantics be rewritten without a game restart. Measured: a handle stored, the mod fully
+unloaded and re-injected, the handle read back unchanged. An XrInstance and XrSession cost real time
+to build and a session cannot be casually recreated, so this turns "restart the game to test an XR
+change" into the same reload loop everything else here enjoys.
+
+**The price, paid knowingly.** The proxy itself is pinned, so replacing IT needs a game restart --
+observed immediately, as LNK1104 on fear2xr.dll while the game held it. That is why the proxy is
+thin and holds no policy: the part that cannot be iterated must be the part that never needs to be.
+Design rule: *the proxy owns what cannot be safely destroyed and recreated -- the runtime module,
+the handles, later the D3D11 device. Everything else belongs to the mod.*
+
+**Attaching must be free.** The first version loaded the runtime inside `fear2xr_get_api`, so merely
+asking whether a proxy existed started a vendor's VR service. Split: `attach_proxy()` starts nothing
+and reaches the handle store, `ensure_runtime()` is the moment a caller says it wants a headset.
+
+**One rule for consumers.** Never hand the runtime a pointer into the mod that outlives a call. A
+debug-utils messenger, or any registered callback, would be invoked after the mod unloads and jump
+into freed memory. Callbacks belong to the proxy or to nobody.
+
+**An unexplained observation, recorded rather than explained.** The same Oculus runtime, same
+library, same negotiated version, reported 35 extensions in one session and 88 in a later one. The
+only known difference is that OVRServer was freshly woken by the probe in the first case and fully
+up in the second [INFERENCE]. Whatever the cause, capability enumeration is NOT stable across
+service state, so a mod must not read it once at startup and trust it forever.
+
 ### Loading a runtime is a one-way door, and it is not passive
 
 Two properties that shape where OpenXR work is allowed to happen in this project.

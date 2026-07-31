@@ -77,6 +77,32 @@ public:
     // guarded -- a faulting runtime is reported as a failed load, with `crashed()` set, and the
     // process keeps running. This is the difference between a mod that degrades to flatscreen and
     // one that takes the game down on machines its author never tested.
+    // ---- THE ROUTE A MOD SHOULD ACTUALLY USE ---------------------------------------------------
+    //
+    // Load the runtime inside the RESIDENT PROXY (fear2xr.dll) instead of this module, and route
+    // every call through it. Costs nothing at the call site -- `resolve`, `enumerate_extensions`
+    // and everything built on them work identically -- and keeps this DLL unloadable, because the
+    // runtime's threads end up in the proxy's module range rather than ours.
+    //
+    // A mod running inside the game MUST prefer this over load(). Direct load() is for out-of-
+    // process tools like xr-probe, where nothing needs to unload.
+    //
+    // `proxy_path` with no directory separator is resolved next to THIS module, not against the
+    // working directory the game happened to start in.
+    // Attach WITHOUT starting anything. Free: it loads the proxy module and reads its API, but no
+    // OpenXR runtime and no vendor service. This is how a mod asks "is the proxy here" and how the
+    // persistent handle store is reached, neither of which should wake a headset.
+    bool attach_proxy(const char* proxy_path = "fear2xr.dll");
+
+    bool load_via_proxy(const char* proxy_path = "fear2xr.dll");
+    bool using_proxy() const { return m_proxy != nullptr; }
+
+    // Handles parked in the proxy, which outlive this DLL. An XrInstance or XrSession costs real
+    // time to create and a session cannot be casually recreated, so a mod reload should find them
+    // still alive rather than build them again. Returns 0 for an unknown key.
+    bool persist_handle(const char* key, XrHandle value);
+    XrHandle persisted_handle(const char* key) const;
+
     // LOADING A RUNTIME IS NOT PASSIVE. It starts that vendor's services -- PimaxXR brings up
     // PiPlatformService, Oculus wakes OVRServer -- and can trip a Windows firewall prompt that
     // blocks unrelated things until someone answers it. Load the one runtime you intend to use.
@@ -138,6 +164,7 @@ private:
     bool m_crashed{false};
     bool m_faulted{false};
     std::vector<std::string> m_extensions;
+    const void* m_proxy{nullptr};
 };
 
 }  // namespace sdk

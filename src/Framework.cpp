@@ -10505,21 +10505,33 @@ bool Framework::initialize() {
                 // PiPlatformService, Oculus woke OVRServer) and trips a Windows firewall prompt
                 // that then blocks everything else. A consumer wanting a different runtime should
                 // change the ACTIVE one, which is the switch the user already controls.
-                // DISCOVERY ONLY unless explicitly asked. Loading a runtime PINS THIS DLL: the
-                // runtimes here spawn threads and none support FreeLibrary, so after a load
-                // `injector --unload` no longer frees the module and the next build cannot
-                // overwrite fear2vr.dll -- observed as a link failure. The project's iteration loop
-                // is inject / test / unload / rebuild, so an unguarded load costs a game restart
-                // per edit. Bring-up belongs in build/bin/xr-probe.exe, which is a throwaway
-                // process; `load=1` exists for the eventual real session and nothing else.
+                // THROUGH THE RESIDENT PROXY, never directly. Loading a runtime into THIS module
+                // would strand its threads in our address range, and the unload path's quiescence
+                // check -- correctly -- then refuses to unmap us forever. fear2xr.dll holds the
+                // runtime instead and never leaves, so the mod stays reloadable and the XR state
+                // survives the reload.
                 // Discovery ALWAYS runs: a registry read and a small file parse, no library
                 // touched, nothing started. It answers "is there VR software on this machine",
                 // which is what a mod needs before it offers a VR mode at all.
                 xr.discover();
 
-                if (webapi_query_int(q, "load", 0) != 0 && xr.load()) {
+                // Attaching is free and starts nothing, so it always happens: it is how the mod
+                // finds the resident proxy and reaches state that outlived it.
+                xr.attach_proxy();
+
+                if (q.find("store") != q.end()) {
+                    xr.persist_handle(webapi_query_string(q, "store").c_str(),
+                                      static_cast<uint64_t>(webapi_query_int(q, "value", 0)));
+                }
+
+                if (webapi_query_int(q, "load", 0) != 0 && xr.load_via_proxy()) {
                     std::vector<std::string> exts;
                     xr.enumerate_extensions(exts);
+                }
+                if (webapi_query_int(q, "list", 0) != 0) {
+                    for (const auto& e : xr.extensions()) {
+                        LOGX("[openxr] ext %s", e.c_str());
+                    }
                 }
                 if (q.find("probe") != q.end()) {
                     static const char* const kNames[] = {"xrGetInstanceProcAddr",
@@ -10713,6 +10725,10 @@ bool Framework::initialize() {
               .f("head_pos_y", head.position[1], 4)
               .b("xr_rt_discovered", sdk::OpenXR::get().discovered())
               .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
+              .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())
+              .u("xr_rt_handle",
+                 static_cast<size_t>(sdk::OpenXR::get().persisted_handle(
+                     webapi_query_string(q, "fetch").c_str())))
               .s("xr_rt_manifest", sdk::OpenXR::get().manifest_path())
               .u("xr_rt_available", sdk::OpenXR::available_runtimes().size())
               .b("xr_rt_loaded", sdk::OpenXR::get().loaded())
