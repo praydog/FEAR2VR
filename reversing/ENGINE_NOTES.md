@@ -1295,6 +1295,32 @@ source was wrong. The attached weapon object is worse and not monotonic.
 `BoneControl`, so asking the engine where the gun ended up pays an animation composition to recover
 something we handed it in the first place, and loses a component on the way.
 
+### BoneControl drives N bones, so both hands work
+
+The mechanism held one cell, which put a two-handed grip and any off-hand interaction out of reach.
+It now has four slots, and the slot INDEX travels in the engine's own `userdata` -- handed back to
+the callback untouched -- so servicing the right bone needs no lookup, no search and no lock on the
+skeleton's hot path.
+
+Live, driving RightHand (node 38) and LeftHand (node 18) at once:
+
+    move slot 0 only    slot0 dx 40.00 (46 writes)      slot1 0 writes
+    move both           slot0 dx 40.00 dy 0.00          slot1 dx 0.00 dy 25.00
+    record consistency  slot0 174/0                     slot1 140/0
+
+The assertion that matters is the NEGATIVE one -- slot 1 having applied nothing while slot 0 was
+driven. Two slots aliasing each other would move together, and a check that only watched the slot
+being driven could not tell the difference.
+
+`detach_all()` exists because releasing one slot and forgetting the others is the shape of bug this
+class must not make easy: a cell left linked when the image unmaps is a call into freed memory.
+
+**A stale readback found by the same test.** Slot 1 reported a 6.71-unit displacement it had never
+applied, because `last_written_position` still held a value from a previous attachment and was being
+differenced against the current `last_seen_position`. It is zeroed on attach now, and documented as
+meaningless unless `writes > 0` -- the absence-reading-as-a-value trap, in a field this project
+added itself.
+
 ### The shot can leave the BARREL instead of the eye
 
 The engine starts the ray at the player's eye, which is right for a crosshair game and wrong for one

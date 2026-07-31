@@ -10662,38 +10662,47 @@ bool Framework::initialize() {
     handlers.bone = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         auto& bc = BoneControl::get();
-        if (webapi_query_int(q, "detach", 0) != 0) {
-            bc.detach();
-            bc.clear_offset();
-            bc.clear_rotation();
+        // `slot=` picks which bone this call drives. Defaulting to 0 keeps every existing
+        // caller working; a second hand is `slot=1`, and `detach_all=1` releases the lot.
+        const auto slot = static_cast<uint32_t>(webapi_query_int(q, "slot", 0));
+        if (webapi_query_int(q, "detach_all", 0) != 0) {
+            bc.detach_all();
+            for (uint32_t i = 0; i < BoneControl::kSlots; ++i) {
+                bc.clear_offset(i);
+                bc.clear_rotation(i);
+            }
+        } else if (webapi_query_int(q, "detach", 0) != 0) {
+            bc.detach(slot);
+            bc.clear_offset(slot);
+            bc.clear_rotation(slot);
         } else {
             // `socket=` is the form a consumer usually wants ("RightHand"); `name=` is a NODE.
             const std::string socket = webapi_query_string(q, "socket");
             const std::string name = webapi_query_string(q, "name");
             if (!socket.empty()) {
-                bc.attach_to_player_socket(socket.c_str());
+                bc.attach_to_player_socket(socket.c_str(), slot);
             } else if (!name.empty()) {
-                bc.attach_to_player_node(name.c_str());
+                bc.attach_to_player_node(name.c_str(), slot);
             } else if (q.find("node") != q.end()) {
-                bc.attach_to_player_node(static_cast<uint32_t>(webapi_query_int(q, "node", 0)));
+                bc.attach_to_player_node(static_cast<uint32_t>(webapi_query_int(q, "node", 0)), slot);
             }
             if (q.find("x") != q.end() || q.find("y") != q.end() || q.find("z") != q.end()) {
                 bc.set_offset(static_cast<float>(webapi_query_double(q, "x", 0.0)),
                               static_cast<float>(webapi_query_double(q, "y", 0.0)),
-                              static_cast<float>(webapi_query_double(q, "z", 0.0)));
+                              static_cast<float>(webapi_query_double(q, "z", 0.0)), slot);
             }
             if (q.find("qw") != q.end()) {
                 bc.set_rotation(static_cast<float>(webapi_query_double(q, "qx", 0.0)),
                                 static_cast<float>(webapi_query_double(q, "qy", 0.0)),
                                 static_cast<float>(webapi_query_double(q, "qz", 0.0)),
-                                static_cast<float>(webapi_query_double(q, "qw", 1.0)));
+                                static_cast<float>(webapi_query_double(q, "qw", 1.0)), slot);
             }
         }
-        const auto o = bc.observed();
+        const auto o = bc.observed(slot);
         std::string out;
         {
             JsonFields jf(out);
-            jf.b("ok", o.available).b("attached", o.attached).b("want_attached", o.want_attached)
+            jf.b("ok", o.available).u("slot", slot).b("attached", o.attached).b("want_attached", o.want_attached)
               .u("node", static_cast<size_t>(o.node))
               .u("calls", static_cast<size_t>(o.calls))
               .u("writes", static_cast<size_t>(o.writes))

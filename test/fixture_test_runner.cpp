@@ -10995,6 +10995,79 @@ int main(int argc, char** argv) {
                 const double aim0 = aim_at_measure;
                 const double dist0 = range_at_measure;
 
+                // ---- TWO HANDS AT ONCE -----------------------------------------
+                //
+                // BoneControl drove exactly one bone until this pass, which put a two-handed
+                // grip and any off-hand interaction out of reach. The slot index travels in
+                // the engine's own `userdata`, so what has to be proven is that the slots are
+                // genuinely INDEPENDENT rather than aliasing one another.
+                //
+                // The strong form is the negative: displace slot 0 and require slot 1 to have
+                // applied NOTHING. Two slots sharing state would move together and a check
+                // that only looked at the one being driven could not tell.
+                {
+                    std::string br;
+                    auto bone = [&](const char* qs, long long* node, long long* writes,
+                                    double* seen, double* wrote, bool* attached) {
+                        if (!http::get(port, qs, br)) {
+                            return false;
+                        }
+                        const std::string b = http::body_of(br);
+                        json_int(b, "node", *node);
+                        json_int(b, "writes", *writes);
+                        json_bool(b, "attached", *attached);
+                        return json_double(b, "seen_x", seen[0]) && json_double(b, "seen_y", seen[1]) &&
+                               json_double(b, "wrote_x", wrote[0]) && json_double(b, "wrote_y", wrote[1]);
+                    };
+                    long long n0 = -1, n1 = -1, w0 = -1, w1 = -1;
+                    double s0[2]{}, s1[2]{}, o0[2]{}, o1[2]{};
+                    bool a0 = false, a1 = false;
+
+                    http::get(port, "/vr/bone?detach_all=1", br);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    http::get(port, "/vr/bone?slot=0&socket=RightHand", br);
+                    http::get(port, "/vr/bone?slot=1&socket=LeftHand", br);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+
+                    const bool got = bone("/vr/bone?slot=0", &n0, &w0, s0, o0, &a0) &&
+                                     bone("/vr/bone?slot=1", &n1, &w1, s1, o1, &a1);
+                    check(got && a0 && a1, "both bone slots attach at once");
+                    if (got && a0 && a1) {
+                        check(n0 != n1, "the two slots drive DIFFERENT nodes -- RightHand and "
+                                        "LeftHand are not the same bone");
+
+                        // Displace slot 0 only.
+                        http::get(port, "/vr/bone?slot=0&x=40&y=0&z=0", br);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                        bone("/vr/bone?slot=0", &n0, &w0, s0, o0, &a0);
+                        bone("/vr/bone?slot=1", &n1, &w1, s1, o1, &a1);
+                        printf("[fixture] bone slots: slot0 dx %.2f (%lld writes), slot1 %lld writes\n",
+                               o0[0] - s0[0], w0, w1);
+                        check(w0 > 0 && fabs((o0[0] - s0[0]) - 40.0) < 0.01,
+                              "slot 0 applies exactly the offset it was given");
+                        check(w1 == 0, "slot 1 applied NOTHING while only slot 0 was driven -- the "
+                                       "slots do not alias");
+
+                        // Now drive both, on different axes, and require each to keep its own.
+                        http::get(port, "/vr/bone?slot=1&x=0&y=25&z=0", br);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                        bone("/vr/bone?slot=0", &n0, &w0, s0, o0, &a0);
+                        bone("/vr/bone?slot=1", &n1, &w1, s1, o1, &a1);
+                        check(fabs((o0[0] - s0[0]) - 40.0) < 0.01 && fabs(o0[1] - s0[1]) < 0.01,
+                              "slot 0 keeps its X offset and gains no Y when slot 1 is driven");
+                        check(w1 > 0 && fabs(o1[0] - s1[0]) < 0.01 && fabs((o1[1] - s1[1]) - 25.0) < 0.01,
+                              "slot 1 applies its own Y offset and no X -- both hands are driven "
+                              "simultaneously and independently");
+                    }
+                    http::get(port, "/vr/bone?detach_all=1", br);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    long long dn = -1, dw = -1;
+                    double ds[2]{}, dow[2]{};
+                    bool da = true;
+                    bone("/vr/bone?slot=1", &dn, &dw, ds, dow, &da);
+                    check(!da, "detach_all releases every slot, so a run leaves no cell linked");
+                }
+
                 // ---- THE SHOT LEAVES THE BARREL, NOT THE EYE -------------------
                 //
                 // FireRedirect can start the ray at the weapon's muzzle. The contract has

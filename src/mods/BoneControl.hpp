@@ -32,6 +32,11 @@
 // this transform afterwards.
 class BoneControl final : public Mod {
 public:
+    // How many bones can be driven at once. Two hands is the immediate need; the spares
+    // cost four atomics each and mean a two-handed grip or a foot IK experiment does not
+    // require touching this class again.
+    static constexpr uint32_t kSlots = 4;
+
     static BoneControl& get() {
         static BoneControl inst;
         return inst;
@@ -51,11 +56,11 @@ public:
     //
     // Returns false only for an obviously invalid request (no node named that); the actual
     // registration result appears in `observed().attached`.
-    bool attach_to_player_node(uint32_t node_index);
+    bool attach_to_player_node(uint32_t node_index, uint32_t slot = 0);
 
     // The same, by NODE name -- "L_Hand", "Head". Resolves through ModelSkeleton, so it follows
     // whatever the live asset defines.
-    bool attach_to_player_node(const char* node_name);
+    bool attach_to_player_node(const char* node_name, uint32_t slot = 0);
 
     // By SOCKET name, which is the lookup a consumer actually reaches for and the one that
     // catches people out: "RightHand" is a SOCKET on this skeleton, riding node 38 -- there is
@@ -64,14 +69,18 @@ public:
     //
     // Driving the socket's OWNING NODE is what moves whatever is mounted there, because the
     // engine composes the socket's fixed offset onto that node afterwards.
-    bool attach_to_player_socket(const char* socket_name);
+    bool attach_to_player_socket(const char* socket_name, uint32_t slot = 0);
 
     // Which node a named socket rides, without attaching -- so a caller can look before it
     // leaps, and so the fixture can assert the resolution independently of the override.
     std::optional<uint32_t> player_socket_node(const char* socket_name) const;
 
     // Stop driving. Idempotent, and the removal is performed on the game thread like the add.
-    void detach();
+    void detach(uint32_t slot = 0);
+
+    // Release EVERY slot. What a mod's own teardown wants -- releasing one and forgetting
+    // the others is the shape of bug this class must not make easy.
+    void detach_all();
 
     // ---- THE OVERRIDE ---------------------------------------------------------------------
     //
@@ -81,13 +90,13 @@ public:
     //
     // Set to (0,0,0) to observe without moving anything -- which is the default, because a mod
     // that displaces the player's arm the instant it loads is not a diagnostic.
-    void set_offset(float x, float y, float z);
-    void clear_offset();
+    void set_offset(float x, float y, float z, uint32_t slot = 0);
+    void clear_offset(uint32_t slot = 0);
 
     // A rotation applied to the node, as a quaternion (x, y, z, w), composed with whatever the
     // animation produced. Identity by default.
-    void set_rotation(float x, float y, float z, float w);
-    void clear_rotation();
+    void set_rotation(float x, float y, float z, float w, uint32_t slot = 0);
+    void clear_rotation(uint32_t slot = 0);
 
     struct Observed {
         bool available{};        // the mechanism resolves at all
@@ -111,6 +120,9 @@ public:
         // What the last invocation saw and wrote, so a consumer can confirm the write landed
         // rather than inferring it from the absence of a complaint.
         std::array<float, 3> last_seen_position{};
+        // ONLY MEANINGFUL WHEN `writes > 0`. Zeroed on attach so a value left by a
+        // previous attachment cannot be differenced against `last_seen_position`
+        // and read as a displacement this slot never applied.
         std::array<float, 3> last_written_position{};
         // WHAT THE ANIMATION PRODUCED for this node's orientation, before any override. A consumer
         // driving a bone needs to know what it is replacing -- and it is the only way to tell an
@@ -124,7 +136,7 @@ public:
         uint32_t engine_registered{};
     };
 
-    Observed observed() const;
+    Observed observed(uint32_t slot = 0) const;
 
 private:
     BoneControl() = default;
