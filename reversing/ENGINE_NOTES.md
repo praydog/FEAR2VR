@@ -1013,6 +1013,50 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### An OpenXR instance exists, and the runtime says the headset is merely ABSENT
+
+`xrCreateInstance` succeeds in this 32-bit process, through the resident proxy, with
+`XR_KHR_D3D11_enable` ENABLED rather than merely listed -- which is a stronger statement than
+enumeration: a runtime can advertise an extension and still refuse to turn it on.
+
+    xrCreateInstance            XR_SUCCESS, handle 0x1
+    enabled extension           XR_KHR_D3D11_enable
+    xrGetSystem(head-mounted)   -35
+    xrGetSystem(handheld)       -34
+
+**The two codes differ, and that is the whole finding.** Numbers alone cannot say whether a refusal
+means "nothing is plugged in" or "this runtime does not do that at all", so the handheld form factor
+was asked for as a control: a PC runtime cannot serve one. It answers -34 where the head-mounted
+display answers -35. So the head-mounted form factor is SUPPORTED AND UNAVAILABLE -- a waitable
+condition. Plug a headset in and this path continues; nothing here needs redesigning first.
+
+**The instance survives a mod reload.** It is parked in the proxy under `xr_instance` and adopted on
+the next load rather than rebuilt -- verified by creating it, fully unloading the mod, re-injecting,
+and reading back the same handle. Instances are expensive and a runtime may permit only one, so this
+is the difference between iterating on XR code and restarting the game for each attempt.
+
+**Struct layout is asserted, not hoped for.** `XrVersion` and `XrFlags64` are 64-bit and force
+8-byte alignment inside otherwise 32-bit structures, so a hand-written definition that looks right
+can still be four bytes out -- exactly the class of error the handle size already cost this project.
+`sizeof(XrApplicationInfo) == 272`, `offsetof(XrInstanceCreateInfo, applicationInfo) == 16`,
+`sizeof(XrInstanceCreateInfo) == 304`, `sizeof(XrSystemGetInfo) == 12`, all static_asserted.
+
+**A silent failure worth keeping.** The in-game path created its instance with NO extensions enabled
+while reporting success, because `supports_extension()` answered from an empty cache that only
+`enumerate_extensions()` filled. It reported `d3d11=false` on a runtime that plainly offers it. The
+accessor now enumerates on demand -- a capability query that requires the caller to remember a prior
+call is a trap, and it had already been walked into.
+
+### The proxy had to stop sharing code with the mod
+
+`sdk::OpenXR.cpp` was compiled into BOTH the proxy and the mod, so every edit to the consumer API
+forced a proxy rebuild -- and the proxy is pinned, so that meant a game restart. It happened twice
+before the rule already written down was actually followed. The loading half now lives alone in
+`xr::RuntimeLoader` (`shared/xr/RuntimeLoader.cpp`), which is the entire content of the proxy and is
+expected to be finished; everything iterated on is in `sdk::OpenXR`, which reaches the runtime
+through the pointer the proxy hands back. The code was MOVED rather than retyped, and the probe's
+output is byte-identical across the split -- same interface version, same 88 extensions.
+
 ### The resident proxy: how the runtime stays without pinning the mod
 
 The door is no longer one-way. `fear2xr.dll` loads the OpenXR runtime and never leaves; the mod

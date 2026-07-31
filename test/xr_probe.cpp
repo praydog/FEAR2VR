@@ -161,6 +161,72 @@ int main(int argc, char** argv) {
             std::printf("[probe] enumeration failed: %s\n", xr.last_error().c_str());
             check(false, "extensions enumerate once the runtime is loaded");
         }
+        // ---- AN INSTANCE ------------------------------------------------------------------
+        //
+        // Creation does NOT need a headset, so this is reachable on any machine with a runtime, and
+        // it is where a layout or calling-convention error shows up -- in a throwaway process
+        // rather than in front of someone wearing hardware.
+        std::vector<std::string> want;
+
+        if (xr.supports_extension("XR_KHR_D3D11_enable")) {
+            // The extension a D3D9 game's surface reaches a compositor through. Asking for it here
+            // proves the runtime will actually ENABLE it, which "it appears in the list" does not.
+            want.emplace_back("XR_KHR_D3D11_enable");
+        }
+
+        const bool made = xr.create_instance("FEAR2VR probe", want);
+        std::printf("[probe] xrCreateInstance -> %s (XrResult %d) handle 0x%llX\n",
+                    made ? "ok" : "FAILED", xr.last_xr_result(),
+                    static_cast<unsigned long long>(xr.instance()));
+
+        if (!made) {
+            std::printf("[probe] %s\n", xr.last_error().c_str());
+        }
+
+        check(made && xr.instance() != 0,
+              "an OpenXR instance is created, which is the first thing beyond enumeration and the "
+              "point where a wrong struct layout would surface");
+
+        if (made) {
+            // ---- THE SYSTEM, WHICH DOES NEED HARDWARE --------------------------------------
+            //
+            // The FAILURE is the informative outcome here. XR_ERROR_FORM_FACTOR_UNAVAILABLE means
+            // "runtime fine, nothing plugged in" -- completely different from a validation error,
+            // and a consumer must tell them apart to decide whether to offer VR at all. So this
+            // asserts that the call is ANSWERED definitively, not that a headset exists.
+            sdk::OpenXR::XrHandle system = 0;
+            const int32_t sr = xr.get_system(system);
+            std::printf("[probe] xrGetSystem -> XrResult %d, system 0x%llX  (%s)\n", sr,
+                        static_cast<unsigned long long>(system),
+                        sr == 0 ? "A HEADSET IS PRESENT"
+                                : "no headset -- expected on a bare machine");
+
+            // WHICH refusal is it? "Supported but nothing plugged in" and "this runtime does not
+            // do that at all" are different situations, and the numbers alone do not say which is
+            // which. Asking for a form factor a PC runtime cannot possibly serve -- handheld --
+            // separates them: if the two codes differ, the HMD answer means the headset is merely
+            // absent, and a consumer can offer to wait for one.
+            sdk::OpenXR::XrHandle handheld_system = 0;
+            const int32_t hr2 = xr.get_system(handheld_system, 2);  // XR_FORM_FACTOR_HANDHELD_DISPLAY
+            std::printf("[probe] xrGetSystem(handheld) -> XrResult %d\n", hr2);
+
+            if (sr != 0) {
+                check(hr2 != sr,
+                      "the runtime distinguishes an ABSENT head-mounted display from a form factor "
+                      "it does not support, so 'no headset' is a waitable condition rather than a "
+                      "permanent refusal");
+            }
+
+            check(sr == 0 ? system != 0 : system == 0,
+                  "xrGetSystem either yields a system id or none at all, never a success with "
+                  "nothing behind it");
+            check(sr != -1,
+                  "and answers with a real runtime verdict rather than XR_ERROR_VALIDATION_FAILURE, "
+                  "which is what a malformed XrSystemGetInfo would produce");
+
+            check(xr.destroy_instance(), "and the instance is destroyed cleanly");
+            check(xr.instance() == 0, "leaving no handle behind");
+        }
     } else {
         // A runtime that faults is a broken install, not a broken caller -- but the process being
         // alive to report it is the property that matters, and it is asserted rather than assumed.

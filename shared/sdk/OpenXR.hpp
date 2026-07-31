@@ -145,7 +145,45 @@ public:
     // The same list, queried once and kept. A consumer checking three capabilities should not pay
     // three round trips into the runtime, and a status publisher should pay none at all.
     const std::vector<std::string>& extensions() const { return m_extensions; }
-    bool supports_extension(const char* name) const;
+    // Answers without the caller having to remember to enumerate first: an empty cache is filled
+    // on demand. The version that required a prior enumerate_extensions() call silently returned
+    // false for everything, and the in-game path duly created an instance with NO extensions
+    // enabled while reporting success.
+    bool supports_extension(const char* name);
+
+    // ---- AN INSTANCE, WHICH IS WHERE OPENXR ACTUALLY BEGINS ------------------------------------
+    //
+    // Everything beyond enumeration needs one. Creation does NOT need a headset -- only
+    // xrGetSystem does -- so this is the deepest a machine with nothing plugged in can go, and it
+    // is worth going there because a layout or convention error shows up here rather than in front
+    // of a user wearing hardware.
+    //
+    // THE HANDLE IS PARKED IN THE PROXY when one is attached, under "xr_instance". A reload finds
+    // the existing instance and adopts it instead of building a second one: instances are
+    // expensive, a runtime may permit only one, and re-creating it would defeat the reason the
+    // proxy exists. Pass `force` to build a fresh one anyway.
+    bool create_instance(const char* app_name, const std::vector<std::string>& extensions = {},
+                         bool force = false);
+    XrHandle instance() const { return m_instance; }
+    bool have_instance() const { return m_instance != 0; }
+
+    // Destroys and forgets it, including the proxy's copy. A consumer should rarely want this --
+    // the point of parking the handle is that it survives -- but a changed extension list needs a
+    // new instance.
+    bool destroy_instance();
+
+    // ---- THE SYSTEM, WHICH DOES NEED HARDWARE --------------------------------------------------
+    //
+    // Returns the runtime's XrResult verbatim rather than a bool, because the FAILURE is the
+    // informative part on a machine with no headset: XR_ERROR_FORM_FACTOR_UNAVAILABLE means
+    // "runtime fine, nothing plugged in", which is a completely different situation from a
+    // validation error and a consumer must be able to tell them apart to decide whether to offer
+    // VR at all.
+    int32_t get_system(XrHandle& out_system, uint32_t form_factor = kHeadMountedDisplay);
+    static constexpr uint32_t kHeadMountedDisplay = 1;  // XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY
+
+    // The raw XrResult of the last instance or system call, for a caller that wants the code.
+    int32_t last_xr_result() const { return m_last_result; }
 
     // Empty when the last operation succeeded.
     const std::string& last_error() const { return m_error; }
@@ -157,7 +195,6 @@ private:
     std::string m_manifest;
     std::string m_library;
     std::string m_error;
-    void* m_module{nullptr};
     PFN_GetInstanceProcAddr m_get_proc{nullptr};
     uint32_t m_interface_version{0};
     uint64_t m_api_version{0};
@@ -165,6 +202,8 @@ private:
     bool m_faulted{false};
     std::vector<std::string> m_extensions;
     const void* m_proxy{nullptr};
+    XrHandle m_instance{0};
+    int32_t m_last_result{0};
 };
 
 }  // namespace sdk

@@ -10475,6 +10475,8 @@ bool Framework::initialize() {
         bool ammo_floor_refused = false;
         bool capture_armed = false;
         bool capture_drop_ok = false;
+        int32_t xr_system_result = 1;  // 1 = not asked
+        size_t xr_system_id = 0;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
@@ -10528,6 +10530,24 @@ bool Framework::initialize() {
                 if (webapi_query_int(q, "load", 0) != 0 && xr.load_via_proxy()) {
                     std::vector<std::string> exts;
                     xr.enumerate_extensions(exts);
+                }
+                // An instance, created THROUGH THE PROXY and parked in it. A reload adopts the
+                // existing one rather than building a second: instances are expensive, a runtime
+                // may permit only one, and rebuilding it would waste the reason the proxy exists.
+                if (webapi_query_int(q, "instance", 0) != 0 && xr.load_via_proxy()) {
+                    std::vector<std::string> want;
+                    if (xr.supports_extension("XR_KHR_D3D11_enable")) {
+                        want.emplace_back("XR_KHR_D3D11_enable");
+                    }
+                    xr.create_instance("FEAR2VR", want);
+                }
+                if (webapi_query_int(q, "destroy_instance", 0) != 0) {
+                    xr.destroy_instance();
+                }
+                if (webapi_query_int(q, "system", 0) != 0) {
+                    sdk::OpenXR::XrHandle sys_id = 0;
+                    xr_system_result = xr.get_system(sys_id);
+                    xr_system_id = static_cast<size_t>(sys_id);
                 }
                 if (webapi_query_int(q, "list", 0) != 0) {
                     for (const auto& e : xr.extensions()) {
@@ -10733,6 +10753,10 @@ bool Framework::initialize() {
               .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
               .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())
+              .u("xr_instance", static_cast<size_t>(sdk::OpenXR::get().instance()))
+              .i("xr_last_result", static_cast<int64_t>(sdk::OpenXR::get().last_xr_result()))
+              .i("xr_system_result", static_cast<int64_t>(xr_system_result))
+              .u("xr_system", xr_system_id)
               .u("d3d_behavior_flags",
                  static_cast<size_t>(sdk::Render::creation_params().has_value()
                                          ? sdk::Render::creation_params()->BehaviorFlags

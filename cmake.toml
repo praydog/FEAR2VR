@@ -63,8 +63,8 @@ set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 # interfaces (ILTClient, IDatabaseMgr...). Consumed by fear2-core and tests.
 [target.fear2-sdk]
 type = "static"
-sources = ["shared/sdk/**.cpp"]
-headers = ["shared/sdk/**.hpp"]
+sources = ["shared/sdk/**.cpp", "shared/xr/**.cpp"]
+headers = ["shared/sdk/**.hpp", "shared/xr/**.hpp", "shared/xr/**.h"]
 include-directories = ["shared"]
 compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
@@ -162,7 +162,7 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 # NO GPU -- so it ALWAYS runs and must pass on any CI. No SKIP_RETURN_CODE.
 [target.fear2xr]
 type = "shared"
-sources = ["src/xr/Proxy.cpp", "shared/sdk/OpenXR.cpp"]
+sources = ["src/xr/Proxy.cpp", "shared/xr/RuntimeLoader.cpp"]
 include-directories = ["shared"]
 compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
@@ -175,13 +175,25 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 
 [target.xr-probe]
 type = "executable"
-sources = ["test/xr_probe.cpp", "shared/sdk/OpenXR.cpp"]
+sources = ["test/xr_probe.cpp", "shared/sdk/OpenXR.cpp", "shared/xr/RuntimeLoader.cpp"]
 include-directories = ["shared"]
 compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
 cmake-after = """
 add_test(NAME xr-probe COMMAND xr-probe)
 set_tests_properties(xr-probe PROPERTIES TIMEOUT 60)
+
+# LOADING A RUNTIME IS NOT PASSIVE -- it starts that vendor's services and can raise a Windows
+# firewall prompt that blocks unrelated launches. So the half of the probe that actually talks to a
+# runtime (load, negotiate, enumerate, xrCreateInstance, xrGetSystem) is OPT-IN, and a plain `ctest`
+# stays free of side effects on someone else's machine.
+#
+#   cmake -DFEAR2_XR_RUNTIME_TESTS=ON ...   then   ctest -R xr-probe-runtime
+option(FEAR2_XR_RUNTIME_TESTS "Run OpenXR tests that load a real runtime" OFF)
+if(FEAR2_XR_RUNTIME_TESTS)
+	add_test(NAME xr-probe-runtime COMMAND xr-probe --load)
+	set_tests_properties(xr-probe-runtime PROPERTIES TIMEOUT 120)
+endif()
 """
 
 [target.xr-probe.properties]

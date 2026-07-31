@@ -1,9 +1,11 @@
 #include "OpenXR.hpp"
 
 #include "xr/Fear2XrApi.h"
+#include "xr/RuntimeLoader.hpp"
 
 #include <windows.h>
 
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -12,50 +14,30 @@ namespace sdk {
 
 namespace {
 
+constexpr int32_t kSuccess = 0;  // XR_SUCCESS
+
+// XR_TYPE_EXTENSION_PROPERTIES. Established by ASKING THE RUNTIME rather than trusting a remembered
+// enum: 0 and 1 were rejected with XR_ERROR_VALIDATION_FAILURE, 2 accepted. An earlier version
+// guessed 3 -- XR_TYPE_INSTANCE_CREATE_INFO -- and the validation failure looked like a broken
+// runtime.
+constexpr uint32_t kTypeExtensionProperties = 2;
+
+constexpr uint64_t make_version(uint64_t major, uint64_t minor, uint64_t patch) {
+    return (major << 48) | (minor << 32) | patch;
+}
+
+std::string directory_of(const std::string& path) {
+    const size_t slash = path.find_last_of("\\/");
+    return slash == std::string::npos ? std::string{} : path.substr(0, slash);
+}
+
+
+
 // ---- THE LOADER<->RUNTIME NEGOTIATION ABI ------------------------------------------------------
 //
 // Declared here rather than vendoring the OpenXR SDK: this is the entire surface needed to reach a
 // runtime, it is fixed by the loader specification, and adding a fetched dependency to the build for
 // six structs would be a poor trade. Field order and the constants below are the spec's.
-constexpr uint32_t kStructLoaderInfo = 1;      // XR_LOADER_INTERFACE_STRUCT_LOADER_INFO
-constexpr uint32_t kStructRuntimeRequest = 3;  // XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST
-constexpr uint32_t kLoaderInfoVersion = 1;     // XR_LOADER_INFO_STRUCT_VERSION
-constexpr uint32_t kRuntimeInfoVersion = 1;    // XR_RUNTIME_INFO_STRUCT_VERSION
-constexpr uint32_t kCurrentLoaderRuntimeVersion = 1;
-constexpr int32_t kSuccess = 0;  // XR_SUCCESS
-
-// XR_TYPE_EXTENSION_PROPERTIES. Established by ASKING THE RUNTIME rather than by trusting a
-// remembered enum: values 0 and 1 were rejected with XR_ERROR_VALIDATION_FAILURE and 2 was accepted.
-// The first version of this file guessed 3 -- which is XR_TYPE_INSTANCE_CREATE_INFO -- and produced
-// a validation failure that looked exactly like a broken runtime.
-constexpr uint32_t kTypeExtensionProperties = 2;
-
-// XR_MAKE_VERSION(major, minor, patch)
-constexpr uint64_t make_version(uint64_t major, uint64_t minor, uint64_t patch) {
-    return (major << 48) | (minor << 32) | patch;
-}
-
-struct NegotiateLoaderInfo {
-    uint32_t structType;
-    uint32_t structVersion;
-    size_t structSize;
-    uint32_t minInterfaceVersion;
-    uint32_t maxInterfaceVersion;
-    uint64_t minApiVersion;
-    uint64_t maxApiVersion;
-};
-
-struct NegotiateRuntimeRequest {
-    uint32_t structType;
-    uint32_t structVersion;
-    size_t structSize;
-    uint32_t runtimeInterfaceVersion;
-    uint64_t runtimeApiVersion;
-    OpenXR::PFN_GetInstanceProcAddr getInstanceProcAddr;
-};
-
-using PFN_Negotiate = int32_t(__stdcall*)(const NegotiateLoaderInfo*, NegotiateRuntimeRequest*);
-
 // XrExtensionProperties. The name array is XR_MAX_EXTENSION_NAME_SIZE = 128.
 struct ExtensionProperties {
     uint32_t type;  // XR_TYPE_EXTENSION_PROPERTIES = 3
@@ -67,76 +49,55 @@ struct ExtensionProperties {
 using PFN_EnumerateExtensions = int32_t(__stdcall*)(const char*, uint32_t, uint32_t*,
                                                     ExtensionProperties*);
 
+// ---- INSTANCE AND SYSTEM STRUCTURES ------------------------------------------------------------
+//
+// Declared rather than vendored, same as the negotiation ABI above, and asserted rather than
+// trusted. Layout is where a 32-bit consumer of this API gets hurt: XrVersion and XrFlags64 are
+// 64-bit and force 8-byte alignment inside otherwise 32-bit structs, so a hand-written definition
+// that "looks right" can still be four bytes out. The static_asserts below are the cheap version of
+// the lesson the handle size already taught this project.
+constexpr uint32_t kTypeInstanceCreateInfo = 3;
+constexpr uint32_t kTypeSystemGetInfo = 4;
+
+struct ApplicationInfo {
+    char applicationName[128];  // XR_MAX_APPLICATION_NAME_SIZE
+    uint32_t applicationVersion;
+    char engineName[128];  // XR_MAX_ENGINE_NAME_SIZE
+    uint32_t engineVersion;
+    uint64_t apiVersion;
+};
+
+struct InstanceCreateInfo {
+    uint32_t type;
+    const void* next;
+    uint64_t createFlags;
+    ApplicationInfo applicationInfo;
+    uint32_t enabledApiLayerCount;
+    const char* const* enabledApiLayerNames;
+    uint32_t enabledExtensionCount;
+    const char* const* enabledExtensionNames;
+};
+
+struct SystemGetInfo {
+    uint32_t type;
+    const void* next;
+    uint32_t formFactor;
+};
+
+static_assert(sizeof(ApplicationInfo) == 272, "XrApplicationInfo layout");
+static_assert(offsetof(InstanceCreateInfo, applicationInfo) == 16, "createFlags is 64-bit");
+static_assert(sizeof(InstanceCreateInfo) == 304, "XrInstanceCreateInfo layout");
+static_assert(sizeof(SystemGetInfo) == 12, "XrSystemGetInfo layout");
+
+using PFN_CreateInstance = int32_t(__stdcall*)(const InstanceCreateInfo*, uint64_t*);
+using PFN_DestroyInstance = int32_t(__stdcall*)(uint64_t);
+using PFN_GetSystem = int32_t(__stdcall*)(uint64_t, const SystemGetInfo*, uint64_t*);
+
 static_assert(sizeof(OpenXR::XrHandle) == 8, "OpenXR handles are 64-bit on every platform");
 
 // The manifest is small and its shape is fixed, so the one field we need is lifted directly rather
 // than by pulling in a JSON parser. Deliberately narrow: anything unexpected fails the discovery
 // instead of guessing at a path.
-std::string extract_library_path(const std::string& json) {
-    const size_t key = json.find("\"library_path\"");
-
-    if (key == std::string::npos) {
-        return {};
-    }
-
-    const size_t colon = json.find(':', key);
-
-    if (colon == std::string::npos) {
-        return {};
-    }
-
-    const size_t open = json.find('"', colon);
-
-    if (open == std::string::npos) {
-        return {};
-    }
-
-    std::string out;
-
-    for (size_t i = open + 1; i < json.size(); ++i) {
-        const char c = json[i];
-
-        if (c == '"') {
-            return out;
-        }
-
-        // JSON escapes backslashes, and Windows paths are full of them.
-        if (c == '\\' && i + 1 < json.size()) {
-            ++i;
-            out.push_back(json[i]);
-            continue;
-        }
-
-        out.push_back(c);
-    }
-
-    return {};
-}
-
-std::string directory_of(const std::string& path) {
-    const size_t slash = path.find_last_of("\\/");
-    return slash == std::string::npos ? std::string{} : path.substr(0, slash);
-}
-
-// ---- SURVIVING A BROKEN RUNTIME ----------------------------------------------------------------
-//
-// Separate functions with no C++ objects in scope, because __try cannot coexist with unwinding. The
-// game's crash reporter uses SetUnhandledExceptionFilter, which only runs when nothing CLAIMS the
-// exception -- so claiming it here is what keeps the process alive.
-int guarded_load(const char* path, HMODULE* out) {
-    __try {
-        *out = ::LoadLibraryExA(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-        return 0;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *out = nullptr;
-        return 1;
-    }
-}
-
-// EVERY call into the runtime, not just the negotiation. The first version of this class guarded
-// the load and then called the runtime's own xrGetInstanceProcAddr unguarded -- which jumped into
-// unmapped memory and took the game down exactly as before. A pointer a foreign library handed us
-// is foreign code too.
 int guarded_call_get_proc(OpenXR::PFN_GetInstanceProcAddr fn, OpenXR::XrHandle instance,
                           const char* name,
                           void** out, int32_t* result) {
@@ -159,10 +120,29 @@ int guarded_enumerate(PFN_EnumerateExtensions fn, uint32_t capacity, uint32_t* c
     }
 }
 
-int guarded_negotiate(PFN_Negotiate fn, const NegotiateLoaderInfo* info,
-                      NegotiateRuntimeRequest* request, int32_t* result) {
+int guarded_create_instance(PFN_CreateInstance fn, const InstanceCreateInfo* info, uint64_t* out,
+                            int32_t* result) {
     __try {
-        *result = fn(info, request);
+        *result = fn(info, out);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
+    }
+}
+
+int guarded_destroy_instance(PFN_DestroyInstance fn, uint64_t instance, int32_t* result) {
+    __try {
+        *result = fn(instance);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
+    }
+}
+
+int guarded_get_system(PFN_GetSystem fn, uint64_t instance, const SystemGetInfo* info,
+                       uint64_t* out, int32_t* result) {
+    __try {
+        *result = fn(instance, info, out);
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 1;
@@ -171,195 +151,60 @@ int guarded_negotiate(PFN_Negotiate fn, const NegotiateLoaderInfo* info,
 
 }  // namespace
 
+namespace {
+
+// The direct (non-proxy) route, used out of process by xr-probe. In the game the runtime lives in
+// the resident proxy instead and this stays untouched.
+xr::RuntimeLoader& direct() {
+    static xr::RuntimeLoader loader;
+    return loader;
+}
+
+}  // namespace
+
 std::vector<std::string> OpenXR::available_runtimes() {
-    std::vector<std::string> out;
-    HKEY key = nullptr;
-
-    if (::RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1\\AvailableRuntimes", 0,
-                        KEY_READ, &key) != ERROR_SUCCESS) {
-        return out;
-    }
-
-    char name[MAX_PATH * 2]{};
-    DWORD index = 0;
-
-    for (;;) {
-        DWORD len = sizeof(name);
-        DWORD type = 0;
-
-        if (::RegEnumValueA(key, index++, name, &len, nullptr, &type, nullptr, nullptr) !=
-            ERROR_SUCCESS) {
-            break;
-        }
-
-        out.emplace_back(name);
-    }
-
-    ::RegCloseKey(key);
-    return out;
+    return xr::RuntimeLoader::available_runtimes();
 }
 
 bool OpenXR::select_manifest(const std::string& manifest) {
-    unload();
-    m_discovered = false;
-    m_error.clear();
-    m_manifest = manifest;
+    const bool ok = direct().select_manifest(manifest);
+    m_manifest = direct().manifest_path();
+    m_library = direct().library_path();
+    m_discovered = direct().discovered();
+    m_error = direct().last_error();
+    return ok;
+}
 
-    std::ifstream f(m_manifest, std::ios::binary);
+bool OpenXR::discover() {
+    const bool ok = direct().discover();
+    m_manifest = direct().manifest_path();
+    m_library = direct().library_path();
+    m_discovered = direct().discovered();
+    m_error = direct().last_error();
+    return ok;
+}
 
-    if (!f) {
-        m_error = "manifest unreadable: " + m_manifest;
+bool OpenXR::load() {
+    const bool ok = direct().load();
+    m_manifest = direct().manifest_path();
+    m_library = direct().library_path();
+    m_discovered = direct().discovered();
+    m_crashed = direct().crashed();
+    m_error = direct().last_error();
+
+    if (!ok) {
         return false;
     }
 
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    const std::string lib = extract_library_path(ss.str());
-
-    if (lib.empty()) {
-        m_error = "manifest names no library_path: " + m_manifest;
-        return false;
-    }
-
-    const bool absolute = lib.size() > 2 && (lib[1] == ':' || (lib[0] == '\\' && lib[1] == '\\'));
-    m_library = absolute ? lib : directory_of(m_manifest) + "\\" + lib;
-    m_discovered = true;
+    m_get_proc = reinterpret_cast<PFN_GetInstanceProcAddr>(direct().get_proc());
+    m_interface_version = direct().interface_version();
+    m_api_version = direct().api_version();
     return true;
 }
 
 OpenXR& OpenXR::get() {
     static OpenXR instance{};
     return instance;
-}
-
-bool OpenXR::discover() {
-    m_discovered = false;
-    m_manifest.clear();
-    m_library.clear();
-    m_error.clear();
-
-    // A 32-bit process reads HKLM\SOFTWARE\Khronos through the WOW6432Node view automatically, so
-    // this resolves the 32-BIT active runtime without asking for it -- which is exactly what we
-    // want, and why a 64-bit tool checking the same key would report a different (useless) answer.
-    char value[MAX_PATH * 2]{};
-    DWORD size = sizeof(value);
-    DWORD type = 0;
-    LSTATUS st = ::RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1", "ActiveRuntime",
-                                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, &type, value,
-                                &size);
-
-    if (st != ERROR_SUCCESS) {
-        m_error = "no ActiveRuntime registered for 32-bit (status " + std::to_string(st) + ")";
-        return false;
-    }
-
-    char expanded[MAX_PATH * 2]{};
-
-    if (::ExpandEnvironmentStringsA(value, expanded, sizeof(expanded)) == 0) {
-        m_error = "could not expand the runtime manifest path";
-        return false;
-    }
-
-    m_manifest = expanded;
-
-    std::ifstream f(m_manifest, std::ios::binary);
-
-    if (!f) {
-        m_error = "runtime manifest is registered but unreadable: " + m_manifest;
-        return false;
-    }
-
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    const std::string lib = extract_library_path(ss.str());
-
-    if (lib.empty()) {
-        m_error = "manifest names no library_path: " + m_manifest;
-        return false;
-    }
-
-    // Relative paths are resolved against the MANIFEST's directory, per the loader spec -- the
-    // Oculus manifest uses ".\LibOVRRTImpl32_1.dll" and resolving it against the working directory
-    // would silently look in the game's folder.
-    const bool absolute = lib.size() > 2 && (lib[1] == ':' || (lib[0] == '\\' && lib[1] == '\\'));
-    m_library = absolute ? lib : directory_of(m_manifest) + "\\" + lib;
-    m_discovered = true;
-    return true;
-}
-
-bool OpenXR::load() {
-    if (loaded()) {
-        return true;
-    }
-
-    if (!m_discovered && !discover()) {
-        return false;
-    }
-
-    m_error.clear();
-    m_crashed = false;
-    m_faulted = false;
-
-    // LOAD_WITH_ALTERED_SEARCH_PATH so the runtime finds its own siblings: LibOVRRTImpl32_1.dll
-    // pulls in further Oculus libraries from its directory, which is not on our search path.
-    HMODULE mod = nullptr;
-
-    if (guarded_load(m_library.c_str(), &mod) != 0) {
-        m_crashed = true;
-        m_error = "runtime faulted while loading: " + m_library;
-        return false;
-    }
-
-    if (mod == nullptr) {
-        m_error = "LoadLibrary failed (" + std::to_string(::GetLastError()) + ") for " + m_library;
-        return false;
-    }
-
-    auto negotiate =
-        reinterpret_cast<PFN_Negotiate>(::GetProcAddress(mod, "xrNegotiateLoaderRuntimeInterface"));
-
-    if (negotiate == nullptr) {
-        ::FreeLibrary(mod);
-        m_error = "runtime exports no xrNegotiateLoaderRuntimeInterface: " + m_library;
-        return false;
-    }
-
-    NegotiateLoaderInfo info{};
-    info.structType = kStructLoaderInfo;
-    info.structVersion = kLoaderInfoVersion;
-    info.structSize = sizeof(info);
-    info.minInterfaceVersion = kCurrentLoaderRuntimeVersion;
-    info.maxInterfaceVersion = kCurrentLoaderRuntimeVersion;
-    info.minApiVersion = make_version(1, 0, 0);
-    // Accept anything in 1.x: a runtime newer than us is not a reason to refuse to talk.
-    info.maxApiVersion = make_version(1, 0xFFF, 0xFFFFFFFF);
-
-    NegotiateRuntimeRequest request{};
-    request.structType = kStructRuntimeRequest;
-    request.structVersion = kRuntimeInfoVersion;
-    request.structSize = sizeof(request);
-
-    int32_t result = 0;
-
-    if (guarded_negotiate(negotiate, &info, &request, &result) != 0) {
-        // Do NOT FreeLibrary here: the runtime faulted partway through its own setup and its state
-        // is unknown, so unloading it is at least as likely to fault again as to help.
-        m_crashed = true;
-        m_error = "runtime faulted during negotiation: " + m_library;
-        return false;
-    }
-
-    if (result != kSuccess || request.getInstanceProcAddr == nullptr) {
-        ::FreeLibrary(mod);
-        m_error = "runtime refused negotiation (XrResult " + std::to_string(result) + ")";
-        return false;
-    }
-
-    m_module = mod;
-    m_get_proc = request.getInstanceProcAddr;
-    m_interface_version = request.runtimeInterfaceVersion;
-    m_api_version = request.runtimeApiVersion;
-    return true;
 }
 
 bool OpenXR::attach_proxy(const char* proxy_path) {
@@ -380,7 +225,7 @@ bool OpenXR::attach_proxy(const char* proxy_path) {
 
         if (::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                      GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                 reinterpret_cast<LPCSTR>(&extract_library_path), &self) != 0) {
+                                 reinterpret_cast<LPCSTR>(&directory_of), &self) != 0) {
             char buf[MAX_PATH]{};
 
             if (::GetModuleFileNameA(self, buf, sizeof(buf)) != 0) {
@@ -462,17 +307,16 @@ OpenXR::XrHandle OpenXR::persisted_handle(const char* key) const {
 void OpenXR::unload() {
     // In proxy mode the runtime is NOT ours to free -- it belongs to a module that stays. Detach
     // and leave it running, which is exactly the point: the next mod load finds it ready.
-    m_proxy = nullptr;
-
-    if (m_module != nullptr) {
-        ::FreeLibrary(static_cast<HMODULE>(m_module));
-        m_module = nullptr;
+    if (m_proxy == nullptr) {
+        direct().unload();
     }
 
+    m_proxy = nullptr;
     m_get_proc = nullptr;
     m_interface_version = 0;
     m_api_version = 0;
     m_faulted = false;
+    m_instance = 0;
     m_extensions.clear();
 }
 
@@ -571,9 +415,160 @@ bool OpenXR::enumerate_extensions(std::vector<std::string>& out) {
     return true;
 }
 
-bool OpenXR::supports_extension(const char* name) const {
+bool OpenXR::create_instance(const char* app_name, const std::vector<std::string>& extensions,
+                             bool force) {
+    m_error.clear();
+
+    if (m_get_proc == nullptr) {
+        m_error = "no runtime loaded";
+        return false;
+    }
+
+    // ADOPT rather than rebuild. The proxy outlives this DLL, so a reload normally finds the
+    // instance it made last time still alive and valid -- which is the entire point of parking it.
+    if (!force) {
+        if (m_instance != 0) {
+            return true;
+        }
+
+        const XrHandle parked = persisted_handle("xr_instance");
+
+        if (parked != 0) {
+            m_instance = parked;
+            return true;
+        }
+    }
+
+    void* fn = nullptr;
+
+    if (resolve("xrCreateInstance", &fn) != kSuccess || fn == nullptr) {
+        m_error = "runtime does not resolve xrCreateInstance";
+        return false;
+    }
+
+    InstanceCreateInfo info{};
+    info.type = kTypeInstanceCreateInfo;
+    info.applicationInfo.applicationVersion = 1;
+    info.applicationInfo.engineVersion = 1;
+    // 1.0 rather than the runtime's own version: an application declares what it was WRITTEN
+    // against, and a 1.1 runtime is required to serve a 1.0 app.
+    info.applicationInfo.apiVersion = make_version(1, 0, 34);
+
+    const char* const name = app_name == nullptr ? "FEAR2VR" : app_name;
+    ::strncpy_s(info.applicationInfo.applicationName, sizeof(info.applicationInfo.applicationName),
+                name, _TRUNCATE);
+    ::strncpy_s(info.applicationInfo.engineName, sizeof(info.applicationInfo.engineName),
+                "LithTech Jupiter EX", _TRUNCATE);
+
+    // The array must outlive the call, so the pointers are taken from storage that does.
+    std::vector<const char*> ext_ptrs;
+    ext_ptrs.reserve(extensions.size());
+
+    for (const auto& e : extensions) {
+        ext_ptrs.push_back(e.c_str());
+    }
+
+    info.enabledExtensionCount = static_cast<uint32_t>(ext_ptrs.size());
+    info.enabledExtensionNames = ext_ptrs.empty() ? nullptr : ext_ptrs.data();
+
+    uint64_t handle = 0;
+    int32_t result = 0;
+
+    if (guarded_create_instance(reinterpret_cast<PFN_CreateInstance>(fn), &info, &handle,
+                                &result) != 0) {
+        m_faulted = true;
+        m_crashed = true;
+        m_error = "runtime faulted creating an instance";
+        return false;
+    }
+
+    m_last_result = result;
+
+    if (result != kSuccess || handle == 0) {
+        m_error = "xrCreateInstance failed (XrResult " + std::to_string(result) + ")";
+        return false;
+    }
+
+    m_instance = handle;
+    persist_handle("xr_instance", handle);
+    return true;
+}
+
+bool OpenXR::destroy_instance() {
+    if (m_instance == 0) {
+        return true;
+    }
+
+    void* fn = nullptr;
+
+    // Instance-level functions are resolved THROUGH the instance, not a null handle.
+    if (resolve("xrDestroyInstance", &fn, m_instance) != kSuccess || fn == nullptr) {
+        m_error = "runtime does not resolve xrDestroyInstance";
+        return false;
+    }
+
+    int32_t result = 0;
+    const int faulted =
+        guarded_destroy_instance(reinterpret_cast<PFN_DestroyInstance>(fn), m_instance, &result);
+
+    m_instance = 0;
+    persist_handle("xr_instance", 0);
+
+    if (faulted != 0) {
+        m_faulted = true;
+        m_crashed = true;
+        m_error = "runtime faulted destroying the instance";
+        return false;
+    }
+
+    m_last_result = result;
+    return result == kSuccess;
+}
+
+int32_t OpenXR::get_system(XrHandle& out_system, uint32_t form_factor) {
+    out_system = 0;
+
+    if (m_instance == 0) {
+        m_error = "no instance";
+        return -1;  // XR_ERROR_VALIDATION_FAILURE
+    }
+
+    void* fn = nullptr;
+    const int32_t rr = resolve("xrGetSystem", &fn, m_instance);
+
+    if (rr != kSuccess || fn == nullptr) {
+        m_error = "runtime does not resolve xrGetSystem";
+        return rr == kSuccess ? -1 : rr;
+    }
+
+    SystemGetInfo info{};
+    info.type = kTypeSystemGetInfo;
+    info.formFactor = form_factor;
+
+    uint64_t id = 0;
+    int32_t result = 0;
+
+    if (guarded_get_system(reinterpret_cast<PFN_GetSystem>(fn), m_instance, &info, &id, &result) !=
+        0) {
+        m_faulted = true;
+        m_crashed = true;
+        m_error = "runtime faulted in xrGetSystem";
+        return -1;
+    }
+
+    m_last_result = result;
+    out_system = id;
+    return result;
+}
+
+bool OpenXR::supports_extension(const char* name) {
     if (name == nullptr) {
         return false;
+    }
+
+    if (m_extensions.empty()) {
+        std::vector<std::string> ignored;
+        enumerate_extensions(ignored);
     }
 
     for (const auto& e : m_extensions) {

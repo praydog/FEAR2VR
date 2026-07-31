@@ -9,13 +9,21 @@
 #include <mutex>
 #include <string>
 
-#include "sdk/OpenXR.hpp"
 #include "xr/Fear2XrApi.h"
+#include "xr/RuntimeLoader.hpp"
 
 namespace {
 
 Fear2XrApi g_api{};
 std::mutex g_lock;
+
+// The runtime lives HERE, in the module that never leaves. Everything else about OpenXR -- the
+// instance, the session, the policy -- belongs to the mod, which is free to be rebuilt.
+xr::RuntimeLoader& runtime() {
+    static xr::RuntimeLoader loader;
+    return loader;
+}
+
 std::map<std::string, uint64_t> g_handles;
 std::string g_library;
 std::string g_error;
@@ -42,7 +50,7 @@ int api_ensure_runtime() {
     static std::mutex once;
     std::lock_guard<std::mutex> guard(once);
 
-    if (sdk::OpenXR::get().loaded()) {
+    if (runtime().loaded()) {
         return 1;
     }
 
@@ -50,48 +58,46 @@ int api_ensure_runtime() {
     // threads are created against this module's lifetime, not the mod's. sdk::OpenXR guards the
     // load, the negotiation and every call, so a broken runtime leaves the process alive with
     // `runtime_crashed()` set.
-    if (!sdk::OpenXR::get().load()) {
+    if (!runtime().load()) {
         return 0;
     }
 
-    g_api.get_instance_proc_addr =
-        reinterpret_cast<int32_t(__stdcall*)(uint64_t, const char*, void**)>(
-            sdk::OpenXR::get().get_instance_proc_addr());
+    g_api.get_instance_proc_addr = runtime().get_proc();
     return 1;
 }
 
 int api_runtime_loaded() {
-    return sdk::OpenXR::get().loaded() ? 1 : 0;
+    return runtime().loaded() ? 1 : 0;
 }
 
 int api_runtime_crashed() {
-    return sdk::OpenXR::get().crashed() ? 1 : 0;
+    return runtime().crashed() ? 1 : 0;
 }
 
 const char* api_runtime_library() {
     // Returned through a static: the caller is a separate module and must not receive a pointer
     // into a temporary.
     std::lock_guard<std::mutex> guard(g_lock);
-    g_library = sdk::OpenXR::get().library_path();
+    g_library = runtime().library_path();
     return g_library.c_str();
 }
 
 const char* api_last_error() {
     std::lock_guard<std::mutex> guard(g_lock);
-    g_error = sdk::OpenXR::get().last_error();
+    g_error = runtime().last_error();
     return g_error.c_str();
 }
 
 uint32_t api_api_major() {
-    return sdk::OpenXR::get().api_major();
+    return runtime().api_major();
 }
 
 uint32_t api_api_minor() {
-    return sdk::OpenXR::get().api_minor();
+    return runtime().api_minor();
 }
 
 uint32_t api_interface_version() {
-    return sdk::OpenXR::get().interface_version();
+    return runtime().interface_version();
 }
 
 void api_store_handle(const char* key, uint64_t value) {
