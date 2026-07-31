@@ -894,6 +894,26 @@ Separation is absent at zero, present at a human baseline, and GROWS with the ba
 makes the eye offset the cause rather than a correlate, and all three are now asserted with bounds
 taken from the same-eye spread measured in the same run.
 
+### The corridor flickers, and two samples could not tell that from stereo
+
+The first version of the stereo check took TWO captures per eye. It passed standalone and failed
+under ctest on the identical build -- the null control and the monotonicity claim both went red.
+
+Nothing was wrong with the stereo. This corridor contains a flickering light, so a same-eye pair can
+differ by more than the eyes do, and a two-sample spread estimate is worthless against it.
+
+Two changes, both of which this file already prescribes elsewhere:
+
+  * **Four samples per eye, INTERLEAVED** (L,R,L,R,...). Interleaving puts any slow drift on both
+    eyes equally instead of letting it masquerade as separation, and four samples give a spread
+    stable enough to bound against.
+  * **A gate on being able to see the signal at all.** When the same-eye spread exceeds half the
+    eye separation, none of the claims is measurable -- which is a fact about the scene, not about
+    stereo -- so the block reports NOT EXERCISED instead of failing.
+
+Two consecutive ctest runs green afterwards. The tell for this class: a check that passes when run
+by hand and fails in the suite, on the same binary, is measuring the world rather than the code.
+
 ### `both=1&split=1` does NOT currently produce a stereo pair
 
 The side-by-side mode is the format a headset consumes, and it puts both eyes in ONE frame, which

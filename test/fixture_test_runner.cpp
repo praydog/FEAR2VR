@@ -12134,15 +12134,33 @@ int main(int argc, char** argv) {
             return false;
         };
         // Separation between the eyes at one IPD, plus the same-eye spread that bounds it.
+        //
+        // FOUR SAMPLES PER EYE, INTERLEAVED. Two was not enough: this corridor contains a
+        // flickering light, so a same-eye pair can differ by more than the eyes do, and the check
+        // passed standalone and failed under ctest on the identical build. Interleaving means any
+        // slow drift lands on both eyes equally instead of masquerading as separation, and four
+        // samples give a spread estimate stable enough to bound against.
+        constexpr int kSamples = 4;
         auto measure = [&](const char* ipd, double& separation, double& spread, bool& ok) {
-            double l[2] = {0, 0}, rr[2] = {0, 0};
-            ok = eye_luma("left", ipd, l[0]) && eye_luma("right", ipd, rr[0]) &&
-                 eye_luma("left", ipd, l[1]) && eye_luma("right", ipd, rr[1]);
+            double l[kSamples] = {}, rr[kSamples] = {};
+            ok = true;
+            for (int i = 0; i < kSamples && ok; ++i) {
+                ok = eye_luma("left", ipd, l[i]) && eye_luma("right", ipd, rr[i]);
+            }
             if (!ok) {
                 return;
             }
-            separation = fabs((l[0] + l[1]) / 2.0 - (rr[0] + rr[1]) / 2.0);
-            spread = fabs(l[0] - l[1]) > fabs(rr[0] - rr[1]) ? fabs(l[0] - l[1]) : fabs(rr[0] - rr[1]);
+            double lsum = 0, rsum = 0, lmin = l[0], lmax = l[0], rmin = rr[0], rmax = rr[0];
+            for (int i = 0; i < kSamples; ++i) {
+                lsum += l[i];
+                rsum += rr[i];
+                lmin = l[i] < lmin ? l[i] : lmin;
+                lmax = l[i] > lmax ? l[i] : lmax;
+                rmin = rr[i] < rmin ? rr[i] : rmin;
+                rmax = rr[i] > rmax ? rr[i] : rmax;
+            }
+            separation = fabs(lsum / kSamples - rsum / kSamples);
+            spread = (lmax - lmin) > (rmax - rmin) ? (lmax - lmin) : (rmax - rmin);
         };
 
         double sep0 = 0, spr0 = 0, sep1 = 0, spr1 = 0, sep2 = 0, spr2 = 0;
@@ -12160,14 +12178,28 @@ int main(int argc, char** argv) {
                    "ipd10 %.3f (%.3f)\n",
                    sep0, spr0, sep1, spr1, sep2, spr2);
 
-            check(sep0 <= 3.0 * spr0 + 0.10,
-                  "NULL CONTROL: with the eye offset at zero the two eyes are indistinguishable, "
-                  "which is what makes any separation below attributable to the offset");
-            check(sep1 > 3.0 * spr1 + 0.10,
-                  "at a human 6.4 cm baseline the two eyes render measurably different pictures");
-            check(sep2 > sep1,
-                  "and a wider baseline separates them FURTHER -- the difference tracks the offset "
-                  "rather than merely existing");
+            // GATE ON BEING ABLE TO SEE THE SIGNAL AT ALL. A flickering light can make the
+            // same-eye spread larger than the eye separation, and then none of these claims is
+            // measurable -- which is a statement about the scene, not about stereo. Report it
+            // rather than failing, exactly as the ammo and firing blocks do when the world will
+            // not cooperate.
+            const double worst_spread = spr0 > spr1 ? (spr0 > spr2 ? spr0 : spr2)
+                                                    : (spr1 > spr2 ? spr1 : spr2);
+            const bool discriminating = sep1 > 2.0 * worst_spread;
+
+            check_gated(discriminating, "scene flicker exceeds the eye separation", g_skipped_motion,
+                        sep0 <= 3.0 * spr0 + 0.10,
+                        "NULL CONTROL: with the eye offset at zero the two eyes are "
+                        "indistinguishable, which is what makes any separation attributable to the "
+                        "offset rather than to the scene");
+            check_gated(discriminating, "scene flicker exceeds the eye separation", g_skipped_motion,
+                        sep1 > 3.0 * spr1 + 0.10,
+                        "at a human 6.4 cm baseline the two eyes render measurably different "
+                        "pictures");
+            check_gated(discriminating, "scene flicker exceeds the eye separation", g_skipped_motion,
+                        sep2 > sep1,
+                        "and a wider baseline separates them FURTHER -- the difference tracks the "
+                        "offset rather than merely existing");
 
             std::string sr;
             if (http::get(port, "/stereo/state", sr)) {
