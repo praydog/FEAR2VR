@@ -12141,6 +12141,81 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- AND IT CAN STAY ON THE GPU ---------------------------------------------
+    //
+    // The pair verified below exists in SYSTEM MEMORY, which costs milliseconds and is useless for
+    // submission -- a compositor wants a texture. The mirror is a private render target filled with
+    // StretchRect at the same stage: GPU to GPU, no lock, no stall.
+    //
+    // Two things have to be true for that to be the submission path, and neither needs a headset:
+    // the copy must be cheap, and it must hold the SAME PICTURE. The second is the one worth
+    // asserting, because a copy that returns S_OK and lands somewhere black would pass a timing
+    // test perfectly.
+    {
+        std::string r;
+        http::get(port, "/stereo/eye?both=1&split=1&centre_x=0&centre_y=0&half_ipd=3.2", r);
+        http::get(port, "/xr/capture?stage=second_eye&mirror=1", r);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+        long long f0 = -1;
+        if (http::get(port, "/xr/head", r)) {
+            json_int(http::body_of(r), "fc_mirror_frames", f0);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+
+        // Ask for the readback verification; it is performed on the render thread and reported back.
+        http::get(port, "/xr/capture?stage=second_eye&verify_mirror=1", r);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        long long f1 = -1;
+        bool verified = false, has_surface = false;
+        double ml = 0, mr = 0, dl = 0, dr = 0, copy_ms = -1, lock_ms = 0, cpu_copy_ms = 0;
+        if (http::get(port, "/xr/head", r)) {
+            const std::string b = http::body_of(r);
+            json_int(b, "fc_mirror_frames", f1);
+            json_bool(b, "fc_mirror_verified", verified);
+            json_bool(b, "fc_mirror_surface", has_surface);
+            json_double(b, "fc_mirror_left_luma", ml);
+            json_double(b, "fc_mirror_right_luma", mr);
+            // The reference sampled INSIDE the verification call, not the published readback --
+            // that one is whatever frame last completed, and comparing across a frame boundary made
+            // this fail by 0.059 on a scene that had simply moved.
+            json_double(b, "fc_mirror_ref_left", dl);
+            json_double(b, "fc_mirror_ref_right", dr);
+            json_double(b, "fc_mirror_copy_ms", copy_ms);
+            json_double(b, "fc_lock_ms", lock_ms);
+            json_double(b, "fc_copy_ms", cpu_copy_ms);
+        }
+        {
+            std::string rr;  // release: the mirror costs a copy per frame and the stage is global
+            http::get(port, "/xr/capture?mirror=0&stage=present", rr);
+            http::get(port, "/stereo/eye?both=0&eye=off&half_ipd=0&split=0", rr);
+        }
+
+        printf("[fixture] gpu mirror: %lld frames, copy %.4f ms (cpu readback %.3f ms), "
+               "halves L %.3f/%.3f R %.3f/%.3f\n",
+               f1 - f0, copy_ms, lock_ms + cpu_copy_ms, ml, dl, mr, dr);
+
+        check(has_surface && f1 > f0,
+              "the GPU mirror produces a surface and keeps filling it");
+        check(verified,
+              "and the mirror can be read back at all -- without this the luminances below would "
+              "be the zeros a failed copy leaves behind");
+        check(ml > 1.0 && mr > 1.0,
+              "the mirror carries light, so the comparison below is not two black rectangles "
+              "agreeing");
+        // SAME FRAME, SAME GRID: the mirror is copied and the back buffer read in one service call,
+        // and both luminances walk the identical 8-pixel grid. So this is an identity, not a
+        // tolerance -- 0.01 covers the published three decimals and nothing else.
+        check(fabs(ml - dl) < 0.01 && fabs(mr - dr) < 0.01,
+              "and it holds the SAME PICTURE as the CPU readback of the same frame -- which is what "
+              "makes it the surface a compositor can be handed");
+        check_gated(copy_ms >= 0.0 && lock_ms > 0.0, "no readback timed this run", g_skipped_motion,
+                    copy_ms < (lock_ms + cpu_copy_ms),
+                    "and costs less than reading the frame to system memory, which is the whole "
+                    "reason a submission path would use it");
+    }
+
     // ---- A SUBMITTABLE STEREO PAIR EXISTS, AND THIS IS IT ------------------------
     //
     // The previous version of this check captured one eye, then the other, and compared. That works

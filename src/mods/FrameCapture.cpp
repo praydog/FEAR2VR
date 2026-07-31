@@ -82,7 +82,205 @@ void FrameCapture::on_present() {
 }
 
 void FrameCapture::service_now() {
+    service_mirror();
     service();
+}
+
+void FrameCapture::set_gpu_mirror(bool enabled) {
+    if (enabled && !m_registered.load(std::memory_order_relaxed)) {
+        if (RenderHook::get().add_present_callback(&FrameCapture::on_present)) {
+            m_registered.store(true, std::memory_order_relaxed);
+        }
+    }
+    m_mirror_on.store(enabled, std::memory_order_release);
+    LOGX("[capture] gpu mirror %s", enabled ? "ON" : "off");
+}
+
+double FrameCapture::last_gpu_copy_ms() const {
+    return ticks_to_ms(m_mirror_copy_ticks.load(std::memory_order_relaxed));
+}
+
+double FrameCapture::mirror_left_luma() const {
+    return static_cast<double>(m_mirror_left_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
+double FrameCapture::mirror_right_luma() const {
+    return static_cast<double>(m_mirror_right_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
+double FrameCapture::mirror_ref_left_luma() const {
+    return static_cast<double>(m_mirror_ref_left_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
+double FrameCapture::mirror_ref_right_luma() const {
+    return static_cast<double>(m_mirror_ref_right_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
+// GPU -> GPU. No lock, no system memory, no stall: this is the copy a compositor submission makes.
+void FrameCapture::service_mirror() {
+    if (!m_mirror_on.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    auto* device = sdk::Render::device();
+
+    if (device == nullptr) {
+        return;
+    }
+
+    IDirect3DSurface9* back = nullptr;
+
+    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) || back == nullptr) {
+        return;
+    }
+
+    D3DSURFACE_DESC desc{};
+
+    if (FAILED(back->GetDesc(&desc))) {
+        back->Release();
+        return;
+    }
+
+    if (m_mirror == nullptr || m_mirror_w != desc.Width || m_mirror_h != desc.Height) {
+        if (m_mirror != nullptr) {
+            static_cast<IDirect3DSurface9*>(m_mirror)->Release();
+            m_mirror = nullptr;
+        }
+        IDirect3DSurface9* rt = nullptr;
+        // DEFAULT pool, lockable=FALSE: a submission surface is never read by the CPU, and asking
+        // for lockable would put it somewhere slower for no benefit. verify_gpu_mirror() copies it
+        // to its own staging surface instead.
+        if (SUCCEEDED(device->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+                                                 D3DMULTISAMPLE_NONE, 0, FALSE, &rt, nullptr)) &&
+            rt != nullptr) {
+            m_mirror = rt;
+            m_mirror_w = desc.Width;
+            m_mirror_h = desc.Height;
+            m_mirror_fmt = static_cast<uint32_t>(desc.Format);
+        } else {
+            back->Release();
+            return;
+        }
+    }
+
+    const int64_t t0 = now_ticks();
+    const HRESULT hr = device->StretchRect(back, nullptr, static_cast<IDirect3DSurface9*>(m_mirror),
+                                           nullptr, D3DTEXF_NONE);
+    m_mirror_copy_ticks.store(now_ticks() - t0, std::memory_order_relaxed);
+    back->Release();
+
+    if (SUCCEEDED(hr)) {
+        m_mirror_frames.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // A verification asked for from the IPC thread is performed HERE, where the device lives.
+    if (m_mirror_verify.exchange(false, std::memory_order_acq_rel)) {
+        m_mirror_verified.store(verify_gpu_mirror(), std::memory_order_relaxed);
+    }
+}
+
+bool FrameCapture::verify_gpu_mirror() {
+    if (m_mirror == nullptr) {
+        return false;
+    }
+
+    auto* device = sdk::Render::device();
+
+    if (device == nullptr) {
+        return false;
+    }
+
+    IDirect3DSurface9* sys = nullptr;
+
+    // THE MIRROR'S OWN FORMAT. Hardcoding X8R8G8B8 made GetRenderTargetData fail silently and the
+    // luminances read a very convincing 0.000.
+    if (FAILED(device->CreateOffscreenPlainSurface(m_mirror_w, m_mirror_h,
+                                                   static_cast<D3DFORMAT>(m_mirror_fmt),
+                                                   D3DPOOL_SYSTEMMEM, &sys, nullptr)) ||
+        sys == nullptr) {
+        return false;
+    }
+
+    bool ok = false;
+
+    // Sample the MIRROR, then the BACK BUFFER, through the same staging surface in the same call --
+    // one instant, one grid, so the comparison is an identity rather than a tolerance.
+    IDirect3DSurface9* back = nullptr;
+    device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back);
+
+    if (SUCCEEDED(device->GetRenderTargetData(static_cast<IDirect3DSurface9*>(m_mirror), sys))) {
+        D3DLOCKED_RECT lr{};
+
+        if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+            const auto* base = static_cast<const uint8_t*>(lr.pBits);
+            uint64_t left = 0, right = 0, nl = 0, nr = 0;
+            const uint32_t mid = m_mirror_w / 2;
+
+            // The SAME grid the direct path samples, so the two are comparable by construction.
+            for (uint32_t y = 0; y < m_mirror_h; y += 8) {
+                const auto* row =
+                    reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(y) * lr.Pitch);
+                for (uint32_t x = 0; x < m_mirror_w; x += 8) {
+                    const uint32_t px = row[x] & 0x00FFFFFFu;
+                    const uint64_t l =
+                        ((px >> 16 & 0xFF) * 77 + (px >> 8 & 0xFF) * 150 + (px & 0xFF) * 29) >> 8;
+                    if (x < mid) {
+                        left += l;
+                        ++nl;
+                    } else {
+                        right += l;
+                        ++nr;
+                    }
+                }
+            }
+            m_mirror_left_milli.store(nl == 0 ? 0 : static_cast<int64_t>((left * 1000ull) / nl),
+                                      std::memory_order_relaxed);
+            m_mirror_right_milli.store(nr == 0 ? 0 : static_cast<int64_t>((right * 1000ull) / nr),
+                                       std::memory_order_relaxed);
+            sys->UnlockRect();
+            ok = true;
+        }
+    }
+
+    if (ok && back != nullptr && SUCCEEDED(device->GetRenderTargetData(back, sys))) {
+        D3DLOCKED_RECT lr{};
+
+        if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+            const auto* base = static_cast<const uint8_t*>(lr.pBits);
+            uint64_t left = 0, right = 0, nl = 0, nr = 0;
+            const uint32_t mid = m_mirror_w / 2;
+
+            for (uint32_t y = 0; y < m_mirror_h; y += 8) {
+                const auto* row =
+                    reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(y) * lr.Pitch);
+                for (uint32_t x = 0; x < m_mirror_w; x += 8) {
+                    const uint32_t px = row[x] & 0x00FFFFFFu;
+                    const uint64_t l =
+                        ((px >> 16 & 0xFF) * 77 + (px >> 8 & 0xFF) * 150 + (px & 0xFF) * 29) >> 8;
+                    if (x < mid) {
+                        left += l;
+                        ++nl;
+                    } else {
+                        right += l;
+                        ++nr;
+                    }
+                }
+            }
+            m_mirror_ref_left_milli.store(nl == 0 ? 0 : static_cast<int64_t>((left * 1000ull) / nl),
+                                          std::memory_order_relaxed);
+            m_mirror_ref_right_milli.store(
+                nr == 0 ? 0 : static_cast<int64_t>((right * 1000ull) / nr),
+                std::memory_order_relaxed);
+            sys->UnlockRect();
+        }
+    }
+
+    if (back != nullptr) {
+        back->Release();
+    }
+
+    sys->Release();
+    return ok;
 }
 
 bool FrameCapture::request_capture() {
@@ -498,5 +696,10 @@ void FrameCapture::on_shutdown() {
             static_cast<IDirect3DSurface9*>(p)->Release();
             p = nullptr;
         }
+    }
+    m_mirror_on.store(false, std::memory_order_release);
+    if (m_mirror != nullptr) {
+        static_cast<IDirect3DSurface9*>(m_mirror)->Release();
+        m_mirror = nullptr;
     }
 }

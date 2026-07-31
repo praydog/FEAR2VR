@@ -938,6 +938,38 @@ so it never reached `capture_viewport()` or `record_pass()`: the census reported
 frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
 one. It is recorded now, which is what made the table above possible.
 
+### The pair can stay on the GPU, which is what submission needs
+
+The verified pair above lands in SYSTEM MEMORY, and that path costs ~2 ms here and up to 10 ms at
+full resolution -- fine for a diagnostic, useless for a compositor, which wants a texture.
+
+`FrameCapture`'s GPU mirror is a private render target filled with `StretchRect` at the same stage.
+Measured live:
+
+    mirror copy   0.0007 ms      GPU -> GPU, no lock, no stall
+    CPU readback  0.195 - 2.2 ms  same frame, same size
+
+Roughly three orders of magnitude, and the content is not merely "a copy that returned S_OK":
+
+    mirror halves     L 20.585  R 18.983
+    back buffer       L 20.585  R 18.983     sampled in the SAME call
+
+So the surface a headset would be handed exists, holds exactly the drawn frame, and costs nothing to
+produce. Everything between here and a working headset is OpenXR and hardware.
+
+**Two mistakes worth keeping.** The first verification called D3D from the IPC thread and returned a
+convincing 0.000 -- the device belongs to the render thread, so the request is now a flag serviced
+where the copy happens. The second hardcoded `D3DFMT_X8R8G8B8` for the staging surface instead of
+the mirror's own format, which made `GetRenderTargetData` fail silently and produce the same zeros.
+
+**And a third, which is the interesting one.** The content check first compared the mirror against
+the PUBLISHED readback and failed by 0.059. Nothing was wrong with the mirror: the published value
+is whatever frame last completed, so the two numbers straddled a frame boundary on a scene that had
+moved. The verification now samples the back buffer through the same staging surface in the same
+call, and the two agree to every published decimal. **A comparison between two producers has to be
+sampled at one instant** -- the fourth time this project has been caught by that, and the first time
+the fix was to make the instant shared rather than to widen a bound.
+
 ### A SUBMITTABLE STEREO PAIR EXISTS -- it is destroyed after it is drawn
 
 Capturing the back buffer INSIDE the pass hook, immediately after the second eye's draw returns,

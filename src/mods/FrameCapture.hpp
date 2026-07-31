@@ -142,6 +142,48 @@ public:
     void set_stage(Stage s) { m_stage.store(static_cast<uint32_t>(s), std::memory_order_release); }
     Stage stage() const { return static_cast<Stage>(m_stage.load(std::memory_order_acquire)); }
 
+    // ---- KEEPING THE PAIR ON THE GPU ----------------------------------------------------------
+    //
+    // Everything above ends in SYSTEM MEMORY, which costs ~10 ms at 2560x1440 and 3.6-17% of frame
+    // rate -- fine for a screenshot or a diagnostic, useless for submission. A compositor wants a
+    // TEXTURE, and the copy that produces one never leaves the GPU.
+    //
+    // The mirror is a private render target the same size as the back buffer, filled with
+    // StretchRect at the chosen stage. That is the surface a headset submission hands over, and the
+    // reason this can be built and measured without any hardware: the copy either happens at GPU
+    // speed and holds the right picture, or it does not.
+    //
+    // Armed separately from the readback because they answer different questions and a consumer
+    // submitting frames does not want a 10 ms stall attached.
+    void set_gpu_mirror(bool enabled);
+    bool gpu_mirror() const { return m_mirror_on.load(std::memory_order_relaxed); }
+
+    // The live surface. Null until the mirror has run at least once. Valid on the render thread;
+    // do NOT hold it across a device reset.
+    void* gpu_mirror_surface() const { return m_mirror; }
+    uint64_t gpu_mirror_frames() const { return m_mirror_frames.load(std::memory_order_relaxed); }
+    double last_gpu_copy_ms() const;
+
+    // Ask for the mirror to be read back once and its half luminances reported, so a caller can
+    // prove the GPU copy holds the same picture the CPU path sees. Deliberately expensive -- a
+    // verification, not a submission path -- and what lets the suite assert the mirror's CONTENT
+    // rather than merely that a copy returned S_OK.
+    //
+    // REQUESTED, not performed: this touches the device, and the device belongs to the render
+    // thread. Calling it from the IPC thread returned zeros and would eventually have returned
+    // something worse. Poll mirror_verified() for the result.
+    void request_gpu_mirror_verify() { m_mirror_verify.store(true, std::memory_order_release); }
+    bool mirror_verified() const { return m_mirror_verified.load(std::memory_order_relaxed); }
+    double mirror_left_luma() const;
+    double mirror_right_luma() const;
+
+    // The BACK BUFFER's halves, sampled inside the same verification call as the mirror's. The
+    // comparison a consumer wants is "does the mirror hold what the frame holds", and that is only
+    // an identity if both are read at ONE instant -- the published readback above is whatever frame
+    // last completed, which drifts by a frame and by however much the scene moved in it.
+    double mirror_ref_left_luma() const;
+    double mirror_ref_right_luma() const;
+
     // Perform a pending readback right now. MUST be called on the render thread; it is what the
     // present callback calls, exposed so another stage can call it at its own point in the frame.
     void service_now();
@@ -194,6 +236,8 @@ private:
     static void on_present();
     void service();
     void service_continuous();
+    void service_mirror();
+    bool verify_gpu_mirror();
 
     std::atomic<bool> m_registered{false};
     std::atomic<bool> m_pending{false};
@@ -207,6 +251,19 @@ private:
     std::atomic<uint32_t> m_divisor{1};
     std::atomic<bool> m_continuous{false};
     std::atomic<uint32_t> m_stage{0};
+    std::atomic<bool> m_mirror_on{false};
+    std::atomic<uint64_t> m_mirror_frames{0};
+    std::atomic<int64_t> m_mirror_copy_ticks{0};
+    std::atomic<int64_t> m_mirror_left_milli{0};
+    std::atomic<int64_t> m_mirror_right_milli{0};
+    std::atomic<int64_t> m_mirror_ref_left_milli{0};
+    std::atomic<int64_t> m_mirror_ref_right_milli{0};
+    void* m_mirror{nullptr};
+    uint32_t m_mirror_w{0};
+    uint32_t m_mirror_h{0};
+    uint32_t m_mirror_fmt{0};
+    std::atomic<bool> m_mirror_verify{false};
+    std::atomic<bool> m_mirror_verified{false};
     std::atomic<uint64_t> m_signature{0};
     std::atomic<int64_t> m_mean_luma_milli{0};
     std::atomic<int64_t> m_left_luma_milli{0};

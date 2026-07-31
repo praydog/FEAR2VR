@@ -10493,6 +10493,12 @@ bool Framework::initialize() {
             // capture is timing-only. This is the project's first visual oracle that cannot be
             // stale -- it samples the buffer the engine is about to present, on the render
             // thread, in phase with it.
+            if (q.find("mirror") != q.end()) {
+                FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
+            }
+            if (webapi_query_int(q, "verify_mirror", 0) != 0) {
+                FrameCapture::get().request_gpu_mirror_verify();
+            }
             if (q.find("stage") != q.end()) {
                 const auto st = webapi_query_string(q, "stage");
                 FrameCapture::get().set_stage(st == "second_eye"
@@ -10732,6 +10738,17 @@ bool Framework::initialize() {
               .f("fc_mean_luma", FrameCapture::get().last_mean_luma(), 3)
               .f("fc_left_luma", FrameCapture::get().last_left_luma(), 3)
               .f("fc_right_luma", FrameCapture::get().last_right_luma(), 3)
+              // THE GPU-RESIDENT PAIR: the surface a compositor would be handed, its copy cost,
+              // and -- after ?verify_mirror=1 -- proof it holds the same picture as the CPU path.
+              .b("fc_mirror_on", FrameCapture::get().gpu_mirror())
+              .u("fc_mirror_frames", FrameCapture::get().gpu_mirror_frames())
+              .f("fc_mirror_copy_ms", FrameCapture::get().last_gpu_copy_ms(), 4)
+              .b("fc_mirror_surface", FrameCapture::get().gpu_mirror_surface() != nullptr)
+              .f("fc_mirror_left_luma", FrameCapture::get().mirror_left_luma(), 3)
+              .f("fc_mirror_right_luma", FrameCapture::get().mirror_right_luma(), 3)
+              .b("fc_mirror_verified", FrameCapture::get().mirror_verified())
+              .f("fc_mirror_ref_left", FrameCapture::get().mirror_ref_left_luma(), 3)
+              .f("fc_mirror_ref_right", FrameCapture::get().mirror_ref_right_luma(), 3)
               .f("fc_cont_lock_ms", FrameCapture::get().continuous_lock_ms(), 3)
               .u("fc_width", FrameCapture::get().width())
               .u("fc_height", FrameCapture::get().height())
