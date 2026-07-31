@@ -914,7 +914,48 @@ Two changes, both of which this file already prescribes elsewhere:
 Two consecutive ctest runs green afterwards. The tell for this class: a check that passes when run
 by hand and fails in the suite, on the same binary, is measuring the world rather than the code.
 
-### `both=1&split=1` does NOT currently produce a stereo pair
+### `both=1&split=1` renders THREE panels, and a single eye renders a quarter
+
+The side-by-side mode is the format a headset consumes, so it is the last thing between the mapped
+view chain and a submittable frame. It does not work, and the failure is now pinned to a mechanism.
+
+**What the pictures show.** A settled capture in `both=1&split=1` contains THREE copies of the
+scene, at unequal widths (roughly 0-45%, 50-78%, 78-100%) -- not two halves. And the decisive
+isolation: ONE eye with `split=1` renders into the left QUARTER of the screen with the remainder
+black, when it should fill exactly half.
+
+**What the numbers show.** Exactly 0.98 second-eye draws per present frame, so the replay fires once
+-- the extra panels are not extra replays. `main_only` is on, so the auxiliary pass is skipped and
+cannot be the third panel. Comparing halves against a monocular capture of the same view:
+
+    left  half vs mono squeezed 2x   1.26     <- the left half IS the whole scene at half width
+    right half vs mono squeezed 2x  13.19
+    right half vs mono left/right portion (clip)  10.11 / 16.37
+
+So the left half behaves as a correct half-viewport render and the right half matches nothing --
+consistent with its rect having been halved more times than the left's.
+
+**The mechanism.** A rect that renders a QUARTER when asked to render a half can only have been
+halved twice, which means the engine's `rect` composes with the currently bound viewport rather than
+addressing the target absolutely. Applying the split on every SetupPass therefore COMPOUNDS.
+
+That also explains the earlier IPD sweep: the halves differed by ~16 at 0.0, 3.2 and 10.0 because a
+scale error of this size swamps a few pixels of parallax, and no translation ever aligned them
+because the panels are at different scales.
+
+**What was tried and did not work.** Applying the split at most once per frame (a latch reset on the
+present callback). The single-eye width did not become half, so the compounding is not only across
+SetupPass calls within a frame. That change was REVERTED rather than left in: an unvalidated edit to
+the render path is how this project acquired its teardown crash.
+
+**Still open**, and the precise next question: where else the halved rect is re-applied. The
+candidates are the second-eye replay (`build_eye` halves `g_pristine.rect`, which is captured from
+the engine's own arguments and may itself already be viewport-relative) and any engine-side
+re-derivation between the setup call and the draw.
+
+The single-eye path is unaffected and remains the one with verified stereo geometry.
+
+### Superseded: the earlier reading of split mode
 
 The side-by-side mode is the format a headset consumes, and it puts both eyes in ONE frame, which
 removes the temporal confound entirely. `second_eye_draws` climbs (28 per capture), and a captured

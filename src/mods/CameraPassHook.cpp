@@ -497,9 +497,12 @@ void CameraPassHook::set_eye(Eye eye, float half_ipd, bool split_viewport) {
 void CameraPassHook::set_stereo(bool on, float half_ipd, bool split_viewport) {
     g_half_ipd.store(half_ipd, std::memory_order_relaxed);
     g_split.store(split_viewport, std::memory_order_relaxed);
-    if (!on) {
-        g_eye.store(static_cast<uint8_t>(Eye::Off), std::memory_order_relaxed);
-    }
+    // Keep the STORED eye consistent with what the pass detour actually renders. The detour
+    // already forces Eye::Left while stereo is on, so this changes no pixels -- it only stops
+    // observed().eye reporting Off during stereo, which is what a consumer polling the state sees.
+    //
+    // Recorded because it was briefly mistaken for a fix: the split-mode defect below is NOT this.
+    g_eye.store(static_cast<uint8_t>(on ? Eye::Left : Eye::Off), std::memory_order_relaxed);
     g_stereo.store(on, std::memory_order_release);
     LOGX("[camerapass] stereo %s half_ipd=%.3f split=%d", on ? "ON" : "OFF", half_ipd, split_viewport ? 1 : 0);
 }
