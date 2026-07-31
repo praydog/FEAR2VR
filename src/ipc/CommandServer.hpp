@@ -181,6 +181,7 @@ using ComfortFn = std::function<std::string(const std::string& request_target)>;
 // pick from when it wants to drive "the right hand" rather than "node 37".
 using XrFn = std::function<std::string(const std::string& request_target)>;
 using SpawnsFn = std::function<std::string(const std::string& request_target)>;
+using WeaponsFn = std::function<std::string(const std::string& request_target)>;
 using SkeletonFn = std::function<std::string(const std::string& request_target)>;
 
 // PER-PIECE VISIBILITY -- /sdk/piece. MUTATES the model: hiding a piece suppresses its draw
@@ -217,6 +218,7 @@ struct Handlers {
     ComfortFn comfort{};             // optional; /vr/comfort 404s without it -- MUTATES engine cvars
     XrFn xr{};                       // optional; /xr/* 404s without it -- MUTATES the simulated runtime
     SpawnsFn spawns{};               // optional; /sdk/spawns 404s without it -- read-only
+    WeaponsFn weapons{};             // optional; /sdk/weapons 404s without it -- read-only
     SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
     PieceFn piece{};                 // optional; /sdk/piece 404s without it -- MUTATES visibility
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it

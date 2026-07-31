@@ -619,6 +619,66 @@ enabled and NONE after release -- a mode left running would tax every frame for 
 session, and the counters are the only way to see that. Every millisecond and every frame rate above
 is reported.
 
+### The player's weapons, and which field is the one in hand
+
+`sdk::WeaponMgr`. The weapon chooser is the subsystem at player slot **+244**, named in an earlier
+pass by its console variables (`KeepCurrentAmmo`, `ChooserAutoSwitchTime`, `ChooserAutoSwitchFreq`)
+and confirmed here: its first ~350 bytes are exactly the fourteen listener records
+`WeaponChooser_Init` (gameclient `0x101361D0`) builds.
+
+Two of its fields hold weapon records:
+
+    chooser+420   "Unarmed"          did NOT move
+    chooser+512   "Assault Rifle" -> "Submachinegun"    MOVED
+
+**The discriminator was behaviour, not layout.** Both fields hold a record from `Arsenal/Weapons`,
+sit in the same object, and look identical to any structural test. Pressing the weapon-slot keys
+moved one and not the other, and the one that follows the player IS the current weapon. Nothing
+about the offsets or their neighbourhood could have separated them.
+
+The sweep that found them keys on the record's OWN back-pointer (`DatabaseMgrRecord.owner_category`
+at +0x10) resolving to the weapon category. An earlier sweep keyed only on "has a record pointer at
++668" -- the offset the fire path reads -- and returned `GhostAttack1` and `book_chunk_red2`. The
+typed check is what makes the difference, and `is_weapon()` re-runs it on EVERY read rather than
+trusting the offset from when it was found.
+
++420 is deliberately **not** named "holster" or "default". It held "Unarmed" across every switch,
+which several roles in the reference source would explain equally well, so it is exposed as what it
+is: a second, stable handle.
+
+Named in IDA: `WeaponChooser_Init`, `Arsenal_FindWeaponRecordByName` (`0x10176640`, name -> record),
+`CheatCmd_GiveWeapon` (`0x10046BC0`).
+
+### A record the chooser reports as a weapon is not necessarily a gun that works
+
+`Shotgun_Clip` selects, displays, reports as a weapon record, resolves a muzzle socket, and spends
+ammunition when the trigger is pulled. It also, across four runs, produced no fire-path origin, no
+impact effects with a direction, and no recoil -- each of which surfaced as a DIFFERENT red test in
+a DIFFERENT subsystem.
+
+This cost four full suite runs and two wrong diagnoses, both worth recording:
+
+  * **"my new test block broke the fire origin"** -- it was placed immediately before that block, so
+    it looked causal. Moving it to the end of the suite left the failure exactly where it was. The
+    block ordering fix was still right; the diagnosis was not.
+
+  * **"this weapon's muzzle socket does not resolve"** -- `eye->muzzle 8464 units` against the ~70 a
+    real gun gives is a compelling reading, and it was wrong. `sdk::WeaponMgr::muzzle_resolvable()`
+    was written to test it and reports TRUE for every weapon including this one. The muzzle resolves
+    fine; what is missing is the shot, so the distance was computed against a stale origin. The
+    method is kept, with the disproof in its own doc comment, because "the muzzle resolves" remains
+    a real question for a mod aiming from the barrel -- it just is not the question that was asked.
+
+**The fix was to stop asserting a proxy.** `g_can_fire` gated the whole firing half on
+"the ammunition pool has rounds", which is necessary and nowhere near sufficient. It now fires a
+probe burst at setup and requires the two observables the firing tests are actually built on --
+rounds leaving the pool AND impacts appearing where the SDK can see them -- and prints the held
+weapon's name, so a NOT EXERCISED run explains itself instead of reading as three regressions.
+
+The suite passes on a standard firearm (1717 checks). On `Shotgun_Clip` it still reds
+intermittently in places the gate does not cover; that is a known, named limitation rather than a
+mystery, which is the difference this section buys.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

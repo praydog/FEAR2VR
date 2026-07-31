@@ -223,6 +223,70 @@ constexpr int64_t kRoundsTheSuiteSpends = 32;
 //
 // `sdk::PlayerMgr::ammo_total` asks instead of spending, and asks the right question: not "is there
 // a round" but "are there enough". A probe that changes what it measures is not a probe.
+// Does the HELD weapon actually shoot? `weapon_is_live_at` below only proves the pool has rounds in
+// it, and that is not the same question: "Shotgun_Clip" is a record the chooser will happily select
+// and report, with ammunition available, that fires nothing at all. A suite gated on the pool then
+// runs its whole firing half against a gun that cannot fire and reports the silence as three
+// unrelated regressions -- the fire origin, the impact effects, and the recoil.
+//
+// So ASK THE GAME. One short pull, and the observable is the same one the trigger test uses: rounds
+// leaving the pool. Costs a few rounds and about three seconds at setup, which is cheap against a
+// run that reds for a reason no one can see on the screen.
+bool weapon_actually_fires_at(int32_t port) {
+    std::string resp;
+    http::get(port, "/xr/reset", resp);
+    http::get(port, "/xr/trigger?on=1", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+    double ammo0 = -1.0;
+    if (http::get(port, "/xr/head", resp)) {
+        json_double(http::body_of(resp), "ammo_total", ammo0);
+    }
+
+    http::get(port, "/xr/input?side=right&trigger=0.90", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+
+    double ammo1 = -1.0;
+    if (http::get(port, "/xr/head", resp)) {
+        json_double(http::body_of(resp), "ammo_total", ammo1);
+    }
+
+    // Leave the trigger exactly as it was found; a latched trigger outlives this function.
+    http::get(port, "/xr/input?side=right&trigger=0.0", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    http::get(port, "/xr/trigger?on=0", resp);
+    http::get(port, "/xr/reset", resp);
+
+    if (!(ammo0 > 0.0 && ammo1 >= 0.0 && ammo1 < ammo0)) {
+        return false;
+    }
+
+    // SPENDING AMMUNITION IS NOT ENOUGH EITHER. "Shotgun_Clip" passes the check above -- it really
+    // does consume rounds -- and still spawns no impact effects with a direction, which is the
+    // observable half the firing tests are built on. Two weapons, two different failure modes, and
+    // the first gate written here only caught one of them.
+    //
+    // So the precondition is the full observable the suite depends on: rounds leave the pool AND
+    // the shot appears in the world where the SDK can see it.
+    http::get(port, "/sdk/spawns?type=6", resp);
+    http::get(port, "/input/hold?vk=256&down=1", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    http::get(port, "/input/hold?vk=256&down=0", resp);
+    http::get(port, "/input/release", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    if (!http::get(port, "/sdk/spawns?type=6", resp)) {
+        return false;
+    }
+
+    double bearing = 0.0;
+    long long appeared = 0;
+    const std::string sb = http::body_of(resp);
+
+    return json_double(sb, "bearing_deg", bearing) && json_int(sb, "appeared", appeared) &&
+           appeared > 0;
+}
+
 bool weapon_is_live_at(int32_t port) {
     std::string resp;
 
@@ -10302,7 +10366,20 @@ int main(int argc, char** argv) {
             g_can_fire = player_alive_at(port) && weapon_is_live_at(port);
         }
 
-        printf("[fixture] weapon live: %s\n", g_can_fire ? "yes" : "NO -- firing checks will report NOT EXERCISED");
+        // The pool having rounds is necessary, not sufficient. Confirm the gun actually shoots.
+        if (g_can_fire) {
+            g_can_fire = weapon_actually_fires_at(port);
+        }
+        std::string held;
+        std::string wresp;
+        if (http::get(port, "/sdk/weapons?limit=0", wresp)) {
+            held = json_string(http::body_of(wresp), "current");
+        }
+        printf("[fixture] weapon live: %s (holding '%s')\n",
+               g_can_fire ? "yes"
+                          : "NO -- firing checks will report NOT EXERCISED; the held weapon did "
+                            "not both spend ammunition and spawn visible impacts on a test pull",
+               held.c_str());
 
         // ---- AMMUNITION -----------------------------------------------------------------------
         //
@@ -11455,10 +11532,32 @@ int main(int argc, char** argv) {
                         }
                         const double eye_to_muzzle = dist(b_on, muz);
                         const double sent_to_muzzle = dist(s_on, muz);
+                        // A SECOND GUARD, AND A CORRECTED STORY. When this first went red the
+                        // reading was eye->muzzle 8464 units against the ~70 a real gun gives, and
+                        // the obvious conclusion -- "this weapon's muzzle socket does not resolve"
+                        // -- was WRONG. sdk::WeaponMgr::muzzle_resolvable() was added to check it
+                        // and reports true for every weapon tried, Shotgun_Clip included.
+                        //
+                        // What is actually missing is the SHOT: a weapon that fires nothing never
+                        // populates the fire path's origin, so the distance is computed against a
+                        // stale value. The real fix is the empirical gate on g_can_fire above; this
+                        // bound stays as a cheap guard against measuring a stale origin, and names
+                        // the weapon so the next reader is not sent after the socket again.
+                        std::string wname;
+                        std::string wbody;
+                        if (http::get(port, "/sdk/weapons?limit=0", wbody)) {
+                            wname = json_string(http::body_of(wbody), "current");
+                        }
+                        const bool muzzle_usable = eye_to_muzzle > 1.0 && eye_to_muzzle < 500.0;
                         printf("[fixture] fire origin: eye->muzzle %.1f units, override put the ray "
-                               "start %.1f from the muzzle (%lld writes)\n",
-                               eye_to_muzzle, sent_to_muzzle, w_on - w_off);
-                        check_armed(g_can_fire, w_on > w_off, "the override writes on every shot");
+                               "start %.1f from the muzzle (%lld writes)%s\n",
+                               eye_to_muzzle, sent_to_muzzle, w_on - w_off,
+                               muzzle_usable ? ""
+                                             : (" -- STALE ORIGIN holding '" + wname +
+                                                "', no shot populated the fire path")
+                                                   .c_str());
+                        check_armed(g_can_fire && muzzle_usable, w_on > w_off,
+                                    "the override writes on every shot");
                         // The residual is the cached muzzle sample ageing across the shot -- the
                         // weapon recoils between the frame that sampled it and the frame that
                         // fires. Judged against the distance it MOVED, not an absolute bound,
@@ -11837,6 +11936,120 @@ int main(int argc, char** argv) {
             }
         }
 
+    }
+
+    // ---- LAST, BECAUSE IT CHANGES THE WEAPON ------------------------------------
+    //
+    // This block is at the END of the suite on purpose. Its load-bearing check presses weapon keys,
+    // and the first placement -- immediately before the fire-origin block -- made that block report
+    // "eye->muzzle 8464 units, 0 writes". The gun still fired (35 hitscan shots, ammo moving) but
+    // the MUZZLE SOCKET was stale, and the mod correctly refuses to aim with a stale socket, so a
+    // real safety feature read as a regression in an unrelated test.
+    //
+    // Restoring the weapon NAME was not enough and a 2.5 s settle was not enough: what a later block
+    // depends on is the socket, which the game thread re-samples on its own schedule. Ordering is
+    // the fix that does not depend on guessing how long that takes.
+    // ---- WHAT THE PLAYER IS HOLDING ---------------------------------------------
+    //
+    // sdk::WeaponMgr. The offset for the current weapon was found by sweeping the chooser for
+    // fields whose record belongs to the weapon category, and then -- the part that actually
+    // settled it -- by pressing weapon keys and seeing which field moved. These checks defend
+    // that: the TYPE test must refuse things that are not weapons, and the field must still
+    // FOLLOW a switch, because an offset that stops following is the failure this would hit.
+    {
+        std::string wr;
+        if (http::get(port, "/sdk/weapons?limit=4", wr)) {
+            const std::string wb = http::body_of(wr);
+            bool ok = false, is_w = false, overflow_refused = false;
+            bool missing_refused = false, null_refused = false;
+            long long count = -1, named = -1, index = -1, vk1 = -1;
+            json_bool(wb, "ok", ok);
+            json_bool(wb, "current_is_weapon", is_w);
+            json_bool(wb, "slot_overflow_refused", overflow_refused);
+            json_bool(wb, "missing_weapon_refused", missing_refused);
+            json_bool(wb, "null_refused", null_refused);
+            json_int(wb, "count", count);
+            json_int(wb, "named", named);
+            json_int(wb, "current_index", index);
+            json_int(wb, "slot1_vk", vk1);
+            const std::string current = json_string(wb, "current");
+            const std::string stable = json_string(wb, "stable");
+
+            printf("[fixture] weapons: holding %s (index %lld of %lld), stable %s\n",
+                   current.c_str(), index, count, stable.c_str());
+
+            if (ok) {
+                check(count > 0, "the weapon category resolves and is not empty");
+                check(named == count,
+                      "EVERY weapon record has a readable name -- a nameless one means the "
+                      "category pointer is wrong, not that a weapon is anonymous");
+                check(!current.empty() && is_w,
+                      "the held weapon is a record from the weapon category, re-checked on read "
+                      "rather than trusted from when the offset was found");
+                check(index >= 0 && index < count,
+                      "and its index round-trips through the category it claims to be in");
+
+                // The type check must REFUSE. A predicate that says yes to everything would pass
+                // every check above while being worthless.
+                check(missing_refused, "a weapon that does not exist resolves to nothing");
+                check(null_refused, "and is_weapon(nullptr) is false rather than a crash");
+
+                // The slot mapping is knowledge, not timing: bounded, and refusing past the bound.
+                check(vk1 == static_cast<long long>('1'),
+                      "slot 1 maps to the '1' key, which is what the discriminator pressed");
+                check(overflow_refused,
+                      "and a slot past the bound returns nothing rather than a guessed key code");
+
+                // ---- THE ONE THAT MATTERS: DOES IT STILL FOLLOW? ------------------------------
+                //
+                // Presses weapon keys until the held weapon changes. This MUTATES the player's
+                // loadout, so it restores afterwards and asserts the restoration -- a suite that
+                // leaves the rig on a different weapon breaks whatever runs next.
+                const std::string original = current;
+                std::string switched;
+                for (int attempt = 0; attempt < 6 && switched.empty(); ++attempt) {
+                    std::string ir;
+                    const std::string tap =
+                        std::string("/input/tap?vk=") + std::to_string('1' + (attempt % 3));
+                    http::get(port, tap.c_str(), ir);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+                    std::string wr2;
+                    if (http::get(port, "/sdk/weapons?limit=0", wr2)) {
+                        const std::string now = json_string(http::body_of(wr2), "current");
+                        if (!now.empty() && now != original) {
+                            switched = now;
+                        }
+                    }
+                }
+                printf("[fixture] weapons: %s -> %s on a slot key\n", original.c_str(),
+                       switched.empty() ? "(no change)" : switched.c_str());
+                check(!switched.empty(),
+                      "the held weapon FOLLOWS a slot key -- this is the property that "
+                      "identified the field, and an offset that stops following fails here");
+
+                std::string restored;
+                for (int attempt = 0; attempt < 8 && restored != original; ++attempt) {
+                    std::string ir;
+                    const std::string tap =
+                        std::string("/input/tap?vk=") + std::to_string('1' + (attempt % 3));
+                    http::get(port, tap.c_str(), ir);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+                    std::string wr3;
+                    if (http::get(port, "/sdk/weapons?limit=0", wr3)) {
+                        restored = json_string(http::body_of(wr3), "current");
+                    }
+                }
+                check(restored == original,
+                      "and the block puts the original weapon back, because the next block is "
+                      "entitled to the loadout it started with");
+
+                // RESTORING THE NAME IS NOT RESTORING THE STATE. The first run of this block put
+                // the weapon back and still broke the next one ("the override writes on every
+                // shot"), because a weapon that has just been selected is mid-DEPLOY and will not
+                // fire. The name is the last thing to change, not the last thing to settle.
+                std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+            }
+        }
     }
 
     // 6. Graceful unload proof: module vanishes, game keeps running.

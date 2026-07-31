@@ -301,6 +301,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.compare(0, 12, "/sdk/weapons") == 0) {
+        if (!g_handlers.weapons) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no weapons handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.weapons(path));
+        return;
+    }
+
     if (path.compare(0, 11, "/sdk/spawns") == 0) {
         if (!g_handlers.spawns) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no spawns handler registered\"}");

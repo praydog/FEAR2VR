@@ -60,6 +60,7 @@
 #include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
 #include "sdk/PlayerMgr.hpp"
+#include "sdk/WeaponMgr.hpp"
 #include "sdk/Resources.hpp"
 #include "sdk/Vtables.hpp"
 #include "sdk/Render.hpp"
@@ -9047,6 +9048,62 @@ std::string webapi_hex6_json(uintptr_t v) {
 }
 
 // ---- GET /api/state -------------------------------------------------------------------
+// ---- WHAT THE PLAYER IS HOLDING, AND WHAT THEY COULD HOLD -----------------------------------
+//
+// sdk::WeaponMgr's public surface, published so a wheel prototype (or the suite) can see the same
+// values without linking against the mod. `limit` caps the catalogue: the weapon category is large
+// and a consumer paging through it should not be forced to take all of it at once.
+std::string build_weapons_json(const std::string& request_target) {
+    const WebApiQuery q = webapi_parse_query(request_target);
+    const auto limit = static_cast<size_t>(webapi_query_int(q, "limit", 24));
+
+    const auto chooser = sdk::WeaponMgr::chooser(0);
+    const auto current = sdk::WeaponMgr::current_weapon_name(0);
+    const auto stable = sdk::WeaponMgr::stable_weapon_name(0);
+    const auto index = sdk::WeaponMgr::current_weapon_index(0);
+    const auto names = sdk::WeaponMgr::weapon_names();
+
+    std::string out = "{";
+    json_append_bool(out, "ok", chooser != 0);
+    json_append_raw(out, "chooser", std::to_string(static_cast<uint64_t>(chooser)).c_str());
+    json_append_string(out, "current", current.c_str());
+    json_append_string(out, "stable", stable.c_str());
+    json_append_bool(out, "current_is_weapon", sdk::WeaponMgr::current_weapon(0) != nullptr);
+    json_append_raw(out, "current_index",
+                    std::to_string(index.has_value() ? static_cast<int64_t>(*index) : -1).c_str());
+    json_append_raw(out, "count", std::to_string(sdk::WeaponMgr::weapon_count()).c_str());
+    json_append_raw(out, "named", std::to_string(names.size()).c_str());
+
+    // The slot->key mapping, so a consumer does not have to hardcode what the SDK already knows.
+    const auto k1 = sdk::WeaponMgr::slot_virtual_key(1);
+    json_append_raw(out, "slot1_vk",
+                    std::to_string(k1.has_value() ? static_cast<int>(*k1) : -1).c_str());
+    const auto kbad = sdk::WeaponMgr::slot_virtual_key(sdk::WeaponMgr::kMaxBoundSlot + 1);
+
+    // THE NEGATIVE CASE FOR THE TYPE CHECK. is_weapon() is what separates a real weapon from the
+    // "GhostAttack1"/"book_chunk_red2" false positives an untyped sweep produced, so a consumer
+    // deciding whether to trust it wants to see it REFUSE something. An ammo record is a record from
+    // a sibling category: structurally identical, semantically not a weapon.
+    auto* foreign = sdk::WeaponMgr::find_weapon("__no_such_weapon__");
+    json_append_bool(out, "missing_weapon_refused", foreign == nullptr);
+    json_append_bool(out, "null_refused", !sdk::WeaponMgr::is_weapon(nullptr));
+    json_append_bool(out, "muzzle_resolvable", sdk::WeaponMgr::muzzle_resolvable(0));
+    json_append_bool(out, "slot_overflow_refused", !kbad.has_value());
+
+    // json_append_* writes a TRAILING comma and json_escape_append writes its own quotes. Adding
+    // either by hand produced ",," and ""name"" in the first two live responses -- which is why this
+    // was checked against the raw body before a test was written around it.
+    out += "\"names\":[";
+    for (size_t i = 0; i < names.size() && i < limit; ++i) {
+        if (i != 0) {
+            out += ',';
+        }
+        json_escape_append(out, names[i]);
+    }
+    out += "]}";
+    return out;
+}
+
 std::string build_api_state_json() {
     std::string out;
     JsonFields top(out);
@@ -10161,6 +10218,7 @@ bool Framework::initialize() {
     handlers.database = build_database_json;
     handlers.objects = build_objects_json;
     handlers.spawns = build_spawns_json;
+    handlers.weapons = build_weapons_json;
     handlers.models = build_models_json;
     handlers.interfaces = build_interfaces_json;
     // READ-ONLY BY DEFAULT. The mutation probes are visible in-game, so observing state never triggers them.
