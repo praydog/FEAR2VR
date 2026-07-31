@@ -57,6 +57,30 @@ namespace {
 // Only the call displacement is wildcarded. NOTE the kananlib syntax: each `?`
 // is ONE wildcard byte, so a rel32 needs four of them and IDA-style `??` would
 // silently ask for eight.
+// The instruction immediately AFTER the client's own fire-vector builder returns,
+// inside the dispatcher (gameclient 0x1012DD61):
+//
+//     lea  eax, [esp+144h+var_130]   ; the DIRECTION out-parameter
+//     push eax                        ; ... third argument
+//     call sub_1012C8C0               ; builds direction + origin
+//  -> test al, al                     ; WE HOOK HERE
+//     ...
+//     <VectorsPerRound loop: the CLIENT-SIDE effect prediction reads that direction>
+//     call Weapon_SendClientFireMessage(this, spread, origin, direction)
+//
+// This is the only point that reaches BOTH consumers. Writing the direction at the
+// sender redirects the server's trace and leaves the client drawing blood along the
+// old aim, which is exactly what was observed in game.
+//
+// The builder is __thiscall and cleans its own four arguments, so at this
+// instruction esp is back to its pre-push value and the buffer that `lea` addressed
+// sits at esp+0x10. DERIVED, then PROVEN: the captured vector is published and
+// compared against what the sender reports for the same shot.
+constexpr const char* kVectorsBuiltPattern =
+    "84 C0 0F 84 ? ? ? ? 80 BE 98 02 00 00 00 66 C7 86 B4 02 00 00 28 00";
+
+constexpr uintptr_t kBuiltDirOffset = 0x10;
+
 constexpr const char* kSendFirePattern =
     "83 EC 08 53 55 56 57 8B F9 8D 4C 24 10 C7 44 24 10 00 00 00 00 E8 ? ? ? ? 8B 74 24 10 8B 06";
 
@@ -112,6 +136,8 @@ FireRedirect& FireRedirect::get() {
     static FireRedirect instance;
     return instance;
 }
+
+std::array<float, 3> FireRedirect::built_dir() const { return load3(m_built_dir); }
 
 std::array<float, 3> FireRedirect::weapon_forward() const { return load3(m_weapon_fwd); }
 
@@ -175,10 +201,51 @@ size_t FireRedirect::sender_frames(uintptr_t* out, size_t cap) const {
     return n;
 }
 
+void FireRedirect::on_vectors_built(SafetyHookContext& ctx) {
+    auto& self = FireRedirect::get();
+    self.m_builds.fetch_add(1, std::memory_order_relaxed);
+
+    const uintptr_t dir_ptr = ctx.esp + kBuiltDirOffset;
+    const auto cur = sdk::mem::read<std::array<float, 3>>(dir_ptr);
+    if (!cur.has_value()) {
+        return;
+    }
+    store3(self.m_built_dir, (*cur)[0], (*cur)[1], (*cur)[2]);
+
+    if (!self.m_armed.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (self.m_hotkey.load(std::memory_order_relaxed) != 0 &&
+        !self.m_hotkey_held.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    std::array<float, 3> dir{};
+    const Mode mode = self.m_mode.load(std::memory_order_acquire);
+    if (mode == Mode::Weapon) {
+        if (!self.m_weapon_ok.load(std::memory_order_relaxed)) {
+            return;
+        }
+        dir = load3(self.m_weapon_fwd);
+    } else if (mode == Mode::Reverse) {
+        dir = {-(*cur)[0], -(*cur)[1], -(*cur)[2]};
+    } else {
+        dir = load3(self.m_dir);
+    }
+
+    if (sdk::mem::write<std::array<float, 3>>(dir_ptr, dir)) {
+        store3(self.m_written_dir, dir[0], dir[1], dir[2]);
+        self.m_writes.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void FireRedirect::on_send_fire(SafetyHookContext& ctx) {
     auto& self = FireRedirect::get();
     self.m_sends.fetch_add(1, std::memory_order_relaxed);
 
+    if (const auto ret = sdk::mem::read<uintptr_t>(ctx.esp); ret.has_value() && *ret != 0) {
+        self.m_send_caller.store(*ret, std::memory_order_relaxed);
+    }
     const uintptr_t dir_ptr = sdk::mem::read<uintptr_t>(ctx.esp + kSendFireDirArg).value_or(0);
     const uintptr_t org_ptr = sdk::mem::read<uintptr_t>(ctx.esp + kSendFireOriginArg).value_or(0);
     if (dir_ptr == 0) {
@@ -194,41 +261,12 @@ void FireRedirect::on_send_fire(SafetyHookContext& ctx) {
             store3(self.m_sent_origin, (*o)[0], (*o)[1], (*o)[2]);
         }
     }
-    if (!self.m_armed.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    // A hotkey, when set, gates the replacement so normal fire is one key away.
-    if (self.m_hotkey.load(std::memory_order_relaxed) != 0 &&
-        !self.m_hotkey_held.load(std::memory_order_relaxed)) {
-        return;
-    }
-
-    std::array<float, 3> dir{};
-    const Mode mode = self.m_mode.load(std::memory_order_acquire);
-    if (mode == Mode::Weapon) {
-        // Refusing beats aiming with a stale muzzle: a shot that goes where the player
-        // pointed last frame is worse than one that goes where the game intended.
-        if (!self.m_weapon_ok.load(std::memory_order_relaxed)) {
-            return;
-        }
-        dir = load3(self.m_weapon_fwd);
-    } else if (mode == Mode::Reverse) {
-        // Negate what the client built, in place. Done here rather than host-side so
-        // it holds whichever way the player happens to be facing.
-        const auto cur = sdk::mem::read<std::array<float, 3>>(dir_ptr);
-        if (!cur.has_value()) {
-            return;
-        }
-        dir = {-(*cur)[0], -(*cur)[1], -(*cur)[2]};
-    } else {
-        dir = load3(self.m_dir);
-    }
-
-    if (sdk::mem::write<std::array<float, 3>>(dir_ptr, dir)) {
-        store3(self.m_written_dir, dir[0], dir[1], dir[2]);
-        self.m_writes.fetch_add(1, std::memory_order_relaxed);
-    }
+    // NO WRITE HERE. The redirect moved UPSTREAM to on_vectors_built, which is the
+    // only point both consumers read: the client's own effect prediction runs between
+    // the builder and this send, so writing here steered the server while the client
+    // kept drawing blood along the old aim -- observed in game as a target that takes
+    // no damage while still showing impacts. Redirecting in both places would also
+    // double-apply, and Reverse would negate twice and cancel.
 }
 
 void FireRedirect::on_message(SafetyHookContext& ctx) {
@@ -315,6 +353,9 @@ std::optional<std::string> FireRedirect::on_initialize() {
     if (const uintptr_t msg = sdk::Modules::get().scan_game_server(kFireMessagePattern, "Weapon_HandleClientFireMessage"); msg != 0) {
         Hooks::get().install_mid("weapon_fire_message", reinterpret_cast<void*>(msg), &FireRedirect::on_message);
     }
+    if (const uintptr_t vb = sdk::Modules::get().scan_game_client(kVectorsBuiltPattern, "Weapon_FireVectorsBuilt"); vb != 0) {
+        Hooks::get().install_mid("weapon_vectors_built", reinterpret_cast<void*>(vb), &FireRedirect::on_vectors_built);
+    }
     if (const uintptr_t snd = sdk::Modules::get().scan_game_client(kSendFirePattern, "Weapon_SendClientFireMessage"); snd != 0) {
         m_send_hooked.store(Hooks::get().install_mid("weapon_send_fire", reinterpret_cast<void*>(snd), &FireRedirect::on_send_fire),
                             std::memory_order_relaxed);
@@ -379,6 +420,9 @@ void FireRedirect::on_frame() {
     }
     if (const uintptr_t msg = sdk::Modules::get().scan_game_server(kFireMessagePattern, "Weapon_HandleClientFireMessage"); msg != 0) {
         Hooks::get().install_mid("weapon_fire_message", reinterpret_cast<void*>(msg), &FireRedirect::on_message);
+    }
+    if (const uintptr_t vb = sdk::Modules::get().scan_game_client(kVectorsBuiltPattern, "Weapon_FireVectorsBuilt"); vb != 0) {
+        Hooks::get().install_mid("weapon_vectors_built", reinterpret_cast<void*>(vb), &FireRedirect::on_vectors_built);
     }
     if (const uintptr_t snd = sdk::Modules::get().scan_game_client(kSendFirePattern, "Weapon_SendClientFireMessage"); snd != 0) {
         m_send_hooked.store(Hooks::get().install_mid("weapon_send_fire", reinterpret_cast<void*>(snd), &FireRedirect::on_send_fire),

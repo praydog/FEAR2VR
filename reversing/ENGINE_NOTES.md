@@ -1240,6 +1240,43 @@ Two facts fall out of that single observation, and they explain every earlier re
    server never traced. So the effects are drawn from the aim the player is holding, independently
    of what the server does with the shot.
 
+### ONE hook steers both the shot AND the client's impacts
+
+The client PREDICTS its impact effects, so redirecting at the sender left a target taking no damage
+while blood still appeared on it. The fix is to move one level upstream, and the dispatcher
+(`sub_1012DC80`, gameclient) shows exactly where:
+
+    sub_1012C8C0(v55, v56, v32, v33);        // builds DIRECTION (v32) and ORIGIN (v33)
+ -> test al, al                              // 0x1012DD61  <-- HOOK HERE
+    ...
+    do {                                     // VectorsPerRound times, hitscan only
+        v39 = *(float*)v32; ...              // the CLIENT-SIDE effect prediction
+        sub_10197DE0(0); sub_10198BF0(v35);
+    } while (--v20);
+    Weapon_SendClientFireMessage(this, spread, v33, v32);   // origin, direction
+
+The effect loop and the network send read the SAME buffer, so the instruction after the builder
+returns is the only point that reaches both. It also confirmed the sender's argument order from a
+second direction: origin third, direction fourth.
+
+**Recovering the buffer address, and proving it rather than trusting it.** The builder is
+`__thiscall` and cleans its own four arguments, so at the hook site esp is back to its pre-push
+value and the buffer that `lea eax, [esp+144h+var_130]` addressed sits at **esp+0x10**. That is
+derived, and a wrong offset would write into an unrelated local -- so the captured vector is
+published and compared against what the sender reports for the same shot. Live: 9 builds, 9 sends,
+bit-identical. Only then was the write enabled.
+
+Measured, reversing every shot:
+
+    baseline    client built -178.76 -> sent -178.76    impacts: -180 (14 spawns), -160 (2)
+    REVERSED    client built -179.15 -> sent   +0.85    impacts:    0 (14 spawns),  100 (2)
+
+Fourteen impact spawns swung a clean 180 degrees. Damage and visuals now agree.
+
+**The redirect lives in ONE place for a reason.** Doing it at both the builder and the sender would
+double-apply, and Reverse would negate twice and cancel -- a bug that would present as "the feature
+silently does nothing". The sender hook is now observation only.
+
 ### Hand-aimed shooting, which this unlocks
 
 `FireRedirect::Mode::Weapon` takes the direction from the WEAPON's own muzzle -- the `flash` socket's

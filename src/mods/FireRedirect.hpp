@@ -104,6 +104,13 @@ public:
     // and doing that from inside the fire path would mutate engine state in the
     // middle of the engine's own call. One frame of staleness is the price, and it
     // is the same age as the pose the player is looking at.
+    // The direction as the client's own builder just produced it, read at the point
+    // BEFORE the local effect prediction consumes it. Published so the stack offset
+    // it is recovered from can be PROVEN against what the sender reports rather than
+    // trusted -- a wrong offset here writes into an unrelated local.
+    std::array<float, 3> built_dir() const;
+    uint64_t builds() const { return m_builds.load(std::memory_order_relaxed); }
+
     std::array<float, 3> weapon_forward() const;
     bool weapon_forward_valid() const { return m_weapon_ok.load(std::memory_order_relaxed); }
     Mode mode() const { return m_mode.load(std::memory_order_relaxed); }
@@ -143,6 +150,10 @@ public:
     // naming the one the PLAYER goes through is the difference between reading one
     // function and reading eight. Costs a hook and one stack read.
     uintptr_t fire_caller() const { return m_fire_caller.load(std::memory_order_relaxed); }
+    // Return address into whoever calls the CLIENT sender -- names which of its two
+    // static callers builds the direction, and therefore where the local effect
+    // prediction is likely to live.
+    uintptr_t send_caller() const { return m_send_caller.load(std::memory_order_relaxed); }
     uint64_t fire_entries() const { return m_fire_entries.load(std::memory_order_relaxed); }
     uint64_t messages() const { return m_messages.load(std::memory_order_relaxed); }
     uint64_t sends() const { return m_sends.load(std::memory_order_relaxed); }
@@ -175,12 +186,15 @@ private:
     static void on_fire_entry(SafetyHookContext& ctx);
     static void on_message(SafetyHookContext& ctx);
     static void on_send_fire(SafetyHookContext& ctx);
+    static void on_vectors_built(SafetyHookContext& ctx);
 
     std::atomic<bool> m_armed{false};
     std::atomic<Mode> m_mode{Mode::Off};
     std::atomic<int> m_hotkey{0};
     std::atomic<bool> m_hotkey_held{false};
     std::atomic<bool> m_weapon_ok{false};
+    std::atomic<uint64_t> m_builds{0};
+    std::atomic<float> m_built_dir[3]{};
     std::atomic<float> m_weapon_fwd[3]{};
     std::atomic<bool> m_hooked{false};
     std::atomic<uintptr_t> m_target{0};
@@ -189,6 +203,7 @@ private:
     std::atomic<uint64_t> m_fire_entries{0};
     std::atomic<uint64_t> m_messages{0};
     std::atomic<uint64_t> m_sends{0};
+    std::atomic<uintptr_t> m_send_caller{0};
     std::atomic<bool> m_send_hooked{false};
     std::atomic<float> m_sent_dir[3]{};
     std::atomic<float> m_sent_origin[3]{};
