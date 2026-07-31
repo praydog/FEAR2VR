@@ -44,6 +44,11 @@ public:
     bool initialize();
     bool is_initialized() const { return m_initialized; }
 
+    // Resolve a module that was absent when initialize() ran -- gameserver.dll is the case that
+    // matters, since the framework normally starts at the main menu where no session exists yet.
+    // Safe to call repeatedly; it is a loader-list lookup and loads nothing.
+    bool resolve_lazy_module(const char* name);
+
     // Null handle until initialize() resolved that module.
     const Module* exe() const { return &m_modules[0]; }           // FEAR2.exe
     const Module* game_client() const { return &m_modules[1]; }   // Game\gameclient.dll

@@ -44,8 +44,21 @@ uintptr_t Modules::scan_game_server(const char* pattern, const char* name) const
     // once a session starts. A miss here is therefore not necessarily an error,
     // so callers are expected to retry rather than treat 0 as fatal.
     if (game_server()->handle == nullptr) {
-        LOGX("[sdk] scan '%s': gameserver.dll module unresolved (no session yet?)", name);
-        return 0;
+        // RE-RESOLVE, DO NOT GIVE UP. initialize() runs when the framework starts, which for the
+        // normal unattended path is AT THE MAIN MENU -- gameserver.dll does not exist yet. Latching
+        // that absence meant the module stayed "unresolved" for the entire session even after a
+        // world loaded, so FireRedirect's retry loop re-scanned forever against a null handle and
+        // the fire hooks never installed. AGENT.MD rule 6's retryable-versus-definitive split,
+        // in its module-table form.
+        //
+        // Measured: injected at the menu, then in-world for 30 s, the log repeated
+        // "gameserver.dll module unresolved (no session yet?)" while the DLL was plainly loaded.
+        if (!const_cast<Modules*>(this)->resolve_lazy_module("gameserver.dll")) {
+            LOGX("[sdk] scan '%s': gameserver.dll module unresolved (no session yet?)", name);
+            return 0;
+        }
+        LOGX("[sdk] gameserver.dll resolved late at 0x%08" PRIXPTR " -- session started",
+             game_server()->base);
     }
     const auto result = utility::scan(game_server()->handle, pattern);
     if (!result) {
@@ -84,6 +97,27 @@ bool Modules::initialize() {
     }
     m_initialized = all_required;
     return all_required;
+}
+
+// Try again for a module that was absent at initialize(). Returns true once it is resolved,
+// including on the call that resolves it. Cheap: a basename lookup in the loader's own list.
+bool Modules::resolve_lazy_module(const char* name) {
+    for (auto& m : m_modules) {
+        if (std::strcmp(m.name, name) != 0) {
+            continue;
+        }
+        if (m.handle != nullptr) {
+            return true;
+        }
+        m.handle = utility::get_module(m.name);
+        if (m.handle == nullptr) {
+            return false;
+        }
+        m.base = reinterpret_cast<uintptr_t>(m.handle);
+        m.size = utility::get_module_size(m.handle).value_or(0);
+        return m.size != 0;
+    }
+    return false;
 }
 
 std::optional<std::string> Modules::owning_module_name(uintptr_t address) {

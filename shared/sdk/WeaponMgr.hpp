@@ -118,6 +118,29 @@ public:
 
     static constexpr unsigned kNoSlot = 0xFFFF;
 
+    // ---- IS A SWITCH IN FLIGHT? ----------------------------------------------------------------
+    //
+    // Changing weapon is NOT instantaneous, and a VR mod that ignores that gets wrong answers the
+    // same way this project's own fixture did twice: a weapon selected a moment ago is mid-DEPLOY,
+    // fires nothing, and reports a muzzle that has not arrived.
+    //
+    // The mechanism, from CClientWeaponMgr_ChangeWeapon (gameclient 0x10136850): when something is
+    // already equipped, it stores the REQUESTED weapon at +432, asks the animation system to play
+    // the deselect, and defers. The completion callback (WeaponChooser_OnDeselectComplete,
+    // 0x10134FA0) then clears +408 to -1 and +412 to null -- so between the request and the new
+    // weapon arriving, the player is holding NOTHING and a request is outstanding.
+    //
+    // Two states worth distinguishing, because a consumer reacts differently to each:
+    //   * `pending_weapon()`  -- what was asked for, non-null only while a switch is in flight;
+    //   * `equipped()`        -- whether a weapon is actually in hand right now.
+    static regenny::DatabaseMgrRecord* pending_weapon(unsigned player_index = 0);
+    static std::string pending_weapon_name(unsigned player_index = 0);
+    static bool equipped(unsigned player_index = 0);
+
+    // The question a wheel actually asks: "has my request landed yet?" True while the engine is
+    // between weapons -- either a request is outstanding or nothing is in hand.
+    static bool switching(unsigned player_index = 0);
+
     // ---- THE QUICK-SWITCH SLOT -----------------------------------------------------------------
     //
     // What "last weapon" would switch back to. Named for what gates it (the CanLastWeapon database
@@ -182,6 +205,7 @@ public:
     static constexpr uintptr_t kCurrentSlot = 408;        // chooser -> uint16 index
     static constexpr uintptr_t kCurrentWeaponObject = 412; // chooser -> CClientWeapon*
     static constexpr uintptr_t kWeaponObjectRecord = 668;  // CClientWeapon -> record (the fire path's field)
+    static constexpr uintptr_t kPendingWeapon = 432;      // chooser -> requested record, mid-switch
     static constexpr uintptr_t kLastWeapon = 512;         // chooser -> record, quick-switch slot
     static constexpr uintptr_t kRecordOwnerCategory = 0x10;
 

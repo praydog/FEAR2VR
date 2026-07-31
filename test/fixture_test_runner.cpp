@@ -1091,33 +1091,42 @@ int main(int argc, char** argv) {
                 held = json_string(http::body_of(wr), "current");
             }
 
+            // THROUGH THE MOD, not through a tap loop written here. The first version of this block
+            // pressed keys and slept, which is control logic in the runner -- forbidden by
+            // TESTING.MD for the reason this migration demonstrates: WeaponWheel already owns the
+            // press, the multi-frame wait, the switch-in-flight state and the retry budget, and a
+            // second copy of that logic in the test proves nothing about shipped code.
             std::string chosen;
             for (const char* want : kPreferred) {
                 std::string q;
-                const std::string route =
-                    std::string("/sdk/weapons?limit=0&key_for=") + want;
+                const std::string route = std::string("/sdk/weapons?limit=0&select=") +
+                                          http::url_encode(want);
                 if (!http::get(port, route.c_str(), q)) {
                     break;
                 }
-                long long vk = -1;
-                json_int(http::body_of(q), "key_for_requested", vk);
-                if (vk <= 0) {
-                    continue;  // not carried
+                bool accepted = false;
+                json_bool(http::body_of(q), "select_accepted", accepted);
+                if (!accepted) {
+                    continue;  // not carried -- try the next preference
                 }
-                if (held == want) {
-                    chosen = want;
+                for (int i = 0; i < 50; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                    std::string p;
+                    if (!http::get(port, "/sdk/weapons?limit=0", p)) {
+                        continue;
+                    }
+                    long long st = -1;
+                    json_int(http::body_of(p), "wheel_state", st);
+                    if (st == 1) {
+                        continue;  // Working
+                    }
+                    if (st == 2) {  // Succeeded
+                        chosen = want;
+                    }
                     break;
                 }
-                std::string ir;
-                const std::string tap = std::string("/input/tap?vk=") + std::to_string(vk);
-                http::get(port, tap.c_str(), ir);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-                std::string after;
-                if (http::get(port, "/sdk/weapons?limit=0", after)) {
-                    if (json_string(http::body_of(after), "current") == want) {
-                        chosen = want;
-                        break;
-                    }
+                if (!chosen.empty()) {
+                    break;
                 }
             }
 
@@ -12235,6 +12244,97 @@ int main(int argc, char** argv) {
                 check(lag_held,
                       "and after each switch the quick-switch slot holds the weapon just left, "
                       "which is the relation that identifies +512 as last-weapon and not current");
+
+                // ---- THE WHEEL, WHICH IS THE FEATURE A VR CONSUMER CALLS ----------------------
+                //
+                // WeaponWheel::request(name) is the shipped path: it owns the key press, the
+                // multi-frame wait, the retry budget and the switch-in-flight state, because a
+                // caller wiring sdk::Input to sdk::WeaponMgr by hand gets all four wrong. The
+                // fixture drives it exactly as a mod would -- ask, then poll.
+                auto wheel_request = [&](const std::string& want, bool& accepted, long long& st,
+                                         long long& presses, std::string& err) {
+                    accepted = false;
+                    st = -1;
+                    presses = -1;
+                    std::string wr4;
+                    const std::string route =
+                        std::string("/sdk/weapons?limit=0&select=") + http::url_encode(want);
+                    if (!http::get(port, route.c_str(), wr4)) {
+                        return;
+                    }
+                    json_bool(http::body_of(wr4), "select_accepted", accepted);
+                    for (int i = 0; i < 60; ++i) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                        std::string p;
+                        if (!http::get(port, "/sdk/weapons?limit=0", p)) {
+                            continue;
+                        }
+                        const std::string pb = http::body_of(p);
+                        json_int(pb, "wheel_state", st);
+                        json_int(pb, "wheel_presses", presses);
+                        err = json_string(pb, "wheel_error");
+                        if (st != 1) {  // 1 == Working
+                            break;
+                        }
+                    }
+                };
+
+                if (!names.empty()) {
+                    // 1. THE ONE ALREADY IN HAND must succeed without spending a key press. A wheel
+                    //    that re-presses for the current weapon would cycle the player off it.
+                    std::string held_now;
+                    {
+                        std::string wr5;
+                        if (http::get(port, "/sdk/weapons?limit=0", wr5)) {
+                            held_now = json_string(http::body_of(wr5), "current");
+                        }
+                    }
+                    bool acc = false;
+                    long long st = -1, pr = -1;
+                    std::string err;
+                    if (!held_now.empty()) {
+                        wheel_request(held_now, acc, st, pr, err);
+                        printf("[fixture] wheel: already-held '%s' -> state %lld, %lld press(es)\n",
+                               held_now.c_str(), st, pr);
+                        check(acc && st == 2, "requesting the weapon already in hand succeeds");
+                        check(pr == 0,
+                              "and spends NO key press -- re-pressing would cycle the player off it");
+                    }
+
+                    // 2. A DIFFERENT carried weapon must actually arrive.
+                    std::string other;
+                    for (const auto& n : names) {
+                        if (n != held_now && !n.empty()) {
+                            other = n;
+                            break;
+                        }
+                    }
+                    if (!other.empty()) {
+                        wheel_request(other, acc, st, pr, err);
+                        std::string got;
+                        std::string wr6;
+                        if (http::get(port, "/sdk/weapons?limit=0", wr6)) {
+                            got = json_string(http::body_of(wr6), "current");
+                        }
+                        printf("[fixture] wheel: '%s' -> state %lld, %lld press(es), holding '%s'\n",
+                               other.c_str(), st, pr, got.c_str());
+                        check(acc, "a carried weapon is accepted by name");
+                        check(st == 2 && got == other,
+                              "and the wheel delivers it -- request by NAME is the whole VR-facing "
+                              "feature, and this is it working end to end");
+                        check(pr >= 1 && pr <= 4,
+                              "within the retry budget, so a refused press cannot spin forever");
+                    }
+
+                    // 3. SOMETHING NOT CARRIED must be refused UP FRONT, spending nothing. "You are
+                    //    not carrying that" is a different answer from "it did not work", and a
+                    //    wheel needs it immediately rather than after the budget drains.
+                    wheel_request("__not_a_carried_weapon__", acc, st, pr, err);
+                    printf("[fixture] wheel: uncarried request -> accepted=%s, error '%s'\n",
+                           acc ? "yes" : "no", err.c_str());
+                    check(!acc, "a weapon the player is not carrying is refused up front");
+                    check(!err.empty(), "and says why, rather than failing silently");
+                }
 
                 // Put the loadout back where it was found.
                 const auto want = std::find(names.begin(), names.end(), original);

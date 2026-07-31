@@ -52,6 +52,26 @@ public:
 
     // Disable every hook. Returns false if ANY disable() failed (fail-closed:
     // the caller MUST NOT unmap the DLL in that case).
+    // ---- SEALING, WHICH CLOSES A RACE THAT CORRUPTED THE GAME ----------------------------------
+    //
+    // After this returns, every install*() call is REFUSED and logged. Retirement is only complete
+    // if nothing can be added behind it, and until this existed something could:
+    //
+    //     Framework::shutdown() -> Mods::on_shutdown()   mods stop their own work...
+    //                           -> Hooks::retire()       ...but the FRAME HOOK is still live here
+    //
+    // FireRedirect installs its gameserver hooks from on_frame() on a retry countdown, because
+    // gameserver.dll is lazy. A retry landing in that window -- or during retire()'s own walk,
+    // after it has passed the end of the registry -- adds a hook nothing will ever disable.
+    //
+    // FOUND IN A LIVE PROCESS, not by reading: gameserver.dll's Weapon_TraceShot began with `E9`,
+    // jumping to an orphaned RWX stub at 0x0ADD01E0 that belongs to no loaded module and whose own
+    // first byte is another jump into an unmapped image. The next hitscan shot would have run it.
+    // It also explains the symptom that started the hunt -- the scan for that function MISSED,
+    // because the pattern's first ten bytes had been overwritten by the stale patch.
+    void seal();
+    bool sealed() const;
+
     bool retire();
 
     // Disable ONE hook by name (no-op + false if absent/already retired).

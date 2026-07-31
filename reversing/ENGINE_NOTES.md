@@ -722,6 +722,66 @@ The suite passes on a standard firearm (1717 checks). On `Shotgun_Clip` it still
 intermittently in places the gate does not cover; that is a known, named limitation rather than a
 mystery, which is the difference this section buys.
 
+### Switching weapons takes frames, and during it the player holds nothing
+
+`CClientWeaponMgr_ChangeWeapon` does not install the new weapon when something is already equipped.
+It parks the request at **chooser+432**, asks the animation system to play the deselect
+(`WeaponAnim_RequestDeselectWithCallback`, gameclient `0x10131660`), and defers. The callback
+(`WeaponChooser_OnDeselectComplete`, `0x10134FA0`) is five lines and decisive:
+
+    chooser+408 = -1     current slot index -> none
+    chooser+412 = 0      current CClientWeapon* -> null
+
+So between the request and the arrival there is a real interval in which nothing is in hand.
+Measured live, the request appears at +432 and clears when the weapon lands:
+
+    current=Submachinegun  pending=''              switching=false
+    current=Submachinegun  pending='FlameThrower'  switching=true     <- in flight
+    current=FlameThrower   pending=''              switching=false
+
+`sdk::WeaponMgr::switching()` is that state. Reading a muzzle or firing inside it produces the
+answers this project twice mistook for regressions. The switch is FAST -- 3 to 18 frames per the
+wheel's own counter -- and an earlier "~0.5 s" figure was an artefact of 0.4 s HTTP sampling, not a
+measurement of the engine.
+
+`WeaponWheel` (src/mods) is the consumer: `request("Assault Rifle")` presses the key
+`key_for_weapon()` names, waits out the switch, retries within a bounded budget, and reports.
+Measured on all four carried weapons: **one press each**, and an uncarried name is refused up front
+with a reason rather than after the budget drains.
+
+### A stale hook in gameserver.dll, and the race that left it there
+
+`Weapon_TraceShot`'s scan started missing. The bytes said why:
+
+    live  @ 0x2EAEF4D0: E9 0B 0D 2E DC 0D 1C 3D CD 2E 56 8B 74 24 30 ...
+    want              : 8B 44 24 08 8B 0D ?? ?? ?? ?? 56 8B 74 24 30 ...
+
+Only the first ten bytes differ, and they are a 5-byte `E9` JMP -- **the function was still hooked
+by a previous injection**. The jump landed at `0x0ADD01E0`: inside no loaded module, in a committed
+RWX region, whose own first byte is another jump into an image that no longer exists. The next
+hitscan shot would have run it, which is the most plausible account of the uninject crash that
+started this hunt.
+
+The race: `Framework::shutdown()` runs `Mods::on_shutdown()` and only then `Hooks::retire()`, and
+the FRAME HOOK is live throughout. `FireRedirect` installs its gameserver hooks from `on_frame()` on
+a retry countdown, so an install landing in that window -- or during `retire()`'s own walk, after it
+has passed the end of the registry -- adds a hook nothing will ever disable.
+
+`Hooks::seal()` closes it: called first in shutdown, it refuses and logs every later install, so
+retirement is complete by construction rather than by timing.
+
+### gameserver.dll is lazy, and latching that absence cost every unattended session
+
+The same investigation found why the fire hooks were often missing entirely. `Modules::initialize()`
+resolves module handles once, and the normal unattended path injects AT THE MAIN MENU -- where
+`gameserver.dll` does not exist. The null handle was latched, so `scan_game_server` logged
+"module unresolved (no session yet?)" forever, including thirty seconds into a loaded world with the
+DLL plainly present.
+
+`Modules::resolve_lazy_module()` re-resolves on demand, which is AGENT.MD rule 6's retryable-versus-
+definitive split applied to the module table rather than to a function-local static. After it,
+injecting at the menu and loading a world gives `fr_hooked=true` within seconds.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

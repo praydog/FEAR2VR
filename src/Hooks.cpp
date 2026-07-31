@@ -1,5 +1,7 @@
 #include "Hooks.hpp"
 
+#include <atomic>
+
 #include "Log.hpp"
 
 Hooks& Hooks::get() {
@@ -12,7 +14,26 @@ Hooks& Hooks::get() {
     return *s_hooks;
 }
 
+namespace {
+std::atomic<bool> g_sealed{false};
+}  // namespace
+
+void Hooks::seal() {
+    if (!g_sealed.exchange(true, std::memory_order_acq_rel)) {
+        LOGX("[hooks] registry SEALED -- no further installs will be accepted");
+    }
+}
+
+bool Hooks::sealed() const {
+    return g_sealed.load(std::memory_order_acquire);
+}
+
 bool Hooks::install(std::string name, void* target, void* destination) {
+    if (g_sealed.load(std::memory_order_acquire)) {
+        LOGX("[hooks] REFUSED install of '%s' -- registry is sealed (shutting down)", name.c_str());
+        return false;
+    }
+
     // create_inline returns the hook directly (truthy on success); error detail
     // is only available via InlineHook::create, which we don't need here --
     // failure handling is identical (log + false), the log just loses the enum.
@@ -39,6 +60,11 @@ void Hooks::adopt(std::string name, safetyhook::InlineHook hook) {
 }
 
 bool Hooks::install_mid(std::string name, void* target, safetyhook::MidHookFn destination) {
+    if (g_sealed.load(std::memory_order_acquire)) {
+        LOGX("[hooks] REFUSED install of '%s' -- registry is sealed (shutting down)", name.c_str());
+        return false;
+    }
+
     auto hook = safetyhook::create_mid(target, destination);
     if (!hook) {
         LOGX("[hooks] FAILED to install mid %s at %p", name.c_str(), target);

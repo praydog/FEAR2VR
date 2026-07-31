@@ -34,6 +34,7 @@
 #include "mods/WeaponAgreement.hpp"
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
+#include "mods/WeaponWheel.hpp"
 #include "mods/AmmoKeeper.hpp"
 #include "mods/FrameCapture.hpp"
 #include "mods/ResourceWatch.hpp"
@@ -9056,6 +9057,7 @@ std::string webapi_hex6_json(uintptr_t v) {
 std::string build_weapons_json(const std::string& request_target) {
     const WebApiQuery q = webapi_parse_query(request_target);
     const auto limit = static_cast<size_t>(webapi_query_int(q, "limit", 24));
+    const auto requested_select = webapi_query_string(q, "select");
 
     const auto chooser = sdk::WeaponMgr::chooser(0);
     const auto current = sdk::WeaponMgr::current_weapon_name(0);
@@ -9077,6 +9079,28 @@ std::string build_weapons_json(const std::string& request_target) {
     // The QUICK-SWITCH slot, published beside `current` on purpose: an earlier pass reported this
     // field AS the current weapon, and seeing both makes the difference visible instead of a claim.
     json_append_string(out, "last", last.c_str());
+    json_append_string(out, "pending", sdk::WeaponMgr::pending_weapon_name(0).c_str());
+    json_append_bool(out, "equipped", sdk::WeaponMgr::equipped(0));
+    json_append_bool(out, "switching", sdk::WeaponMgr::switching(0));
+
+    // ---- THE WHEEL ITSELF --------------------------------------------------------------------
+    //
+    // `select=<name>` asks for a weapon BY NAME and returns immediately; the selection runs on the
+    // game thread over the following frames (a key press spans frames and the switch takes ~0.5 s).
+    // Poll `wheel_state` for the outcome. `cancel=1` abandons an outstanding request.
+    if (!requested_select.empty()) {
+        json_append_bool(out, "select_accepted", WeaponWheel::get().request(requested_select));
+    }
+    if (webapi_query_int(q, "cancel", 0) != 0) {
+        WeaponWheel::get().cancel();
+    }
+    json_append_raw(out, "wheel_state",
+                    std::to_string(static_cast<int>(WeaponWheel::get().state())).c_str());
+    json_append_bool(out, "wheel_busy", WeaponWheel::get().busy());
+    json_append_string(out, "wheel_requested", WeaponWheel::get().requested().c_str());
+    json_append_raw(out, "wheel_presses", std::to_string(WeaponWheel::get().presses()).c_str());
+    json_append_raw(out, "wheel_frames", std::to_string(WeaponWheel::get().frames_taken()).c_str());
+    json_append_string(out, "wheel_error", WeaponWheel::get().last_error().c_str());
     json_append_bool(out, "current_is_weapon", sdk::WeaponMgr::current_weapon(0) != nullptr);
     json_append_raw(out, "current_slot",
                     std::to_string(slot.has_value() ? static_cast<int64_t>(*slot) : -1).c_str());
@@ -10226,6 +10250,7 @@ bool Framework::initialize() {
     Mods::get().add(&HudPassHook::get());
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
+    Mods::get().add(&WeaponWheel::get());
     Mods::get().add(&AmmoKeeper::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
@@ -11272,6 +11297,13 @@ bool Framework::shutdown() {
     // 2. Stop IPC: joins the socket thread; afterwards no handler is executing.
     cmdsrv::stop();
     LOGX("[framework] IPC stopped");
+
+    // 2b. SEAL THE HOOK REGISTRY FIRST. Mods keep receiving on_frame() until the frame hook itself
+    //     is retired in step 4, and at least one of them (FireRedirect, retrying against a lazy
+    //     gameserver.dll) INSTALLS hooks from there. An install landing after retire() has walked
+    //     past the end of the registry leaves a patched function with no owner -- found live in
+    //     gameserver.dll, jumping into an orphaned stub outside every loaded module.
+    Hooks::get().seal();
 
     // 3. Mods yield the frame path.
     Mods::get().on_shutdown();

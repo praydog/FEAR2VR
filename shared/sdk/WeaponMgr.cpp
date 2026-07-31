@@ -128,6 +128,30 @@ std::optional<unsigned> WeaponMgr::current_slot(unsigned player_index) {
     return static_cast<unsigned>(*raw);
 }
 
+regenny::DatabaseMgrRecord* WeaponMgr::pending_weapon(unsigned player_index) {
+    return weapon_at(chooser(player_index), kPendingWeapon);
+}
+
+std::string WeaponMgr::pending_weapon_name(unsigned player_index) {
+    auto* r = pending_weapon(player_index);
+
+    return r == nullptr ? std::string() : DatabaseMgr::record_name(r);
+}
+
+bool WeaponMgr::equipped(unsigned player_index) {
+    // BOTH halves, because the completion callback clears them together and a consumer reading only
+    // one would see a half-torn state as valid.
+    return current_slot(player_index).has_value() && current_weapon_object(player_index) != 0;
+}
+
+bool WeaponMgr::switching(unsigned player_index) {
+    if (chooser(player_index) == 0) {
+        return false;  // no player is not "switching"
+    }
+
+    return pending_weapon(player_index) != nullptr || !equipped(player_index);
+}
+
 regenny::DatabaseMgrRecord* WeaponMgr::last_weapon(unsigned player_index) {
     return weapon_at(chooser(player_index), kLastWeapon);
 }

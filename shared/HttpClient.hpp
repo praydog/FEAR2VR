@@ -16,6 +16,37 @@
 
 namespace http {
 
+// ---- ENCODING A QUERY VALUE ------------------------------------------------------------------
+//
+// A SPACE IN A QUERY VALUE TERMINATES THE HTTP REQUEST LINE. "GET /x?k=Assault Rifle HTTP/1.1"
+// parses as target "/x?k=Assault", so the server sees a different question and confidently answers
+// it. That is not hypothetical: the fixture's weapon normalisation asked for "Assault Rifle" with a
+// raw space, matched nothing, and silently fell through to its second preference for a whole
+// session -- a green run the entire time, because falling through is a legitimate outcome.
+//
+// Every caller building a query from data (a weapon name, a world name, a path) needs this, which
+// is why it lives beside get() rather than in whichever caller noticed first.
+inline std::string url_encode(const std::string& in) {
+    static const char* const kHex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(in.size() + 8);
+
+    for (unsigned char c : in) {
+        const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+                                c == '~';
+        if (unreserved) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0F]);
+        }
+    }
+
+    return out;
+}
+
 // Connect to 127.0.0.1:port, send `request`, append the full raw response to
 // `out`. Returns false on any socket failure.
 inline bool request_raw(int32_t port, const std::string& request, std::string& out) {
