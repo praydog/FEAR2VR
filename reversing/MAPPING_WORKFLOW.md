@@ -5258,3 +5258,80 @@ Two routes remain, both bounded:
    This needs a candidate address, which route 1 would also supply.
 
 Route 1 subsumes route 2 and is the better next step.
+
+## THE SHOT FOLLOWS THE VIEW, NOT THE GUN
+
+The question this project has deferred five times, and the most consequential one for VR: with the
+rig decoupled, the weapon points one way and the camera another -- where do the bullets go?
+
+**The camera.** Turning the head while the aim is held still moves where shots land, by the angle
+the head turned:
+
+| head yaw | aim_yaw during | impact bearing shift |
+|---|---|---|
+| +30 | 89.8 | -29.64 / -30.65 / -29.32 / -29.96 / -30.27 / -30.26 |
+| -30 | 90.1 | +30.60 |
+| +60 | 90.9 | -61.38 |
+
+The aim never moved (89.8 to 90.9 across every trial). The sign flips because a bearing is
+`atan2(dz, dx)` while engine yaw runs the other way. Recorded in IDA on
+`CPlayerCamera_ApplyLookToRotation` (gameclient 0x100E0830).
+
+For the mod this settles a design question: `ViewmodelDecouple` keeps the weapon out of the head's
+way visually, but it does NOT redirect fire. A VR mod that wants hand-aimed shooting has to drive
+the view, not the rig.
+
+### How it was measured, given the ray is unreachable
+
+No trace function is named anywhere in the exe; `ILTPhysics` (0x0066EA70) and `ILTCommon`
+(0x0066E600) have no segment-intersect entry between them. But the shot has a CONSEQUENCE: firing
+spawns effects, so a newly-appeared object's position is a point the ray reached.
+
+`sdk::ObjectWatch` is the class that makes that observable -- the difference between two looks at an
+object bucket, with `appeared()`, `vanished()`, and `dominant_bearing()`. It is a real consumer API,
+not test scaffolding: "what just spawned, and which way" is what a mod needs to react to projectiles,
+impacts, bodies and pickups. Exposed at `/sdk/spawns`.
+
+Three statistics were tried for "which way did that burst come from" and only the third survives:
+
+- **Farthest object** -- returns a distant ambient emitter (7060 units away, 114 degrees off) that
+  appeared in every single trial and had nothing to do with the shot.
+- **Mean bearing** -- the same emitter drags it by tens of degrees.
+- **Largest cluster** -- the impacts agreed to within ~5 degrees across 15 objects while the emitter
+  sat alone. This is what `dominant_bearing` computes, with wrapped angle differences and unit-vector
+  summation so the +/-pi seam cannot fold two neighbours into opposites.
+
+### A NEGATIVE RESULT on the mechanism
+
+An rw watch on the camera holder's pose fields during firing yields NO accessor that is absent while
+idle: +244 (152 idle / 157 firing hits), +324 (1881 / 1940), +552 (1819 / 1843). The fire path does
+not read the camera pose from the holder. Next candidate is the shell player object's own rotation,
+already known to track the view exactly.
+
+## RECOIL DOES NOT RECOVER, and last session's claim was wrong
+
+Last session added "the recoil recovers, so firing leaves the aim where it found it". **That is
+false on this build.** Measured with the player alive at full health and the world still (1157 idle
+frames):
+
+```
+burst  200ms  start +5.332  peak +5.332  after 6s +6.431
+burst  600ms  start +6.431  peak +6.431  after 6s +5.936
+burst 1200ms  start +5.936  peak +7.522  after 6s +7.522   residual = 100% of the kick
+burst 2000ms  start +7.522  peak +8.623  after 6s +8.623   residual = 100% of the kick
+```
+
+Sustained fire walks the aim upward and leaves it there. The old assertion passed only because a
+short burst from an already-level aim lands back near zero -- a coincidence of the starting pose,
+not an invariant. The engine has a `FireRecoilRecoverFactor` and it plainly does not return the full
+kick.
+
+The suite now drives the aim back itself through the public look primitive, with a MEASURED gain
+(degrees per unit of look delta depends on the player's sensitivity, which is not ours to assume),
+and asserts that closing the loop works. That is a claim about `sdk::Input::send_mouse_look` and
+`PlayerMgr::aim_pitch` together, which is worth making, rather than about the engine tidying up,
+which it does not do.
+
+It is also a PRECONDITION, not just hygiene: an aim resting at +8.6 degrees shoots the ceiling,
+produces no impacts, and silently breaks every measurement downstream of it. Three consecutive runs
+failed three DIFFERENT ways from that one cause before it was found.

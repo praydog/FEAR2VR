@@ -179,6 +179,7 @@ using ComfortFn = std::function<std::string(const std::string& request_target)>;
 
 // THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
 // pick from when it wants to drive "the right hand" rather than "node 37".
+using SpawnsFn = std::function<std::string(const std::string& request_target)>;
 using SkeletonFn = std::function<std::string(const std::string& request_target)>;
 
 // PER-PIECE VISIBILITY -- /sdk/piece. MUTATES the model: hiding a piece suppresses its draw
@@ -213,6 +214,7 @@ struct Handlers {
     ViewmodelFn viewmodel{};         // optional; /vr/viewmodel 404s without it -- MUTATES the rig
     TurnFn turn{};                   // optional; /vr/turn 404s without it -- MUTATES the heading
     ComfortFn comfort{};             // optional; /vr/comfort 404s without it -- MUTATES engine cvars
+    SpawnsFn spawns{};               // optional; /sdk/spawns 404s without it -- read-only
     SkeletonFn skeleton{};           // optional; /sdk/skeleton 404s without it -- read-only
     PieceFn piece{};                 // optional; /sdk/piece 404s without it -- MUTATES visibility
     EngineHookFn engine_hook{};  // optional; /engine-hook 404s without it

@@ -22,6 +22,7 @@
 #include "Log.hpp"
 #include "Mods.hpp"
 #include "sdk/CClientMgr.hpp"
+#include "sdk/ObjectWatch.hpp"
 #include "sdk/CClientShell.hpp"
 #include "sdk/DatabaseMgr.hpp"
 #include "sdk/Delegates.hpp"
@@ -9869,6 +9870,137 @@ std::string build_api_vars_json(const WebApiQuery& q) {
 }
 
 // ---- dispatcher: wired into cmdsrv::Handlers::api in Framework::initialize() -------------
+// ---- /sdk/spawns -- WHAT APPEARED AND WHAT LEFT SINCE THE LAST LOOK --------
+//
+// Drives sdk::ObjectWatch. One watcher PER BUCKET, kept alive between requests,
+// because a difference needs somewhere to remember the previous sample: each
+// call reports the change since the caller's own last call on that type.
+//
+// Read-only. It walks buckets through snapshot_objects (POD copied out, no
+// engine pointers held), which is exactly what makes it sound to run from the
+// IPC thread -- see AGENT.MD rule 6 on thread affinity.
+std::string build_spawns_json(const std::string& request_target) {
+    const WebApiQuery q = webapi_parse_query(request_target);
+    // OT_PARTICLESYSTEM by default: the bucket effects land in.
+    const long long type = webapi_query_int(q, "type", 6);
+
+    std::string out;
+    JsonFields top(out);
+
+    if (type < 0 || type > 6) {
+        top.b("ok", false);
+        top.s("error", "type out of range 0..6");
+        return out;
+    }
+
+    // One watcher per bucket, constructed on first use and outliving the
+    // request. Only the IPC thread reaches these, but the mutex is cheap and
+    // makes that an enforced property rather than a remembered one.
+    static std::mutex s_spawn_mutex;
+    static std::vector<std::unique_ptr<sdk::ObjectWatch>> s_watchers;
+
+    std::scoped_lock lock{s_spawn_mutex};
+
+    if (s_watchers.empty()) {
+        for (int32_t t = 0; t <= 6; ++t) {
+            s_watchers.emplace_back(std::make_unique<sdk::ObjectWatch>(static_cast<sdk::ObjectType>(t)));
+        }
+    }
+
+    auto& watch = *s_watchers[static_cast<size_t>(type)];
+
+    if (webapi_query_int(q, "reset", 0) != 0) {
+        watch.reset();
+    }
+
+    const auto present = watch.sample();
+
+    top.b("ok", present.has_value());
+    top.i("type", type);
+    top.b("primed", watch.primed());
+    top.b("truncated", watch.truncated());
+    top.u("samples", static_cast<size_t>(watch.samples()));
+    if (present.has_value()) {
+        top.u("present", *present);
+    } else {
+        top.n("present");
+    }
+    top.u("appeared", watch.appeared().size());
+    top.u("vanished", watch.vanished().size());
+
+    // WHICH WAY the burst appeared, from the muzzle. This is the SDK's own
+    // clustering (ObjectWatch::dominant_bearing), not something recomputed
+    // here: a consumer asking "where did that come from" gets the same answer
+    // the diagnostic reports.
+    //
+    // Origin defaults to the weapon muzzle, since the first question this route
+    // was built to answer is where a shot's impacts land. `origin=view` uses
+    // the camera instead.
+    {
+        const auto player = sdk::CClientShell::local_player(0);
+        float origin[3]{};
+        bool have_origin = false;
+
+        if (player.has_value()) {
+            if (const auto m = sdk::attached_socket(player->object, "flash"); m.has_value()) {
+                origin[0] = m->transform.position.x;
+                origin[1] = m->transform.position.y;
+                origin[2] = m->transform.position.z;
+                have_origin = true;
+            }
+        }
+
+        top.b("origin_resolved", have_origin);
+
+        if (have_origin) {
+            top.f("origin_x", origin[0], 3);
+            top.f("origin_y", origin[1], 3);
+            top.f("origin_z", origin[2], 3);
+
+            if (const auto bearing = watch.dominant_bearing(origin)) {
+                top.f("bearing_deg", bearing->radians * 57.29577951308232, 3);
+                top.u("bearing_count", bearing->count);
+                top.f("bearing_distance", bearing->mean_distance, 2);
+            } else {
+                top.n("bearing_deg");
+                top.n("bearing_count");
+                top.n("bearing_distance");
+            }
+        }
+    }
+
+    // The appeared objects themselves, with positions -- the point of the
+    // route. Bounded, because a level load appears as hundreds at once and the
+    // reply still has to be a reply.
+    const size_t limit = webapi_clamp_limit(webapi_query_int(q, "limit", 24));
+    std::string items = "[";
+    size_t emitted = 0;
+
+    for (const auto& o : watch.appeared()) {
+        if (emitted >= limit) {
+            break;
+        }
+
+        if (emitted != 0) {
+            items += ",";
+        }
+
+        JsonFields ji(items);
+        ji.hex("address", o.address);
+        ji.hex("vtable", o.vtable);
+        ji.u("handle", static_cast<size_t>(o.handle));
+        ji.f("x", o.position[0], 3);
+        ji.f("y", o.position[1], 3);
+        ji.f("z", o.position[2], 3);
+        ++emitted;
+    }
+
+    items += "]";
+    top.raw("new_objects", items);
+
+    return out;
+}
+
 std::string build_api_json(const std::string& request_target) {
     const size_t q = request_target.find('?');
     const std::string route = q == std::string::npos ? request_target : request_target.substr(0, q);
@@ -9960,6 +10092,7 @@ bool Framework::initialize() {
     handlers.targets = build_targets_json;
     handlers.database = build_database_json;
     handlers.objects = build_objects_json;
+    handlers.spawns = build_spawns_json;
     handlers.models = build_models_json;
     handlers.interfaces = build_interfaces_json;
     // READ-ONLY BY DEFAULT. The mutation probes are visible in-game, so observing state never triggers them.

@@ -39,6 +39,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <functional>
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -71,6 +72,8 @@ void check(bool ok, const char* name, const char* detail = nullptr) {
 // gate belongs beside check() rather than buried among the parsers.
 bool json_double(const std::string& body, const char* key, double& out);
 bool json_bool(const std::string& body, const char* key, bool& out);
+bool json_int(const std::string& body, const char* key, long long& out);
+bool world_is_quiescent(const std::string& body);
 
 // ---- QUIESCENCE, AS A REPORTED CONDITION ----------------------------------
 //
@@ -92,6 +95,150 @@ bool json_bool(const std::string& body, const char* key, bool& out);
 int64_t g_not_exercised = 0;
 int64_t g_skipped_motion = 0;
 int64_t g_skipped_world = 0;
+// Firing consumes ammunition the world does not replace. Tallied apart from the others because the
+// remedy is different again: not 'stand still' or 'load a level' but 'restore the loadout'.
+int64_t g_skipped_dry = 0;
+// Set once, early, by the loadout probe: can the player actually shoot? Suite-wide because the
+// probe has to run BEFORE the first assertion (a dead player fails checks that have nothing to do
+// with weapons) while the firing checks that consume it are thousands of lines further down.
+bool g_can_fire = false;
+// ---- FIXTURE STEPS, AS FREE FUNCTIONS ---------------------------------------------------------
+//
+// Free functions rather than lambdas in main() for a reason that cost a crash: an earlier version
+// kept POINTERS to `std::function` locals so the firing blocks could reuse them, but those locals
+// live in a scope that closes long before those blocks run, and the lambdas captured `[&]` on top
+// of that. The suite died with 0xC0000409 (stack buffer overrun) immediately after the fire-ray
+// measurement. Nothing here captures anything; `port` is passed in.
+
+bool json_flag_of(const std::string& body, const char* key) {
+    bool v = false;
+    return json_bool(body, key, v) && v;
+}
+
+bool player_alive_at(int32_t port) {
+    std::string resp;
+    if (!http::get(port, "/sdk/shader-params", resp)) {
+        return false;
+    }
+    return json_flag_of(http::body_of(resp), "ps_alive");
+}
+
+// Fires a short burst and reports whether anything came of it. This is the only reliable read on
+// "can the player actually shoot": the loadout is not exposed anywhere the SDK has mapped, and an
+// empty weapon is indistinguishable from a working one until you pull the trigger.
+bool weapon_is_live_at(int32_t port) {
+    std::string resp;
+    http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    http::get(port, "/sdk/spawns?type=6&reset=1", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    http::get(port, "/sdk/spawns?type=6", resp);
+
+    http::get(port, "/input/hold?vk=256&down=1", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(450));
+    http::get(port, "/input/hold?vk=256&down=0", resp);
+    http::get(port, "/input/release", resp);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+    if (!http::get(port, "/sdk/spawns?type=6", resp)) {
+        return false;
+    }
+    long long appeared = 0;
+    json_int(http::body_of(resp), "appeared", appeared);
+    return appeared > 0;
+}
+
+// Drives the aim's PITCH to `target` degrees through the public look primitive, and returns where
+// it ended up. Closed-loop with a MEASURED gain rather than an assumed one, because degrees per
+// unit of look delta depends on the player's sensitivity setting, which is not ours to know.
+//
+// This exists because the engine does not recover recoil: sustained fire walks the aim upward and
+// leaves it there (measured, four consecutive bursts, +5.33 -> +8.62 with the world still). An
+// elevated aim shoots the ceiling, which produces no impacts, which silently breaks any measurement
+// that depends on where shots land -- so levelling is a PRECONDITION of the firing checks, not just
+// tidying afterwards.
+double drive_pitch_to(int32_t port, double target) {
+    std::string resp;
+    double cur = target;
+
+    if (http::get(port, "/sdk/shader-params", resp)) {
+        json_double(http::body_of(resp), "aim_pitch_deg", cur);
+    }
+
+    double gain = 0.0;   // degrees of pitch per unit of look delta
+
+    for (int i = 0; i < 12 && fabs(cur - target) > 0.25; ++i) {
+        int32_t dy = 0;
+
+        if (gain == 0.0) {
+            dy = (cur > target) ? 40 : -40;   // probe step, to measure the gain
+        } else {
+            double want = (target - cur) / gain;
+            want = want > 600.0 ? 600.0 : (want < -600.0 ? -600.0 : want);
+            dy = static_cast<int32_t>(want);
+        }
+
+        if (dy == 0) {
+            break;
+        }
+
+        char look[96];
+        snprintf(look, sizeof(look), "/input/look?dx=0&dy=%d", dy);
+        http::get(port, look, resp);
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+
+        double after = cur;
+        if (http::get(port, "/sdk/shader-params", resp)) {
+            json_double(http::body_of(resp), "aim_pitch_deg", after);
+        }
+
+        if (fabs(after - cur) > 0.05) {
+            gain = (after - cur) / static_cast<double>(dy);
+        }
+        cur = after;
+    }
+
+    return cur;
+}
+
+// The engine's own state restore: refills the loadout and revives the player. Only called when a
+// probe shows the fixture is unusable, so a healthy run never pays the reload.
+void restore_fixture_at(int32_t port, const char* why) {
+    std::string resp;
+    printf("[fixture] %s -- restoring with LoadCheckpoint\n", why);
+    http::get(port, "/console/run?cmd=LoadCheckpoint", resp);
+
+    // Wait for the world to come back rather than sleeping a guessed interval.
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!http::get(port, "/sdk/shader-params", resp)) {
+            continue;
+        }
+        const std::string body = http::body_of(resp);
+        if (json_flag_of(body, "ws_world_ready") && json_flag_of(body, "ps_alive")) {
+            break;
+        }
+    }
+    // AND WAIT FOR IT TO SETTLE, not merely to exist. A checkpoint load drops the player into a
+    // world that is still interpolating -- measured, the bone-displacement checks failed twice
+    // straight after a restore because the skeleton had not finished arriving. `world_is_quiescent`
+    // is the suite's own settled-world predicate, so this waits on exactly what those checks need
+    // rather than on a sleep chosen to look long enough.
+    for (int i = 0; i < 60; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (!http::get(port, "/sdk/shader-params", resp)) {
+            continue;
+        }
+        // QUIESCENT IS NOT ENOUGH, AND THE REASON IS A TRAP: a PAUSED world is perfectly still,
+        // so `world_is_quiescent` returns true the instant a checkpoint load stops the clock. That
+        // let the suite start against a frozen game and the shell's real-clock check failed on
+        // three consecutive runs. Settled means still AND running.
+        const std::string st = http::body_of(resp);
+        if (world_is_quiescent(st) && json_flag_of(st, "eng_clock_advancing")) {
+            break;
+        }
+    }
+}
 
 // 90 frames, and the number is derived rather than picked: the longest interpolation mapped in this engine is
 // the camera's pitch recovery timer at 0.300s, and the per-frame view hook runs at ~300 calls/second, so 90
@@ -123,6 +270,13 @@ void check_gated(bool condition, const char* reason, int64_t& tally, bool ok, co
 
 void check_quiescent(bool quiescent, bool ok, const char* name) {
     check_gated(quiescent, "world in motion", g_skipped_motion, ok, name);
+}
+
+// Firing checks. `armed` is the result of the loadout probe in main(); when it is false the weapon
+// could not fire even after a checkpoint restore, and asserting on recoil or impacts would be
+// measuring an empty gun.
+void check_armed(bool armed, bool ok, const char* name) {
+    check_gated(armed, "no loaded weapon", g_skipped_dry, ok, name);
 }
 
 // IS THERE A WORLD AND A PLAYER AT ALL? At a main menu there is neither, and 145 checks in this file treated
@@ -8537,67 +8691,43 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ---- THE AIM'S PITCH, PROVEN BY RECOIL ----------------------------------------------
+        // ---- OBJECT WATCH: A DIFFERENCE, NOT A SNAPSHOT ---------------------------------------
         //
-        // `aim_pitch` is the counterpart to `aim_yaw`: a VR mod reconciling a head pose with the
-        // weapon needs both angles, and recoil, the engine's pitch clamp and any look-assist all act
-        // on this one rather than on yaw.
-        //
-        // A static read cannot show it is the PITCH rather than some other angle that happens to be
-        // near zero. Firing can: recoil kicks the aim UP and then recovers, so holding the trigger
-        // must raise this number and releasing must bring it back. That is a behavioural proof of
-        // the accessor, using the game's own mechanism, and it needs no target and no baseline.
+        // The class the measurement above rests on. Its contract is that the FIRST sample reports
+        // no changes (there is nothing to compare against, and reporting the whole world as "new"
+        // would be a lie every consumer then works around), and that a quiet world produces a quiet
+        // difference.
         {
-            std::string pb0;
-            if (http::get(port, "/sdk/shader-params", resp)) {
-                pb0 = http::body_of(resp);
-            }
-            double pitch0 = -999.0;
-            const bool have_pitch = json_double(pb0, "aim_pitch_deg", pitch0);
-            check(have_pitch, "the aim's pitch is readable alongside its yaw");
-            if (have_pitch) {
-                check(fabs(pitch0) < 90.0,
-                      "and it is an elevation angle -- inside +/-90 by construction, which a "
-                      "mis-taken Euler term would not be");
+            if (http::get(port, "/sdk/spawns?type=1&reset=1", resp)) {
+                const std::string first = http::body_of(resp);
+                long long appeared = -1, vanished = -1, samples = -1, present = -1;
+                json_int(first, "appeared", appeared);
+                json_int(first, "vanished", vanished);
+                json_int(first, "samples", samples);
+                json_int(first, "present", present);
 
-                // RELOAD FIRST. Nothing in this suite ever reloads, so the magazine drains a
-                // little every run -- measured falling from a 7.46 degree peak to 1.10 across two
-                // runs. An empty weapon produces no recoil, which would read as this accessor
-                // being broken rather than as the suite having run out of bullets.
-                http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
-                std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+                check(samples == 1 && appeared == 0 && vanished == 0,
+                      "the first sample after a reset reports no changes -- a difference needs two "
+                      "looks, and the world is not 'new' just because nobody looked before");
+                check(present > 0,
+                      "while still reporting what is actually there, so priming is not a wasted "
+                      "call");
 
-                // HOLD THE TRIGGER and watch the recoil climb.
-                http::get(port, "/input/hold?vk=256&down=1", resp);
-                double peak = pitch0;
-                for (int i = 0; i < 12; ++i) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    if (!http::get(port, "/sdk/shader-params", resp)) {
-                        continue;
-                    }
-                    double p = 0.0;
-                    if (json_double(http::body_of(resp), "aim_pitch_deg", p) && p > peak) {
-                        peak = p;
-                    }
+                // A second look with nothing driven. Objects do come and go on their own, so the
+                // assertion is that the difference is SMALL relative to the population -- not zero,
+                // which would be asserting the game is paused.
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                if (http::get(port, "/sdk/spawns?type=1", resp)) {
+                    const std::string second = http::body_of(resp);
+                    long long a2 = -1, s2 = -1, p2 = -1;
+                    json_int(second, "appeared", a2);
+                    json_int(second, "samples", s2);
+                    json_int(second, "present", p2);
+                    check(s2 == 2, "and the watcher counts its own samples");
+                    check(a2 >= 0 && a2 < p2,
+                          "an undriven quarter-second does not turn the world over -- fewer things "
+                          "appear than exist, which is what makes a firing burst stand out");
                 }
-                http::get(port, "/input/hold?vk=256&down=0", resp);
-                http::get(port, "/input/release", resp);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1400));
-
-                double pitch1 = -999.0;
-                if (http::get(port, "/sdk/shader-params", resp)) {
-                    json_double(http::body_of(resp), "aim_pitch_deg", pitch1);
-                }
-                printf("[fixture] recoil: pitch %+.4f -> peak %+.4f -> %+.4f deg\n",
-                       pitch0, peak, pitch1);
-                // The rise is the assertion: it proves the weapon fired AND that this accessor
-                // tracks the axis recoil acts on. Live it reaches ~2.2 degrees on a held burst.
-                check(peak - pitch0 > 0.5,
-                      "holding the trigger raises the aim's pitch -- recoil, which both proves the "
-                      "shot happened and that this is the axis it acts on");
-                // And it comes back, so the suite has not left the player aiming at the ceiling.
-                check(fabs(pitch1 - pitch0) < 0.5,
-                      "and the recoil recovers, so firing leaves the aim where it found it");
             }
         }
 
@@ -9838,6 +9968,368 @@ int main(int argc, char** argv) {
               "the engine holds a pointer into this image and teardown has to take it back");
     }
 
+    // ---- EVERYTHING THAT PULLS A TRIGGER, AND WHY IT IS ALL DOWN HERE ---------------------------
+    //
+    // Firing is the only thing this suite does that the LEVEL reacts to. A burst wakes the enemies
+    // in earshot, and from then on the player is being shot at: the view flinches, damage kicks the
+    // aim, and eventually the player dies. None of that is a problem for the firing checks
+    // themselves -- they measure a burst against its own consequences -- but it is fatal to the
+    // ~1600 checks that assume a calm world.
+    //
+    // Measured, and it took three fixes to see clearly: with the weapon probe running at the TOP of
+    // the suite, the viewmodel-decouple and roll-arc checks failed on every ctest invocation while
+    // passing standalone. Neither has anything to do with weapons; they were simply the two checks
+    // most sensitive to a view that would not sit still, and the probe had started a firefight
+    // 1500 checks earlier. Settling the world after the firing blocks did not help, because the
+    // disturbance was upstream of them.
+    //
+    // So: destructive work runs LAST, after every observational check and before the unload proof.
+    // The ordering is the fix, and it is load-bearing -- moving any of these three blocks back up
+    // reintroduces failures in checks that look unrelated.
+
+    {
+        std::string resp;
+
+        // ---- A FIRING TEST NEEDS A LOADED WEAPON, AND MUST SAY SO ------------------------------
+        //
+        // Every block below that fires consumes ammunition the world does not give back, and this
+        // suite is run dozens of times against one long-lived game process. Measured: the magazine
+        // drained across runs until the reserve was gone, the game auto-switched to a flamethrower,
+        // and THREE separate checks went red at once -- recoil, spawn direction, and the bearing
+        // measurement -- none of which had anything wrong with them.
+        //
+        // That is the worst kind of failure: the red lands on whichever check runs when the world
+        // happens to run out, rather than on the thing that emptied it. So the precondition is
+        // established explicitly, in one place, and its outcome is printed.
+        //
+        // `LoadCheckpoint` is the engine's own state restore and refills the loadout. It is only
+        // used when the probe shows the weapon cannot fire, so a healthy run does not pay for it.
+        auto json_flag = [](const std::string& body, const char* key) -> bool {
+            bool v = false;
+            return json_bool(body, key, v) && v;
+        };
+
+        std::function<bool()> weapon_is_live = [&](void) -> bool {
+            http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            http::get(port, "/sdk/spawns?type=6&reset=1", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            http::get(port, "/sdk/spawns?type=6", resp);
+
+            http::get(port, "/input/hold?vk=256&down=1", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(450));
+            http::get(port, "/input/hold?vk=256&down=0", resp);
+            http::get(port, "/input/release", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+            if (!http::get(port, "/sdk/spawns?type=6", resp)) {
+                return false;
+            }
+            long long appeared = 0;
+            json_int(http::body_of(resp), "appeared", appeared);
+            return appeared > 0;
+        };
+
+        // WHY THIS PROBES INSTEAD OF ALWAYS RESTORING. Restoring unconditionally was tried, to make
+        // every run start from an identical loadout, and it traded one flake for a worse one: a
+        // checkpoint load leaves the world briefly PAUSED, a paused world is perfectly still so the
+        // suite's own quiescence predicate calls it settled, and the shell's real-clock check then
+        // failed on three consecutive runs. Gating additionally on `eng_clock_advancing` did not
+        // fix it -- that is a different clock from the one that check measures.
+        //
+        // So the restore stays a REMEDY, not a ritual: it runs when the fixture is unusable and
+        // otherwise the world is left alone. What makes that safe is that each firing check below
+        // verifies its OWN burst rather than trusting this flag (see the spawn gate on the recoil
+        // block) -- a run that goes dry midway reports NOT EXERCISED instead of a false red.
+        g_can_fire = player_alive_at(port) && weapon_is_live_at(port);
+
+        if (!g_can_fire) {
+            restore_fixture_at(port, "player dead or weapon dry");
+            g_can_fire = player_alive_at(port) && weapon_is_live_at(port);
+        }
+
+        printf("[fixture] weapon live: %s\n", g_can_fire ? "yes" : "NO -- firing checks will report NOT EXERCISED");
+
+        // ---- WHERE THE SHOTS ACTUALLY GO ------------------------------------------------------
+        //
+        // THE question for a VR mod, and it had been open for five sessions because the engine's
+        // fire ray is not reachable statically: neither ILTPhysics nor ILTCommon carries a
+        // segment-intersect entry, and no trace function is named anywhere in the exe.
+        //
+        // It is answerable by CONSEQUENCE instead. Firing spawns effects, and a newly-appeared
+        // object's position is a point the ray reached, so `sdk::ObjectWatch` turns the un-findable
+        // function into a measurement.
+        //
+        // The experiment discriminates two hypotheses. With the head turned, the view and the aim
+        // point in different directions, and the impacts must follow one of them:
+        //
+        //   H_aim  -- the shot follows the weapon: impact bearing does not move  (shift 0)
+        //   H_view -- the shot follows the camera: impact bearing tracks the head (shift -yaw)
+        //
+        // The sign flips because a bearing is atan2(dz, dx) while engine yaw runs the other way.
+        //
+        // The tolerance is DERIVED, not chosen: the two hypotheses are `yaw` degrees apart, so
+        // agreeing with one to within a quarter of that separation rules the other out with three
+        // quarters of the gap to spare. Nothing here depends on the level's geometry -- only on the
+        // difference between two bearings measured from the same spot moments apart.
+        {
+            const int32_t kYaw = 30;
+
+            // LEVEL THE AIM FIRST. Previous bursts leave it elevated (the engine does not
+            // recover recoil), and an aim pointing at the ceiling produces no impacts to measure.
+            // Measured failing exactly that way: with the aim resting at +8.6 degrees the bearing
+            // measurement had nothing to cluster and three separate runs failed differently.
+            const double levelled = drive_pitch_to(port, 0.0);
+            printf("[fixture] fire ray: aim levelled to %+.3f deg before measuring\n", levelled);
+
+            auto fire_and_measure = [&](int32_t head_yaw, double& bearing_out,
+                                        long long& agree_out, long long& total_out) -> bool {
+                char url[160];
+                if (head_yaw != 0) {
+                    snprintf(url, sizeof(url), "/vr/head?yaw=%d&frames=400", head_yaw);
+                } else {
+                    snprintf(url, sizeof(url), "/vr/head?clear=1");
+                }
+                http::get(port, url, resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+                // RELOAD FIRST -- this block fires two bursts and every shot it takes is one the
+                // recoil check downstream will not have. An empty weapon spawns no impacts, and
+                // the failure lands on whichever check runs when the magazine happens to run dry
+                // rather than on the block that emptied it. (This rule was written last session
+                // for the recoil probe and then broken here immediately.)
+                http::get(port, "/input/tap?vk=82&frames=3", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+
+                // Prime the watcher, then take a second sample so the difference is meaningful.
+                http::get(port, "/sdk/spawns?type=6&reset=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(350));
+                http::get(port, "/sdk/spawns?type=6", resp);
+
+                http::get(port, "/input/hold?vk=256&down=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                http::get(port, "/input/hold?vk=256&down=0", resp);
+                http::get(port, "/input/release", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+                if (!http::get(port, "/sdk/spawns?type=6", resp)) {
+                    return false;
+                }
+                const std::string body = http::body_of(resp);
+                return json_double(body, "bearing_deg", bearing_out) &&
+                       json_int(body, "bearing_count", agree_out) &&
+                       json_int(body, "appeared", total_out);
+            };
+
+            double b0 = 0.0, b1 = 0.0;
+            long long agree0 = 0, agree1 = 0, total0 = 0, total1 = 0;
+
+            bool got0 = false;
+            if (g_can_fire) {
+                got0 = fire_and_measure(0, b0, agree0, total0);
+            }
+            check_armed(g_can_fire, got0,
+                        "firing spawns effects the SDK can give a direction for -- the shot is "
+                        "observable through its consequences even though its ray is not");
+
+            if (got0) {
+                // RETRACTED ASSERTION, and the reason is worth keeping. This originally demanded
+                // that the cluster be a strict MAJORITY of everything that appeared. That is a
+                // claim about the ambient spawn rate in the sampling window -- how much unrelated
+                // scenery happened to emit while the burst was in the air -- and not about the SDK
+                // or the engine behaviour under test. It duly failed on a busy scene while the
+                // measurement it was supposedly protecting was perfectly good: that run reported
+                // -32.82 degrees against a -30 prediction and the relationship check passed.
+                //
+                // What IS required is that the direction have support: a bearing through a single
+                // spawn is just that spawn's position, whereas two or more objects agreeing to
+                // within the cluster tolerance is a direction. The ratio is printed as evidence
+                // rather than asserted, since it varies with the scenery and not with correctness.
+                printf("[fixture] fire ray: %lld of %lld spawns agree on the direction\n",
+                       agree0, total0);
+                check(agree0 >= 2,
+                      "the measured direction has support from more than one spawn, so it is a "
+                      "direction rather than a single object's position");
+
+                const bool got1 = fire_and_measure(kYaw, b1, agree1, total1);
+                check(got1, "the same measurement is available with the head turned");
+
+                if (got1) {
+                    double shift = b1 - b0;
+                    while (shift > 180.0) { shift -= 360.0; }
+                    while (shift < -180.0) { shift += 360.0; }
+
+                    const double err_view = fabs(shift - (-1.0 * kYaw));
+                    const double err_aim = fabs(shift);
+                    printf("[fixture] fire ray: head +%d turned the impact bearing %+.2f deg "
+                           "(H_view predicts %+d, H_aim predicts 0)\n",
+                           kYaw, shift, -kYaw);
+
+                    // THE FINDING. Shots follow the VIEW: with the aim held still and the head
+                    // turned 30 degrees, the impacts moved 30 degrees with it. Measured across
+                    // +30/-30/+60 the agreement was 0.36 / 0.60 / 1.38 degrees.
+                    check(err_view < kYaw / 4.0,
+                          "the shot follows the VIEW: turning the head moves where the bullets "
+                          "land, by the angle the head turned");
+                    check(err_view < err_aim,
+                          "and it is not the weapon it follows -- the aim never moved, and the "
+                          "impacts did");
+                }
+            }
+
+            // LEAVE THE PLAYER FACING WHERE THE SUITE FOUND THEM.
+            http::get(port, "/vr/head?clear=1", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+            // AND LEAVE THEM ALIVE. Two bursts in a populated level is enough to get shot; every
+            // check after this one assumes a player who can move and look.
+            if (g_can_fire && !player_alive_at(port)) {
+                restore_fixture_at(port, "the firing checks got the player killed");
+            }
+
+            // AND LEAVE THE WORLD STILL. This block is the most disruptive thing the suite does:
+            // two bursts leave recoil decaying and the level reacting, and the checks downstream
+            // measure view geometry that only holds in a settled world -- the viewmodel-decouple
+            // and roll-arc checks both went red on a run where everything here passed, purely
+            // because the view was still moving when they sampled it.
+            //
+            // Waiting on the suite's own quiescence predicate, rather than a sleep, means this
+            // costs nothing when the world settles fast and waits as long as it genuinely needs.
+            for (int i = 0; i < 40; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                if (!http::get(port, "/sdk/shader-params", resp)) {
+                    continue;
+                }
+                if (world_is_quiescent(http::body_of(resp))) {
+                    break;
+                }
+            }
+        }
+
+        // ---- THE AIM'S PITCH, PROVEN BY RECOIL ----------------------------------------------
+        //
+        // `aim_pitch` is the counterpart to `aim_yaw`: a VR mod reconciling a head pose with the
+        // weapon needs both angles, and recoil, the engine's pitch clamp and any look-assist all act
+        // on this one rather than on yaw.
+        //
+        // A static read cannot show it is the PITCH rather than some other angle that happens to be
+        // near zero. Firing can: recoil kicks the aim UP and then recovers, so holding the trigger
+        // must raise this number and releasing must bring it back. That is a behavioural proof of
+        // the accessor, using the game's own mechanism, and it needs no target and no baseline.
+        {
+            std::string pb0;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                pb0 = http::body_of(resp);
+            }
+            double pitch0 = -999.0;
+            const bool have_pitch = json_double(pb0, "aim_pitch_deg", pitch0);
+            check(have_pitch, "the aim's pitch is readable alongside its yaw");
+            if (have_pitch) {
+                check(fabs(pitch0) < 90.0,
+                      "and it is an elevation angle -- inside +/-90 by construction, which a "
+                      "mis-taken Euler term would not be");
+
+                // PRIME A SPAWN WATCHER so this block can tell "recoil is broken" from "the gun
+                // is empty". Those are opposite verdicts and they look identical from the pitch
+                // alone: both read as no movement. The burst below is judged against whether it
+                // actually put anything into the world.
+                http::get(port, "/sdk/spawns?type=6&reset=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                http::get(port, "/sdk/spawns?type=6", resp);
+
+                // RELOAD FIRST. Nothing in this suite ever reloads, so the magazine drains a
+                // little every run -- measured falling from a 7.46 degree peak to 1.10 across two
+                // runs. An empty weapon produces no recoil, which would read as this accessor
+                // being broken rather than as the suite having run out of bullets.
+                http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
+                std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+
+                // HOLD THE TRIGGER and watch the recoil climb.
+                http::get(port, "/input/hold?vk=256&down=1", resp);
+                double peak = pitch0;
+                for (int i = 0; i < 12; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    if (!http::get(port, "/sdk/shader-params", resp)) {
+                        continue;
+                    }
+                    double p = 0.0;
+                    if (json_double(http::body_of(resp), "aim_pitch_deg", p) && p > peak) {
+                        peak = p;
+                    }
+                }
+                http::get(port, "/input/hold?vk=256&down=0", resp);
+                http::get(port, "/input/release", resp);
+
+                // WAIT FOR THE DECAY, DO NOT GUESS AT IT. Recoil recovery is a decay whose
+                // duration scales with how far the burst pushed the aim, so a fixed interval is
+                // right for one burst length and wrong for another: a 1400ms wait passed at a 5.6
+                // degree peak and failed at 9.2, leaving 0.82 degrees still in flight. Poll until
+                // it settles, bounded, and let the assertion below judge where it settled.
+                double pitch1 = -999.0;
+                for (int i = 0; i < 25; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    double p = 0.0;
+                    if (!http::get(port, "/sdk/shader-params", resp) ||
+                        !json_double(http::body_of(resp), "aim_pitch_deg", p)) {
+                        continue;
+                    }
+                    const bool settled = pitch1 > -900.0 && fabs(p - pitch1) < 0.01;
+                    pitch1 = p;
+                    if (settled) {
+                        break;
+                    }
+                }
+                printf("[fixture] recoil: pitch %+.4f -> peak %+.4f -> %+.4f deg\n",
+                       pitch0, peak, pitch1);
+                // The rise is the assertion: it proves the weapon fired AND that this accessor
+                // tracks the axis recoil acts on. Live it reaches ~2.2 degrees on a held burst.
+                // ALIVE RIGHT NOW, not merely alive when the suite started. A corpse's aim is
+                // frozen -- measured as `pitch +1.9293 -> peak +4.3183 -> +4.3183`, where the
+                // final reading equalling the peak EXACTLY is the tell that nothing was decaying.
+                long long shot_spawns = 0;
+                if (http::get(port, "/sdk/spawns?type=6", resp)) {
+                    json_int(http::body_of(resp), "appeared", shot_spawns);
+                }
+                // A SHOT DEMONSTRABLY HAPPENED, or there is nothing here to measure.
+                const bool live_now = player_alive_at(port) && shot_spawns > 0;
+                check_armed(g_can_fire && live_now, peak - pitch0 > 0.5,
+                      "holding the trigger raises the aim's pitch -- recoil, which both proves the "
+                      "shot happened and that this is the axis it acts on");
+                // And it comes back, so the suite has not left the player aiming at the ceiling.
+                // RETRACTED, WITH THE MEASUREMENT THAT DISPROVED IT. This previously asserted
+                // "the recoil recovers, so firing leaves the aim where it found it". That is FALSE
+                // on this build. Measured directly, with the player alive at full health and the
+                // world still (1157 idle frames), the aim CLIMBED across four consecutive bursts
+                // and stayed there:
+                //
+                //   200ms   start +5.332  peak +5.332  after 6s +6.431
+                //   600ms   start +6.431  peak +6.431  after 6s +5.936
+                //   1200ms  start +5.936  peak +7.522  after 6s +7.522   (residual = 100% of kick)
+                //   2000ms  start +7.522  peak +8.623  after 6s +8.623   (residual = 100% of kick)
+                //
+                // Sustained fire walks the aim up permanently -- the engine has a
+                // FireRecoilRecoverFactor and it plainly does not return the full kick. The old
+                // assertion passed only because short bursts from a level aim happen to land back
+                // near zero, which is a coincidence of the starting pose rather than an invariant.
+                // A VR mod inherits this: it must expect to pull the aim back itself.
+                //
+                // So the suite stops asserting the engine tidies up and DOES THE TIDYING, through
+                // the same public look primitive a mod would use -- and asserts that closing the
+                // loop works, which is a claim about `sdk::Input::send_mouse_look` and
+                // `PlayerMgr::aim_pitch` together rather than about the engine's generosity.
+                const double cur = drive_pitch_to(port, pitch0);
+
+                printf("[fixture] recoil: aim restored to %+.3f (from %+.3f, target %+.3f)\n",
+                       cur, pitch1, pitch0);
+                check_armed(g_can_fire && live_now, fabs(cur - pitch0) < 0.5,
+                            "the aim can be driven back to where the burst found it through the "
+                            "public look primitive -- the engine does not do it, so a consumer must, "
+                            "and this proves a consumer can");
+            }
+        }
+
+    }
+
     // 6. Graceful unload proof: module vanishes, game keeps running.
     {
         check(run_injector(injector, "unload", dll, port) == 0, "injector --unload accepted");
@@ -9869,6 +10361,10 @@ int main(int argc, char** argv) {
     // a large number here means the run was weak however green it looks.
     if (g_not_exercised > 0) {
         printf("[fixture] %lld check(s) NOT EXERCISED", static_cast<long long>(g_not_exercised));
+        if (g_skipped_dry > 0) {
+            printf("[fixture]   %lld for want of a loaded weapon (the loadout ran dry and the checkpoint "
+                   "restore did not bring it back)\n", static_cast<long long>(g_skipped_dry));
+        }
         if (g_skipped_motion > 0) {
             printf(" | %lld need a settled world (stand still)", static_cast<long long>(g_skipped_motion));
         }

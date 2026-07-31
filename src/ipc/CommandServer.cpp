@@ -292,6 +292,15 @@ void handle_client(SOCKET c) {
         send_response(c, 200, g_handlers.objects());
         return;
     }
+    if (path.compare(0, 11, "/sdk/spawns") == 0) {
+        if (!g_handlers.spawns) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no spawns handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.spawns(path));
+        return;
+    }
+
 
     if (path.compare(0, 11, "/sdk/models") == 0) {
         if (!g_handlers.models) {
