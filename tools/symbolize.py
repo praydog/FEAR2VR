@@ -81,6 +81,17 @@ def main(offsets):
         print("  symbols: %s from %s%s" % (
             kinds.get(mi.SymType, mi.SymType), mi.LoadedPdbName.decode(errors="replace"),
             "  *** PDB DOES NOT MATCH THE BINARY ***" if mi.PdbUnmatched else ""))
+
+        # AN RVA IS ONLY MEANINGFUL AGAINST THE BUILD THAT PRODUCED IT, and this project rebuilds
+        # constantly. The same offset resolved to `memcpy_s` before a rebuild and to
+        # `__crt_strtox::divide` after -- both answers confident, one of them nonsense. So the
+        # binary's own link timestamp is printed for comparison against when the crash happened.
+        import datetime
+        linked = datetime.datetime.fromtimestamp(mi.TimeDateStamp, datetime.timezone.utc)
+        print("  binary linked: %s UTC  <-- an RVA from a DIFFERENT build resolves to garbage" %
+              linked.strftime("%Y-%m-%d %H:%M:%S"))
+        print("  file mtime   : %s" % datetime.datetime.fromtimestamp(
+            os.path.getmtime(DLL)).strftime("%Y-%m-%d %H:%M:%S"))
     for off in offsets:
         addr = 0x10000000 + off
         buf = SYMBOL_INFO()

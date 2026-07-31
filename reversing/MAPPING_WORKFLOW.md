@@ -5607,6 +5607,15 @@ fine. The lesson worth keeping: when a Win32 call fails with no error set, suspe
 alignment of a struct you are passing, not the data you are asking about. The tool now prints the
 module's symbol status on every run so the next failure says which half is wrong.
 
+### An RVA belongs to ONE build
+
+Immediately after fixing the lookup I ran the same offset again against a freshly rebuilt DLL and
+got `__crt_strtox::divide` instead of `memcpy_s` -- two confident answers, one of them nonsense,
+with nothing in the output to say which. This project rebuilds many times an hour, so that is the
+default state of affairs rather than an edge case. The tool now prints the binary's LINK TIMESTAMP
+so it can be compared against when the crash actually happened; if they differ, the answer is
+noise. Archive the PDB alongside a crash if it matters.
+
 First use: WER's `faulting_module=Fear2vr.dll offset=0xE7B10` resolves to
 `memcpy_s +0x62 (corecrt_memcpy_s.h:58)`. That is a leaf, so it names the fault but not the cause
 -- `sdk::mem::copy` wraps its memcpy in SEH and would have swallowed a fault there, so the caller
