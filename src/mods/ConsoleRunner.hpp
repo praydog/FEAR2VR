@@ -11,7 +11,7 @@
 //
 // The point is a development loop that survives a crash without a human: relaunch, inject, and put the game
 // back into a playable state by asking the game to do it. That turned out to be the only workable answer --
-// every synthetic-input route was measured and none drives the main menu (see reversing/MAPPING_WORKFLOW.MD),
+// every synthetic-input route was measured and none drives the main menu (see reversing/REVERSING_LESSONS.md),
 // while the commands the menu itself ultimately invokes are right there in the console registry.
 //
 // It is also the more useful artefact. A console command is how a mod triggers engine behaviour it has not

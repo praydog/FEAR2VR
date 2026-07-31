@@ -31,7 +31,7 @@
 // engine clock advancing by 0.000 -- and then the process HUNG, because holding it true runs the DirectInput
 // poll and the render path against a window that does not have focus, every iteration.
 //
-// The lesson is the one already recorded for the camera rotation in reversing/MAPPING_WORKFLOW.MD: when a
+// The lesson is the one already recorded for the camera rotation in reversing/ENGINE_NOTES.md: when a
 // value is recomputed or rewritten by an owner, fighting the store loses. Intercept the CALL that decides.
 // So this refuses the pause request at `ILTTimer::SetPaused`, which is one function, the engine's own API, and
 // the exact point where the decision becomes a memory write.

@@ -20,7 +20,7 @@
 // ViewHook can own LTObject_SetPosRot and replace the camera's rotation outright. That works, and it is how
 // this project first proved the view could be driven, but it seizes the ENTIRE rotation: the player's aim is
 // then something the mod has to re-derive and feed back, and a partial job produced the jitter and
-// rubber-banding recorded in reversing/MAPPING_WORKFLOW.MD.
+// rubber-banding recorded in reversing/ENGINE_NOTES.md.
 //
 // The outer operand is the composition point the engine already has. Nothing needs re-deriving.
 //

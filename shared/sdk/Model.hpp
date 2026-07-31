@@ -554,7 +554,7 @@ public:
     // this header.
     //
     // An attempt to verify it by walking every dirty skeleton from the frame hook wedged the
-    // payload; see reversing/MAPPING_WORKFLOW.md. A bounded few-per-frame refresh is the shape that
+    // payload; see reversing/REVERSING_LESSONS.md. A bounded few-per-frame refresh is the shape that
     // would work.
     //
     // nullopt when the socket cannot be resolved or the engine reports failure; the result is

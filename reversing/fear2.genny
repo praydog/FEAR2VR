@@ -763,7 +763,7 @@ class LTWorldClientBSP 0x170 {
     LTVector bounds_min        @0x04   // CONFIRMED: equals the +0x22C copy live
     LTVector bounds_max        @0x10   // CONFIRMED
     uint32_t world_tree_node_count @0x1C   // CONFIRMED == 649 live, exactly the nodes reached by walking world_tree_root
-    LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED three ways: climbing LTObject.world_tree_link's parent chain reaches it, WorldBSP/VisTree descend from it live, and it is THE ENGINE'S OWN STARTING NODE for insertion. That last one took two indirections to establish and is worth the trail: LTWorldTree_AddObject is `(world, object)` and starts at `world + 0x1C`; `world` comes from the object's owner (LTObject +0x34, the singleton g_LTObjectOwner) through owner vtable slot 3, which forwards to IWorldClientBSP vtable slot 13 -- and that slot is literally `lea eax, [ecx+4]; retn`. So `world` is `bsp + 4` and `world + 0x1C` is `bsp + 0x20`, i.e. this field. An earlier draft nearly recorded `world + 0x1C` as a field of some other class, because +0x1C OF THIS CLASS is the node count (649) and the arithmetic only closes once the +4 is followed. // AND IT IS GROWN, NOT LOADED: LTWorldClientBSP_Construct calls LTWorldTree_InitFields, which zeroes the bounds, sets world_tree_node_count to 1 and leaves this null -- there is no world-tree stream loader at all, unlike the vis tree beside it (IWorldClientBSP_LoadVisTree, vtable slot 18). Nodes appear as objects are inserted through LTWorldTree_AddObject. THAT IS THE STRUCTURAL REASON FOR THE STALENESS ASYMMETRY recorded in reversing/MAPPING_WORKFLOW.md: the vis tree is immutable level data loaded once, so nothing in it can go stale, while this tree indexes moving objects and is mutated at runtime -- so a stale entry here is native to the design rather than a fault.
+    LTWorldTreeNode* world_tree_root @0x20   // CONFIRMED three ways: climbing LTObject.world_tree_link's parent chain reaches it, WorldBSP/VisTree descend from it live, and it is THE ENGINE'S OWN STARTING NODE for insertion. That last one took two indirections to establish and is worth the trail: LTWorldTree_AddObject is `(world, object)` and starts at `world + 0x1C`; `world` comes from the object's owner (LTObject +0x34, the singleton g_LTObjectOwner) through owner vtable slot 3, which forwards to IWorldClientBSP vtable slot 13 -- and that slot is literally `lea eax, [ecx+4]; retn`. So `world` is `bsp + 4` and `world + 0x1C` is `bsp + 0x20`, i.e. this field. An earlier draft nearly recorded `world + 0x1C` as a field of some other class, because +0x1C OF THIS CLASS is the node count (649) and the arithmetic only closes once the +4 is followed. // AND IT IS GROWN, NOT LOADED: LTWorldClientBSP_Construct calls LTWorldTree_InitFields, which zeroes the bounds, sets world_tree_node_count to 1 and leaves this null -- there is no world-tree stream loader at all, unlike the vis tree beside it (IWorldClientBSP_LoadVisTree, vtable slot 18). Nodes appear as objects are inserted through LTWorldTree_AddObject. THAT IS THE STRUCTURAL REASON FOR THE STALENESS ASYMMETRY recorded in reversing/REVERSING_LESSONS.md: the vis tree is immutable level data loaded once, so nothing in it can go stale, while this tree indexes moving objects and is mutated at runtime -- so a stale entry here is native to the design rather than a fault.
     LTVisTree vis_tree         @0x24   // CONFIRMED embedded sub-object: IWorldClientBSP vtable slot 14 is `return this + 36`
     void* attach_resource      @0x44   // Created during world attach and returned by vtable slot 15 (`mov eax, [ecx+44h]`). IWorldClientBSP_AttachToServerWorld releases the previous value then reassigns from 0x4633DC; live it is a heap pointer (0x290298A8). What it owns is unmapped.
     uint8_t world_attached     @0x48   // CONFIRMED A LOADED-WORLD FLAG: LTWorldClientBSP_Construct zeroes it and IWorldClientBSP_AttachToServerWorld sets it to 1 on success only, in the same breath as world_attached_2 and the world_path copy. Vtable slot 7 is its getter. Live 1.
@@ -2400,7 +2400,7 @@ class CClientMgrCounterNode 0x40 {
 // against a stored double, which makes that a ~2 Hz periodic branch rather than a per-frame one.
 //
 // NINE MORE SLOTS NAMED (2026-07) from the binary's own error strings, reached through the pointer-variable
-// indirection IDA does not xref -- see MAPPING_WORKFLOW.md:
+// indirection IDA does not xref -- see REVERSING_LESSONS.md:
 //   20 ForceCurrentObjectPos   31 GetObjectShadowLOD   35 SetObjectShadowLOD
 //   50 SetLightIntensityScale  51 GetLightIntensityScale
 //   21/22 GetObjectTransform, 23/24 SetObjectTransform -- TWO ENTRY POINTS EACH for one operation, kept as
@@ -6151,7 +6151,7 @@ class CPlayerCamera 0x18C6 {
 //
 // THAT WAS ALREADY MAPPED. shared/sdk/Delegates.hpp holds it, derived properly by reading the shared
 // Delegate_Detach body (gameclient 0x100EE9F0) rather than from spacing. This pass wrote a new file over it and
-// had to restore it from git. See MAPPING_WORKFLOW.MD; the rule earned is "grep the SDK before adding a class,
+// had to restore it from git. See REVERSING_LESSONS.md; the rule earned is "grep the SDK before adding a class,
 // and never write a path you have not read".
 //
 // AND THE STRIDE-DERIVED LAYOUT WAS 4 BYTES OUT OF PHASE. Matching "a field equal to the object, then a data
@@ -6273,7 +6273,7 @@ class CPlayerCamera 0x18C6 {
 // already been seen in the very probe that identified the class. The float at +244 IS a real float (1.0f), so
 // the type boundary is exactly there and one field further would have been plausible either way.
 //
-// > MAPPING_WORKFLOW.MD's denormal warning was about reading values. It applies to a consumer's own guards too:
+// > REVERSING_LESSONS.md's denormal warning was about reading values. It applies to a consumer's own guards too:
 // > `max > 0.0f` is not a validity test on data that may not be float at all. The suite now asserts the four
 // > values EXACTLY and asserts they are whole numbers, since plausibility is the thing that failed.
 //
@@ -6510,7 +6510,7 @@ class CPlayerStats 0x120 {
 // by earlier passes in the EXE at 0x004051C0 and confirmed there on 191 of 191 skeleton node names and 42 of 42
 // animation names. Both facts are recorded IN THIS FILE, at the LTModelSocket name_hash and the animation-table
 // name_hash. The check that missed them was `grep -nE "919|hash" reversing/fear2.genny | head -8` -- the matches
-// were on lines 371 and 2806, past the cut. A truncated grep is not a check; see MAPPING_WORKFLOW.MD.
+// were on lines 371 and 2806, past the cut. A truncated grep is not a check; see REVERSING_LESSONS.md.
 //
 // WHAT IS GENUINELY NEW, once the credit is straight:
 //
@@ -6723,7 +6723,7 @@ class CPlayerStats 0x120 {
 // four other literals resolved fine. Its literal at .rdata 0x101D8624 is preceded by the float 280.0f, whose
 // exponent byte is 0x43 = 'C', so the run read "CWaterAffectsSpeed". Printable bytes are not a string. The fix
 // indexes each run AND its first three suffixes -- enough for one glued dword -- trading precision for reach
-// deliberately. See MAPPING_WORKFLOW.MD; this is the THIRD instance of a predicate testing how bytes LOOK when
+// deliberately. See REVERSING_LESSONS.md; this is the THIRD instance of a predicate testing how bytes LOOK when
 // the question was what a location is USED AS.
 //
 // TYPES 7 AND 8 ARE FLOATS, 6 IS UNDECIDED. Size alone says nothing about components, so the EngineVars test was

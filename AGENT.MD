@@ -56,7 +56,7 @@ inject → test → uninject with the game never restarting.
    a struct OFFSET answers a different question than the one you asked (67
    functions across unrelated classes, in the case that established this rule)
    and has produced a plausible WRONG answer every single time it was tried
-   here. See `reversing/MAPPING_WORKFLOW.MD`.
+   here. Every instance is recorded in `reversing/REVERSING_LESSONS.md`.
 
    **The workflow is: trap it, then read it.** Arm the watch, take the reported
    static address and caller candidates into IDA, decompile the writer, walk the
@@ -285,7 +285,7 @@ inject → test → uninject with the game never restarting.
     generated at all (`CPlayerCamera`, `CLTInput`, `GameTimer`, `LTInputDeviceMouse`,
     `LTInputDeviceKeyboard`, `LTNodeControlCell`, `PlayerZoom`). Regenerate deliberately, migrate
     the callsites in the same commit, and run the suite. Full record in
-    `reversing/MAPPING_WORKFLOW.MD`.
+    `reversing/REVERSING_LESSONS.md` (ReGenny and codegen).
 9b. **The SCHEMA owns layout. Codegen is unfrozen -- regenerate rather than hand-declare.**
     `shared/sdk/regenny/` is generated again (see 9a). The rule that follows from it: a structure
     or class layout belongs in `reversing/fear2.genny` and reaches the SDK through generated
@@ -381,8 +381,11 @@ shared/                       -- Log, HttpClient, sdk/ (fear2-sdk static lib)
 shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr,
                                  VisTree, Model (consumer-facing skeleton/material API)
 shared/sdk/regenny/           -- generated (sdk:generate) layout structs + Primitives.hpp shim
-reversing/                    -- fear2.genny (ground truth), MAPPING_WORKFLOW.md
-                                 (the mapping recipe), DatabaseMgrDump.lua, dump artifacts
+reversing/                    -- fear2.genny (ground truth for LAYOUT),
+                                 MAPPING_WORKFLOW.MD (the recipe -- start here),
+                                 ENGINE_NOTES.md (what is known about FEAR2),
+                                 REVERSING_LESSONS.md (technique + how it goes wrong),
+                                 INTERFACE_HOLDERS.md, DatabaseMgrDump.lua, dump artifacts
 src/                          -- Main.cpp (DllMain), AgentRuntime, Framework,
                                  Hooks, Mod/Mods, ipc/CommandServer
 src/mods/                     -- ViewHook (the view override), Watchpoints (hardware data
@@ -430,7 +433,7 @@ What it does, and why each step is what it is:
 4. **`/input/tap?vk=32`** to dismiss the load screen's "press to continue".
 
 **The menu CANNOT be driven by synthetic input.** Measured, not assumed -- all three
-routes fail, and the evidence is in `reversing/MAPPING_WORKFLOW.MD`:
+routes fail, and the evidence is in `reversing/REVERSING_LESSONS.md`:
 
 | route | result |
 |---|---|

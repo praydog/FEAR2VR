@@ -107,7 +107,7 @@ follows but nothing activates; the window-message key queue is never drained (bu
 input reads false); and a press written through the engine's own entry points is
 visible in the engine's own `MouseState` and ignored by Scaleform. So the script
 dispatches the game's own UI command instead -- `sdk::UiCommands`, the table a click
-goes through anyway. Full evidence in `reversing/MAPPING_WORKFLOW.MD`.
+goes through anyway. Full evidence in `reversing/REVERSING_LESSONS.md`.
 
 Once a world IS loaded, synthetic input works, because the game consumes it rather than
 the front end. That is why step 4 (a synthetic Space on the load screen) succeeds where
@@ -201,7 +201,7 @@ on something"* and *"writes +144 on THE camera"*).
 **Use this instead of scanning the binary for stores to an offset.** That scan
 answers a different question than you asked and has produced a plausible wrong
 answer every time it was tried in this project — 67 unrelated functions, in the case
-that established the rule. `reversing/MAPPING_WORKFLOW.MD` records each instance.
+that established the rule. `reversing/REVERSING_LESSONS.md` records each instance.
 
 **The loop is: trap → read in IDA → walk up → hook the decider.**
 
@@ -561,7 +561,7 @@ That gives three distinguishable outcomes, which is the whole point:
 
 A frozen fixture is the only case that downgrades to not-exercised, and it must
 say so loudly ("fixture not advancing — resume the game or investigate"), never
-pass quietly. See MAPPING_WORKFLOW Phase 2 for the mapping claim this cost us.
+pass quietly. See MAPPING_WORKFLOW.MD Phase 2 for the mapping claim this cost us.
 
 ### 4. Write the host-side test and run it against the game
 Add checks in `test/fixture_test_runner.cpp`. Build (`build.bat`), run:

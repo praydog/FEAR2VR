@@ -20,7 +20,7 @@ namespace sdk {
 // Every synthetic-input route was measured and none of them drives this main menu: SendInput moves the cursor
 // and the highlight follows, but no click or key ever activates an item; the window-message key queue is not
 // drained; and input written into the device array -- visible in the engine's own MouseState as a clean press
-// and release -- is ignored by the menu too. The full evidence is in reversing/MAPPING_WORKFLOW.MD.
+// and release -- is ignored by the menu too. The full evidence is in reversing/REVERSING_LESSONS.md.
 //
 // The menu's own dispatch table has none of those problems, because it is where the click was going anyway.
 //

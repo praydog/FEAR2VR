@@ -472,7 +472,7 @@ struct TransformQuality {
     float determinant;
 
     // The three verdicts, with the tolerances that were measured rather than chosen --
-    // see MAPPING_WORKFLOW on picking a tolerance against the type and coordinate range.
+    // see REVERSING_LESSONS.md on picking a tolerance against the type and coordinate range.
     bool rotation_matches;  // rotation_error < 0.002
     bool inverse_exact;     // inverse_error < 0.002 && translation_error < 0.05
     bool determinant_unit;  // |determinant - 1| < 0.01

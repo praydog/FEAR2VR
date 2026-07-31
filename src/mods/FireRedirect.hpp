@@ -17,7 +17,7 @@
 // object rotation, camera object rotation) found ZERO accessors unique to the
 // trigger being down, because the client replicates its rotation every frame
 // whether or not you fire. The ray is built and traced in gameserver.dll, by
-// `Weapon_FireServer` -- reversing/MAPPING_WORKFLOW.MD records the hunt.
+// `Weapon_FireServer` -- reversing/ENGINE_NOTES.md records the hunt.
 //
 // That function receives a descriptor:
 //

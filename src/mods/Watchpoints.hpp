@@ -15,7 +15,7 @@
 // we scanned the binary for instructions that store to a matching STRUCT OFFSET. That answers "what writes +144
 // on ANY object" -- 67 functions across unrelated classes -- when the question was "what writes THIS object's
 // +144". Every such scan in this project's history produced a plausible wrong answer, and each one cost hours.
-// The offset-collision false positive is documented at length in reversing/MAPPING_WORKFLOW.MD.
+// The offset-collision false positive is documented at length in reversing/REVERSING_LESSONS.md.
 //
 // A data breakpoint on the live address answers the actual question in one hit, with the accessing instruction,
 // the register state, and the stack. It replaces an external debugger for this workflow.

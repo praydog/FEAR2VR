@@ -8,7 +8,7 @@ key press -- which is exactly the kind of thing that stalls an unattended sessio
 WHY IT DOES NOT SYNTHESISE THE MENU CLICK
 -----------------------------------------
 Every synthetic-input route was measured against the main menu and none of them works (the evidence is in
-reversing/MAPPING_WORKFLOW.MD):
+reversing/REVERSING_LESSONS.md):
 
   * SendInput moves the cursor and the menu highlight follows it, but no click or key activates anything.
   * The window-message key queue is only drained when buffered input is active, which is false at the menu.

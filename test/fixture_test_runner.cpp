@@ -863,7 +863,7 @@ int main(int argc, char** argv) {
     // INJECT, the verified path. A `reload` variant was tried here to survive a dormant leftover
     // and it HUNG the run, so it is not kept: an unverified change to the harness that starts the
     // game is worse than the problem it addressed. The leftover state that motivated it is covered
-    // in reversing/MAPPING_WORKFLOW.md instead -- the real fix is not to wedge the payload.
+    // in reversing/REVERSING_LESSONS.md instead -- the real fix is not to wedge the payload.
     if (run_injector(injector, "inject", dll, port) != 0) {
         printf("[fixture] injection failed -- skipping (no injection rights?)\n");
         cleanup();
@@ -5056,7 +5056,7 @@ int main(int argc, char** argv) {
             //
             // So their difference is the bob OFFSET, not evidence that two distinct generations exist. What is
             // invariant is that both are readable and usable; whether they differ is a user setting, and it is
-            // reported. See MAPPING_WORKFLOW.md -- this also retracts the "the object lags the pose within the
+            // reported. See ENGINE_NOTES.md -- this also retracts the "the object lags the pose within the
             // frame" reading, which was bob all along.
             json_bool(body, "pmgr_pose_generations_differ", pm_gens);
             printf("[fixture] camera pose generations %s -- they diverge only while view bob is enabled\n",
@@ -5674,7 +5674,7 @@ int main(int argc, char** argv) {
                 //
                 // The suite does NOT arm the override: it steers the live camera, and a test that jolts the
                 // player's view on every run would be a defect regardless of what it proved. The capability is
-                // established by a recorded measurement (reversing/MAPPING_WORKFLOW.md -- yaw pinned at zero
+                // established by a recorded measurement (reversing/ENGINE_NOTES.md -- yaw pinned at zero
                 // spread against ~4400 live look events, versus 237 degrees of spread unoverridden).
                 //
                 // What IS asserted here is the part that must hold in every state: the writer refuses values
@@ -10529,7 +10529,7 @@ int main(int argc, char** argv) {
 
             // MEASURE THE ANIMATION FIRST. The arm is animated, so a before/after comparison across
             // a wall-clock window measures idle sway as much as it measures our offset -- the
-            // project has been bitten by exactly this before (see MAPPING_WORKFLOW's note on
+            // project has been bitten by exactly this before (see REVERSING_LESSONS.md's note on
             // comparing against an animated value). Measured here: a 16.00 unit offset showed as
             // 19.80 units of muzzle movement, and the 3.8 difference was the arm, not an error.
             //
@@ -10998,7 +10998,7 @@ int main(int argc, char** argv) {
                 // ---- THE SERVER'S OWN FIRE DESCRIPTOR PREDICTS THE IMPACTS ----
                 //
                 // FireRedirect hooks the server's hitscan path and records the direction the
-                // engine was about to fire (reversing/MAPPING_WORKFLOW.MD). If our belief about
+                // engine was about to fire (reversing/ENGINE_NOTES.md). If our belief about
                 // that field is right, its bearing must agree with where the bullets were
                 // actually seen to land -- the two numbers come from completely different
                 // places, one read out of a struct in gameserver.dll and one measured from

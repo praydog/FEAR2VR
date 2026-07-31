@@ -47,7 +47,7 @@ constexpr const char* kFirePattern =
 // return address is at esp+0 and a8 is seven slots past a1.
 constexpr uintptr_t kDescriptorStackOffset = 4 + 7 * 4;
 
-// Fields within the descriptor, established in MAPPING_WORKFLOW.MD.
+// Fields within the descriptor, established in ENGINE_NOTES.md.
 constexpr uintptr_t kDescriptorDirection = 0x00;
 constexpr uintptr_t kDescriptorOrigin = 0x0C;
 
