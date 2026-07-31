@@ -1220,6 +1220,35 @@ never once been evidence** -- only the impact bearing has.
 What remains unexplained is where the trace actually gets its direction. The server has the player's
 replicated rotation independently of the message, and that is the next candidate.
 
+### "Redirected on the server, just not drawn" -- tested, and NO
+
+The obvious reading of the result above is that the server does fire where we asked and the client
+merely draws the old shot. It does not survive the test. Fire two bursts with the same shot count,
+one redirected 60 degrees, and list EVERY spawn's bearing instead of the dominant one:
+
+                     shots  writes  server-desc   spawns
+    baseline           7      0       -34.56      10 @ ~-40 deg (2427..3607), 4 ambient @ +120
+    redirect +60       7      7       -94.56      10 @ ~-40 deg (2718..3016), 5 ambient @ +120
+
+**No second cluster.** Nothing appears near -94 degrees. The impacts sit 2400-3600 units out on real
+geometry and are objects in the client's own manager, so a server-side trace that hit something
+would have to produce them somewhere -- and it produces none.
+
+The honest limit of the instrument: if impact effects were entirely client-PREDICTED, a server-side
+trace would be invisible to it. Closing that needs a server-authoritative consequence, and the
+cheapest is DAMAGE -- aim away from an enemy, redirect into it, and see whether it takes damage.
+That needs a live target, which the corridor these measurements were taken in does not have.
+
+Two practical notes fell out of getting this measurement right, both of which invalidated an earlier
+attempt at it:
+
+- **The pool is not the clip.** AmmoKeeper holds the reserve up, and a burst still runs the MAGAZINE
+  dry -- a run without a reload tap fired once and then not at all, which read as "the redirect
+  stopped the gun". Reload before every burst and check the shot count.
+- **Check the weapon TYPE before interpreting a zero.** With a projectile weapon equipped the
+  hitscan path never runs, the server descriptor reads (0,0,0), and every bearing derived from it is
+  meaningless. Slot 1 is hitscan on this loadout; `fr_calls` incrementing is the confirmation.
+
 ### Weapon_TraceShot is the HITSCAN branch only
 
 `fr_calls` counting zero is not a broken hook. The weapon database's `Type` selects hitscan (0,
