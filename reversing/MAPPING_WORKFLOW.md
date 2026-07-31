@@ -5621,3 +5621,54 @@ First use: WER's `faulting_module=Fear2vr.dll offset=0xE7B10` resolves to
 -- `sdk::mem::copy` wraps its memcpy in SEH and would have swallowed a fault there, so the caller
 is an UNGUARDED bulk copy. The in-process handler now resolves names and source lines for our own
 frames while leaving engine frames as module+offset, so the next occurrence names its own caller.
+
+## WORLD SCALE: ONE UNIT IS ONE CENTIMETRE, and the engine says so
+
+`CClientMgr_GetGlobalForce` reports `(0, -980, 0)`. Earth gravity is 9.80665 m/s^2, so 980 units/s^2
+is 99.93 units per metre -- and 980 is not a coincidence, it is 9.8 m/s^2 written in centimetres.
+
+**The previous value was 64, invented by me and flagged "provisional".** It was 36% wrong, and
+nothing looked broken: every controller position was silently under-scaled while remaining
+plausible. That is exactly what this project's rules forbid, and it survived because "provisional"
+was treated as permission rather than as a debt.
+
+The anthropometric anchors were all worse, and disagreed with each other:
+
+| anchor | implies |
+|---|---|
+| `pmgr_eye_offset_len` 75.6 units at a 1.70 m eye height | 44 u/m |
+| `physics_stair_height` 40 units at a 0.20 m riser | 200 u/m |
+| gravity 980 units/s^2 | **100 u/m** |
+
+Neither field measured what its name suggested -- the "eye offset" is not eye-height-above-feet,
+and the "stair height" is a maximum step-up, which at 100 u/m is 0.40 m and entirely ordinary.
+Using the ENGINE's own constant rather than inferring from anatomy is the same move as calling
+`GetActiveCameraClamp` instead of reimplementing the clamp selection.
+
+Verified after the change: 0.25 m of controller travel moves the weapon 25.00 units, 0.10 -> 10.00,
+0.30 -> 29.99. The fixture asserts the PREMISE (global force magnitude is 980) rather than the
+conclusion, so a level with different gravity reports itself instead of quietly mis-scaling hands.
+
+## The crash hunt: two suspects cleared, one instrument fixed
+
+Two access violations, both inside our own DLL, both in CRT routines:
+
+    0xE7B10 -> memcpy_s +0x62
+    0xE7CF0 -> common_vsprintf +0x1F     (i.e. inside printf-style formatting)
+
+**Why the handler stayed silent through both**: its first act was `LOGX`, which formats -- so a
+fault inside formatting re-enters the faulting code, faults again inside the exception filter, and
+takes the process down with nothing written. It now writes a hand-rolled hex record through a raw
+`WriteFile` first: no varargs, no heap, nothing that can fail the same way twice.
+
+**Suspect cleared -- the giant printf payload.** `build_targets_json` builds its JSON with a single
+194-specifier format string, and a misaligned specifier there would produce exactly these symptoms
+intermittently. Two hand-written parsers failed to audit it, so the compiler did it instead:
+`/W4` enables MSVC's printf-family checking (C4477 and friends), and a forced full rebuild produced
+**14 warnings, none of them format-related**. The format string is correct. Worth knowing the build
+runs at default `/W1`, so that checking is normally off -- re-enable `/W4` on `fear2-core` to redo it.
+
+**Suspect cleared -- a plain unload race.** Eight inject/unload cycles with no suite activity are
+clean, so it needs something the suite does.
+
+Still open. It reproduces roughly once in five to ten suite runs.

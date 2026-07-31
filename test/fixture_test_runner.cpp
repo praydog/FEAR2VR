@@ -345,6 +345,12 @@ void restore_fixture_at(int32_t port, const char* why) {
 // frames is one full recovery. A shorter window could sample mid-interpolation and call it settled.
 constexpr double kQuiescentFrames = 90.0;
 
+// Frames the WEAPON must have been still for before a measurement of where it is means anything.
+// Separate from kQuiescentFrames because it is a different subject: the world can be settled while
+// the arm is mid-sway, and the arm's motion is event-driven rather than continuous, so sampling
+// "drift just beforehand" does not predict it.
+constexpr double kWeaponStillFrames = 100.0;
+
 bool world_is_quiescent(const std::string& body) {
     double still = -1.0;
     if (!json_double(body, "ws_still_frames", still)) {
@@ -2110,7 +2116,8 @@ int main(int argc, char** argv) {
                     // before this runs, so wait for a sample worth judging rather than
                     // asserting on whatever happened to accumulate. A player who is moving
                     // never produces one, and that is a skip, not a failure.
-                    constexpr double kStillFramesNeeded = 100.0;
+                    // (hoisted to file scope -- see kWeaponStillFrames)
+                    constexpr double kStillFramesNeeded = kWeaponStillFrames;
                     double wa_worst = -1.0, wa_still = -1.0;
                     bool wa_valid = false;
                     std::string wbody = body;
@@ -10599,7 +10606,21 @@ int main(int argc, char** argv) {
                 // Tolerance DERIVED from what the arm does on its own, doubled because the idle
                 // sample and the measured window are two draws from the same distribution and
                 // either can be the larger.
-                check(fabs(moved - fabs(off_y)) < 1.0 + 2.0 * idle_drift,
+                // GATED ON THE WEAPON BEING AT REST, the same precondition the muzzle-geometry
+                // check above already uses. Measuring idle drift immediately beforehand is not
+                // enough: the arm's motion is EVENT-driven, not continuous, so a window that was
+                // quiet for the sample can still contain a sway or a bob. Measured failing that
+                // way -- 20.34 units of muzzle movement against a 25.00 offset with idle drift of
+                // only 0.07, so the naive bound rejected a difference the sample could not predict.
+                std::string wb;
+                if (http::get(port, "/sdk/targets", resp)) {
+                    wb = http::body_of(resp);
+                }
+                double w_still = 0.0;
+                const bool weapon_at_rest = json_double(wb, "wa_still_frames", w_still) &&
+                                            w_still >= kWeaponStillFrames;
+                check_gated(weapon_at_rest, "weapon in motion", g_skipped_motion,
+                            fabs(moved - fabs(off_y)) < 1.0 + 2.0 * idle_drift,
                       "the WEAPON follows by the same distance -- the controller drives the socket "
                       "and the attachment chain carries it, which is the mechanism a VR hand needs");
             }
