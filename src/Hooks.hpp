@@ -38,8 +38,17 @@ public:
     // `name` is diagnostic-only (logs, /health).
     bool install(std::string name, void* target, void* destination);
 
+    // Install a MID-function hook: the detour receives the full register
+    // context and the original code continues afterwards. Needed for targets
+    // whose arguments arrive in non-standard registers (`__userpurge`), where
+    // no C++ signature can express the call and an inline hook cannot forward
+    // it. Retired by the same retire()/retire_one() as inline hooks -- the
+    // graceful-uninject contract covers both kinds or it covers neither.
+    bool install_mid(std::string name, void* target, safetyhook::MidHookFn destination);
+
     // Move an already-created hook under management.
     void adopt(std::string name, safetyhook::InlineHook hook);
+    void adopt_mid(std::string name, safetyhook::MidHook hook);
 
     // Disable every hook. Returns false if ANY disable() failed (fail-closed:
     // the caller MUST NOT unmap the DLL in that case).
@@ -55,7 +64,7 @@ public:
     // for detours that must call their original through the trampoline.
     safetyhook::InlineHook* find(const std::string& name);
 
-    size_t count() const { return m_hooks.size(); }
+    size_t count() const { return m_hooks.size() + m_mid_hooks.size(); }
     size_t retired_count() const { return m_retired; }
 
     Hooks() = default;
@@ -65,6 +74,7 @@ public:
 private:
     std::mutex m_mux;
     std::vector<std::pair<std::string, safetyhook::InlineHook>> m_hooks;
+    std::vector<std::pair<std::string, safetyhook::MidHook>> m_mid_hooks;
     size_t m_retired{0};
     bool m_retire_started{false};
 };

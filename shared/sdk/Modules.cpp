@@ -39,6 +39,23 @@ uintptr_t Modules::scan_game_client(const char* pattern, const char* name) const
     return *result;
 }
 
+uintptr_t Modules::scan_game_server(const char* pattern, const char* name) const {
+    // gameserver.dll is LAZY (see initialize()): absent at the main menu, present
+    // once a session starts. A miss here is therefore not necessarily an error,
+    // so callers are expected to retry rather than treat 0 as fatal.
+    if (game_server()->handle == nullptr) {
+        LOGX("[sdk] scan '%s': gameserver.dll module unresolved (no session yet?)", name);
+        return 0;
+    }
+    const auto result = utility::scan(game_server()->handle, pattern);
+    if (!result) {
+        LOGX("[sdk] pattern MISS: %s", name);
+        return 0;
+    }
+    LOGX("[sdk] %-22s -> 0x%08" PRIXPTR, name, *result);
+    return *result;
+}
+
 bool Modules::initialize() {
     // Statically initialized: the table exists from image load; only the
     // resolution pass happens here.

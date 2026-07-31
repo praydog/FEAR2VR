@@ -10994,6 +10994,45 @@ int main(int argc, char** argv) {
 
                 const double aim0 = aim_at_measure;
                 const double dist0 = range_at_measure;
+
+                // ---- THE SERVER'S OWN FIRE DESCRIPTOR PREDICTS THE IMPACTS ----
+                //
+                // FireRedirect hooks the server's hitscan path and records the direction the
+                // engine was about to fire (reversing/MAPPING_WORKFLOW.MD). If our belief about
+                // that field is right, its bearing must agree with where the bullets were
+                // actually seen to land -- the two numbers come from completely different
+                // places, one read out of a struct in gameserver.dll and one measured from
+                // spawned impact effects, so agreement is not something a coding error
+                // manufactures.
+                //
+                // Tolerance is loose on purpose: weapon spread genuinely scatters pellets, and
+                // the measured bearing is the dominant direction among them. A wrong field or a
+                // flipped convention misses by tens of degrees, not by ten.
+                {
+                    std::string fr;
+                    if (http::get(port, "/xr/head", fr)) {
+                        const std::string body = http::body_of(fr);
+                        double ex = 0.0, ez = 0.0;
+                        long long calls = 0;
+                        const bool have = json_double(body, "fr_engine_x", ex) &&
+                                          json_double(body, "fr_engine_z", ez) &&
+                                          json_int(body, "fr_calls", calls);
+                        check_armed(g_can_fire, have && calls > 0,
+                                    "the server's fire path is hooked and saw the burst -- shots "
+                                    "reach gameserver.dll, which is where the ray is built");
+                        if (have && calls > 0 && (fabs(ex) > 1e-6 || fabs(ez) > 1e-6)) {
+                            const double predicted = atan2(ez, ex) * 57.29577951308232;
+                            double err = predicted - b0;
+                            while (err > 180.0) { err -= 360.0; }
+                            while (err < -180.0) { err += 360.0; }
+                            printf("[fixture] fire descriptor: predicts bearing %.2f, impacts "
+                                   "measured %.2f (err %+.2f deg)\n", predicted, b0, err);
+                            check_armed(got0, fabs(err) < 12.0,
+                                        "the direction in the server's fire descriptor points where "
+                                        "the bullets were seen to land");
+                        }
+                    }
+                }
                 const bool got1 = fire_and_measure(kYaw, b1, agree1, total1);
                 const double aim1 = aim_at_measure;
                 const double dist1 = range_at_measure;

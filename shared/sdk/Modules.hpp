@@ -121,6 +121,10 @@ public:
     // DEFINITIVE resolution.
     uintptr_t scan_game_client(const char* pattern, const char* name) const;
 
+    // Scan gameserver.dll. Returns 0 when the module is not resolved yet, which
+    // is the NORMAL state at a main menu -- retry once a session exists.
+    uintptr_t scan_game_server(const char* pattern, const char* name) const;
+
 private:
     Modules() = default;
 

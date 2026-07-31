@@ -5798,3 +5798,55 @@ rather than merely a workable one:
 The hook target is in a different module from everything the mod currently touches. `gameserver.dll`
 is loaded in single player -- FEAR 2 runs a local server -- so this is reachable, but the mod's
 module scanning presently looks at the exe and gameclient only.
+
+## Hooking the server fire path: one capability gained, one negative result banked
+
+`FireRedirect` (`src/mods/FireRedirect.hpp`) hooks gameserver.dll and now sees every shot.
+
+### What works
+
+The descriptor's direction **predicts where bullets land**. The fixture reads the direction out of
+a struct in gameserver.dll and compares it against the impact bearing measured from spawned effect
+objects -- two numbers from unrelated sources:
+
+    [fixture] fire descriptor: predicts bearing -34.56, impacts measured -34.71 (err +0.15 deg)
+
+Manual runs at a different heading agreed just as closely (88.93 predicted / 88.74 measured, and
+88.65 / 88.03). That confirms the descriptor layout empirically rather than by reading.
+
+### What does not work, measured three times
+
+Writing that direction does not steer the shot. Three hook points, each verified to be executing
+and writing:
+
+| hook point                     | asked    | impacts moved |
+|--------------------------------|----------|---------------|
+| `Weapon_FireServer` entry      | +40 deg  | +1.23 deg     |
+| `Weapon_FireHitscanVector` entry | +25 deg | +0.06 deg    |
+| `Weapon_TraceShot` entry       | +25 deg  | +0.29 deg     |
+
+**`fr_writes` incremented every time.** A hook on the right function at the wrong instant is
+indistinguishable from a working one if you only count writes, which is why every attempt had to
+end at the impact bearing. The reading these support: `descriptor+0` is a *record* of the aim,
+derived alongside the trace from the weapon's own state, not the input the trace consumes. The
+field that matters is further upstream and is not yet found.
+
+Two functions were mis-read along the way, and both mistakes were only caught by measuring:
+
+- `sub_100B94A0(desc)` looked like the trace. It is an AABB containment test of `desc+12` against
+  object `desc+44` -- a muzzle-inside-target contact case. The normal shot takes its `else`.
+- `sub_1014D350(..., desc)` runs before any work in `Weapon_FireHitscanVector` and refills the
+  direction, which is what discarded the write at that hook point.
+
+### kananlib pattern wildcards are ONE character, not two
+
+`buildPattern` strips whitespace and then treats **each `?` as one wildcard byte**. IDA-style `??`
+therefore means TWO bytes and silently lengthens the pattern -- it does not error, it just never
+matches. A pattern here missed for exactly that reason. Every other pattern in this repo happens
+to be wildcard-free, so nothing had exercised it before.
+
+### Mid hooks
+
+`Hooks` now manages `safetyhook::MidHook` alongside `InlineHook`, retired by the same
+`retire()`/`retire_one()`. Mid hooks are required for `__userpurge` targets like these, where
+arguments arrive in registers no C++ signature can express.

@@ -38,6 +38,26 @@ void Hooks::adopt(std::string name, safetyhook::InlineHook hook) {
     m_hooks.emplace_back(std::move(name), std::move(hook));
 }
 
+bool Hooks::install_mid(std::string name, void* target, safetyhook::MidHookFn destination) {
+    auto hook = safetyhook::create_mid(target, destination);
+    if (!hook) {
+        LOGX("[hooks] FAILED to install mid %s at %p", name.c_str(), target);
+        return false;
+    }
+    LOGX("[hooks] installed mid %s at %p", name.c_str(), target);
+    adopt_mid(std::move(name), std::move(hook));
+    return true;
+}
+
+void Hooks::adopt_mid(std::string name, safetyhook::MidHook hook) {
+    std::scoped_lock _{m_mux};
+    if (m_retire_started) {
+        LOGX("[hooks] WARNING: adopting mid %s AFTER retire started; disabling immediately", name.c_str());
+        (void)hook.disable();
+    }
+    m_mid_hooks.emplace_back(std::move(name), std::move(hook));
+}
+
 safetyhook::InlineHook* Hooks::find(const std::string& name) {
     std::scoped_lock _{m_mux};
     for (auto& [hook_name, hook] : m_hooks) {
@@ -65,6 +85,23 @@ bool Hooks::retire_one(const std::string& name) {
             return false;
         }
     }
+    // Same search over mid hooks -- a caller retiring "weapon_fire" by name must
+    // not have to know which kind it is.
+    for (auto& [hook_name, hook] : m_mid_hooks) {
+        if (hook_name == name) {
+            if (!hook || !hook.enabled()) {
+                return false;
+            }
+            const auto result = hook.disable();
+            if (result) {
+                LOGX("[hooks] retired mid %s", name.c_str());
+                ++m_retired;
+                return true;
+            }
+            LOGX("[hooks] FAILED to retire mid %s (error %d)", name.c_str(), static_cast<int>(result.error().type));
+            return false;
+        }
+    }
     return false;
 }
 
@@ -87,6 +124,22 @@ bool Hooks::retire() {
             ok = false;
         } else {
             LOGX("[hooks] retired %s", name.c_str());
+            ++m_retired;
+        }
+    }
+    // Mid hooks are part of the SAME contract: if any of these stays armed the
+    // DLL must not unmap, exactly as for inline hooks.
+    for (auto& [name, hook] : m_mid_hooks) {
+        if (!hook || !hook.enabled()) {
+            continue;
+        }
+        auto result = hook.disable();
+        if (!result) {
+            LOGX("[hooks] FAILED to retire mid %s (error %d) -- fail-closed, DLL stays mapped",
+                 name.c_str(), static_cast<int>(result.error().type));
+            ok = false;
+        } else {
+            LOGX("[hooks] retired mid %s", name.c_str());
             ++m_retired;
         }
     }

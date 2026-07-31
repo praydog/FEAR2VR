@@ -34,6 +34,7 @@
 #include "mods/WeaponAgreement.hpp"
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
+#include "mods/FireRedirect.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
@@ -10131,6 +10132,7 @@ bool Framework::initialize() {
     Mods::get().add(&HudPassHook::get());
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
+    Mods::get().add(&FireRedirect::get());
     // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
     Mods::get().add(&ViewmodelDecouple::get());
     // Closed-loop turning: snap turn and recentre, both of which need a heading rather than a delta.
@@ -10314,11 +10316,29 @@ bool Framework::initialize() {
         auto& rt = vr::simulated_runtime();
         auto& mod = VR::get();
         constexpr double kDeg = 3.14159265358979 / 180.0;
+        // The route below refuses a bad direction rather than normalizing it; this
+        // carries that refusal into the response, since this handler answers with a
+        // state document instead of an HTTP status.
+        bool fire_aim_refused = false;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/reset") {
             rt.reset();
+        } else if (route == "/xr/fire-aim") {
+            // Redirect the SERVER's fire ray (see mods/FireRedirect.hpp). Takes a
+            // world-space unit direction; a non-unit one is refused rather than
+            // normalized, so a caller's scaling error shows up here instead of as
+            // a subtly wrong aim nobody can see.
+            auto& fr = FireRedirect::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                fr.clear_direction();
+            } else {
+                const auto x = static_cast<float>(webapi_query_double(q, "x", 0.0));
+                const auto y = static_cast<float>(webapi_query_double(q, "y", 0.0));
+                const auto z = static_cast<float>(webapi_query_double(q, "z", 0.0));
+                fire_aim_refused = !fr.set_direction(x, y, z);
+            }
         } else if (route == "/xr/trigger") {
             mod.set_trigger_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/input") {
@@ -10435,6 +10455,25 @@ bool Framework::initialize() {
             } else {
                 jf.b("view_readable", false);
             }
+
+            // FIRE REDIRECTION. `fr_calls` counts shots the server actually took
+            // while we were watching, which is the difference between "the hook is
+            // installed" and "the hook is on the path shooting goes through".
+            // `fr_engine_*` is what the engine was about to fire before we wrote,
+            // so a test can prove replacement rather than coincidence.
+            const auto& fr = FireRedirect::get();
+            const auto ed = fr.last_engine_dir();
+            const auto wd = fr.last_written_dir();
+            const auto og = fr.last_origin();
+            jf.b("fr_hooked", fr.hooked())
+              .b("fr_armed", fr.armed())
+              .b("fr_aim_refused", fire_aim_refused)
+              .u("fr_target", static_cast<unsigned long long>(fr.target()))
+              .u("fr_calls", fr.calls())
+              .u("fr_writes", fr.writes())
+              .f("fr_engine_x", ed[0], 4).f("fr_engine_y", ed[1], 4).f("fr_engine_z", ed[2], 4)
+              .f("fr_written_x", wd[0], 4).f("fr_written_y", wd[1], 4).f("fr_written_z", wd[2], 4)
+              .f("fr_origin_x", og[0], 3).f("fr_origin_y", og[1], 3).f("fr_origin_z", og[2], 3);
         }
         return out;
     };
