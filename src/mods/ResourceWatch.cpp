@@ -55,6 +55,8 @@ HRESULT __stdcall create_texture(void* self, UINT w, UINT h, UINT levels, DWORD 
     // Record BEFORE forwarding. The original can fail, and a REFUSED managed allocation is still
     // the engine having asked for one -- which is exactly what the D3D9Ex question is about.
     ResourceWatch::get().note_create(ResourceWatch::Kind::Texture, static_cast<uint32_t>(pool));
+    ResourceWatch::get().note_texture(static_cast<uint32_t>(pool), usage, static_cast<uint32_t>(fmt),
+                                      w > h ? w : h);
     auto fn = original_of<CreateTexture_t>(kTexHook);
     return fn != nullptr ? fn(self, w, h, levels, usage, fmt, pool, out, shared) : D3DERR_INVALIDCALL;
 }
@@ -113,6 +115,39 @@ void ResourceWatch::note_create(Kind kind, uint32_t pool) {
     m_total.fetch_add(1, std::memory_order_relaxed);
 }
 
+void ResourceWatch::note_texture(uint32_t pool, uint32_t usage, uint32_t format, uint32_t edge) {
+    if (pool != 1) {  // only the managed population is in question
+        return;
+    }
+    // D3DUSAGE_DYNAMIC (0x200) decides whether this could live in DEFAULT at all.
+    if ((usage & 0x200u) != 0) {
+        m_managed_dynamic.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_managed_static.fetch_add(1, std::memory_order_relaxed);
+    }
+    if ((usage & 1u) != 0) {  // D3DUSAGE_RENDERTARGET
+        m_managed_rt.fetch_add(1, std::memory_order_relaxed);
+    }
+    uint32_t prev = m_largest_edge.load(std::memory_order_relaxed);
+    while (edge > prev && !m_largest_edge.compare_exchange_weak(prev, edge, std::memory_order_relaxed)) {
+    }
+    if (format < kFormatSlots) {
+        m_formats[format].fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_format_overflow.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+uint32_t ResourceWatch::distinct_formats() const {
+    uint32_t n = 0;
+    for (size_t i = 0; i < kFormatSlots; ++i) {
+        if (m_formats[i].load(std::memory_order_relaxed) != 0) {
+            ++n;
+        }
+    }
+    return n + (m_format_overflow.load(std::memory_order_relaxed) != 0 ? 1 : 0);
+}
+
 uint64_t ResourceWatch::count(Kind kind, size_t pool) const {
     const auto k = static_cast<size_t>(kind);
     if (k >= static_cast<size_t>(Kind::kCount) || pool >= kPools) {
@@ -139,6 +174,14 @@ void ResourceWatch::reset_counts() {
         }
     }
     m_total.store(0, std::memory_order_relaxed);
+    m_managed_dynamic.store(0, std::memory_order_relaxed);
+    m_managed_static.store(0, std::memory_order_relaxed);
+    m_managed_rt.store(0, std::memory_order_relaxed);
+    m_largest_edge.store(0, std::memory_order_relaxed);
+    m_format_overflow.store(0, std::memory_order_relaxed);
+    for (size_t i = 0; i < kFormatSlots; ++i) {
+        m_formats[i].store(0, std::memory_order_relaxed);
+    }
 }
 
 bool ResourceWatch::install() {

@@ -71,10 +71,36 @@ public:
     // level load allocate", not a running total since injection.
     void reset_counts();
 
+    // ---- WHAT THE MANAGED ALLOCATIONS ARE -----------------------------------
+    //
+    // Knowing that 99% of allocations are MANAGED says the D3D9Ex upgrade is large.
+    // Whether it is POSSIBLE depends on what those resources are, because a
+    // DEFAULT-pool texture CANNOT BE LOCKED and D3D9 has no way to supply initial
+    // data at creation -- so anything the engine fills by locking cannot simply be
+    // moved to DEFAULT. It would need the SYSTEMMEM-staging-plus-UpdateTexture dance,
+    // which is a different and much larger change than swapping an argument.
+    //
+    // D3DUSAGE_DYNAMIC is the discriminator: a dynamic resource is lockable in
+    // DEFAULT, a static one is not.
+    //
+    // This is also plain consumer information -- a mod sizing an eye texture wants to
+    // know which formats and dimensions the engine already uses.
+    uint64_t managed_dynamic() const { return m_managed_dynamic.load(std::memory_order_relaxed); }
+    uint64_t managed_static() const { return m_managed_static.load(std::memory_order_relaxed); }
+    uint64_t managed_rendertarget() const { return m_managed_rt.load(std::memory_order_relaxed); }
+
+    // The largest managed texture seen, which bounds what a staging path would cost.
+    uint32_t largest_managed_edge() const { return m_largest_edge.load(std::memory_order_relaxed); }
+    uint32_t distinct_formats() const;
+
     // Called by the detours. Public because the interception points are free functions with COM
     // signatures -- they cannot be members -- and a friend declaration per detour would be five
     // lines of ceremony to hide a counter increment. Not intended for callers outside this mod.
     void note_create(Kind kind, uint32_t pool);
+
+    // Detail for a TEXTURE creation: usage flags, format and edge length. Separate from
+    // note_create because buffers carry neither a format nor a dimension.
+    void note_texture(uint32_t pool, uint32_t usage, uint32_t format, uint32_t edge);
 
     // Whether anything has been observed at all. Distinguishes "no managed
     // resources" from "nothing was created while we were watching", which is the
@@ -91,4 +117,13 @@ private:
     std::atomic<uint32_t> m_retry{0};
     std::atomic<uint64_t> m_total{0};
     std::atomic<uint64_t> m_counts[static_cast<size_t>(Kind::kCount)][kPools]{};
+    std::atomic<uint64_t> m_managed_dynamic{0};
+    std::atomic<uint64_t> m_managed_static{0};
+    std::atomic<uint64_t> m_managed_rt{0};
+    std::atomic<uint32_t> m_largest_edge{0};
+    // A format is a D3DFORMAT enum; the engine uses a handful. Bounded set, and anything
+    // past the cap is counted rather than dropped so the report cannot silently narrow.
+    static constexpr size_t kFormatSlots = 24;
+    std::atomic<uint32_t> m_formats[kFormatSlots]{};
+    std::atomic<uint32_t> m_format_overflow{0};
 };

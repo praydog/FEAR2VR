@@ -489,6 +489,47 @@ allocation whose address does not survive a device reset -- and a stereo path pr
 deliberately. The cost is scope: this sees every device in the process rather than only the
 engine's.
 
+### ...and every managed texture is STATIC, so the remap is not a one-line change either
+
+Knowing the pool is 99% managed sizes the D3D9Ex problem. What the resources ARE decides whether it
+is solvable by swapping an argument, and it is not:
+
+    managed textures  512
+        DYNAMIC         0        <- would be lockable in DEFAULT
+        STATIC        512        <- NOT lockable in DEFAULT
+        render targets  0
+    largest edge   2048 px       distinct formats  2
+
+**A DEFAULT-pool texture cannot be locked unless it is DYNAMIC, and D3D9 cannot supply initial data
+at creation.** The engine fills every one of these by locking it, so rewriting the pool argument to
+DEFAULT would leave 512 textures created successfully and then unfillable -- a change that "works"
+at the call site and produces an untextured world.
+
+The correct D3D9Ex path is therefore SYSTEMMEM staging plus `UpdateTexture` per resource, which
+means handing the engine a texture it can lock while rendering from a different one. That is a COM
+PROXY around `IDirect3DTexture9`, not an argument swap, times 512 per level load.
+
+**This measurement is worth more than the experiment it replaced.** The plan was to remap a bounded
+number of allocations and see whether the game survived. It would have produced a broken-looking
+world and cost a session, and the census answered the same question in one read with no risk. Ask
+what a resource IS before rewriting how it is allocated.
+
+### What this leaves for stereo
+
+Both eyes already render (the pass group is re-issued into the engine's own target and the viewport
+split is measured). What is missing is only getting those pixels to a headset, and D3D9Ex is one
+route, not the only one:
+
+- **D3D9Ex + shared surface** -- fast, and now measured as expensive: a texture proxy for 512
+  static managed textures per load.
+- **Back-buffer copy** -- `GetRenderTargetData` into a lockable surface, upload to a D3D11 texture
+  owned by the OpenXR side. No engine-wide surgery at all, at the cost of a per-frame copy. Nothing
+  about the resource pools stands in its way, which is precisely what makes it worth measuring
+  next.
+
+The second option was previously dismissed on cost without measuring; given what the first now
+costs, its per-frame copy deserves a timing.
+
 ### The 57-failure scare that was the world, not the code
 
 Immediately after the forced level load, a suite run went from green to **57 failures** -- spatial

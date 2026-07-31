@@ -11205,6 +11205,29 @@ int main(int argc, char** argv) {
                                 printf("[fixture] d3d pools: MANAGED IN USE -- D3D9Ex would reject "
                                        "these, so a stereo bring-up must remap them\n");
                             }
+                            // WHAT the managed textures are decides whether a remap is even
+                            // possible: a DEFAULT-pool texture cannot be locked unless it is
+                            // DYNAMIC, and D3D9 cannot supply initial data at creation.
+                            long long dyn = -1, sta = -1, rt = -1, edge = -1, fmts = -1, texman = -1;
+                            if (json_int(b, "rw_managed_dynamic", dyn) &&
+                                json_int(b, "rw_managed_static", sta) &&
+                                json_int(b, "rw_managed_rt", rt) &&
+                                json_int(b, "rw_largest_edge", edge) &&
+                                json_int(b, "rw_distinct_formats", fmts) &&
+                                json_int(b, "rw_tex_managed", texman)) {
+                                printf("[fixture] managed textures: %lld dynamic, %lld static, %lld "
+                                       "render targets, largest edge %lld px, %lld formats\n",
+                                       dyn, sta, rt, edge, fmts);
+                                // The partition is the assertable part and holds at zero too: every
+                                // managed texture is counted exactly once as dynamic or static.
+                                check(dyn + sta == texman,
+                                      "every managed texture is classified exactly once as dynamic "
+                                      "or static -- the usage census partitions the population");
+                                check_gated(texman > 0, "no textures created while watching",
+                                            g_skipped_dry, edge > 0 && fmts > 0,
+                                            "a texture population has a largest dimension and at "
+                                            "least one format");
+                            }
                         }
                     }
                 }
