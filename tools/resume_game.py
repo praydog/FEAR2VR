@@ -105,6 +105,69 @@ def has_visible_window(pid):
     return bool(found)
 
 
+def foreground(pid):
+    """Bring the game's window to the front.
+
+    THE STARTUP LOADING SCREEN STALLS WHILE THE WINDOW IS IN THE BACKGROUND. Not the level load --
+    that one runs fine unfocused, and FocusKeeper already keeps the clock advancing -- but the
+    game's INITIAL load, before our payload is even injected, sits there until the window is
+    activated. Unattended that never happens because the window stays foreground; it bites when a
+    human alt-tabs away in the seconds after launch, which is precisely when they have started a
+    recovery and gone to do something else.
+
+    NOT AUTOMATIC, and the first live test is why: the foreground window turned out to be another
+    fullscreen game, and Windows refuses a foreground steal in that situation anyway -- but the
+    attempt still disturbed it. A recovery script that yanks focus out of whatever someone is
+    doing is worse than one that prints an instruction, so this is behind --foreground.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    target = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                if (rect.right - rect.left) > 320 and (rect.bottom - rect.top) > 240:
+                    target.append(hwnd)
+                    return False
+        return True
+
+    user32.EnumWindows(cb, 0)
+
+    if not target:
+        return False
+
+    hwnd = target[0]
+
+    # SetForegroundWindow is refused for a background process unless the calling thread shares
+    # input state with the target's, so attach first. Failure is not fatal -- the game simply waits
+    # for a human, which is the behaviour we had before.
+    fg = user32.GetForegroundWindow()
+    ours = ctypes.windll.kernel32.GetCurrentThreadId()
+    theirs = user32.GetWindowThreadProcessId(fg, None)
+    user32.AttachThreadInput(ours, theirs, True)
+    user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+    user32.SetForegroundWindow(hwnd)
+    user32.AttachThreadInput(ours, theirs, False)
+
+    # CHECK THE EFFECT, NOT THE RETURN CODE. SetForegroundWindow returned FALSE in the very first
+    # live test while the window nevertheless came forward -- the engine's own focus flag flipped
+    # to "focused" immediately afterwards. Activation can complete asynchronously and the return
+    # value does not promise anything useful, so ask the window manager what actually happened.
+    for _ in range(20):
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        time.sleep(0.05)
+
+    return False
+
+
 def wait_for_window(wait_s):
     deadline = time.time() + wait_s
     while time.time() < deadline:
@@ -153,6 +216,9 @@ def main():
     ap.add_argument("--port", type=int, default=8798)
     ap.add_argument("--launch-timeout", type=int, default=180)
     ap.add_argument("--load-timeout", type=int, default=120)
+    ap.add_argument("--foreground", action="store_true",
+                    help="activate the game window after launching (see foreground(); off by "
+                         "default because it steals focus from whatever you are using)")
     args = ap.parse_args()
 
     if not game_running():
@@ -167,6 +233,9 @@ def main():
         if not wait_for_window(args.launch_timeout):
             print("[resume] FAILED: the game never showed a window")
             return 1
+        # OPT-IN ONLY. See foreground() for why this is not automatic.
+        if args.foreground and foreground(game_pid()):
+            print("[resume] brought the game window forward")
 
     if try_get(args.port, "/health") is None:
         print("[resume] injecting")
@@ -193,6 +262,14 @@ def main():
                 break
         else:
             print("[resume] FAILED: the world never loaded")
+            # THE USUAL CAUSE IS FOCUS, and saying so saves the next person the investigation.
+            # The game's INITIAL load screen stalls while its window is in the background --
+            # distinct from the level load, which runs fine unfocused because FocusKeeper keeps
+            # the clock advancing. Unattended this never happens; it bites when a human alt-tabs
+            # in the seconds after launch.
+            print("[resume]   if you alt-tabbed just after launch, click the game once -- its")
+            print("[resume]   startup load screen waits for the window to be activated.")
+            print("[resume]   `--foreground` makes this script do it, at the cost of stealing focus.")
             return 1
         print("[resume] world loaded")
 

@@ -5716,3 +5716,29 @@ Three things, each of which had been necessary and absent at some point:
 
 Module+offset in the log pastes straight into the right IDB, which is how four anonymous addresses
 became a named function in one lookup.
+
+## The startup load screen needs an activated window; the LEVEL load does not
+
+Distinct problems that look identical from `resume_game.py`:
+
+- **Level load** runs fine with the window in the background. `FocusKeeper` keeps the clock
+  advancing (measured previously at 3371 ms per 3 s while alt-tabbed), so the world loads.
+- **The game's INITIAL load screen**, before our payload is injected, stalls until the window is
+  activated. Unattended this never happens because the window stays foreground; it bites only when
+  a human alt-tabs in the seconds after launch -- which is exactly when someone has kicked off a
+  recovery and gone to do something else.
+
+`resume_game.py` now says so on failure instead of reporting the opaque "the world never loaded".
+
+**Forcing the foreground is opt-in (`--foreground`), and the first live test is the reason.** The
+foreground window turned out to be another fullscreen game; Windows refuses a foreground steal in
+that situation, and the attempt still disturbed it. A recovery script that yanks focus out of
+whatever someone is using is worse than one that prints an instruction.
+
+Two API notes worth keeping:
+
+- `SetForegroundWindow` returned FALSE while the window nevertheless came forward -- the engine's
+  own focus flag flipped immediately after. The return code does not promise anything; check
+  `GetForegroundWindow()` afterwards if the answer matters.
+- Picking "the game window" needs a size filter. FEAR2.exe owns three: the real one at 2566x1460,
+  plus zero-sized `Default IME` and `MSCTFIME UI` helpers that are also owned and also enumerable.
