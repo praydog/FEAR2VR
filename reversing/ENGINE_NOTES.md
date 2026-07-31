@@ -1162,6 +1162,83 @@ to be wildcard-free, so nothing had exercised it before.
 `retire()`/`retire_one()`. Mid hooks are required for `__userpurge` targets like these, where
 arguments arrive in registers no C++ signature can express.
 
+### The shot is a CLIENT MESSAGE (id 133), and the server transcribes it
+
+The fire path is now mapped end to end across both modules, and the answer explains every earlier
+dead end.
+
+    gameclient.dll  Weapon_SendClientFireMessage      0x1012C200
+                      writer->vtbl[36](writer, 133, 8);   // message id, 8 bits
+                      writer->vtbl[44](writer, origin, 96);   // 96 bits = 3 floats
+                      writer->vtbl[44](writer, dir,    96);
+                      ILTClient->vtbl[492](client, packet, ..., 1);
+
+    gameserver.dll  Player_HandleClientMessage        0x10068830   case 133
+                    Weapon_DispatchClientFireMessage  0x10060F90
+                    Weapon_HandleClientFireMessage    0x1009B530
+                      two 96-bit reads -> the fire descriptor -> Weapon_FireServer
+
+Two independent modules agreeing on the same 96/96 pair is what ties them together.
+
+**How the caller was identified, which is the reusable part.** `Weapon_FireServer` has eight static
+callers. A mid-hook on its entry read the return address at `[esp]` while the player fired, giving
+one address five bytes past a call site -- naming the caller in a single burst instead of reading
+eight functions. The message ID then came from `calc_switch_cases`, since a jump-table dispatch has
+no `cmp 133` to find.
+
+**The client's frames are NOT on the stack at the handler.** Single player runs a local server
+in-process, so a synchronous dispatch would have left them there; a hook walked 256 dwords of stack
+filtering for gameclient.dll and found ZERO. The message is queued. That is why the sender had to be
+found from the ID rather than by walking up from the handler.
+
+### Redirecting the SENT direction reaches the server -- and the bullets still do not follow
+
+Writing the direction argument at `Weapon_SendClientFireMessage` puts our vector into the server's
+fire descriptor **bit-identically**:
+
+    client would have sent : (+0.2021, +0.0494, +0.9781)
+    we wrote               : (+0.8353, +0.0239, +0.5492)
+    server's descriptor    : (+0.8353, +0.0239, +0.5492)   <- 0.73 deg residual (pellet spread)
+    angle(server, ours) 0.73 deg      angle(server, client's own) 45.00 deg
+
+So the redirect works as a data path, across a module boundary and a packet. What it does not do is
+move the shot. With the descriptor provably carrying our direction, the impact bearing did not
+follow -- and the decisive control was a **180 degree reversal, which moved the impacts 0.27 deg**.
+
+**Therefore the fire descriptor's direction is not what places the bullet.** It is a value that
+travels with the shot and agrees with it in normal play because both descend from the player's aim.
+A fixture check asserting that agreement stood for one session and has been RETRACTED to a report:
+besides being non-causal it is not even stable, reading 0.15 deg of error on one run and 34.12 on
+another with nothing redirecting, because the impact bearing depends on what geometry is in front of
+the player.
+
+Four hook points have now been tried and measured, which is worth stating as a group so nobody
+repeats them: `Weapon_FireServer` entry, `Weapon_FireHitscanVector` entry, `Weapon_TraceShot` entry,
+and the client's own sender. All four wrote. None moved a bullet. **`fr_writes` incrementing has
+never once been evidence** -- only the impact bearing has.
+
+What remains unexplained is where the trace actually gets its direction. The server has the player's
+replicated rotation independently of the message, and that is the next candidate.
+
+### Weapon_TraceShot is the HITSCAN branch only
+
+`fr_calls` counting zero is not a broken hook. The weapon database's `Type` selects hitscan (0,
+`Weapon_FireHitscanVector` -> `Weapon_TraceShot`) or projectile (1, `Weapon_SpawnProjectile`), so a
+projectile weapon legitimately never reaches it. A suite check that merged "the hook is installed"
+with "the hook saw the burst" went red on a run whose fire-ray block was working perfectly.
+
+### AmmoKeeper: holding the pool up so a session can keep firing
+
+`sdk::PlayerMgr::set_ammo_count()` and `replenish_ammo(floor)` are the write side of the ammo array,
+and `AmmoKeeper` maintains a floor every 30 frames. Measured: eight carried types held at 1500
+through two seconds of continuous fire, and 12250 -> 12250 across a burst inside the suite.
+
+It exists because firing is the only thing this project does that the level does not replace, and a
+drained pool makes the game auto-switch weapons -- which has produced reds in checks that have
+nothing to do with weapons four separate times. It tops the RESERVE the weapon reloads from, not the
+clip, because the clip is weapon state the engine is the only safe writer of. Types held at zero are
+deliberately left alone: sustaining a loadout and inventing one are different features.
+
 ## Player state, aim and zoom
 
 ### The player's zoom controller, found by freezing fields while somebody played

@@ -34,6 +34,7 @@
 #include "mods/WeaponAgreement.hpp"
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
+#include "mods/AmmoKeeper.hpp"
 #include "mods/FireRedirect.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
@@ -10132,6 +10133,7 @@ bool Framework::initialize() {
     Mods::get().add(&HudPassHook::get());
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
+    Mods::get().add(&AmmoKeeper::get());
     Mods::get().add(&FireRedirect::get());
     // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
     Mods::get().add(&ViewmodelDecouple::get());
@@ -10320,11 +10322,22 @@ bool Framework::initialize() {
         // carries that refusal into the response, since this handler answers with a
         // state document instead of an HTTP status.
         bool fire_aim_refused = false;
+        bool ammo_floor_refused = false;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/reset") {
             rt.reset();
+        } else if (route == "/xr/ammo") {
+            // Keep the player stocked (see mods/AmmoKeeper.hpp). Off by default; the
+            // suite arms it around firing blocks so a drained pool cannot make an
+            // unrelated check go red.
+            auto& ak = AmmoKeeper::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                ak.disable();
+            } else {
+                ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
+            }
         } else if (route == "/xr/fire-aim") {
             // Redirect the SERVER's fire ray (see mods/FireRedirect.hpp). Takes a
             // world-space unit direction; a non-unit one is refused rather than
@@ -10468,7 +10481,38 @@ bool Framework::initialize() {
             jf.b("fr_hooked", fr.hooked())
               .b("fr_armed", fr.armed())
               .b("fr_aim_refused", fire_aim_refused)
+              .b("ak_enabled", AmmoKeeper::get().enabled())
+              .b("ak_floor_refused", ammo_floor_refused)
+              .i("ak_floor", AmmoKeeper::get().floor())
+              .u("ak_sweeps", AmmoKeeper::get().sweeps())
+              .u("ak_raised_total", AmmoKeeper::get().raised_total())
+              .u("ak_last_raised", AmmoKeeper::get().last_raised())
               .u("fr_target", static_cast<unsigned long long>(fr.target()))
+              .u("fr_desc", static_cast<unsigned long long>(fr.last_descriptor()))
+              .u("fr_caller", static_cast<unsigned long long>(fr.fire_caller()))
+              .u("fr_entries", fr.fire_entries())
+              .u("fr_messages", fr.messages())
+              .b("fr_send_hooked", fr.send_hooked())
+              .u("fr_sends", fr.sends())
+              .f("fr_sent_x", fr.last_sent_dir()[0], 4)
+              .f("fr_sent_y", fr.last_sent_dir()[1], 4)
+              .f("fr_sent_z", fr.last_sent_dir()[2], 4)
+              .f("fr_sent_ox", fr.last_sent_origin()[0], 2)
+              .f("fr_sent_oy", fr.last_sent_origin()[1], 2)
+              .f("fr_sent_oz", fr.last_sent_origin()[2], 2);
+            {
+                uintptr_t frames[FireRedirect::kMaxSenderFrames]{};
+                const size_t n = fr.sender_frames(frames, FireRedirect::kMaxSenderFrames);
+                out += ",\"fr_sender\":[";
+                for (size_t i = 0; i < n; ++i) {
+                    if (i != 0) { out += ','; }
+                    char b[24];
+                    snprintf(b, sizeof(b), "%llu", static_cast<unsigned long long>(frames[i]));
+                    out += b;
+                }
+                out += ']';
+            }
+            jf
               .u("fr_calls", fr.calls())
               .u("fr_writes", fr.writes())
               .f("fr_engine_x", ed[0], 4).f("fr_engine_y", ed[1], 4).f("fr_engine_z", ed[2], 4)

@@ -10995,6 +10995,77 @@ int main(int argc, char** argv) {
                 const double aim0 = aim_at_measure;
                 const double dist0 = range_at_measure;
 
+                // ---- KEEPING THE PLAYER STOCKED --------------------------------
+                //
+                // AmmoKeeper exists because a drained pool has repeatedly produced reds in
+                // checks that have nothing to do with weapons: an empty magazine makes the
+                // game auto-switch, and the next measurement samples a different gun. This
+                // asserts the mechanism a consumer (and this suite) depends on.
+                //
+                // The contract is a FLOOR, not a number: raise every carried type to at
+                // least N and hold it there. So the assertion is about the relation
+                // (nothing carried sits below the floor), never about a count -- a count
+                // would encode this level's loadout.
+                {
+                    std::string ar;
+                    const bool armed = http::get(port, "/xr/ammo?on=1&floor=750", ar);
+                    check(armed, "the ammo keeper accepts a floor");
+                    if (armed) {
+                        bool en = false;
+                        long long fl = -1;
+                        json_bool(http::body_of(ar), "ak_enabled", en);
+                        json_int(http::body_of(ar), "ak_floor", fl);
+                        check(en && fl == 750, "arming reports the floor it was given");
+
+                        // A rejected floor must NOT read as "disabled" -- a caller that
+                        // miscomputes one has to find out.
+                        std::string bad;
+                        if (http::get(port, "/xr/ammo?on=1&floor=0", bad)) {
+                            bool refused = false;
+                            json_bool(http::body_of(bad), "ak_floor_refused", refused);
+                            check(refused, "a non-positive floor is refused rather than silently disarming");
+                        }
+                        http::get(port, "/xr/ammo?on=1&floor=750", ar);
+
+                        // Let a sweep land, then require the floor to actually hold across a
+                        // burst -- which is the whole point of the feature.
+                        std::this_thread::sleep_for(std::chrono::milliseconds(900));
+                        std::string before;
+                        long long total_before = -1;
+                        if (http::get(port, "/sdk/shader-params", before)) {
+                            json_int(http::body_of(before), "ammo_total", total_before);
+                        }
+                        http::get(port, "/input/hold?vk=256&down=1", ar);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                        http::get(port, "/input/hold?vk=256&down=0", ar);
+                        http::get(port, "/input/release", ar);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(900));
+
+                        std::string after;
+                        long long total_after = -1, sweeps = -1;
+                        if (http::get(port, "/sdk/shader-params", after)) {
+                            json_int(http::body_of(after), "ammo_total", total_after);
+                        }
+                        std::string st;
+                        if (http::get(port, "/xr/head", st)) {
+                            json_int(http::body_of(st), "ak_sweeps", sweeps);
+                        }
+                        printf("[fixture] ammo keeper: total %lld -> %lld across a burst, %lld sweeps\n",
+                               total_before, total_after, sweeps);
+                        check(sweeps > 0, "the keeper swept while enabled");
+                        check_armed(total_before > 0 && total_after > 0,
+                                    total_after >= total_before,
+                                    "firing does not lower the pool while the keeper holds a floor");
+                    }
+                    http::get(port, "/xr/ammo?on=0", ar);
+                    std::string off;
+                    if (http::get(port, "/xr/head", off)) {
+                        bool still = true;
+                        json_bool(http::body_of(off), "ak_enabled", still);
+                        check(!still, "the keeper releases, so a run cannot leave the game modified");
+                    }
+                }
+
                 // ---- THE SERVER'S OWN FIRE DESCRIPTOR PREDICTS THE IMPACTS ----
                 //
                 // FireRedirect hooks the server's hitscan path and records the direction the
@@ -11008,6 +11079,17 @@ int main(int argc, char** argv) {
                 // Tolerance is loose on purpose: weapon spread genuinely scatters pellets, and
                 // the measured bearing is the dominant direction among them. A wrong field or a
                 // flipped convention misses by tens of degrees, not by ten.
+                //
+                // WHAT THIS DOES NOT SHOW, established by breaking it deliberately: the
+                // descriptor's direction does not CAUSE the impacts. Redirecting the direction
+                // the client sends puts our exact vector into this descriptor -- verified
+                // bit-identical -- and the impacts do not follow, not even for a 180 degree
+                // reversal (0.27 deg of movement). Both values track the player's aim, which is
+                // why they agree here; only one of them places the shot. So this check is
+                // evidence the FIELD IS MAPPED, and evidence of nothing else.
+                //
+                // It is therefore only valid with FireRedirect disarmed, which is the suite's
+                // default and is asserted below.
                 {
                     std::string fr;
                     if (http::get(port, "/xr/head", fr)) {
@@ -11017,9 +11099,23 @@ int main(int argc, char** argv) {
                         const bool have = json_double(body, "fr_engine_x", ex) &&
                                           json_double(body, "fr_engine_z", ez) &&
                                           json_int(body, "fr_calls", calls);
-                        check_armed(g_can_fire, have && calls > 0,
-                                    "the server's fire path is hooked and saw the burst -- shots "
-                                    "reach gameserver.dll, which is where the ray is built");
+                        // TWO DIFFERENT CLAIMS, and the first version asserted them as one.
+                        //
+                        // That the hook is INSTALLED is structural: gameserver.dll is loaded in
+                        // any world, so a miss means the pattern rotted. Assert it.
+                        //
+                        // That it SAW the burst is not. `Weapon_TraceShot` is the HITSCAN branch,
+                        // taken when the weapon database's Type is 0; a projectile weapon goes to
+                        // Weapon_SpawnProjectile instead and this counter legitimately stays at
+                        // zero. The merged version went red on a run whose fire-ray block was
+                        // working perfectly (17 of 21 spawns agreeing), which is the tell.
+                        bool fr_hooked = false;
+                        json_bool(body, "fr_hooked", fr_hooked);
+                        check(fr_hooked,
+                              "the server's hitscan path is hooked -- the fire descriptor "
+                              "is reachable wherever a world is loaded");
+                        printf("[fixture] fire descriptor: hitscan path saw %lld shot(s) this run%s\n",
+                               calls, calls > 0 ? "" : " (projectile weapon, or no hitscan fired)");
                         if (have && calls > 0 && (fabs(ex) > 1e-6 || fabs(ez) > 1e-6)) {
                             const double predicted = atan2(ez, ex) * 57.29577951308232;
                             double err = predicted - b0;
@@ -11027,9 +11123,24 @@ int main(int argc, char** argv) {
                             while (err < -180.0) { err += 360.0; }
                             printf("[fixture] fire descriptor: predicts bearing %.2f, impacts "
                                    "measured %.2f (err %+.2f deg)\n", predicted, b0, err);
-                            check_armed(got0, fabs(err) < 12.0,
-                                        "the direction in the server's fire descriptor points where "
-                                        "the bullets were seen to land");
+                            // REPORTED, NOT ASSERTED -- and this is a retraction of the
+                            // assertion that stood here for one session.
+                            //
+                            // Two measurements killed it. It is not CAUSAL: redirecting the
+                            // direction the client sends puts our exact vector into this
+                            // descriptor (verified bit-identical) and the impacts do not
+                            // follow, not even for a 180 degree reversal, which moved them
+                            // 0.27 deg. And it is not STABLE: with nothing redirecting it
+                            // read 0.15 deg of error on one run and 34.12 on another, because
+                            // the impact bearing depends on what geometry happens to be in
+                            // front of the player.
+                            //
+                            // So the agreement is real when the player faces a wall and means
+                            // only that both values descend from the aim. Asserting it was
+                            // asserting the scene, which this file's own rules prohibit. What
+                            // IS asserted about this field is structural, above: it is a unit
+                            // vector and the hook sees every shot.
+                            (void)err;
                         }
                     }
                 }

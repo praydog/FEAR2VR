@@ -325,6 +325,32 @@ public:
     // array's indexing verifiable: fire a weapon and exactly one entry moves.
     static std::vector<AmmoHolding> ammo_held(unsigned index);
 
+    // ---- WRITING THE POOL -------------------------------------------------
+    //
+    // The counterpart to ammo_count. The array is the engine's own storage and
+    // the HUD reads the same field, so a write is visible immediately and needs
+    // no notification -- confirmed by the HUD updating without a reload.
+    //
+    // What a write does NOT do is refill the CLIP: the HUD derives the reserve as
+    // `total - clip`, so topping the total gives the player rounds to reload FROM.
+    // A caller wanting to keep shooting must still let the weapon reload.
+    //
+    // Thread affinity: engine memory, so the game thread. Safe from the IPC
+    // thread only in the same sense every other write here is -- the value is a
+    // plain int32 nothing else is mid-update on.
+    static bool set_ammo_count(unsigned index, const std::string& ammo_name, int32_t rounds);
+
+    // Raise every ammo type the player is ALREADY CARRYING to at least `floor`,
+    // returning how many were raised. Types held at zero are left alone on
+    // purpose: granting those would hand the player a weapon's worth of ammunition
+    // they never picked up, which changes the loadout instead of sustaining it.
+    //
+    // This is the primitive behind a practice/sandbox mode, and it is what lets a
+    // long unattended session fire repeatedly without the magazine running dry --
+    // a drained pool makes the game auto-switch weapons, which has previously
+    // turned several unrelated measurements red.
+    static size_t replenish_ammo(unsigned index, int32_t floor);
+
     // Total across every ammo type. A cheap "is this weapon system alive at all" probe that
     // needs no knowledge of which weapon is equipped.
     static std::optional<int32_t> ammo_total(unsigned index);

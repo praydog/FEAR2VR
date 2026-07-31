@@ -86,6 +86,34 @@ public:
     bool hooked() const { return m_hooked.load(std::memory_order_relaxed); }
     uintptr_t target() const { return m_target.load(std::memory_order_relaxed); }
 
+    // The descriptor the last shot used. Published so a hardware watch can be
+    // armed on the field itself: three hook points have now written desc+0
+    // without moving a bullet, so the question is no longer "where do I write
+    // it" but "who WRITES it, and what do they read to decide" -- which is a
+    // trap-it question, not a scan-it one.
+    uintptr_t last_descriptor() const { return m_last_desc.load(std::memory_order_relaxed); }
+
+    // The RETURN ADDRESS into whoever called the server fire entry. Weapon_FireServer
+    // has eight static callers and the descriptor is built on the caller's stack, so
+    // naming the one the PLAYER goes through is the difference between reading one
+    // function and reading eight. Costs a hook and one stack read.
+    uintptr_t fire_caller() const { return m_fire_caller.load(std::memory_order_relaxed); }
+    uint64_t fire_entries() const { return m_fire_entries.load(std::memory_order_relaxed); }
+    uint64_t messages() const { return m_messages.load(std::memory_order_relaxed); }
+    uint64_t sends() const { return m_sends.load(std::memory_order_relaxed); }
+    bool send_hooked() const { return m_send_hooked.load(std::memory_order_relaxed); }
+    std::array<float, 3> last_sent_dir() const;
+    std::array<float, 3> last_sent_origin() const;
+
+    // Stack values at the SERVER's fire-message handler that land inside
+    // gameclient.dll. Single player runs a local server IN-PROCESS, so if the
+    // client dispatches its fire message synchronously the sender's frames are
+    // still on the stack when the handler runs -- which names the client-side
+    // writer without a static hunt. Empty means the message is queued instead,
+    // which is itself the answer to a different question.
+    static constexpr size_t kMaxSenderFrames = 8;
+    size_t sender_frames(uintptr_t* out, size_t cap) const;
+
     // Observability: shots seen, shots redirected, and the direction the engine
     // held when we last looked -- so a test can prove the engine's own value was
     // replaced rather than merely that we wrote somewhere.
@@ -99,10 +127,22 @@ private:
     FireRedirect() = default;
 
     static void on_fire(SafetyHookContext& ctx);
+    static void on_fire_entry(SafetyHookContext& ctx);
+    static void on_message(SafetyHookContext& ctx);
+    static void on_send_fire(SafetyHookContext& ctx);
 
     std::atomic<bool> m_armed{false};
     std::atomic<bool> m_hooked{false};
     std::atomic<uintptr_t> m_target{0};
+    std::atomic<uintptr_t> m_last_desc{0};
+    std::atomic<uintptr_t> m_fire_caller{0};
+    std::atomic<uint64_t> m_fire_entries{0};
+    std::atomic<uint64_t> m_messages{0};
+    std::atomic<uint64_t> m_sends{0};
+    std::atomic<bool> m_send_hooked{false};
+    std::atomic<float> m_sent_dir[3]{};
+    std::atomic<float> m_sent_origin[3]{};
+    std::atomic<uintptr_t> m_sender[kMaxSenderFrames]{};
     std::atomic<uint64_t> m_calls{0};
     std::atomic<uint64_t> m_writes{0};
     std::atomic<uint32_t> m_retry_countdown{0};
