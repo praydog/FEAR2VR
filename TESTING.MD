@@ -957,3 +957,38 @@ camera (shift -yaw). They are `yaw` degrees apart, so agreeing with one to withi
 separation rules the other out with three quarters of the gap to spare. The bound comes from the
 experiment's own structure rather than from a number that looked about right -- which is the only
 way to satisfy this file's ban on invented tolerances while still asserting something quantitative.
+
+## Control logic belongs in the MOD, never in the runner
+
+A closed-loop pitch driver was written directly in `fixture_test_runner.cpp` -- clamping, gain
+estimation, settle detection, all of it. It worked, and it was wrong on this project's own terms:
+the suite exists to exercise capabilities a CONSUMER has, and a driver that lives only in the test
+proves nothing about shipped code and gives a real mod nothing. It moved to
+`TurnController::pitch_to`; the runner now asks the mod and waits for its verdict.
+
+The tell that this has happened: a test function containing a control loop, a tolerance, or a
+calibration constant. Those are behaviours, and behaviours belong to a class a consumer can call.
+
+## Runs must not inherit each other's world
+
+The suite ends by driving the aim into both pitch clamps, and the engine never recentres pitch. A
+run interrupted anywhere after that -- a ctest timeout, a crash -- leaves the NEXT run looking at
+the ceiling, and checks with nothing to do with aiming fail: the bone-offset release check went red
+exactly that way. The suite now levels the view through the mod's controller before its first
+observational check, which costs nothing when the aim is already level.
+
+Generalisable: any suite that MOVES persistent world state needs to normalise that state on entry,
+not just restore it on exit, because the exit path is the one that does not run when something goes
+wrong.
+
+## A timeout is the least diagnosable red there is
+
+`fixture-test` was capped at 180s and grew past it: a timed-out ctest reports a failure with NO
+output, so there is nothing to read and nothing to reproduce. Raised to 420s against a ~85s healthy
+run, with headroom for the ~15s checkpoint restore the fixture takes when it finds itself unusable.
+
+Related, and worth stating plainly: three consecutive ctest runs failed on `gameclient.dll mapped in
+game` and `/health sdk_ready==true`. Neither was a defect -- the GAME had crashed and was not
+running at all. `tools/resume_game.py` brought it back from cold in 75 seconds (menu ->
+Menu.StartCheckpoint -> in-world) and both subsequent ctest runs passed. Check the fixture is alive
+before reading a suite result; the first two assertions in this file exist to say so loudly.

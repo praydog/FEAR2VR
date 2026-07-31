@@ -5713,6 +5713,10 @@ std::string build_shader_params_json(bool include_write_probes) {
     {
         const auto yaw = sdk::PlayerMgr::aim_yaw(0);
         const auto pitch = sdk::PlayerMgr::aim_pitch(0);
+        const auto plim = sdk::PlayerMgr::pitch_limits(0);
+        json_append_bool(out, "pitch_limits_readable", plim.has_value());
+        json_append_double(out, "pitch_up_deg", plim.has_value() ? plim->up * 57.2957795 : 0.0, 3);
+        json_append_double(out, "pitch_down_deg", plim.has_value() ? plim->down * 57.2957795 : 0.0, 3);
         json_append_double(out, "aim_pitch_deg", pitch.value_or(0.0f) * 57.2957795, 4);
         json_append_bool(out, "aim_yaw_readable", yaw.has_value());
         json_append_double(out, "aim_yaw_deg", yaw.value_or(0.0f) * 57.2957795, 4);
@@ -10250,6 +10254,17 @@ bool Framework::initialize() {
             tc.cancel();
         } else if (webapi_query_int(q, "recentre", 0) != 0 || webapi_query_int(q, "recenter", 0) != 0) {
             tc.recentre();
+        } else if (webapi_query_int(q, "level", 0) != 0) {
+            tc.level();
+        } else if (q.find("pitchby") != q.end()) {
+            tc.pitch_by(static_cast<float>(webapi_query_double(q, "pitchby", 0.0) * kDeg));
+        } else if (q.find("pitch") != q.end() && q.find("to") != q.end()) {
+            // Both axes in one call -- the diagonal a VR mod issues when pointing the view at a
+            // direction, rather than two settles in series.
+            tc.aim_to(static_cast<float>(webapi_query_double(q, "to", 0.0) * kDeg),
+                      static_cast<float>(webapi_query_double(q, "pitch", 0.0) * kDeg));
+        } else if (q.find("pitch") != q.end()) {
+            tc.pitch_to(static_cast<float>(webapi_query_double(q, "pitch", 0.0) * kDeg));
         } else if (q.find("by") != q.end()) {
             tc.turn_by(static_cast<float>(webapi_query_double(q, "by", 0.0) * kDeg));
         } else if (q.find("to") != q.end()) {
@@ -10266,7 +10281,14 @@ bool Framework::initialize() {
               .f("yaw_deg", yaw.value_or(0.0f) * 57.2957795, 4)
               .u("corrections", static_cast<size_t>(o.corrections))
               .u("completed", static_cast<size_t>(o.completed))
-              .u("abandoned", static_cast<size_t>(o.abandoned));
+              .u("abandoned", static_cast<size_t>(o.abandoned))
+              .b("pitch_active", o.pitch_active).b("pitch_converged", o.pitch_converged)
+              .b("pitch_clamped", o.pitch_clamped)
+              .f("pitch_target_deg", o.pitch_target * 57.2957795, 4)
+              .f("pitch_error_deg", o.pitch_error * 57.2957795, 4)
+              .f("pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4)
+              .u("pitch_completed", static_cast<size_t>(o.pitch_completed))
+              .u("pitch_abandoned", static_cast<size_t>(o.pitch_abandoned));
         }
         return out;
     };

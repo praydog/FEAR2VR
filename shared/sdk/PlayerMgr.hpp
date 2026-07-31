@@ -1390,6 +1390,49 @@ public:
     // variable), so a consumer driving it should expect its writes to be bounded.
     static std::optional<float> aim_pitch(unsigned index);
 
+    // ---- HOW FAR THE VIEW IS ALLOWED TO PITCH, RIGHT NOW -------------------
+    //
+    // The engine clamps the aim's pitch, and a VR mod has to know where: a head-tracked pose
+    // beyond these bounds simply cannot be represented, and any closed loop driving pitch toward
+    // a target outside them burns its whole iteration budget against a wall.
+    //
+    // The limits are NOT constant -- they are selected per player state from the
+    // Client/CameraClamping database record, and the shipped Default values differ sharply:
+    //
+    //     StandIdle 80/85   StandMoving 80/85   CrouchIdle 42/85   CrouchMoving 42/85
+    //     Chase 40/45       SlideKick 5/5       (85/85 when no record is set)
+    //
+    // So a mod that samples this once at startup and caches it will be wrong the moment the
+    // player crouches. Ask per use.
+    //
+    // This is the ENGINE'S OWN ANSWER, not a reimplementation: it calls
+    // CPlayerCamera_GetActiveCameraClamp (gameclient .text+0xDE160), the same selector the camera
+    // itself uses, so state dispatch, the record lookup and the vehicle/slide-kick special cases
+    // all come out right by construction.
+    struct PitchLimits {
+        // Radians, in `aim_pitch`'s convention: positive is looking UP. `up` is therefore positive
+        // and `down` negative. Live at StandIdle: up +1.4835 (85 deg), down -1.3963 (-80 deg),
+        // which is exactly where driving the look primitive into the stops lands (+85.000 /
+        // -80.000, measured, with further input moving it 0.000).
+        float up;
+        float down;
+
+        bool contains(float pitch_radians) const {
+            return pitch_radians <= up && pitch_radians >= down;
+        }
+
+        // The nearest representable pitch to `wanted` -- what a VR mod should aim at when the
+        // head is looking somewhere the engine will not go.
+        float clamp(float pitch_radians) const {
+            return pitch_radians > up ? up : (pitch_radians < down ? down : pitch_radians);
+        }
+    };
+
+    // nullopt when the camera holder cannot be read or the engine's selector could not be
+    // resolved. THREAD AFFINITY: calls into gameclient with the live camera as `this`, so it
+    // belongs on the game thread -- do not call it from the IPC thread.
+    static std::optional<PitchLimits> pitch_limits(unsigned index);
+
     // ---- WHERE THE PLAYER IS ACTUALLY GOING --------------------------------------------
     //
     // MEASURED, and it is the fact a VR locomotion scheme has to start from: movement is

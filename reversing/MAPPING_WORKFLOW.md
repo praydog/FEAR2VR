@@ -5335,3 +5335,56 @@ which it does not do.
 It is also a PRECONDITION, not just hygiene: an aim resting at +8.6 degrees shoots the ceiling,
 produces no impacts, and silently breaks every measurement downstream of it. Three consecutive runs
 failed three DIFFERENT ways from that one cause before it was found.
+
+## AIMING THE VIEW IN BOTH AXES, AND THE CLAMP THAT BOUNDS IT
+
+Shots follow the view, so in this game aiming the view IS aiming the gun. `TurnController` closed
+the loop on yaw last session; it now does pitch too -- `pitch_to`, `pitch_by`, `aim_to`, `level` --
+which is what a VR mod needs to point a head- or hand-indicated direction.
+
+Pitch is not yaw with a different letter:
+
+- **It is clamped, and the clamp MOVES.** Selected per player state from the Client/CameraClamping
+  record: standing -80/+85 degrees, crouching -42/+85. Both measured live.
+- **It does not wrap.** Yaw is modular, pitch is an interval; wrapping "look further up" near the
+  top would produce a dive.
+- **The engine never recentres it.** Recoil walks it upward and leaves it there.
+
+### sdk::PlayerMgr::pitch_limits -- the engine's own answer
+
+Rather than reimplement the selection, the SDK CALLS `CPlayerCamera_GetActiveCameraClamp`
+(gameclient .text+0xDE160) with the live camera as `this`, SEH-guarded, resolved by pattern. It
+returns `out[0] = degA*+(pi/180)`, `out[1] = degB*-(pi/180)` -- the negation is in the function --
+so both flip into `aim_pitch`'s upward-positive convention.
+
+**Verified two independent ways, and this is the part worth keeping:**
+
+1. **Static prediction -> live stops.** The shipped StandIdle record is 80/85, predicting stops at
+   +85 up and -80 down. Driving the look primitive into the stops lands at EXACTLY +85.000 and
+   -80.000, with further input moving it 0.000.
+2. **State dispatch -> live state change.** The decompile says CrouchIdle is 42/85. Crouching moves
+   the reported DOWN limit -80.000 -> -42.000 while up stays +85.000.
+
+The fixture asserts the invariant tying them: *the limit the engine reports is where the aim
+actually stops* (84.790 vs 85.000, -79.588 vs -80.000; the residual is the controller's own 0.5
+degree convergence tolerance). A wrong offset into the record, or a flipped sign, breaks that
+agreement. No baseline of ours appears anywhere in it.
+
+Consumer note: ask per use. Caching at startup is wrong the moment the player crouches.
+
+### Calibration, and a trap in it
+
+Pitch gain measured -0.1439 degrees per unit of dy -- the same magnitude as yaw's 0.144, so one
+sensitivity drives both axes. Two of the six samples read exactly -0.2865, precisely double: that
+is the documented delta ACCUMULATION in SyntheticInput (two queued deltas landing in one frame),
+not a real gain change. Averaging all six would have produced a calibration 30% wrong.
+
+### Two camera-mode functions named
+
+`CameraMode_LookAndMoveLocal_ClampPitch80` (0x100668A0) and
+`CameraMode_LookAndMoveWorld_ClampPitch80` (0x100669B0) are slot 4 of two sibling 5-entry vtables
+(0x101CED5C, 0x101CD018) that share slots 0 and 2. Same look-delta handling and the same HARDCODED
+symmetric +/-80 degree Euler clamp; they differ in object layout and in whether velocity is rotated
+into the camera's basis (local) or added in world axes. Explicitly NOT the player camera, whose
+clamp is asymmetric and state-selected -- a distinction that would be easy to conflate, since both
+sites carry a 1.3962634.

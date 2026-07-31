@@ -142,7 +142,12 @@ add_test(
         --fixture  "W:/SteamLibrary/steamapps/common/FEAR2/FEAR2.exe"
         --port     8798
 )
-set_tests_properties(fixture-test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+# 420s, not 180. The suite grew a closed-loop aim director whose checks physically turn the player:
+# driving the pitch into both clamps and back is several seconds each, and a checkpoint restore
+# (only taken when the fixture is unusable) is ~15s on its own. Measured at ~90s healthy, and it
+# timed out at 180 on a run that took the restore path -- a timeout reports as a failure with no
+# output at all, which is the least diagnosable red there is.
+set_tests_properties(fixture-test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 420)
 """
 
 [target.fixture-test.properties]

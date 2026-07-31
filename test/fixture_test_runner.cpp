@@ -148,57 +148,38 @@ bool weapon_is_live_at(int32_t port) {
     return appeared > 0;
 }
 
-// Drives the aim's PITCH to `target` degrees through the public look primitive, and returns where
-// it ended up. Closed-loop with a MEASURED gain rather than an assumed one, because degrees per
-// unit of look delta depends on the player's sensitivity setting, which is not ours to know.
+// Asks the MOD to drive the aim's pitch to `target` degrees, and waits for its closed loop to
+// finish. The control logic lives in `TurnController` -- clamping to the engine's live limits, the
+// measured-gain corrections, the settle-twice rule and the liveness gate are all its business, not
+// this file's.
 //
-// This exists because the engine does not recover recoil: sustained fire walks the aim upward and
-// leaves it there (measured, four consecutive bursts, +5.33 -> +8.62 with the world still). An
-// elevated aim shoots the ceiling, which produces no impacts, which silently breaks any measurement
-// that depends on where shots land -- so levelling is a PRECONDITION of the firing checks, not just
-// tidying afterwards.
-double drive_pitch_to(int32_t port, double target) {
+// An earlier version of this ran the whole loop HERE, in the runner. That was wrong on the
+// project's own terms: the suite is supposed to exercise capabilities a mod consumer has, and a
+// closed-loop aim driver that only exists inside the test proves nothing about the shipped code
+// and gives a real consumer nothing.
+double drive_pitch_to(int32_t port, double target_degrees) {
     std::string resp;
-    double cur = target;
+    char url[128];
+    snprintf(url, sizeof(url), "/vr/turn?pitch=%.4f", target_degrees);
+    http::get(port, url, resp);
 
-    if (http::get(port, "/sdk/shader-params", resp)) {
-        json_double(http::body_of(resp), "aim_pitch_deg", cur);
-    }
-
-    double gain = 0.0;   // degrees of pitch per unit of look delta
-
-    for (int i = 0; i < 12 && fabs(cur - target) > 0.25; ++i) {
-        int32_t dy = 0;
-
-        if (gain == 0.0) {
-            dy = (cur > target) ? 40 : -40;   // probe step, to measure the gain
-        } else {
-            double want = (target - cur) / gain;
-            want = want > 600.0 ? 600.0 : (want < -600.0 ? -600.0 : want);
-            dy = static_cast<int32_t>(want);
+    // Wait for the controller to declare itself done rather than sleeping a guessed interval.
+    for (int i = 0; i < 60; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        if (!http::get(port, "/vr/turn", resp)) {
+            continue;
         }
-
-        if (dy == 0) {
+        bool active = true;
+        if (json_bool(http::body_of(resp), "pitch_active", active) && !active) {
             break;
         }
-
-        char look[96];
-        snprintf(look, sizeof(look), "/input/look?dx=0&dy=%d", dy);
-        http::get(port, look, resp);
-        std::this_thread::sleep_for(std::chrono::milliseconds(350));
-
-        double after = cur;
-        if (http::get(port, "/sdk/shader-params", resp)) {
-            json_double(http::body_of(resp), "aim_pitch_deg", after);
-        }
-
-        if (fabs(after - cur) > 0.05) {
-            gain = (after - cur) / static_cast<double>(dy);
-        }
-        cur = after;
     }
 
-    return cur;
+    double now = target_degrees;
+    if (http::get(port, "/vr/turn", resp)) {
+        json_double(http::body_of(resp), "pitch_deg", now);
+    }
+    return now;
 }
 
 // The engine's own state restore: refills the loadout and revives the player. Only called when a
@@ -785,6 +766,21 @@ int main(int argc, char** argv) {
                      static_cast<uint32_t>(db_mod.base),
                      static_cast<uint32_t>(db_mod.base + db_mod.size));
             check(dbmgr >= db_mod.base && dbmgr < db_mod.base + db_mod.size, "database_mgr residency", detail);
+        }
+
+        // ---- START FROM THE HORIZON ------------------------------------------------------------
+        //
+        // The engine never recentres pitch, and this suite ends by driving the aim into both of its
+        // clamps. So a run that is interrupted -- a ctest timeout, a crash, a cancelled loop --
+        // leaves the NEXT run looking at the floor or the ceiling, and checks with nothing to do
+        // with aiming fail: the bone-offset release check went red exactly that way, on a run
+        // following one that had timed out with the view parked at -80 degrees.
+        //
+        // One short drive through the mod's own controller removes the coupling between runs. It
+        // costs nothing when the aim is already level, because the loop converges immediately.
+        {
+            const double before = drive_pitch_to(port, 0.0);
+            printf("[fixture] view levelled at start: %+.3f deg\n", before);
         }
 
         // (Per the no-RPM rule at the top of this file: every value below is
@@ -10049,6 +10045,118 @@ int main(int argc, char** argv) {
         }
 
         printf("[fixture] weapon live: %s\n", g_can_fire ? "yes" : "NO -- firing checks will report NOT EXERCISED");
+
+        // ---- AIMING THE VIEW, WHICH IN THIS GAME MEANS AIMING THE GUN -------------------------
+        //
+        // Shots follow the view (measured last session: a 30 degree head turn moves the impacts 30
+        // degrees while the aim never moves). So a VR mod that wants hand-aimed shooting has to
+        // drive the VIEW to a direction, in both axes. `TurnController` already closed the loop on
+        // yaw; `pitch_to` / `aim_to` / `level` complete it.
+        //
+        // Pitch is the harder axis because the engine CLAMPS it and the clamp moves with player
+        // state. `PlayerMgr::pitch_limits` reports the live bounds by calling the engine's own
+        // selector (CPlayerCamera_GetActiveCameraClamp), so the controller can aim at the nearest
+        // reachable pitch instead of grinding against a wall it cannot see.
+        {
+            std::string tb;
+            if (http::get(port, "/vr/turn", resp)) {
+                tb = http::body_of(resp);
+            }
+            std::string sp;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                sp = http::body_of(resp);
+            }
+
+            double up = 0.0, down = 0.0;
+            const bool limits_ok = json_flag(sp, "pitch_limits_readable") &&
+                                   json_double(sp, "pitch_up_deg", up) &&
+                                   json_double(sp, "pitch_down_deg", down);
+            check(limits_ok, "the engine reports how far the view may pitch, through its own "
+                             "clamp selector rather than a number we chose");
+
+            if (limits_ok) {
+                check(up > 0.0 && down < 0.0 && up < 90.0 && down > -90.0,
+                      "and the bounds bracket the horizon and stay inside a quarter turn, which "
+                      "an elevation limit must");
+
+                // THE ASSERTION WORTH HAVING, and it needs no baseline: the limit the engine
+                // REPORTS must be where the aim actually STOPS. Two entirely independent paths --
+                // a decompiled selector called in-process, and driving the look primitive until
+                // the view refuses to move -- and they have to agree. If the offset into the
+                // clamping record were wrong, or the sign convention flipped, these diverge.
+                const double reached_up = drive_pitch_to(port, up + 30.0);
+                printf("[fixture] pitch clamp: engine says up %+.3f, aim stopped at %+.3f\n",
+                       up, reached_up);
+                check(fabs(reached_up - up) < 1.0,
+                      "asking to pitch above the limit stops exactly AT the limit the engine "
+                      "reported -- the selector and the behaviour agree");
+
+                const double reached_down = drive_pitch_to(port, down - 30.0);
+                printf("[fixture] pitch clamp: engine says down %+.3f, aim stopped at %+.3f\n",
+                       down, reached_down);
+                check(fabs(reached_down - down) < 1.0,
+                      "and the same holds at the bottom of the range");
+
+                // The controller must SAY it clamped, or a consumer cannot tell "you are aimed
+                // where you asked" from "you are aimed as close as this game allows" -- which for
+                // a head-tracked view is the difference between a correct pose and a lie.
+                if (http::get(port, "/vr/turn", resp)) {
+                    check(json_flag(http::body_of(resp), "pitch_clamped"),
+                          "and it reports that it clamped, so a consumer knows the view is not "
+                          "where it asked for");
+                }
+            }
+
+            // BACK TO THE HORIZON, through the mod's own `level()`.
+            const double levelled = drive_pitch_to(port, 0.0);
+            check(fabs(levelled) < 1.0,
+                  "the aim can be driven back to the horizon on demand -- the engine never "
+                  "recentres pitch itself, so a consumer must be able to");
+
+            // BOTH AXES AT ONCE. A VR mod points the view at a direction, not at an angle.
+            double yaw_now = 0.0;
+            if (http::get(port, "/vr/turn", resp)) {
+                json_double(http::body_of(resp), "yaw_deg", yaw_now);
+            }
+            const double want_yaw = yaw_now + 35.0;
+            const double want_pitch = 12.0;
+            char url[160];
+            snprintf(url, sizeof(url), "/vr/turn?to=%.4f&pitch=%.4f", want_yaw, want_pitch);
+            http::get(port, url, resp);
+
+            bool both_done = false;
+            for (int i = 0; i < 80 && !both_done; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                if (!http::get(port, "/vr/turn", resp)) {
+                    continue;
+                }
+                const std::string b = http::body_of(resp);
+                bool a = true, pa = true;
+                json_bool(b, "active", a);
+                json_bool(b, "pitch_active", pa);
+                both_done = !a && !pa;
+            }
+
+            if (http::get(port, "/vr/turn", resp)) {
+                const std::string b = http::body_of(resp);
+                double got_yaw = 0.0, got_pitch = 0.0;
+                json_double(b, "yaw_deg", got_yaw);
+                json_double(b, "pitch_deg", got_pitch);
+                double dyaw = got_yaw - want_yaw;
+                while (dyaw > 180.0) { dyaw -= 360.0; }
+                while (dyaw < -180.0) { dyaw += 360.0; }
+                printf("[fixture] aim_to: wanted (%+.2f, %+.2f) got (%+.2f, %+.2f)\n",
+                       want_yaw, want_pitch, got_yaw, got_pitch);
+                // One degree, and it is derived: the controller's own convergence tolerance is
+                // 0.5 degrees per axis, and a post-hoc read can differ by one more correction
+                // step. Asserting tighter would be asserting against the loop's own resolution.
+                check(fabs(dyaw) < 1.0 && fabs(got_pitch - want_pitch) < 1.0,
+                      "aiming at a direction converges in BOTH axes together, which is what "
+                      "pointing a head-tracked view at a target requires");
+            }
+
+            drive_pitch_to(port, 0.0);
+        }
 
         // ---- WHERE THE SHOTS ACTUALLY GO ------------------------------------------------------
         //

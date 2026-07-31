@@ -1,3 +1,4 @@
+#include <utility/Seh.hpp>
 #include "PlayerMgr.hpp"
 
 #include <algorithm>
@@ -767,6 +768,98 @@ std::optional<PlayerMgr::Locomotion> PlayerMgr::locomotion(unsigned index) {
     out.bearing_to_aim = wrap(out.bearing - aim_h);
     out.bearing_to_view = wrap(out.bearing - view_h);
     return out;
+}
+
+namespace {
+
+// CPlayerCamera_GetActiveCameraClamp -- gameclient.dll .text+0xDE160.
+//
+//   fld  ds:flt_101D59C8      <- 85.0f, the no-record fallback
+//   sub  esp, 8
+//   push esi
+//   mov  esi, [esp+0Ch+arg_0]
+//   push edi
+//   fst  dword ptr [esi]      <- out[0] = 85.0
+//   mov  edi, ecx
+//   fstp dword ptr [esi+4]    <- out[1] = 85.0
+//   mov  eax, [edi+18BCh]     <- this+6332, the CameraClamping record
+//   test eax, eax
+//
+// The four bytes of the fld operand are an absolute address and are wildcarded.
+constexpr const char* kGetActiveCameraClamp =
+    "D9 05 ? ? ? ? 83 EC 08 56 8B 74 24 10 57 D9 16 8B F9 D9 5E 04 8B 87 BC 18 00 00 85 C0";
+
+using GetActiveCameraClampFn = float*(__thiscall*)(void* self, float* out);
+
+GetActiveCameraClampFn get_active_camera_clamp_fn() {
+    // RETRYABLE, not latched-on-failure: gameclient is a separately loaded module and a caller
+    // reaching here before Modules::initialize() must be able to succeed later (AGENT.MD rule 5).
+    static GetActiveCameraClampFn s_fn = nullptr;
+
+    if (s_fn == nullptr) {
+        const auto addr = Modules::get().scan_game_client(kGetActiveCameraClamp,
+                                                          "CPlayerCamera::GetActiveCameraClamp");
+        s_fn = reinterpret_cast<GetActiveCameraClampFn>(addr);
+    }
+
+    return s_fn;
+}
+
+// SEH-ISOLATED: calling into gameclient with a holder that has just been freed is a fault, not a
+// null. Its own free function with POD-only locals and a POD return, because MSVC C2712 forbids
+// __try in any scope holding a non-trivial local (AGENT.MD rule 6).
+bool seh_get_camera_clamp(GetActiveCameraClampFn fn, uintptr_t holder, float* out) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        fn(reinterpret_cast<void*>(holder), out);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+} // namespace
+
+std::optional<PlayerMgr::PitchLimits> PlayerMgr::pitch_limits(unsigned index) {
+    auto* fn = get_active_camera_clamp_fn();
+
+    if (fn == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto p = player(index);
+
+    if (!p.has_value() || p->holder == 0) {
+        return std::nullopt;
+    }
+
+    float out[2]{};
+
+    if (!seh_get_camera_clamp(fn, p->holder, out)) {
+        return std::nullopt;
+    }
+
+    if (!std::isfinite(out[0]) || !std::isfinite(out[1])) {
+        return std::nullopt;
+    }
+
+    // SIGN, AND WHY IT IS NOT A GUESS. The engine writes out[0] = degreesA * +(pi/180) and
+    // out[1] = degreesB * -(pi/180) -- the negation is in the function itself. With the shipped
+    // StandIdle record (80/85) that is out[0] = +1.396, out[1] = -1.484, i.e. the engine's pitch
+    // grows DOWNWARD. `aim_pitch` grows upward, so both flip.
+    PitchLimits limits{};
+    limits.up = -out[1];
+    limits.down = -out[0];
+
+    if (limits.up < limits.down) {
+        // A record with the pair the other way round would otherwise hand back an empty interval
+        // that silently rejects every pitch. Fail closed instead of lying.
+        return std::nullopt;
+    }
+
+    return limits;
 }
 
 std::optional<float> PlayerMgr::aim_pitch(unsigned index) {
