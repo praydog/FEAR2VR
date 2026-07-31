@@ -121,6 +121,7 @@ public:
     // it is recovered from can be PROVEN against what the sender reports rather than
     // trusted -- a wrong offset here writes into an unrelated local.
     std::array<float, 3> built_dir() const;
+    std::array<float, 3> built_origin() const;
     uint64_t builds() const { return m_builds.load(std::memory_order_relaxed); }
 
     // The muzzle socket's raw rotation. Published because which of its basis axes
@@ -145,6 +146,27 @@ public:
     // before believing a negative result: "the enemy took damage" means nothing if
     // this did not move while they were holding the key.
     uint64_t redirected_shots() const { return m_writes.load(std::memory_order_relaxed); }
+
+    // ---- WHERE THE SHOT STARTS ---------------------------------------------
+    //
+    // The engine starts the ray at the player's EYE, which is right for a game
+    // played down a crosshair and wrong for one played with a gun in your hand: a
+    // shot should leave the BARREL. With the muzzle held out to the side, an
+    // eye-origin ray takes a different path through the world -- around a corner the
+    // player is peeking past, for instance -- so the two disagree exactly where it
+    // matters most.
+    //
+    // Kept as a SEPARATE toggle from the direction, deliberately. Moving the ray's
+    // start changes what it can clip through, so a consumer that only wants
+    // hand-aiming should not silently get a moved origin as well.
+    //
+    // Unlike the muzzle's ROTATION, its POSITION is trustworthy: the pitch that is
+    // missing from the socket transform is a rotation, and a point does not have one.
+    void set_origin_from_weapon(bool enabled);
+    bool origin_from_weapon() const { return m_origin_from_weapon.load(std::memory_order_relaxed); }
+    bool origin_valid() const { return m_origin_ok.load(std::memory_order_relaxed); }
+    std::array<float, 3> weapon_origin() const;
+    uint64_t origin_writes() const { return m_origin_writes.load(std::memory_order_relaxed); }
 
     // Arm with a world-space unit direction. Rejected (returns false) unless the
     // vector is finite and within 1e-3 of unit length: a non-unit direction is
@@ -214,6 +236,11 @@ private:
     std::atomic<bool> m_weapon_ok{false};
     std::atomic<uint64_t> m_builds{0};
     std::atomic<float> m_built_dir[3]{};
+    std::atomic<float> m_built_origin[3]{};
+    std::atomic<bool> m_origin_from_weapon{false};
+    std::atomic<bool> m_origin_ok{false};
+    std::atomic<uint64_t> m_origin_writes{0};
+    std::atomic<float> m_weapon_origin[3]{};
     std::atomic<float> m_weapon_fwd[3]{};
     std::atomic<float> m_weapon_quat[4]{};
     std::atomic<float> m_weapon_obj_quat[4]{};

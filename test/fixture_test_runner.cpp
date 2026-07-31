@@ -10995,6 +10995,83 @@ int main(int argc, char** argv) {
                 const double aim0 = aim_at_measure;
                 const double dist0 = range_at_measure;
 
+                // ---- THE SHOT LEAVES THE BARREL, NOT THE EYE -------------------
+                //
+                // FireRedirect can start the ray at the weapon's muzzle. The contract has
+                // two halves and the OFF half is the one worth having: a mod that is not
+                // enabled must be provably inert, which is asserted as an EXACT identity
+                // (the sender transmits precisely what the engine's own builder produced)
+                // rather than a tolerance.
+                //
+                // The ON half is asserted as a RELATION, never a position: where the eye
+                // and the muzzle are depends on the weapon and the animation frame, so
+                // the claim is "the origin moved most of the way to the muzzle", which
+                // holds for any gun in any pose.
+                {
+                    std::string fr;
+                    auto fire_and_read = [&](double* built, double* sent, long long* writes) {
+                        http::get(port, "/input/tap?vk=82&frames=3", fr);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                        http::get(port, "/input/hold?vk=256&down=1", fr);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                        http::get(port, "/input/hold?vk=256&down=0", fr);
+                        http::get(port, "/input/release", fr);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+                        if (!http::get(port, "/xr/head", fr)) {
+                            return false;
+                        }
+                        const std::string b = http::body_of(fr);
+                        return json_double(b, "fr_bo_x", built[0]) && json_double(b, "fr_bo_y", built[1]) &&
+                               json_double(b, "fr_bo_z", built[2]) && json_double(b, "fr_sent_ox", sent[0]) &&
+                               json_double(b, "fr_sent_oy", sent[1]) && json_double(b, "fr_sent_oz", sent[2]) &&
+                               json_int(b, "fr_origin_writes", *writes);
+                    };
+                    auto dist = [](const double* a, const double* b) {
+                        const double dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
+                        return sqrt(dx*dx + dy*dy + dz*dz);
+                    };
+                    double b_off[3]{}, s_off[3]{}, b_on[3]{}, s_on[3]{}, muz[3]{};
+                    long long w_off = -1, w_on = -1;
+
+                    http::get(port, "/xr/fire-origin?on=0", fr);
+                    const bool got_off = fire_and_read(b_off, s_off, &w_off);
+                    check_armed(g_can_fire, got_off, "the fire origin is observable on both sides of the hook");
+                    if (got_off) {
+                        check(dist(b_off, s_off) < 0.001,
+                              "with the override OFF the sender transmits EXACTLY the origin the "
+                              "engine built -- the mod is inert when disabled");
+                    }
+
+                    http::get(port, "/xr/fire-origin?on=1", fr);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                    const bool got_on = got_off && fire_and_read(b_on, s_on, &w_on);
+                    if (got_on) {
+                        std::string hb;
+                        bool ovalid = false;
+                        if (http::get(port, "/xr/head", hb)) {
+                            json_bool(http::body_of(hb), "fr_origin_valid", ovalid);
+                            json_double(http::body_of(hb), "fr_wo_x", muz[0]);
+                            json_double(http::body_of(hb), "fr_wo_y", muz[1]);
+                            json_double(http::body_of(hb), "fr_wo_z", muz[2]);
+                        }
+                        const double eye_to_muzzle = dist(b_on, muz);
+                        const double sent_to_muzzle = dist(s_on, muz);
+                        printf("[fixture] fire origin: eye->muzzle %.1f units, override put the ray "
+                               "start %.1f from the muzzle (%lld writes)\n",
+                               eye_to_muzzle, sent_to_muzzle, w_on - w_off);
+                        check_armed(g_can_fire, w_on > w_off, "the override writes on every shot");
+                        // The residual is the cached muzzle sample ageing across the shot -- the
+                        // weapon recoils between the frame that sampled it and the frame that
+                        // fires. Judged against the distance it MOVED, not an absolute bound,
+                        // because how far the barrel sits from the eye is a property of the gun.
+                        check_gated(ovalid && eye_to_muzzle > 1.0, "no usable muzzle", g_skipped_dry,
+                                    sent_to_muzzle < eye_to_muzzle * 0.5,
+                                    "the override moves the ray start most of the way from the eye "
+                                    "to the muzzle");
+                    }
+                    http::get(port, "/xr/fire-origin?on=0", fr);
+                }
+
                 // ---- KEEPING THE PLAYER STOCKED --------------------------------
                 //
                 // AmmoKeeper exists because a drained pool has repeatedly produced reds in

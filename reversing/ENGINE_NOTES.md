@@ -1295,6 +1295,32 @@ source was wrong. The attached weapon object is worse and not monotonic.
 `BoneControl`, so asking the engine where the gun ended up pays an animation composition to recover
 something we handed it in the first place, and loses a component on the way.
 
+### The shot can leave the BARREL instead of the eye
+
+The engine starts the ray at the player's eye, which is right for a crosshair game and wrong for one
+with a gun in your hand -- with the muzzle held out to the side the two rays take different paths
+past a corner, which is exactly where it matters.
+
+The origin is the builder's other out-parameter, `var_124` against the direction's `var_130`, so
+**esp+0x1C** at the same hook. Proven the same way before writing: captured read-only and compared
+against what the sender reports -- identical to 0.01 units.
+
+    override OFF   builder (2128.53, 2377.67, -7831.21) -> sender IDENTICAL
+    override ON    builder (2128.45, 2377.66, -7831.18) -> sender (2142.31, 2364.18, -7775.83)
+                   muzzle socket (2146.07, 2363.59, -7765.05)
+                   moved 58.6 of the 69.9 units to the muzzle
+
+**The muzzle's POSITION is trustworthy where its rotation is not.** The pitch missing from the
+socket transform is a rotation, and a point does not have one.
+
+The 11.4-unit residual is the cached sample ageing: the muzzle is sampled in `on_frame` and the
+weapon RECOILS before the shot leaves. Over a ray of ~3000 units that is 0.22 degrees of angular
+error, so it is not worth resolving by sampling inside the fire path -- which would risk evaluating
+a dirty skeleton mid-call, a hazard this project has already paid for once.
+
+Kept as a SEPARATE toggle from the aim (`/xr/fire-origin?on=1`): moving a ray's start changes what
+it can clip past, and a consumer that only asked for hand-aiming should not silently get that too.
+
 ### CONTROLLER mode, which is the one that works
 
 Take the direction from the controller and compose it onto the body's HEADING ALONE -- not its full

@@ -10338,6 +10338,11 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/fire-origin") {
+            // Start the ray at the weapon's muzzle instead of the player's eye.
+            // Independent of the aim mode on purpose: it changes what the shot can
+            // clip past, which a caller should opt into separately.
+            FireRedirect::get().set_origin_from_weapon(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/fire-controller") {
             // Aim the shot along the CONTROLLER. Unlike weapon mode this uses the pose
             // we command rather than one read back from the engine's rig, so it carries
@@ -10524,6 +10529,15 @@ bool Framework::initialize() {
               .f("fr_built_x", FireRedirect::get().built_dir()[0], 4)
               .f("fr_built_y", FireRedirect::get().built_dir()[1], 4)
               .f("fr_built_z", FireRedirect::get().built_dir()[2], 4)
+              .f("fr_bo_x", FireRedirect::get().built_origin()[0], 2)
+              .f("fr_bo_y", FireRedirect::get().built_origin()[1], 2)
+              .f("fr_bo_z", FireRedirect::get().built_origin()[2], 2)
+              .b("fr_origin_weapon", FireRedirect::get().origin_from_weapon())
+              .b("fr_origin_valid", FireRedirect::get().origin_valid())
+              .u("fr_origin_writes", FireRedirect::get().origin_writes())
+              .f("fr_wo_x", FireRedirect::get().weapon_origin()[0], 2)
+              .f("fr_wo_y", FireRedirect::get().weapon_origin()[1], 2)
+              .f("fr_wo_z", FireRedirect::get().weapon_origin()[2], 2)
               .b("fr_weapon_valid", FireRedirect::get().weapon_forward_valid())
               .f("fr_wq_x", FireRedirect::get().weapon_quat()[0], 6)
               .f("fr_wq_y", FireRedirect::get().weapon_quat()[1], 6)

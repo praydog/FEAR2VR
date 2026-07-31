@@ -82,6 +82,12 @@ constexpr const char* kVectorsBuiltPattern =
 
 constexpr uintptr_t kBuiltDirOffset = 0x10;
 
+// The ORIGIN is the builder's fourth out-parameter, `var_124` against the direction's
+// `var_130` -- 0xC higher in the frame, so 0xC past the direction here. Same rule as
+// the direction: derived, then proven against what the sender reports before anything
+// is written to it.
+constexpr uintptr_t kBuiltOriginOffset = kBuiltDirOffset + 0xC;
+
 constexpr const char* kSendFirePattern =
     "83 EC 08 53 55 56 57 8B F9 8D 4C 24 10 C7 44 24 10 00 00 00 00 E8 ? ? ? ? 8B 74 24 10 8B 06";
 
@@ -149,6 +155,15 @@ std::array<float, 4> FireRedirect::weapon_object_quat() const {
     return {m_weapon_obj_quat[0].load(std::memory_order_relaxed), m_weapon_obj_quat[1].load(std::memory_order_relaxed),
             m_weapon_obj_quat[2].load(std::memory_order_relaxed), m_weapon_obj_quat[3].load(std::memory_order_relaxed)};
 }
+
+std::array<float, 3> FireRedirect::weapon_origin() const { return load3(m_weapon_origin); }
+
+void FireRedirect::set_origin_from_weapon(bool enabled) {
+    m_origin_from_weapon.store(enabled, std::memory_order_release);
+    LOGX("[fire] shot origin = %s", enabled ? "WEAPON MUZZLE" : "the engine's own (eye)");
+}
+
+std::array<float, 3> FireRedirect::built_origin() const { return load3(m_built_origin); }
 
 std::array<float, 3> FireRedirect::weapon_forward() const { return load3(m_weapon_fwd); }
 
@@ -222,12 +237,25 @@ void FireRedirect::on_vectors_built(SafetyHookContext& ctx) {
         return;
     }
     store3(self.m_built_dir, (*cur)[0], (*cur)[1], (*cur)[2]);
+    if (const auto org = sdk::mem::read<std::array<float, 3>>(ctx.esp + kBuiltOriginOffset)) {
+        store3(self.m_built_origin, (*org)[0], (*org)[1], (*org)[2]);
+    }
+
+    // The ORIGIN override is independent of the direction mode -- a consumer may want
+    // the shot to leave the barrel while still aiming down the engine's own sights.
+    const bool gated = self.m_hotkey.load(std::memory_order_relaxed) != 0 &&
+                       !self.m_hotkey_held.load(std::memory_order_relaxed);
+    if (!gated && self.m_origin_from_weapon.load(std::memory_order_acquire) &&
+        self.m_origin_ok.load(std::memory_order_relaxed)) {
+        if (sdk::mem::write<std::array<float, 3>>(ctx.esp + kBuiltOriginOffset, load3(self.m_weapon_origin))) {
+            self.m_origin_writes.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     if (!self.m_armed.load(std::memory_order_acquire)) {
         return;
     }
-    if (self.m_hotkey.load(std::memory_order_relaxed) != 0 &&
-        !self.m_hotkey_held.load(std::memory_order_relaxed)) {
+    if (gated) {
         return;
     }
 
@@ -382,6 +410,23 @@ void FireRedirect::on_frame() {
     // Sample where the WEAPON points, on the thread allowed to resolve it. Only when
     // something will consume it -- this walks a socket chain and there is no reason
     // to pay for it every frame of normal play.
+    if (m_origin_from_weapon.load(std::memory_order_relaxed)) {
+        // Position only -- see the header for why the muzzle's rotation is unusable
+        // while its position is not.
+        bool ok = false;
+        if (const auto player = sdk::CClientShell::local_player(0); player.has_value()) {
+            if (const auto muzzle = sdk::attached_socket(player->object, "flash");
+                muzzle.has_value() && !muzzle->transform.stale) {
+                const auto& p = muzzle->transform.position;
+                if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) {
+                    store3(m_weapon_origin, p.x, p.y, p.z);
+                    ok = true;
+                }
+            }
+        }
+        m_origin_ok.store(ok, std::memory_order_relaxed);
+    }
+
     if (m_mode.load(std::memory_order_relaxed) == Mode::Controller) {
         // The controller's orientation is something we KNOW rather than something read
         // back out of the engine's rig, which is why this works where Weapon mode
