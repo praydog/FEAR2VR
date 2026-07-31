@@ -938,6 +938,63 @@ so it never reached `capture_viewport()` or `record_pass()`: the census reported
 frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
 one. It is recorded now, which is what made the table above possible.
 
+### OpenXR is reachable from this 32-bit process, with no loader binary
+
+The last unknown, and it is now closed. There is no 32-bit `openxr_loader.dll` on this machine and
+the Meta XR Simulator -- the one route that would allow bring-up with no hardware -- is **x64 only**
+(SIMULATOR.dll, machine 0x8664), so it can never serve FEAR2. Neither turned out to matter: the
+loader's job at this depth is small and documented, and `sdk::OpenXR` does it directly.
+
+Measured against the registered active runtime, in `build/bin/xr-probe.exe`:
+
+    manifest      HKLM\Software\Khronos\OpenXR\1\ActiveRuntime  (WOW6432Node view)
+                  F:\Oculus\Support\oculus-runtime\oculus_openxr_32.json
+    library       LibOVRRTImpl32_1.dll, machine 0x014c
+    negotiated    loader interface 1, OpenXR API 1.1
+    globals       xrEnumerateInstanceExtensionProperties -> XR_SUCCESS
+                  xrCreateInstance                       -> XR_SUCCESS
+    extensions    35, including XR_KHR_D3D11_enable
+
+`XR_KHR_D3D11_enable` is the one that matters: it is how a D3D9 game's surface reaches a compositor.
+
+**HANDLES ARE 64 BITS IN A 32-BIT PROCESS.** OpenXR's `XR_DEFINE_HANDLE` only makes handles pointers
+when the pointer size IS 8; otherwise they are `uint64_t`, like Vulkan's non-dispatchable handles.
+Declaring `XrInstance` as `void*` costs four bytes of argument, so under `__stdcall` the callee pops
+sixteen where the caller pushed twelve. The stack unbalances by four and the next return goes
+somewhere arbitrary. That is not theory -- it read `name` from the wrong slot (three runtimes
+returning -1, -2 and -7) and then jumped into unmapped memory and killed the game. Both symptoms had
+one cause, and the fix was four bytes wide.
+
+**XR_TYPE_EXTENSION_PROPERTIES is 2**, established by asking the runtime: 0 and 1 were rejected with
+XR_ERROR_VALIDATION_FAILURE, 2 accepted. The first version guessed 3, which is
+XR_TYPE_INSTANCE_CREATE_INFO, and the resulting validation failure looked exactly like a broken
+runtime. Also: resolving `xrGetInstanceProcAddr` through a NULL instance returns -12
+(XR_ERROR_HANDLE_INVALID) and that is the runtime being CORRECT -- a null instance may serve only the
+globals. An early probe read the refusal as a fault.
+
+### Loading a runtime is a one-way door, and it is not passive
+
+Two properties that shape where OpenXR work is allowed to happen in this project.
+
+**It pins the DLL.** Oculus, Virtual Desktop and PimaxXR each spawn threads on load and none of them
+support `FreeLibrary`. After a load, `injector --unload` no longer frees fear2vr.dll and the next
+build fails to overwrite it -- observed directly as LNK1104. The iteration loop is inject / test /
+unload / rebuild, so an unguarded load costs a game restart per edit. Bring-up therefore lives in
+`xr-probe.exe`, a throwaway process, and the in-game route is discovery-only unless asked.
+
+**It touches the machine.** Loading a runtime starts that vendor's services. An early version of the
+probe walked every entry in `AvailableRuntimes` to see which ones worked, which brought up
+PiPlatformService and woke OVRServer on a machine whose owner wanted neither, and raised a Windows
+firewall prompt for FEAR2.exe. That prompt then blocked unrelated launches. Enumerating the registry
+is free; loading is not. The sweep is gone -- only the ACTIVE runtime is ever loaded. Note also that
+an uninstalled runtime can REMAIN registered: PimaxXR's manifest is still listed here after removal.
+
+**And a third-party runtime can kill the host.** The Oculus runtime faulted inside its own
+negotiation on one occasion (null `this`, write to +0xF). `sdk::OpenXR` guards the load, the
+negotiation, and every call through the runtime's own entry point, latching a faulted runtime off
+rather than poking it again. A mod must degrade to flatscreen, not take the game down on a machine
+its author never tested.
+
 ### The pair can stay on the GPU, which is what submission needs
 
 The verified pair above lands in SYSTEM MEMORY, and that path costs ~2 ms here and up to 10 ms at

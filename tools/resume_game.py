@@ -178,14 +178,83 @@ def wait_for_window(wait_s):
     return False
 
 
+def steam_exe():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            return winreg.QueryValueEx(k, "SteamExe")[0].replace("/", "\\")
+    except Exception:
+        return None
+
+
+def steam_thinks_game_runs():
+    """Steam's own idea of what is running, which survives a crash and blocks every relaunch.
+
+    A hard kill -- a crash, a taskkill, a runtime faulting the process -- leaves RunningAppID set to
+    our appid with no process behind it. `steam://rungameid` is then a silent no-op FOREVER: Steam
+    believes the game is already up, so it does nothing and reports nothing. That cost this project
+    three consecutive 200-second launch timeouts before anyone thought to look at the registry.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            return int(winreg.QueryValueEx(k, "RunningAppID")[0]) == STEAM_APPID
+    except Exception:
+        return False
+
+
+def restart_steam(wait_s=60):
+    """The only reliable way to clear it: Steam caches the state in memory, so poking the registry
+    does nothing. -shutdown exits cleanly and resets RunningAppID to 0 on the way out."""
+    exe = steam_exe()
+
+    if exe is None:
+        return False
+
+    print("[resume] Steam still thinks FEAR2 is running -- restarting Steam to clear it")
+    subprocess.run([exe, "-shutdown"], check=False)
+    deadline = time.time() + wait_s
+
+    while time.time() < deadline:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True).stdout
+        if "steam.exe" not in out:
+            break
+        time.sleep(1)
+
+    subprocess.Popen([exe], close_fds=True)
+    deadline = time.time() + wait_s
+
+    while time.time() < deadline:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steamwebhelper.exe", "/FO", "CSV",
+                              "/NH"], capture_output=True, text=True).stdout
+        if "steamwebhelper.exe" in out:
+            time.sleep(8)  # the client is up but not yet answering rungameid
+            return True
+        time.sleep(1)
+
+    return False
+
+
 def launch_game(wait_s):
     # Through Steam, not the exe: the on-disk binary is CEG/SteamStub-wrapped and refuses a direct launch.
-    subprocess.run(["cmd", "/c", "start", "", "steam://rungameid/%d" % STEAM_APPID], check=False)
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        if game_running():
-            return True
-        time.sleep(0.5)
+    if steam_thinks_game_runs():
+        restart_steam()
+
+    for attempt in range(2):
+        subprocess.run(["cmd", "/c", "start", "", "steam://rungameid/%d" % STEAM_APPID], check=False)
+        deadline = time.time() + wait_s
+
+        while time.time() < deadline:
+            if game_running():
+                return True
+            time.sleep(0.5)
+
+        # A launch that produced no process at all is the stale-state signature rather than a slow
+        # disk, so it is worth one Steam restart before giving up on the whole loop.
+        if attempt == 0 and steam_thinks_game_runs() and not restart_steam():
+            break
+
     return False
 
 

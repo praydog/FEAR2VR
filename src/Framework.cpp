@@ -60,6 +60,7 @@
 #include "sdk/UiCommands.hpp"
 #include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
+#include "sdk/OpenXR.hpp"
 #include "sdk/PlayerMgr.hpp"
 #include "sdk/WeaponMgr.hpp"
 #include "sdk/Resources.hpp"
@@ -10488,6 +10489,45 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/runtime") {
+            // Reach OpenXR from INSIDE the game, which is the only view that counts: the runtime a
+            // 32-bit process resolves is not the one a 64-bit tool sees. Goes as deep as a machine
+            // with no headset allows -- discover, load, negotiate, enumerate -- and deliberately
+            // stops short of a session, which needs a device.
+            auto& xr = sdk::OpenXR::get();
+            if (webapi_query_int(q, "unload", 0) != 0) {
+                xr.unload();
+            } else {
+                // ONLY THE ACTIVE RUNTIME, and only when asked. An earlier version of this route
+                // took an `index=` and walked every registered runtime to see which ones worked.
+                // That is a genuinely bad thing to do on someone's machine: LOADING a runtime is
+                // not a passive act -- it starts that vendor's services (PimaxXR brought up
+                // PiPlatformService, Oculus woke OVRServer) and trips a Windows firewall prompt
+                // that then blocks everything else. A consumer wanting a different runtime should
+                // change the ACTIVE one, which is the switch the user already controls.
+                // DISCOVERY ONLY unless explicitly asked. Loading a runtime PINS THIS DLL: the
+                // runtimes here spawn threads and none support FreeLibrary, so after a load
+                // `injector --unload` no longer frees the module and the next build cannot
+                // overwrite fear2vr.dll -- observed as a link failure. The project's iteration loop
+                // is inject / test / unload / rebuild, so an unguarded load costs a game restart
+                // per edit. Bring-up belongs in build/bin/xr-probe.exe, which is a throwaway
+                // process; `load=1` exists for the eventual real session and nothing else.
+                if (webapi_query_int(q, "load", 0) != 0 && xr.load()) {
+                    std::vector<std::string> exts;
+                    xr.enumerate_extensions(exts);
+                }
+                if (q.find("probe") != q.end()) {
+                    static const char* const kNames[] = {"xrGetInstanceProcAddr",
+                                                         "xrEnumerateInstanceExtensionProperties",
+                                                         "xrCreateInstance",
+                                                         "xrEnumerateApiLayerProperties"};
+                    for (const char* n : kNames) {
+                        void* p = nullptr;
+                        LOGX("[openxr] resolve %-42s XrResult %d ptr %p", n,
+                             static_cast<int>(xr.resolve(n, &p)), p);
+                    }
+                }
+            }
         } else if (route == "/xr/capture") {
             // Read the finished frame back off the GPU. `path=` writes a BMP; without it the
             // capture is timing-only. This is the project's first visual oracle that cannot be
@@ -10666,6 +10706,19 @@ bool Framework::initialize() {
               .f("head_eng_x", st.head_engine[0], 5).f("head_eng_y", st.head_engine[1], 5)
               .f("head_eng_z", st.head_engine[2], 5).f("head_eng_w", st.head_engine[3], 5)
               .f("head_pos_y", head.position[1], 4)
+              .b("xr_rt_discovered", sdk::OpenXR::get().discovered())
+              .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
+              .s("xr_rt_manifest", sdk::OpenXR::get().manifest_path())
+              .u("xr_rt_available", sdk::OpenXR::available_runtimes().size())
+              .b("xr_rt_loaded", sdk::OpenXR::get().loaded())
+              .s("xr_rt_library", sdk::OpenXR::get().library_path())
+              .u("xr_rt_iface", static_cast<size_t>(sdk::OpenXR::get().interface_version()))
+              .u("xr_rt_api_major", static_cast<size_t>(sdk::OpenXR::get().api_major()))
+              .u("xr_rt_api_minor", static_cast<size_t>(sdk::OpenXR::get().api_minor()))
+              .u("xr_rt_extensions", sdk::OpenXR::get().extensions().size())
+              .b("xr_rt_d3d11", sdk::OpenXR::get().supports_extension("XR_KHR_D3D11_enable"))
+              .b("xr_rt_d3d12", sdk::OpenXR::get().supports_extension("XR_KHR_D3D12_enable"))
+              .s("xr_rt_error", sdk::OpenXR::get().last_error())
               .b("hands", st.hands)
               .u("hand_applied", static_cast<size_t>(st.hand_applied))
               .f("hand_off_x", st.hand_offset[0], 3)
