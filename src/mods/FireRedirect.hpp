@@ -80,7 +80,8 @@ public:
         Off,        // pass the client's own direction through untouched
         Absolute,   // replace it with a fixed world-space direction (set_direction)
         Reverse,    // negate whatever the client was about to send
-        Weapon,     // aim along the WEAPON's own muzzle -- i.e. where the gun points
+        Weapon,     // aim along the WEAPON's own muzzle -- YAW ONLY, see the note below
+        Controller, // aim along the VR controller, composed onto the body's heading
     };
 
     // REVERSE is not a novelty: it is the only redirection whose effect a HUMAN can
@@ -94,7 +95,18 @@ public:
     // negation happens inside the hook against the value the client actually built.
     void set_mode(Mode mode);
 
-    // WEAPON MODE IS THE VR FEATURE. `BoneControl` already drives the weapon's bone
+    // WEAPON MODE IS YAW-ONLY, MEASURED. The muzzle transform reachable from the
+    // player object carries the BODY's heading and no pitch -- the body stands
+    // upright while the camera pitches -- so its error tracks the aim's pitch exactly:
+    //
+    //     aim pitch     0 deg   -25 deg   +25 deg
+    //     socket +Z     3.5     27.8      21.8      (weapon object was worse: 13.6/16.3/36.1)
+    //
+    // +Z IS the barrel axis (it beat every other basis vector at every pitch); the
+    // pitch simply is not in that transform. Kept because it is honest about what it
+    // does, but CONTROLLER mode is the one a VR player wants.
+    //
+    // CONTROLLER MODE IS THE VR FEATURE. `BoneControl` already drives the weapon's bone
     // from the controller, so once the shot follows the muzzle the gun genuinely
     // points where your hand does -- rather than the shot following the view while
     // the model merely looks aimed.
@@ -110,6 +122,13 @@ public:
     // trusted -- a wrong offset here writes into an unrelated local.
     std::array<float, 3> built_dir() const;
     uint64_t builds() const { return m_builds.load(std::memory_order_relaxed); }
+
+    // The muzzle socket's raw rotation. Published because which of its basis axes
+    // points down the barrel is a property of the ART, not of the engine, and the
+    // only honest way to pick one is to compare all three against a direction
+    // already known to be the true aim.
+    std::array<float, 4> weapon_quat() const;
+    std::array<float, 4> weapon_object_quat() const;
 
     std::array<float, 3> weapon_forward() const;
     bool weapon_forward_valid() const { return m_weapon_ok.load(std::memory_order_relaxed); }
@@ -196,6 +215,8 @@ private:
     std::atomic<uint64_t> m_builds{0};
     std::atomic<float> m_built_dir[3]{};
     std::atomic<float> m_weapon_fwd[3]{};
+    std::atomic<float> m_weapon_quat[4]{};
+    std::atomic<float> m_weapon_obj_quat[4]{};
     std::atomic<bool> m_hooked{false};
     std::atomic<uintptr_t> m_target{0};
     std::atomic<uintptr_t> m_last_desc{0};

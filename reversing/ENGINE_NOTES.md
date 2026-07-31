@@ -1277,6 +1277,46 @@ Fourteen impact spawns swung a clean 180 degrees. Damage and visuals now agree.
 double-apply, and Reverse would negate twice and cancel -- a bug that would present as "the feature
 silently does nothing". The sender hook is now observation only.
 
+### The rig cannot supply the aim: it has the body's yaw and NO pitch
+
+Aiming the shot along the weapon's own muzzle follows yaw and pins pitch near zero. Measured against
+the client's own built direction, which is known to be the true aim:
+
+    aim pitch          0 deg    -25 deg    +25 deg
+    muzzle socket +Z    3.5      27.8       21.8
+    weapon object +Z   13.6      16.3       36.1
+
+The socket's error tracks the pitch magnitude exactly, so the pitch simply is not in that transform:
+the player model's body stands upright while the camera pitches. +Z IS the barrel axis -- it beat
+every other basis vector, and its negation, at every pitch -- so the extraction was right and the
+source was wrong. The attached weapon object is worse and not monotonic.
+
+**The general point: do not read back a value you already command.** The rig is DOWNSTREAM of
+`BoneControl`, so asking the engine where the gun ended up pays an animation composition to recover
+something we handed it in the first place, and loses a component on the way.
+
+### CONTROLLER mode, which is the one that works
+
+Take the direction from the controller and compose it onto the body's HEADING ALONE -- not its full
+aim, the same correction HeadTracking needed, because yawing about an axis tilted by the player's
+own pitch is not yawing:
+
+    world = quat(yaw = aim_yaw) * runtime_to_engine_rotation(controller.aim.orientation)
+    direction = forward_of(world)
+
+Live, driving the controller and reading the resulting fire direction:
+
+    controller pitch   -20   +20   -40   +40      ->  fire pitch  -20.00  +20.00  -40.00  +40.00
+    controller yaw     -30   +30   -60   +60      ->  fire yaw    +30.00  -30.00  +60.00  -60.00
+
+Pitch is 1:1 and yaw is 1:1 INVERTED, which is the correct and already-verified convention: the
+mirror-Z conversion makes OpenXR's +yaw (a left turn) into LithTech's negative yaw. HeadTracking
+produces the identical signature through the same helper -- `yaw +30 -> view dyaw -30.000`,
+`pitch +20 -> dpitch +20.000` -- so two independent consumers agree on it.
+
+Route: `/xr/fire-controller?on=1`, `&vk=<key>` to hold-to-apply. `Mode::Weapon` is kept and its
+yaw-only limit is documented on it rather than hidden.
+
 ### Hand-aimed shooting, which this unlocks
 
 `FireRedirect::Mode::Weapon` takes the direction from the WEAPON's own muzzle -- the `flash` socket's

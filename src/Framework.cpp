@@ -10338,6 +10338,17 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/fire-controller") {
+            // Aim the shot along the CONTROLLER. Unlike weapon mode this uses the pose
+            // we command rather than one read back from the engine's rig, so it carries
+            // pitch -- the rig's does not.
+            auto& fr = FireRedirect::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                fr.set_mode(FireRedirect::Mode::Off);
+            } else {
+                fr.set_hotkey(webapi_query_int(q, "vk", 0));
+                fr.set_mode(FireRedirect::Mode::Controller);
+            }
         } else if (route == "/xr/fire-weapon") {
             // SHOTS FOLLOW THE GUN. With BoneControl driving the weapon bone from the
             // controller this is hand-aimed shooting: the muzzle points where the hand
@@ -10514,6 +10525,14 @@ bool Framework::initialize() {
               .f("fr_built_y", FireRedirect::get().built_dir()[1], 4)
               .f("fr_built_z", FireRedirect::get().built_dir()[2], 4)
               .b("fr_weapon_valid", FireRedirect::get().weapon_forward_valid())
+              .f("fr_wq_x", FireRedirect::get().weapon_quat()[0], 6)
+              .f("fr_wq_y", FireRedirect::get().weapon_quat()[1], 6)
+              .f("fr_wq_z", FireRedirect::get().weapon_quat()[2], 6)
+              .f("fr_wq_w", FireRedirect::get().weapon_quat()[3], 6)
+              .f("fr_woq_x", FireRedirect::get().weapon_object_quat()[0], 6)
+              .f("fr_woq_y", FireRedirect::get().weapon_object_quat()[1], 6)
+              .f("fr_woq_z", FireRedirect::get().weapon_object_quat()[2], 6)
+              .f("fr_woq_w", FireRedirect::get().weapon_object_quat()[3], 6)
               .f("fr_weapon_fx", FireRedirect::get().weapon_forward()[0], 4)
               .f("fr_weapon_fy", FireRedirect::get().weapon_forward()[1], 4)
               .f("fr_weapon_fz", FireRedirect::get().weapon_forward()[2], 4)

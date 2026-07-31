@@ -9,6 +9,7 @@
 #include "../Hooks.hpp"
 #include "Log.hpp"
 #include "sdk/Memory.hpp"
+#include "VR.hpp"
 #include "sdk/CClientShell.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Modules.hpp"
@@ -139,6 +140,16 @@ FireRedirect& FireRedirect::get() {
 
 std::array<float, 3> FireRedirect::built_dir() const { return load3(m_built_dir); }
 
+std::array<float, 4> FireRedirect::weapon_quat() const {
+    return {m_weapon_quat[0].load(std::memory_order_relaxed), m_weapon_quat[1].load(std::memory_order_relaxed),
+            m_weapon_quat[2].load(std::memory_order_relaxed), m_weapon_quat[3].load(std::memory_order_relaxed)};
+}
+
+std::array<float, 4> FireRedirect::weapon_object_quat() const {
+    return {m_weapon_obj_quat[0].load(std::memory_order_relaxed), m_weapon_obj_quat[1].load(std::memory_order_relaxed),
+            m_weapon_obj_quat[2].load(std::memory_order_relaxed), m_weapon_obj_quat[3].load(std::memory_order_relaxed)};
+}
+
 std::array<float, 3> FireRedirect::weapon_forward() const { return load3(m_weapon_fwd); }
 
 std::array<float, 3> FireRedirect::last_sent_dir() const { return load3(m_sent_dir); }
@@ -178,11 +189,11 @@ void FireRedirect::set_mode(Mode mode) {
     // so it arms itself. Off disarms both so nothing can be left applying.
     if (mode == Mode::Off) {
         m_armed.store(false, std::memory_order_release);
-    } else if (mode == Mode::Reverse || mode == Mode::Weapon) {
+    } else if (mode != Mode::Absolute) {
         m_armed.store(true, std::memory_order_release);
     }
     LOGX("[fire] redirect mode = %s (hotkey 0x%02X)",
-         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : (mode == Mode::Weapon ? "WEAPON" : "absolute")),
+         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : (mode == Mode::Weapon ? "WEAPON" : (mode == Mode::Controller ? "CONTROLLER" : "absolute"))),
          m_hotkey.load(std::memory_order_relaxed));
 }
 
@@ -222,7 +233,7 @@ void FireRedirect::on_vectors_built(SafetyHookContext& ctx) {
 
     std::array<float, 3> dir{};
     const Mode mode = self.m_mode.load(std::memory_order_acquire);
-    if (mode == Mode::Weapon) {
+    if (mode == Mode::Weapon || mode == Mode::Controller) {
         if (!self.m_weapon_ok.load(std::memory_order_relaxed)) {
             return;
         }
@@ -371,13 +382,57 @@ void FireRedirect::on_frame() {
     // Sample where the WEAPON points, on the thread allowed to resolve it. Only when
     // something will consume it -- this walks a socket chain and there is no reason
     // to pay for it every frame of normal play.
-    if (m_mode.load(std::memory_order_relaxed) == Mode::Weapon) {
+    if (m_mode.load(std::memory_order_relaxed) == Mode::Controller) {
+        // The controller's orientation is something we KNOW rather than something read
+        // back out of the engine's rig, which is why this works where Weapon mode
+        // cannot: the rig is downstream of BoneControl and loses the pitch on the way.
+        //
+        // Basis is the body's HEADING ALONE, not its full aim -- the same correction
+        // HeadTracking needed. Yawing about an axis tilted by the player's own pitch is
+        // not yawing, and it showed up there as pitch drift.
+        bool ok = false;
+        const auto& rt = vr::simulated_runtime();
+        const auto hand = rt.hand(vr::VRRuntime::Hand::RIGHT);
+        if (hand.aim.valid) {
+            if (const auto heading = sdk::PlayerMgr::aim_yaw(0); heading.has_value()) {
+                const auto e = VR::runtime_to_engine_rotation(hand.aim.orientation);
+                const float half = *heading * 0.5f;
+                const regenny::LTRotation yaw{0.0f, std::sin(half), 0.0f, std::cos(half)};
+                const regenny::LTRotation local{e[0], e[1], e[2], e[3]};
+                const auto world = sdk::multiply_rotations(yaw, local);
+                const auto fwd = sdk::forward_of(world);
+                const float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                if (std::isfinite(len) && len > 0.9f && len < 1.1f) {
+                    store3(m_weapon_fwd, fwd.x / len, fwd.y / len, fwd.z / len);
+                    ok = true;
+                }
+            }
+        }
+        m_weapon_ok.store(ok, std::memory_order_relaxed);
+    } else if (m_mode.load(std::memory_order_relaxed) == Mode::Weapon) {
         bool ok = false;
         if (const auto player = sdk::CClientShell::local_player(0); player.has_value()) {
             if (const auto muzzle = sdk::attached_socket(player->object, "flash"); muzzle.has_value()) {
                 // A stale socket is built on a stale bone, so its direction is last
                 // frame's at best and garbage at worst -- refuse rather than aim with it.
                 if (!muzzle->transform.stale) {
+                    // The socket transform is composed from the player model's bone cache,
+                    // and that model's body does not pitch -- so compare against the attached
+                    // WEAPON OBJECT's own rotation, which the engine writes separately.
+                    if (muzzle->object != nullptr) {
+                        if (const auto wq = sdk::mem::read<regenny::LTRotation>(
+                                reinterpret_cast<uintptr_t>(muzzle->object) + 0x20)) {
+                            m_weapon_obj_quat[0].store(wq->x, std::memory_order_relaxed);
+                            m_weapon_obj_quat[1].store(wq->y, std::memory_order_relaxed);
+                            m_weapon_obj_quat[2].store(wq->z, std::memory_order_relaxed);
+                            m_weapon_obj_quat[3].store(wq->w, std::memory_order_relaxed);
+                        }
+                    }
+                    const auto& q = muzzle->transform.rotation;
+                    m_weapon_quat[0].store(q.x, std::memory_order_relaxed);
+                    m_weapon_quat[1].store(q.y, std::memory_order_relaxed);
+                    m_weapon_quat[2].store(q.z, std::memory_order_relaxed);
+                    m_weapon_quat[3].store(q.w, std::memory_order_relaxed);
                     const auto fwd = sdk::forward_of(muzzle->transform.rotation);
                     const float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
                     if (std::isfinite(len) && len > 0.9f && len < 1.1f) {
