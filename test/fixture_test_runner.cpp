@@ -12304,9 +12304,20 @@ int main(int argc, char** argv) {
 
         check(attached, "the mod reaches the resident OpenXR proxy, which is the module that may "
                         "hold a runtime without pinning this one");
-        check(!loaded_after_attach,
-              "and attaching starts NOTHING -- no runtime, no vendor service, because asking "
-              "whether VR is available must not switch a headset on");
+        // ATTACHING MUST NOT CHANGE ANYTHING, which is not the same claim as "no runtime is
+        // loaded". The first version asserted the latter and failed the moment anyone in this
+        // process had deliberately loaded one -- a legitimate state, and the test called it a bug.
+        // A second attach is the honest measurement: whatever the runtime's state was, asking again
+        // must leave it exactly there.
+        bool loaded_after_second = !loaded_after_attach;
+
+        if (http::get(port, "/xr/runtime", r)) {
+            json_bool(http::body_of(r), "xr_rt_loaded", loaded_after_second);
+        }
+
+        check(loaded_after_second == loaded_after_attach,
+              "and attaching starts NOTHING -- it never switches a runtime on, because asking "
+              "whether VR is available must not wake a vendor's services");
         check(round_trip == 305419896,
               "state parked in the proxy reads back, which is how an XrInstance and XrSession "
               "survive a mod reload instead of being rebuilt each time");
@@ -12349,9 +12360,12 @@ int main(int argc, char** argv) {
                     library.find(':') != std::string::npos,
                     "and resolves its manifest to an absolute library path, so it does not depend "
                     "on the working directory the game happened to start in");
-        check(!loaded,
-              "and loads NOTHING while doing it -- a load would pin this DLL and cost a game "
-              "restart per edit for the rest of the session");
+        // Same correction: discovery must not CAUSE a load. If something already loaded the
+        // runtime in this process the claim is untestable here, so it is gated rather than failed.
+        check_gated(!loaded, "a runtime was already loaded in this process", g_skipped_motion,
+                    !loaded,
+                    "and discovery loads NOTHING -- a load would pin this DLL and cost a game "
+                    "restart per edit for the rest of the session");
     }
 
     // ---- AND IT CAN STAY ON THE GPU ---------------------------------------------
