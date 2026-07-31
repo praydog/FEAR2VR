@@ -10721,6 +10721,9 @@ bool Framework::initialize() {
               .u("fc_divisor", FrameCapture::get().divisor())
               .b("fc_continuous", FrameCapture::get().continuous())
               .u("fc_cont_frames", FrameCapture::get().continuous_frames())
+              .raw("fc_signature",
+                   std::to_string(FrameCapture::get().last_signature()).c_str())
+              .f("fc_mean_luma", FrameCapture::get().last_mean_luma(), 3)
               .f("fc_cont_lock_ms", FrameCapture::get().continuous_lock_ms(), 3)
               .u("fc_width", FrameCapture::get().width())
               .u("fc_height", FrameCapture::get().height())
@@ -11062,19 +11065,36 @@ bool Framework::initialize() {
         }
         const auto ipd = static_cast<float>(webapi_query_double(q, "half_ipd", 0.0));
         const bool split = webapi_query_int(q, "split", 0) != 0;
-        // `both=1` renders BOTH eyes per frame; otherwise `eye=` selects a single one.
-        if (webapi_query_int(q, "both", 0) != 0) {
-            CameraPassHook::get().set_stereo(true, ipd, split);
-        } else {
-            CameraPassHook::get().set_stereo(false, ipd, split);
-            CameraPassHook::get().set_eye(eye, ipd, split);
+
+        // ONLY MUTATE WHAT THE CALLER ASKED FOR. Every route under /stereo/ lands here, so the
+        // obvious "read the state" call -- /stereo/state with no parameters -- used to parse an
+        // ABSENT eye as Eye::Off and apply it. Polling the state therefore CLEARED the eye it was
+        // reporting, and the reading always came back Off with a rising `overridden` count.
+        //
+        // That cost a whole investigation: the eye looked like it was auto-expiring after ~28
+        // passes, and the captures taken to measure stereo were re-asserting it before every shot
+        // to work around an expiry that did not exist. set_eye() was persistent all along.
+        //
+        // Same shape as /xr/capture requesting a one-shot on every call. A query is not a command.
+        if (q.find("eye") != q.end() || q.find("both") != q.end() || q.find("half_ipd") != q.end()) {
+            // `both=1` renders BOTH eyes per frame; otherwise `eye=` selects a single one.
+            if (webapi_query_int(q, "both", 0) != 0) {
+                CameraPassHook::get().set_stereo(true, ipd, split);
+            } else {
+                CameraPassHook::get().set_stereo(false, ipd, split);
+                CameraPassHook::get().set_eye(eye, ipd, split);
+            }
         }
-        CameraPassHook::get().set_frustum_centre(
-            static_cast<float>(webapi_query_double(q, "centre_x", 0.0)),
-            static_cast<float>(webapi_query_double(q, "centre_y", 0.0)));
-        CameraPassHook::get().set_fov_override(
-            static_cast<float>(webapi_query_double(q, "fov_x", 0.0)),
-            static_cast<float>(webapi_query_double(q, "fov_y", 0.0)));
+        if (q.find("centre_x") != q.end() || q.find("centre_y") != q.end()) {
+            CameraPassHook::get().set_frustum_centre(
+                static_cast<float>(webapi_query_double(q, "centre_x", 0.0)),
+                static_cast<float>(webapi_query_double(q, "centre_y", 0.0)));
+        }
+        if (q.find("fov_x") != q.end() || q.find("fov_y") != q.end()) {
+            CameraPassHook::get().set_fov_override(
+                static_cast<float>(webapi_query_double(q, "fov_x", 0.0)),
+                static_cast<float>(webapi_query_double(q, "fov_y", 0.0)));
+        }
         const auto o = CameraPassHook::get().observed();
         std::string out;
         {

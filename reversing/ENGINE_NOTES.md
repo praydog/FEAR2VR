@@ -879,6 +879,56 @@ Fixed by owning what we started: once a slot has ever been armed, the handler cl
 the rest of the session and resumes, reporting nothing because there is no live slot to attribute
 them to.
 
+### The two eyes really do render different pictures, and the parallax is depth-ordered
+
+Everything this project could previously say about stereo was STRUCTURAL -- asymmetric frustum
+centres, a second draw group, a splitting viewport. None of it shows the eyes produce different
+PICTURES, which is the only property a headset cares about. With a frame readback that is now
+measurable.
+
+Captures interleaved L,R,L,R,L,R so time is controlled, compared as mean absolute pixel difference:
+
+    within-eye   1.314   (range 0.31 - 3.01)
+    across-eye  15.251   (range 14.1 - 17.3)
+    ratio       11.6x    -- the distributions do not overlap
+
+At a human 6.4 cm baseline the disparity is depth-ordered, right relative to left:
+
+    far  wall/ceiling   -4 px
+    mid  doorway        -4 px
+    near pillar/sign   -16 px
+
+### The instrument said "no parallax" and the picture said otherwise
+
+Worth recording because the numeric method was the confident one. A global best-fit horizontal
+shift over a crop reported **dx = 0** at every depth, and a 2-D search over dx AND dy agreed --
+while the same metric on a same-eye control bottomed out at 0 with residual 0.73 and rose to 17.9
+at dx=+40, so it was demonstrably sensitive to shift. The conclusion drafted from that was "the
+eyes differ but not by parallax".
+
+The difference image showed **two of every edge** -- two CAUTION signs, two weapons, two door
+frames. It was parallax all along. The measurement was taken at `half_ipd=40`, an 80 cm baseline, so
+near content shifted hundreds of pixels straight out of the comparison window; no single dx could
+align a crop whose content had left it, and dx=0 won by default.
+
+The lesson is not "trust screenshots" -- this project has a section on a screenshot lying. It is
+that **a global-shift metric cannot describe a depth-dependent displacement**, and that a control
+proving an instrument is sensitive does not prove it is sensitive *in the regime being measured*.
+Re-run at a human baseline, the same method gave the depth-ordered numbers above.
+
+### Reading /stereo/state used to clear the eye it reported
+
+Every route under `/stereo/` reaches one handler, and it applied an absent `eye=` parameter as
+`Eye::Off`. So polling `/stereo/state` -- the obvious way to check which eye is selected -- SET the
+eye to off, every time, while reporting a rising `overridden` count.
+
+This looked exactly like a safety countdown expiring after ~28 passes, and the stereo captures above
+were originally written to re-assert the eye before every shot to work around an expiry that did not
+exist. `set_eye()` was persistent all along.
+
+Second instance of the same shape in two sessions (`/xr/capture` requested a one-shot on every call,
+including `?continuous=0`). **A query is not a command**: mutate only what the caller named.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

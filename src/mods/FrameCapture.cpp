@@ -241,6 +241,10 @@ void FrameCapture::service_continuous() {
     m_issue = ready;
 }
 
+double FrameCapture::last_mean_luma() const {
+    return static_cast<double>(m_mean_luma_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
 double FrameCapture::last_stretch_ms() const {
     return ticks_to_ms(m_stretch_ticks.load(std::memory_order_relaxed));
 }
@@ -387,17 +391,31 @@ void FrameCapture::service() {
         // every pixel: this runs on the render thread and 3.7M pixels is not bookkeeping.
         uint64_t nonblack = 0;
         uint64_t sampled = 0;
+        // The same walk also builds the SIGNATURE and the mean luminance -- see last_signature().
+        // Position-sensitive on purpose: a plain sum of pixels would be equal for two frames whose
+        // content merely moved, which is precisely the difference a stereo check must detect.
+        uint64_t sig = 1469598103934665603ull;  // FNV-1a offset basis
+        uint64_t luma_sum = 0;
         for (uint32_t y = 0; y < desc.Height; y += 8) {
             const auto* row = reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(y) * lr.Pitch);
             for (uint32_t x = 0; x < desc.Width; x += 8) {
                 ++sampled;
-                if ((row[x] & 0x00FFFFFFu) != 0) {
+                const uint32_t px = row[x] & 0x00FFFFFFu;
+                if (px != 0) {
                     ++nonblack;
                 }
+                sig = (sig ^ px) * 1099511628211ull;
+                // Rec. 601 weights in integer form; the exact curve does not matter, only that two
+                // different pictures give two different numbers.
+                luma_sum += ((px >> 16 & 0xFF) * 77 + (px >> 8 & 0xFF) * 150 + (px & 0xFF) * 29) >> 8;
             }
         }
         m_nonblack.store(nonblack, std::memory_order_relaxed);
         m_sampled.store(sampled, std::memory_order_relaxed);
+        m_signature.store(sig, std::memory_order_relaxed);
+        m_mean_luma_milli.store(sampled == 0 ? 0
+                                             : static_cast<int64_t>((luma_sum * 1000ull) / sampled),
+                                std::memory_order_relaxed);
 
         if (!m_path.empty()) {
             write_bmp(m_path.c_str(), base, desc.Width, desc.Height,

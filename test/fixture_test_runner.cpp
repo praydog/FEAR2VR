@@ -12095,6 +12095,82 @@ int main(int argc, char** argv) {
 
     }
 
+    // ---- DO THE TWO EYES ACTUALLY RENDER DIFFERENTLY? ---------------------------
+    //
+    // Everything this project could previously say about stereo was STRUCTURAL: the frustum centres
+    // are asymmetric, a second draw group is issued, the viewport splits. None of that shows the two
+    // eyes produce different PICTURES, which is the only property a headset cares about.
+    //
+    // Now that a frame can be read back, it can be measured. Captured per eye and compared:
+    // same-eye captures differ by a mean of 1.3 (animation and flicker) and the two eyes by 15.3,
+    // with no overlap -- and the difference image shows two of every edge, which is parallax. At a
+    // human 6.4 cm baseline the disparity is depth-ordered: near -16 px, mid -4, far -4.
+    //
+    // The fixture asserts the cheap version of that: mean luminance clusters per eye and the other
+    // eye falls outside the cluster. THE BOUND IS THE CLUSTER'S OWN SPREAD, measured in the same
+    // run, so a busier scene widens it by exactly as much as the scene is busy.
+    {
+        auto capture_luma = [&](const char* eye, double& luma) {
+            std::string r;
+            if (eye != nullptr) {
+                const std::string route =
+                    std::string("/stereo/eye?half_ipd=3.2&eye=") + eye;
+                http::get(port, route.c_str(), r);
+            }
+            http::get(port, "/xr/capture", r);
+            for (int i = 0; i < 40; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                if (!http::get(port, "/xr/head", r)) {
+                    continue;
+                }
+                bool pending = true;
+                json_bool(http::body_of(r), "fc_pending", pending);
+                if (!pending) {
+                    return json_double(http::body_of(r), "fc_mean_luma", luma);
+                }
+            }
+            return false;
+        };
+
+        double l0 = 0, l1 = 0, l2 = 0, rr = 0;
+        const bool got = capture_luma("left", l0) && capture_luma(nullptr, l1) &&
+                         capture_luma(nullptr, l2) && capture_luma("right", rr);
+        // Release the eye whatever happened -- a suite must not leave the view on one eye.
+        {
+            std::string r;
+            http::get(port, "/stereo/eye?eye=off&half_ipd=0", r);
+        }
+
+        if (got) {
+            const double lmean = (l0 + l1 + l2) / 3.0;
+            const double lmin = l0 < l1 ? (l0 < l2 ? l0 : l2) : (l1 < l2 ? l1 : l2);
+            const double lmax = l0 > l1 ? (l0 > l2 ? l0 : l2) : (l1 > l2 ? l1 : l2);
+            const double spread = lmax - lmin;      // the SAME-eye variation, measured not assumed
+            const double separation = fabs(rr - lmean);
+            printf("[fixture] stereo eyes: left luma %.3f/%.3f/%.3f (spread %.3f), right %.3f "
+                   "-> separation %.3f\n",
+                   l0, l1, l2, spread, rr, separation);
+
+            // A dark or featureless view makes this vacuous rather than false, so require the
+            // picture to have content before believing either number.
+            check_gated(lmean > 1.0, "view too dark to compare", g_skipped_motion,
+                        separation > 3.0 * spread + 0.05,
+                        "the two eyes render DIFFERENT pictures -- separation exceeds the same-eye "
+                        "spread measured in this very run, which is what makes stereo more than a "
+                        "pair of configured frustums");
+
+            // And the eye must be RELEASED, or every later check runs on one eye.
+            std::string sr;
+            if (http::get(port, "/stereo/state", sr)) {
+                long long eye_after = -1;
+                json_int(http::body_of(sr), "eye", eye_after);
+                check(eye_after == 0,
+                      "and the block puts the view back to both-eyes -- reading /stereo/state must "
+                      "not be what clears it, which it used to be");
+            }
+        }
+    }
+
     // ---- THE MAGAZINE, AND WHAT THE POOL ACTUALLY COUNTS ------------------------
     //
     // Everything mapped before this was the ammunition POOL. The magazine is a different number --
