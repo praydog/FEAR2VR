@@ -79,13 +79,13 @@ POSITION_INDEPENDENT_CODE = "ON"
 # teardown-critical code (graceful uninject lives in exactly ONE place).
 [target.fear2-core]
 type = "static"
-sources = ["src/AgentRuntime.cpp", "src/Framework.cpp", "src/Hooks.cpp", "src/Mods.cpp", "src/ipc/**.cpp", "src/mods/**.cpp", "shared/Log.cpp"]
+sources = ["src/AgentRuntime.cpp", "src/ExceptionHandler.cpp", "src/Framework.cpp", "src/Hooks.cpp", "src/Mods.cpp", "src/ipc/**.cpp", "src/mods/**.cpp", "shared/Log.cpp"]
 headers = ["src/**.hpp", "shared/**.hpp"]
 include-directories = ["src", "shared"]
 compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-link-libraries = ["fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi"]
+link-libraries = ["fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi", "dbghelp"]
 
 [target.fear2-core.properties]
 POSITION_INDEPENDENT_CODE = "ON"
@@ -98,7 +98,7 @@ include-directories = ["src", "shared"]
 compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-link-libraries = ["fear2-core", "fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi"]
+link-libraries = ["fear2-core", "fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi", "dbghelp"]
 
 [target.fear2vr.properties]
 OUTPUT_NAME = "fear2vr"
@@ -142,7 +142,8 @@ add_test(
         --fixture  "W:/SteamLibrary/steamapps/common/FEAR2/FEAR2.exe"
         --port     8798
 )
-# 420s, not 180. The suite grew a closed-loop aim director whose checks physically turn the player:
+# 420s, not 180. The suite is ~85s, plus up to ~25s if it has to cold-start the game through
+# Steam (measured after resume_game.py stopped blind-sleeping; it used to be 165s). The suite grew a closed-loop aim director whose checks physically turn the player:
 # driving the pitch into both clamps and back is several seconds each, and a checkpoint restore
 # (only taken when the fixture is unusable) is ~15s on its own. Measured at ~90s healthy, and it
 # timed out at 180 on a run that took the restore path -- a timeout reports as a failure with no

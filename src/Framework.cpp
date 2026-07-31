@@ -36,6 +36,7 @@
 #include "mods/BoneControl.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
+#include "ExceptionHandler.hpp"
 #include "mods/VR.hpp"
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
 #include "mods/Comfort.hpp"
@@ -125,6 +126,11 @@ int __fastcall frame_tick_detour(void* _this, void* edx) {
     }
 
     service_object_walk_request();
+    // RECLAIM THE CRASH FILTER FIRST. The engine installs its own and there is only one slot, so
+    // ours is periodically displaced -- which is why an access violation inside our own DLL was
+    // reported by WER with nothing in our log. One call per frame, and it self-heals.
+    exception_handler::reassert();
+
     Mods::get().on_frame();
 
     auto* hook = Hooks::get().find("CClientShell::Update");
@@ -1412,6 +1418,9 @@ std::string build_targets_json() {
              // The muzzle, and the engine-vs-us agreement on where the weapon sits.
              "\"shell_obj\":\"0x%08" PRIXPTR "\","
              "\"muzzle_ok\":%s,\"muzzle_clean\":%s,\"muzzle\":[%.2f,%.2f,%.2f],"
+             // Components as well as the array. A consumer differencing the muzzle frame to frame
+             // wants scalars rather than a list to parse -- the fixture is one such consumer.
+             "\"muzzle_x\":%.3f,\"muzzle_y\":%.3f,\"muzzle_z\":%.3f,"
              "\"muzzle_mdl\":\"%s\",\"weapon_vs_hand\":%.3f,\"muzzle_from_hand\":%.2f,"
              "\"wa_valid\":%s,\"wa_frames\":%llu,\"wa_disagreement\":%.4f,\"wa_step\":%.4f,"
              "\"wa_worst_at_rest\":%.4f,\"wa_still_frames\":%llu,"
@@ -1515,6 +1524,7 @@ std::string build_targets_json() {
              player.has_value() ? reinterpret_cast<uintptr_t>(player->object) : 0,
              muzzle_ok ? "true" : "false",
              muzzle_clean ? "true" : "false",
+             muzzle[0], muzzle[1], muzzle[2],
              muzzle[0], muzzle[1], muzzle[2],
              muzzle_mdl.c_str(), weapon_vs_hand, muzzle_from_hand,
              wa.valid ? "true" : "false", static_cast<unsigned long long>(wa.frames), wa.disagreement,
@@ -10130,6 +10140,8 @@ bool Framework::initialize() {
     // on_frame runs in the same order every session.
     Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());
+    // Before mods initialize, so a fault during their setup is reported rather than silent.
+    exception_handler::install();
     Mods::get().on_initialize();
 
     cmdsrv::Handlers handlers;
@@ -10304,6 +10316,23 @@ bool Framework::initialize() {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/reset") {
             rt.reset();
+        } else if (route == "/xr/hands") {
+            mod.set_hands_enabled(webapi_query_int(q, "on", 1) != 0);
+        } else if (route == "/xr/hand") {
+            // Controller pose in RUNTIME space, metres. Absolute here; the mapping to a hand
+            // OFFSET is a delta taken against the rest pose inside the mod, which is where that
+            // policy belongs.
+            const std::string side = webapi_query_string(q, "side");
+            const auto which = (side == "left") ? vr::VRRuntime::Hand::LEFT : vr::VRRuntime::Hand::RIGHT;
+            const auto current = rt.hand(which);
+
+            vr::Pose aim = current.aim;
+            aim.position = {static_cast<float>(webapi_query_double(q, "x", aim.position[0])),
+                            static_cast<float>(webapi_query_double(q, "y", aim.position[1])),
+                            static_cast<float>(webapi_query_double(q, "z", aim.position[2]))};
+            aim.valid = true;
+            aim.tracked = true;
+            rt.set_hand_pose(which, aim, aim);
         } else if (route == "/xr/head") {
             // Yaw/pitch/roll in RUNTIME space, converted to a quaternion here so a caller never
             // has to build one by hand. Order is yaw * pitch * roll, which matches how a headset
@@ -10346,6 +10375,11 @@ bool Framework::initialize() {
               .f("head_eng_x", st.head_engine[0], 5).f("head_eng_y", st.head_engine[1], 5)
               .f("head_eng_z", st.head_engine[2], 5).f("head_eng_w", st.head_engine[3], 5)
               .f("head_pos_y", head.position[1], 4)
+              .b("hands", st.hands)
+              .u("hand_applied", static_cast<size_t>(st.hand_applied))
+              .f("hand_off_x", st.hand_offset[0], 3)
+              .f("hand_off_y", st.hand_offset[1], 3)
+              .f("hand_off_z", st.hand_offset[2], 3)
               .f("aim_yaw_deg", sdk::PlayerMgr::aim_yaw(0).value_or(0.0f) * 57.2957795, 4)
               .f("aim_pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4);
 
@@ -10883,6 +10917,10 @@ bool Framework::shutdown() {
 
     // 3. Mods yield the frame path.
     Mods::get().on_shutdown();
+
+    // AFTER the mods, because a fault while they tear down is exactly the kind we most want
+    // reported -- and BEFORE the image unmaps, because the process holds a pointer to our filter.
+    exception_handler::remove();
 
     // 4. Retire ALL hooks so no new detour fires during the quiescence scan.
     //    Fail-closed: a failed disable means the DLL must stay mapped.

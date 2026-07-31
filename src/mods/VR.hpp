@@ -86,10 +86,31 @@ public:
         bool head_valid{};
         std::array<float, 4> head_runtime{};
         std::array<float, 4> head_engine{};
+
+        bool hands{};
+        uint64_t hand_applied{};
+        std::array<float, 3> hand_offset{};   // engine units, applied to the RightHand socket
     };
+
+    // ---- CONTROLLERS -> THE WEAPON HAND -----------------------------------------------------
+    //
+    // The right controller drives the socket the weapon hangs off ("RightHand"), through
+    // BoneControl. Off separately from the head, because the two are independently useful and
+    // independently able to look wrong: a mod author debugging hand placement should not have to
+    // have the view seized as well.
+    //
+    // Position is a DELTA from the controller's rest pose, not an absolute. The runtime's origin
+    // is a room-scale floor point with no relationship to where the game's arm happens to be, so
+    // an absolute mapping would fling the hand across the level on the first frame. A delta means
+    // "however you are holding it, move the hand by that much", which is both correct at rest and
+    // the only mapping that works before world scale is measured.
+    void set_hands_enabled(bool enabled);
+    bool hands_enabled() const;
 
     State state() const;
 
 private:
     VR() = default;
+
+    void update_hands();
 };

@@ -684,16 +684,36 @@ bool bring_up_fixture() {
         return false;
     }
 
-    // Cold start is ~75s measured (Steam launch, engine boot, checkpoint load). Allow generous
-    // headroom, then fall through to the pid check either way.
-    const DWORD waited = WaitForSingleObject(pi.hProcess, 240000);
+    // ctest buffers a test's output and prints it only on failure, so anything slow here is
+    // indistinguishable from a deadlock from the outside -- which is exactly how a 165s cold start
+    // was read, and the run was rightly killed. Progress is printed so `ctest -V` streams it and a
+    // failure's captured output says how far it got.
+    //
+    // A cold start is ~25s now (Steam launch, engine window, inject, checkpoint load). It used to
+    // be 165s because resume_game.py blind-slept 45s waiting for the engine and polled everything
+    // else at 2-3s intervals; it waits on the game's actual window instead.
+    printf("[fixture] no game running -- cold start through Steam, ~25s. `ctest -V` to watch.\n");
+    fflush(stdout);
+
+    DWORD waited = WAIT_TIMEOUT;
+    for (int elapsed = 0; elapsed < 180; elapsed += 10) {
+        waited = WaitForSingleObject(pi.hProcess, 10000);
+
+        if (waited == WAIT_OBJECT_0) {
+            break;
+        }
+
+        printf("[fixture]   ... still bringing the game up (%ds)\n", elapsed + 10);
+        fflush(stdout);
+    }
+
     DWORD rc = 1;
     GetExitCodeProcess(pi.hProcess, &rc);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
     if (waited != WAIT_OBJECT_0) {
-        printf("[fixture] resume_game.py did not finish in time\n");
+        printf("[fixture] resume_game.py did not finish within 180s -- giving up\n");
         return false;
     }
 
@@ -10372,6 +10392,208 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- THE VR RUNTIME, AND THE TWO CHAINS IT DRIVES --------------------------------------
+        //
+        // A simulated runtime rather than a real one, and not as a convenience: Meta's XR Simulator
+        // and its Operator layer are BOTH x64, and FEAR2.exe is x86, so the ordinary way to develop
+        // VR without hardware is closed to this project. The simulated backend is the only runtime
+        // reachable at 32-bit today, which makes it the only way these two chains get tested at all.
+        //
+        // It proves nothing about OpenXR conformance -- we write both sides -- and it is not asked
+        // to. What it proves is the part that is ours: that a pose in runtime space arrives in the
+        // engine as the same rotation, in the right frame, without disturbing anything else.
+        {
+            std::string xb;
+            if (http::get(port, "/xr/head", resp)) {
+                xb = http::body_of(resp);
+            }
+            const std::string rt_name = json_string(xb, "runtime");
+            check(rt_name == "SIMULATED",
+                  "a VR runtime is up and identifies itself, so a consumer can tell which backend "
+                  "it is talking to without inspecting the mod");
+
+            double f0 = -1.0, f1 = -1.0;
+            json_double(xb, "frames", f0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            if (http::get(port, "/xr/head", resp)) {
+                json_double(http::body_of(resp), "frames", f1);
+            }
+            check(f0 >= 0.0 && f1 > f0,
+                  "and its frame counter advances off the game's frame tick, so the runtime is "
+                  "live rather than a struct nobody drives");
+
+            // ---- HEAD POSE -> THE CAMERA -------------------------------------------------------
+            http::get(port, "/xr/enable?on=1", resp);
+            http::get(port, "/xr/head?yaw=0&pitch=0&roll=0", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(600));
+
+            double base_view_yaw = 0.0, base_view_pitch = 0.0, base_aim_yaw = 0.0;
+            if (http::get(port, "/xr/head", resp)) {
+                const std::string b = http::body_of(resp);
+                json_double(b, "view_yaw_deg", base_view_yaw);
+                json_double(b, "view_pitch_deg", base_view_pitch);
+                json_double(b, "aim_yaw_deg", base_aim_yaw);
+            }
+
+            auto head_delta = [&](const char* qs, double& dyaw, double& dpitch, double& aim_yaw) {
+                char url[160];
+                snprintf(url, sizeof(url), "/xr/head?yaw=0&pitch=0&roll=0&%s", qs);
+                http::get(port, url, resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                double vy = 0.0, vp = 0.0;
+                if (!http::get(port, "/xr/head", resp)) {
+                    return false;
+                }
+                const std::string b = http::body_of(resp);
+                json_double(b, "view_yaw_deg", vy);
+                json_double(b, "view_pitch_deg", vp);
+                json_double(b, "aim_yaw_deg", aim_yaw);
+                dyaw = vy - base_view_yaw;
+                while (dyaw > 180.0) { dyaw -= 360.0; }
+                while (dyaw < -180.0) { dyaw += 360.0; }
+                dpitch = vp - base_view_pitch;
+                return true;
+            };
+
+            double dy = 0.0, dp = 0.0, aim_now = 0.0;
+
+            // THE SIGN IS PART OF THE CLAIM. OpenXR is right-handed with -Z forward; LithTech is
+            // left-handed with +Z forward, so the conversion mirrors Z, and a +yaw in runtime space
+            // (a LEFT turn) must appear as a NEGATIVE engine yaw. Asserting the magnitude alone
+            // would pass with the handedness inverted, which is the classic way this bug ships.
+            if (head_delta("yaw=30", dy, dp, aim_now)) {
+                printf("[fixture] xr head: yaw +30 -> view dyaw %+.3f dpitch %+.3f\n", dy, dp);
+                check(fabs(dy - (-30.0)) < 0.5,
+                      "a head yaw reaches the view one-for-one and with the handedness the two "
+                      "coordinate systems require");
+                check(fabs(dp) < 0.5,
+                      "and does not leak into pitch -- the head is composed in the body's frame, "
+                      "not the world's");
+                check(fabs(aim_now - base_aim_yaw) < 0.5,
+                      "while the BODY does not turn: composing onto the camera's outer operand is "
+                      "what lets the head move without dragging the aim");
+            }
+
+            if (head_delta("pitch=20", dy, dp, aim_now)) {
+                printf("[fixture] xr head: pitch +20 -> view dyaw %+.3f dpitch %+.3f\n", dy, dp);
+                // Pitch is the axis that catches a wrong composition frame. Applied in WORLD axes
+                // it comes out short by cos(body yaw) -- measured 17.851 against a 26.86 degree
+                // heading, where 20*cos(26.86) = 17.84 -- and it drags yaw with it.
+                check(fabs(dp - 20.0) < 0.5,
+                      "a head pitch reaches the view at full magnitude, which it only does when "
+                      "composed about the body's right axis rather than the world's");
+                check(fabs(dy) < 0.5,
+                      "and does not drag yaw with it");
+            }
+
+            http::get(port, "/xr/head?yaw=0&pitch=0&roll=0", resp);
+            http::get(port, "/xr/enable?on=0", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+            // ---- CONTROLLER -> THE WEAPON HAND -------------------------------------------------
+            //
+            // The whole attachment chain in one measurement: a controller moves, the socket it
+            // drives moves, and the weapon hanging off that socket moves with it.
+            std::string t0;
+            if (http::get(port, "/sdk/targets", resp)) {
+                t0 = http::body_of(resp);
+            }
+            double mx0 = 0.0, my0 = 0.0, mz0 = 0.0;
+            const bool have_muzzle = json_flag_of(t0, "muzzle_ok") &&
+                                     json_double(t0, "muzzle_x", mx0) &&
+                                     json_double(t0, "muzzle_y", my0) &&
+                                     json_double(t0, "muzzle_z", mz0);
+
+            // MEASURE THE ANIMATION FIRST. The arm is animated, so a before/after comparison across
+            // a wall-clock window measures idle sway as much as it measures our offset -- the
+            // project has been bitten by exactly this before (see MAPPING_WORKFLOW's note on
+            // comparing against an animated value). Measured here: a 16.00 unit offset showed as
+            // 19.80 units of muzzle movement, and the 3.8 difference was the arm, not an error.
+            //
+            // So the same window is timed with nothing applied, and that becomes the tolerance.
+            http::get(port, "/xr/reset", resp);
+            http::get(port, "/xr/hands?on=1", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+            double ix0 = 0.0, iy0 = 0.0, iz0 = 0.0;
+            if (http::get(port, "/sdk/targets", resp)) {
+                const std::string b = http::body_of(resp);
+                json_double(b, "muzzle_x", ix0);
+                json_double(b, "muzzle_y", iy0);
+                json_double(b, "muzzle_z", iz0);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+            double ix1 = 0.0, iy1 = 0.0, iz1 = 0.0;
+            if (http::get(port, "/sdk/targets", resp)) {
+                const std::string b = http::body_of(resp);
+                json_double(b, "muzzle_x", ix1);
+                json_double(b, "muzzle_y", iy1);
+                json_double(b, "muzzle_z", iz1);
+            }
+            const double idle_drift = sqrt((ix1-ix0)*(ix1-ix0) + (iy1-iy0)*(iy1-iy0) + (iz1-iz0)*(iz1-iz0));
+
+            // Re-baseline AFTER the idle sample, so the offset is measured from where the arm
+            // actually is rather than from where it was two seconds ago.
+            mx0 = ix1;
+            my0 = iy1;
+            mz0 = iz1;
+
+            http::get(port, "/xr/hand?side=right&y=1.50", resp);   // +0.25 m up from rest
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+            double off_y = 0.0, applied = 0.0;
+            if (http::get(port, "/xr/head", resp)) {
+                const std::string b = http::body_of(resp);
+                json_double(b, "hand_off_y", off_y);
+                json_double(b, "hand_applied", applied);
+            }
+            check(applied > 0.0, "the controller pose reaches the hand every frame it is armed");
+            // 0.25 m at the mod's declared units-per-metre. The scale is provisional and the test
+            // says so by deriving the expectation from the same constant rather than hardcoding
+            // 16 -- if the scale is remeasured, this follows it instead of going red.
+            check(fabs(off_y - 0.25 * 64.0) < 0.5,
+                  "and arrives scaled from metres into engine units");
+
+            if (have_muzzle) {
+                std::string t1;
+                if (http::get(port, "/sdk/targets", resp)) {
+                    t1 = http::body_of(resp);
+                }
+                double mx1 = 0.0, my1 = 0.0, mz1 = 0.0;
+                json_double(t1, "muzzle_x", mx1);
+                json_double(t1, "muzzle_y", my1);
+                json_double(t1, "muzzle_z", mz1);
+                const double moved = sqrt((mx1-mx0)*(mx1-mx0) + (my1-my0)*(my1-my0) + (mz1-mz0)*(mz1-mz0));
+                printf("[fixture] xr hand: offset %.2f units -> muzzle moved %.2f (arm's own idle "
+                       "drift over the same window: %.2f)\n", off_y, moved, idle_drift);
+                // Tolerance DERIVED from what the arm does on its own, doubled because the idle
+                // sample and the measured window are two draws from the same distribution and
+                // either can be the larger.
+                check(fabs(moved - fabs(off_y)) < 1.0 + 2.0 * idle_drift,
+                      "the WEAPON follows by the same distance -- the controller drives the socket "
+                      "and the attachment chain carries it, which is the mechanism a VR hand needs");
+            }
+
+            http::get(port, "/xr/reset", resp);
+            http::get(port, "/xr/hands?on=0", resp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+            if (have_muzzle) {
+                std::string t2;
+                if (http::get(port, "/sdk/targets", resp)) {
+                    t2 = http::body_of(resp);
+                }
+                double mx2 = 0.0, my2 = 0.0, mz2 = 0.0;
+                json_double(t2, "muzzle_x", mx2);
+                json_double(t2, "muzzle_y", my2);
+                json_double(t2, "muzzle_z", mz2);
+                const double back = sqrt((mx2-mx0)*(mx2-mx0) + (my2-my0)*(my2-my0) + (mz2-mz0)*(mz2-mz0));
+                check(back < 1.0,
+                      "and releasing puts the weapon back where the animation had it, so the suite "
+                      "leaves the rig exactly as it found it");
+            }
+        }
+
         // ---- AIMING THE VIEW, WHICH IN THIS GAME MEANS AIMING THE GUN -------------------------
         //
         // Shots follow the view (measured last session: a 30 degree head turn moves the impacts 30
@@ -10523,6 +10745,7 @@ int main(int argc, char** argv) {
             // failing exactly that way: a -79.03 shift against a -30 prediction, with 6 of 6
             // spawns agreeing on the direction, i.e. a clean measurement of the wrong quantity.
             double aim_at_measure = 0.0;
+            double range_at_measure = 0.0;
 
             auto fire_and_measure = [&](int32_t head_yaw, double& bearing_out,
                                         long long& agree_out, long long& total_out) -> bool {
@@ -10561,6 +10784,7 @@ int main(int argc, char** argv) {
                 if (http::get(port, "/vr/turn", resp)) {
                     json_double(http::body_of(resp), "yaw_deg", aim_at_measure);
                 }
+                json_double(body, "bearing_distance", range_at_measure);
                 return json_double(body, "bearing_deg", bearing_out) &&
                        json_int(body, "bearing_count", agree_out) &&
                        json_int(body, "appeared", total_out);
@@ -10597,8 +10821,10 @@ int main(int argc, char** argv) {
                       "direction rather than a single object's position");
 
                 const double aim0 = aim_at_measure;
+                const double dist0 = range_at_measure;
                 const bool got1 = fire_and_measure(kYaw, b1, agree1, total1);
                 const double aim1 = aim_at_measure;
+                const double dist1 = range_at_measure;
                 check(got1, "the same measurement is available with the head turned");
 
                 if (got1) {
@@ -10626,9 +10852,26 @@ int main(int argc, char** argv) {
                     // THE FINDING. Shots follow the VIEW: with the aim held still and the head
                     // turned 30 degrees, the impacts moved 30 degrees with it. Measured across
                     // +30/-30/+60 the agreement was 0.36 / 0.60 / 1.38 degrees.
-                    check(err_view < kYaw / 4.0,
-                          "the shot follows the VIEW: turning the head moves where the bullets "
-                          "land, by the angle the head turned");
+                    // THE MAGNITUDE IS GEOMETRY-DEPENDENT, THE DIRECTION IS NOT.
+                    //
+                    // The bearing is measured to where the impacts LANDED, so it only equals the
+                    // head yaw when both bursts hit comparable surfaces. When the second burst
+                    // finds a wall at a very different range the shift is diluted -- measured at
+                    // -20.10 and -33.51 on runs where the discriminating comparison below still
+                    // passed comfortably. Asserting the tight value regardless would be asserting
+                    // the level's layout, not the engine's behaviour.
+                    //
+                    // So the tight bound is gated on the two clusters being at comparable range,
+                    // and the CLAIM -- shots follow the view rather than the weapon -- is carried
+                    // by the discrimination check below, which needs no such precondition.
+                    const bool comparable = dist0 > 1.0 && dist1 > 1.0 &&
+                                            (dist0 / dist1) < 2.0 && (dist1 / dist0) < 2.0;
+                    printf("[fixture] fire ray: cluster ranges %.0f then %.0f units (%s)\n",
+                           dist0, dist1, comparable ? "comparable" : "NOT comparable");
+                    check_gated(comparable, "impacts at different ranges", g_skipped_motion,
+                                err_view < kYaw / 4.0,
+                                "the shot follows the VIEW: turning the head moves where the "
+                                "bullets land, by the angle the head turned");
                     check(err_view < err_aim,
                           "and it is not the weapon it follows -- the aim never moved, and the "
                           "impacts did");

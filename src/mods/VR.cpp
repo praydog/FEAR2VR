@@ -5,6 +5,7 @@
 
 #include "sdk/PlayerMgr.hpp"
 #include "sdk/Object.hpp"
+#include "BoneControl.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
 
@@ -13,6 +14,15 @@ namespace {
 std::atomic<bool> g_enabled{false};
 std::atomic<uint64_t> g_applied{0};
 std::atomic<bool> g_head_valid{false};
+std::atomic<bool> g_hands{false};
+std::atomic<uint64_t> g_hand_applied{0};
+std::atomic<float> g_hand_off[3]{};
+std::atomic<bool> g_hand_attached{false};
+
+// The controller pose the hand offset is measured FROM. Captured the first time hands are armed,
+// so "no movement" means the hand sits exactly where the animation put it.
+std::atomic<float> g_hand_rest[3]{};
+std::atomic<bool> g_have_rest{false};
 
 // Last head orientation seen, in both spaces. Reported so a consumer -- or the fixture -- can
 // check the conversion against its input without recomputing it, which would just be asserting
@@ -29,7 +39,7 @@ VR& VR::get() {
 
 std::optional<std::string> VR::on_initialize() {
     vr::simulated_runtime().initialize();
-    LOGX("VR: simulated runtime up ({})", vr::simulated_runtime().name());
+    LOGX("[vr] simulated runtime up (%s)", std::string(vr::simulated_runtime().name()).c_str());
     return std::nullopt;
 }
 
@@ -38,6 +48,7 @@ void VR::on_shutdown() {
     // Release the view. HeadTracking composes rather than overrides, so clearing is enough -- the
     // engine's own identity write stands on the very next frame and there is nothing to restore.
     HeadTracking::get().clear();
+    set_hands_enabled(false);
     vr::simulated_runtime().destroy();
 }
 
@@ -48,6 +59,25 @@ std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& 
 
 std::array<float, 3> VR::runtime_to_engine_position(const std::array<float, 3>& p) {
     return {p[0] * kUnitsPerMetre, p[1] * kUnitsPerMetre, -p[2] * kUnitsPerMetre};
+}
+
+void VR::set_hands_enabled(bool enabled) {
+    g_hands.store(enabled, std::memory_order_relaxed);
+
+    if (!enabled) {
+        // Release the bone outright. Clearing the offset alone would leave our callback registered
+        // on the engine's list contributing an identity, which is a different state from "not
+        // driving the hand" and one the suite can tell apart.
+        BoneControl::get().clear_offset();
+        BoneControl::get().clear_rotation();
+        BoneControl::get().detach();
+        g_hand_attached.store(false, std::memory_order_relaxed);
+        g_have_rest.store(false, std::memory_order_relaxed);
+    }
+}
+
+bool VR::hands_enabled() const {
+    return g_hands.load(std::memory_order_relaxed);
 }
 
 void VR::set_enabled(bool enabled) {
@@ -79,6 +109,8 @@ void VR::on_frame() {
     rt.synchronize_frame();
     rt.update_poses();
     rt.update_input();
+
+    update_hands();
 
     const auto head = rt.head();
     g_head_valid.store(head.valid, std::memory_order_relaxed);
@@ -143,6 +175,50 @@ void VR::on_frame() {
     g_applied.fetch_add(1, std::memory_order_relaxed);
 }
 
+void VR::update_hands() {
+    if (!g_hands.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto& rt = vr::simulated_runtime();
+    const auto right = rt.hand(vr::VRRuntime::Hand::RIGHT);
+
+    if (!right.active || !right.aim.valid) {
+        return;
+    }
+
+    auto& bc = BoneControl::get();
+
+    if (!g_hand_attached.load(std::memory_order_relaxed)) {
+        if (!bc.attach_to_player_socket("RightHand")) {
+            return;
+        }
+        g_hand_attached.store(true, std::memory_order_relaxed);
+    }
+
+    if (!g_have_rest.load(std::memory_order_relaxed)) {
+        for (size_t i = 0; i < 3; ++i) {
+            g_hand_rest[i].store(right.aim.position[i], std::memory_order_relaxed);
+        }
+        g_have_rest.store(true, std::memory_order_relaxed);
+    }
+
+    // DELTA FROM REST, converted into the engine's space and units.
+    const std::array<float, 3> delta{
+        right.aim.position[0] - g_hand_rest[0].load(std::memory_order_relaxed),
+        right.aim.position[1] - g_hand_rest[1].load(std::memory_order_relaxed),
+        right.aim.position[2] - g_hand_rest[2].load(std::memory_order_relaxed)};
+
+    const auto engine_delta = runtime_to_engine_position(delta);
+
+    for (size_t i = 0; i < 3; ++i) {
+        g_hand_off[i].store(engine_delta[i], std::memory_order_relaxed);
+    }
+
+    bc.set_offset(engine_delta[0], engine_delta[1], engine_delta[2]);
+    g_hand_applied.fetch_add(1, std::memory_order_relaxed);
+}
+
 VR::State VR::state() const {
     State s{};
     s.enabled = g_enabled.load(std::memory_order_relaxed);
@@ -150,6 +226,11 @@ VR::State VR::state() const {
     s.runtime_frames = vr::simulated_runtime().frame_count();
     s.applied = g_applied.load(std::memory_order_relaxed);
     s.head_valid = g_head_valid.load(std::memory_order_relaxed);
+    s.hands = g_hands.load(std::memory_order_relaxed);
+    s.hand_applied = g_hand_applied.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < 3; ++i) {
+        s.hand_offset[i] = g_hand_off[i].load(std::memory_order_relaxed);
+    }
 
     for (size_t i = 0; i < 4; ++i) {
         s.head_runtime[i] = g_head_rt[i].load(std::memory_order_relaxed);

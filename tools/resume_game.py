@@ -52,10 +52,67 @@ def try_get(port, path):
         return None
 
 
-def game_running():
+def game_pid():
     out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq FEAR2.exe", "/FO", "CSV", "/NH"],
                          capture_output=True, text=True).stdout
-    return "FEAR2.exe" in out
+    for line in out.splitlines():
+        parts = [p.strip('"') for p in line.split('","')]
+        if parts and parts[0].lower() == "fear2.exe":
+            try:
+                return int(parts[1])
+            except (IndexError, ValueError):
+                pass
+    return None
+
+
+def game_running():
+    return game_pid() is not None
+
+
+def has_visible_window(pid):
+    """Does `pid` own a visible top-level window yet?
+
+    THE READINESS SIGNAL, and it replaces a blind 45-second sleep. That sleep was not arbitrary --
+    FEAR2.exe is CEG/SteamStub-wrapped, so its .text is CIPHERTEXT until the stub decrypts it at
+    runtime. Inject before that and every pattern scan misses, and because exe patterns latch their
+    result forever (deliberately -- the exe is always mapped, so a miss is normally definitive) the
+    session is dead for its whole lifetime with no error that says why.
+
+    A visible top-level window is a signal that arrives strictly AFTER the stub has run and the
+    engine has initialised its window, and it arrives when it actually happens rather than at a
+    fixed pessimistic guess. Measured: the window appears in ~12s where the sleep waited 45.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            # Skip zero-sized helper windows -- splash and IME windows are visible but not the game.
+            rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                if (rect.right - rect.left) > 320 and (rect.bottom - rect.top) > 240:
+                    found.append(hwnd)
+                    return False
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return bool(found)
+
+
+def wait_for_window(wait_s):
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        pid = game_pid()
+        if pid is not None and has_visible_window(pid):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def launch_game(wait_s):
@@ -65,7 +122,7 @@ def launch_game(wait_s):
     while time.time() < deadline:
         if game_running():
             return True
-        time.sleep(2)
+        time.sleep(0.5)
     return False
 
 
@@ -75,7 +132,7 @@ def inject(injector, wait_s, port):
     while time.time() < deadline:
         if try_get(port, "/health") is not None:
             return True
-        time.sleep(1)
+        time.sleep(0.5)
     return False
 
 
@@ -103,9 +160,13 @@ def main():
         if not launch_game(args.launch_timeout):
             print("[resume] FAILED: the game did not appear")
             return 1
-        # The engine needs to reach the menu before the payload has anything to bind to.
-        print("[resume] waiting for the engine to come up")
-        time.sleep(45)
+        # WAIT FOR THE WINDOW, not for a fixed interval. See has_visible_window() for why this
+        # cannot simply be dropped: injecting before the SteamStub decrypts .text latches every
+        # pattern miss permanently.
+        print("[resume] waiting for the engine's window")
+        if not wait_for_window(args.launch_timeout):
+            print("[resume] FAILED: the game never showed a window")
+            return 1
 
     if try_get(args.port, "/health") is None:
         print("[resume] injecting")
@@ -126,7 +187,7 @@ def main():
             return 1
         deadline = time.time() + args.load_timeout
         while time.time() < deadline:
-            time.sleep(3)
+            time.sleep(0.5)
             sp = try_get(args.port, "/sdk/shader-params") or {}
             if sp.get("ws_world_loaded"):
                 break
@@ -140,7 +201,7 @@ def main():
     deadline = time.time() + 60
     while time.time() < deadline:
         try_get(args.port, "/input/tap?vk=%d&frames=4" % VK_SPACE)
-        time.sleep(2)
+        time.sleep(0.75)
         sp = try_get(args.port, "/sdk/shader-params") or {}
         if is_ready(sp):
             print("[resume] in-world and running: %s" % (sp.get("world_name") or "(unnamed)"))
