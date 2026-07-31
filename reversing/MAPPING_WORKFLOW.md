@@ -5552,3 +5552,22 @@ It asserts the impact bearing shifts by the head yaw, which assumes the AIM hold
 two bursts. It does not always: a run measured -79.03 against a -30 prediction with 6 of 6 spawns
 agreeing on the direction -- a clean measurement of aim drift plus head yaw. The prediction now
 subtracts the measured heading drift, and reports when it exceeds a degree.
+
+## CPlayerStats is a schema class now, and the SDK derives its offsets
+
+Authored `class CPlayerStats 0x120` in `fear2.genny` -- health/armor/max pairs, the air fraction,
+`health_lost`, and the `ammo_counts` pointer -- carrying the evidence each field already had. The
+seven `static constexpr uintptr_t kStats*` values in PlayerMgr.hpp are now
+`offsetof(regenny::CPlayerStats, field)`, so the compiler derives every one and the layout exists
+in exactly one place. Behaviour is unchanged by construction and was confirmed live: health 100,
+ammo readable, 1656 checks green.
+
+Size 0x120 is a LOWER BOUND covering the highest confirmed field, not a measurement -- safe only
+because nothing allocates one; a raw engine pointer is cast on and only mapped fields are read.
+
+Gotcha for the next class: a class written at the file's top level generates to
+`shared/sdk/regenny/Foo.hpp` instead of `regenny/Foo.hpp`. It must be inside a
+`namespace regenny { ... }` block.
+
+Remaining debt after this: 78 hardcoded layout offsets across `shared/sdk/*.hpp`, 52 of them still
+in PlayerMgr.hpp (the camera holder's pose fields are the big cluster).

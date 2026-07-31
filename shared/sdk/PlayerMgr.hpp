@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 #include "regenny/Primitives.hpp"
+#include "regenny/regenny/CPlayerStats.hpp"
 #include "regenny/regenny/DatabaseMgrRecord.hpp"
 
 //
@@ -265,12 +266,17 @@ public:
     //
     // An invariant that holds under the wrong structure as well as the right one cannot discriminate between
     // them, so it was never evidence for the pairing it appeared to confirm. The pairing needed the setters.
-    static constexpr uintptr_t kStatsHealth = 228;
-    static constexpr uintptr_t kStatsArmor = 232;
-    static constexpr uintptr_t kStatsMaxHealth = 236;
-    static constexpr uintptr_t kStatsMaxArmor = 240;
-    static constexpr uintptr_t kStatsAir = 244;
-    static constexpr uintptr_t kStatsHealthLost = 284;
+    // EVERY OFFSET BELOW IS DERIVED BY THE COMPILER from `regenny::CPlayerStats`, generated from
+    // reversing/fear2.genny. They used to be seven hand-typed integers here, so the layout lived
+    // in two places and only one of them was the evidence record. The schema owns it now; these
+    // names stay because callers use them, but moving a field is a schema edit plus a
+    // regeneration, never an edit here.
+    static constexpr uintptr_t kStatsHealth = offsetof(regenny::CPlayerStats, health);
+    static constexpr uintptr_t kStatsArmor = offsetof(regenny::CPlayerStats, armor);
+    static constexpr uintptr_t kStatsMaxHealth = offsetof(regenny::CPlayerStats, max_health);
+    static constexpr uintptr_t kStatsMaxArmor = offsetof(regenny::CPlayerStats, max_armor);
+    static constexpr uintptr_t kStatsAir = offsetof(regenny::CPlayerStats, air);
+    static constexpr uintptr_t kStatsHealthLost = offsetof(regenny::CPlayerStats, health_lost);
 
     // ---- AMMUNITION -----------------------------------------------------------------------
     //
@@ -296,7 +302,7 @@ public:
     // within the Arsenal/Ammo category. Not a fixed-size struct member -- a separate allocation
     // sized by the database, which is why it is a pointer and why the index must come from the
     // database rather than from a constant here.
-    static constexpr uintptr_t kStatsAmmoArray = 248;
+    static constexpr uintptr_t kStatsAmmoArray = offsetof(regenny::CPlayerStats, ammo_counts);
 
     // Rounds of one ammo type, by its Arsenal/Ammo record name ("SMG", "Vulcan", ...).
     // nullopt when the stats subsystem, the database, the record or the array cannot be read --

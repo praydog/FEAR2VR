@@ -59,4 +59,5 @@
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTInputDeviceMouse.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\GameTimer.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\CPlayerCamera.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\CPlayerStats.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\PlayerZoom.hpp" \

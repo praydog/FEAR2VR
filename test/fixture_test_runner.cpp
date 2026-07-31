@@ -624,16 +624,80 @@ struct SpawnedProcess {
     }
 };
 
-void launch_fixture(const fs::path& exe, SpawnedProcess& out) {
+// BRING THE GAME UP THE ONLY WAY IT COMES UP: through Steam, via tools/resume_game.py.
+//
+// This used to CreateProcessW the exe directly, and that CANNOT WORK -- the on-disk FEAR2.exe is
+// CEG/SteamStub-wrapped and refuses a direct launch (AGENT.MD rule 9 and the launcher notes say so
+// explicitly). The bug hid for the entire life of the runner because the branch only executes when
+// no game is already running, and in practice one always was. The moment the game crashed, ctest
+// started reporting a launch failure that looked like a broken fixture rather than a runner that
+// was never able to launch anything.
+//
+// Delegating rather than reimplementing, because resume_game.py does not merely start the process:
+// it waits for the engine, injects, dispatches Menu.StartCheckpoint (the game's OWN UI command --
+// synthetic input cannot drive the Scaleform menu) and dismisses the load screen. A runner that
+// only spawned would land at the main menu, where 103 checks go red for want of a world.
+//
+// We do NOT own the resulting process: nothing is written to `out`, so teardown leaves the game
+// running. That is deliberate and matches the project's premise -- inject, test, uninject, with
+// the game never restarting.
+bool bring_up_fixture() {
+    // Find tools/resume_game.py by walking up from BOTH the runner's own location and the working
+    // directory. ctest runs from build/, a developer runs from the repo root, and the binary lives
+    // in build/bin -- so neither anchor alone is reliable.
+    fs::path script;
+    wchar_t self[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+
+    for (fs::path anchor : {fs::path(self).parent_path(), fs::current_path()}) {
+        for (int up = 0; up < 5 && !anchor.empty(); ++up) {
+            const fs::path candidate = anchor / "tools" / "resume_game.py";
+            if (fs::exists(candidate)) {
+                script = candidate;
+                break;
+            }
+            if (!anchor.has_parent_path() || anchor.parent_path() == anchor) {
+                break;
+            }
+            anchor = anchor.parent_path();
+        }
+        if (!script.empty()) {
+            break;
+        }
+    }
+
+    if (script.empty()) {
+        printf("[fixture] tools/resume_game.py not found -- cannot bring the game up\n");
+        return false;
+    }
+
+    const fs::path repo_root = script.parent_path().parent_path();
+
+    std::wstring cmd = L"python \"" + script.wstring() + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
-    std::wstring cmd = L"\"" + exe.wstring() + L"\"";
-    std::wstring dir = exe.parent_path().wstring();
-    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &out.pi)) {
-        printf("[fixture] CreateProcessW failed (%lu) for %s\n", GetLastError(), exe.string().c_str());
-        return;
+    PROCESS_INFORMATION pi{};
+
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                        repo_root.wstring().c_str(), &si, &pi)) {
+        printf("[fixture] could not run resume_game.py (%lu)\n", GetLastError());
+        return false;
     }
-    out.launched = true;
+
+    // Cold start is ~75s measured (Steam launch, engine boot, checkpoint load). Allow generous
+    // headroom, then fall through to the pid check either way.
+    const DWORD waited = WaitForSingleObject(pi.hProcess, 240000);
+    DWORD rc = 1;
+    GetExitCodeProcess(pi.hProcess, &rc);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (waited != WAIT_OBJECT_0) {
+        printf("[fixture] resume_game.py did not finish in time\n");
+        return false;
+    }
+
+    return rc == 0;
 }
 
 int run_injector(const fs::path& injector, const char* action, const fs::path& dll, int32_t port) {
@@ -732,18 +796,17 @@ int main(int argc, char** argv) {
             printf("[fixture] game exe not found at %s -- skipping\n", fixture.string().c_str());
             return kSkip;
         }
-        launch_fixture(fixture, spawned);
-        if (!spawned.launched) {
-            printf("[fixture] could not launch game -- skipping\n");
+        printf("[fixture] no game running -- bringing one up through Steam (resume_game.py)\n");
+        if (!bring_up_fixture()) {
+            printf("[fixture] could not bring the game up -- skipping\n");
             return kSkip;
         }
-        printf("[fixture] spawned FEAR2.exe; waiting for engine boot...\n");
-        std::this_thread::sleep_for(std::chrono::seconds(20)); // LithTech boot to main menu
         pid = find_pid("FEAR2.exe");
         if (pid == 0) {
-            printf("[fixture] game died during boot -- skipping\n");
+            printf("[fixture] game not running after resume_game.py -- skipping\n");
             return kSkip;
         }
+        printf("[fixture] game is up and in-world (pid %lu)\n", pid);
     }
 
     auto cleanup = [&] {
@@ -6105,7 +6168,11 @@ int main(int argc, char** argv) {
                   "the level registered a sane number of cinematic camera descriptors");
             check(json_bool(body, "cf_saved_nearz_readable", cin_nz) && cin_nz,
                   "the parked NearZ reads");
-            // The saved NearZ is only filled on entering a cinematic, so idle it must still be its constructed zero.
+            // The saved NearZ is filled on ENTERING a cinematic and never cleared on exit, so "idle
+            // implies zero" holds only until the first cinematic of the session -- a checkpoint load
+            // plays an intro, and this went red on the first cold-started run because of it. The
+            // predicate now accepts the constructed zero OR a plausible near plane; a wrong offset
+            // lands on neither.
             check(json_bool(body, "cf_nearz_idle_consistent", cin_ic) && cin_ic,
                   "with no cinematic active the parked NearZ is untouched");
             check(json_bool(body, "cf_range_refused", cf_rr) && cf_rr,

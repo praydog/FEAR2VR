@@ -1025,3 +1025,35 @@ the at-rest gate that the check two lines above already applied.
 When a check depends on which THING is loaded -- weapon, level, model -- ask what happens when a
 different one is. The suite changing the world is what surfaces these, which is an argument for
 letting it change the world rather than against.
+
+## The runner could never launch the game, and nobody noticed for months
+
+`fixture_test_runner` spawned `FEAR2.exe` with `CreateProcessW`. That CANNOT WORK: the on-disk exe
+is CEG/SteamStub-wrapped and refuses a direct launch, which AGENT.MD has stated since the project
+was scaffolded. The branch is only reached when no game is already running, and in practice one
+always was -- so the bug sat behind a condition that never fired until the game crashed mid-session
+and ctest started reporting a launch failure that read like a broken fixture.
+
+It now delegates to `tools/resume_game.py`, which is the documented path and does more than start a
+process: Steam launch, engine wait, inject, `Menu.StartCheckpoint`, dismiss the load screen. A
+runner that merely spawned would land at the main menu, where 103 checks go red for want of a
+world. Verified from a genuinely dead game: `no game running -- bringing one up through Steam` ->
+`game is up and in-world (pid 1020892)`.
+
+It deliberately does NOT own the process it brings up, so teardown leaves the game running -- which
+is the whole premise of the loop.
+
+**The general shape:** a fallback path that is never exercised is not a fallback, it is an untested
+claim. This one contradicted a documented hard fact in the repo's own rules and still shipped,
+because nothing ever ran it.
+
+## An invariant that was only true once
+
+`cf_nearz_idle_consistent` asserted that with no cinematic active the parked NearZ reads its
+constructed zero. The field is filled on ENTERING a cinematic and never cleared on exit, so that
+holds only until the first cinematic of the session -- and a checkpoint load plays an intro. The
+check went red the first time the suite ever cold-started a game, having passed for months on
+sessions that happened to begin after a manual load.
+
+Replaced with what is actually invariant: the field holds either the constructed zero or a
+plausible near plane, and a wrong offset lands on neither. The value is now also reported.

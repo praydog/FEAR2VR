@@ -6372,6 +6372,28 @@ class CPlayerCamera 0x18C6 {
 // CONSEQUENCE FOR THE SUITE. The fixture's "can the player shoot" precondition used to FIRE a
 // burst, spending the resource it was measuring; it now reads the total. See TESTING.MD.
 
+// The class itself, authored once codegen was unfrozen. Every field below was already mapped and
+// carried as a hand-written `static constexpr uintptr_t` in PlayerMgr.hpp; the schema owns them
+// now and the SDK derives each offset with offsetof, so the numbers exist in exactly one place.
+//
+// SIZE IS A LOWER BOUND, not a measurement: 0x120 covers through the highest confirmed field
+// (health_lost at +284) and nothing has established where the object actually ends. That is safe
+// here because no consumer allocates one -- a raw engine pointer is cast onto it and only mapped
+// fields are read.
+namespace regenny {
+
+class CPlayerStats 0x120 {
+    int32_t health        @0xE4   // +228. CONFIRMED by CPlayerStats_SetHealth, which clamps it to max_health
+    int32_t armor         @0xE8   // +232. CONFIRMED by CPlayerStats_SetArmor, which clamps it to max_armor
+    int32_t max_health    @0xEC   // +236. The clamp target the health setter reads
+    int32_t max_armor     @0xF0   // +240. The clamp target the armor setter reads
+    float air             @0xF4   // +244. A FRACTION in [0,1] -- the 'Air' console handler passes atof(arg)/100
+    int32_t* ammo_counts  @0xF8   // +248. CONFIRMED: a POINTER to an int32 array of ammunition counts, indexed by the ammo record's POSITION within the Arsenal/Ammo database category. CPlayerStats_GetAmmoCount (gameclient 0x10110FD0) is, entirely: `if (this[62] && rec && (i = IDatabaseMgr->vslot21(rec)) != -1) return this[62][i];`. The array length is the category's record count (52 live), so it is deliberately NOT declared with a fixed bound -- read it through sdk::PlayerMgr::ammo_count/ammo_held, which take the length from the database. Verified behaviourally by NAME rather than by value: with submachinegun.mdl equipped a 0.6s burst moved the entry called 'SMG' by 9 while the total fell 220 -> 211, and with assaultrifle.mdl the entry called 'AssaultRifle'. A wrong index still returns a plausible integer, so only the name discriminates.
+    int32_t health_lost   @0x11C  // +284. Cumulative: SetHealth adds (old - new) whenever health drops
+}
+
+}
+
 // ---- CMoveMgr, 79 CONSOLE REGISTRATIONS, AND FIVE COMMANDS THAT DO NOTHING ----------------------
 //
 // The route that identified CPlayerStats last pass generalises: every RegisterConsoleProgram call site pairs a

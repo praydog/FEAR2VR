@@ -5603,10 +5603,17 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "cf_cine_count_available", cin_n.has_value());
     json_append_double(out, "cf_cine_count", static_cast<double>(cin_n.value_or(0)), 0);
     json_append_bool(out, "cf_saved_nearz_readable", nz.has_value());
-    // WHILE NO CINEMATIC IS ACTIVE the saved NearZ is not a live value -- the path only fills it on entry, so it
-    // should read as the zero it was constructed with. Asserted as a consistency pair, not as a magic number.
+    // WHILE NO CINEMATIC IS ACTIVE the saved NearZ is not a live value -- the path only fills it on ENTRY to a
+    // cinematic and never clears it on exit. So "idle implies zero" is true only until the FIRST cinematic of
+    // the session and is not an invariant: a checkpoint load plays an intro, and every run after one reads the
+    // value that intro parked. Measured going red exactly that way on a cold-started fixture.
+    //
+    // What IS invariant is that the field holds a plausible NEAR PLANE rather than garbage: either the
+    // constructed zero, or a small positive distance. A wrong offset lands on neither.
     json_append_bool(out, "cf_nearz_idle_consistent",
-                     cin.has_value() && nz.has_value() && (*cin || *nz == 0.0f));
+                     cin.has_value() && nz.has_value() &&
+                         (*cin || *nz == 0.0f || (std::isfinite(*nz) && *nz > 0.0f && *nz < 100.0f)));
+    json_append_double(out, "cf_saved_nearz", static_cast<double>(nz.value_or(-1.0f)), 4);
     // THE RECOVERED RATIO. Reported rather than asserted against 16:9, because the producer also scales the
     // half-angle and the live value is 3.56 -- which is the honest measurement, not a bug.
     const auto ar = sdk::PlayerMgr::aspect_ratio(0);
