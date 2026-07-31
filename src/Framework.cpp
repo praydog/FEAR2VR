@@ -10348,6 +10348,9 @@ bool Framework::initialize() {
             // capture is timing-only. This is the project's first visual oracle that cannot be
             // stale -- it samples the buffer the engine is about to present, on the render
             // thread, in phase with it.
+            if (q.find("continuous") != q.end()) {
+                FrameCapture::get().set_continuous(webapi_query_int(q, "continuous", 0) != 0);
+            }
             if (q.find("divisor") != q.end()) {
                 FrameCapture::get().set_divisor(static_cast<uint32_t>(webapi_query_int(q, "divisor", 1)));
             }
@@ -10565,6 +10568,9 @@ bool Framework::initialize() {
               .f("fc_lock_ms", FrameCapture::get().last_lock_ms(), 3)
               .f("fc_stretch_ms", FrameCapture::get().last_stretch_ms(), 3)
               .u("fc_divisor", FrameCapture::get().divisor())
+              .b("fc_continuous", FrameCapture::get().continuous())
+              .u("fc_cont_frames", FrameCapture::get().continuous_frames())
+              .f("fc_cont_lock_ms", FrameCapture::get().continuous_lock_ms(), 3)
               .u("fc_width", FrameCapture::get().width())
               .u("fc_height", FrameCapture::get().height())
               .u("fc_format", FrameCapture::get().format())

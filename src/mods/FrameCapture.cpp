@@ -73,6 +73,7 @@ std::optional<std::string> FrameCapture::on_initialize() {
 }
 
 void FrameCapture::on_present() {
+    FrameCapture::get().service_continuous();
     FrameCapture::get().service();
 }
 
@@ -111,6 +112,122 @@ double FrameCapture::last_total_ms() const {
 
 double FrameCapture::last_lock_ms() const {
     return ticks_to_ms(m_lock_ticks.load(std::memory_order_relaxed));
+}
+
+double FrameCapture::continuous_lock_ms() const {
+    return ticks_to_ms(m_cont_lock_ticks.load(std::memory_order_relaxed));
+}
+
+void FrameCapture::set_continuous(bool enabled) {
+    if (enabled && !m_registered.load(std::memory_order_relaxed)) {
+        if (RenderHook::get().add_present_callback(&FrameCapture::on_present)) {
+            m_registered.store(true, std::memory_order_relaxed);
+        }
+    }
+    if (!enabled) {
+        // Priming state is per-session: leaving it set would make the first frame after
+        // re-enabling lock a surface nothing had issued into.
+        m_pipe_primed = false;
+    }
+    m_continuous.store(enabled, std::memory_order_release);
+    LOGX("[capture] continuous readback %s", enabled ? "ON (pipelined)" : "off");
+}
+
+void FrameCapture::service_continuous() {
+    if (!m_continuous.load(std::memory_order_acquire)) {
+        return;
+    }
+    auto* device = sdk::Render::device();
+    if (device == nullptr) {
+        return;
+    }
+    IDirect3DSurface9* back = nullptr;
+    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) || back == nullptr) {
+        return;
+    }
+    D3DSURFACE_DESC desc{};
+    if (FAILED(back->GetDesc(&desc))) {
+        back->Release();
+        return;
+    }
+    const uint32_t div = m_divisor.load(std::memory_order_relaxed);
+    const uint32_t w = desc.Width / (div < 1 ? 1 : div);
+    const uint32_t h = desc.Height / (div < 1 ? 1 : div);
+
+    if (m_pipe[0] == nullptr || m_pipe_w != w || m_pipe_h != h) {
+        for (auto& p : m_pipe) {
+            if (p != nullptr) {
+                static_cast<IDirect3DSurface9*>(p)->Release();
+                p = nullptr;
+            }
+        }
+        bool ok = true;
+        for (auto& p : m_pipe) {
+            IDirect3DSurface9* sys = nullptr;
+            if (FAILED(device->CreateOffscreenPlainSurface(w, h, desc.Format, D3DPOOL_SYSTEMMEM,
+                                                           &sys, nullptr)) ||
+                sys == nullptr) {
+                ok = false;
+                break;
+            }
+            p = sys;
+        }
+        m_pipe_w = w;
+        m_pipe_h = h;
+        m_pipe_primed = false;
+        if (!ok) {
+            back->Release();
+            return;
+        }
+    }
+
+    // Downscale first when asked, exactly as the one-shot path does.
+    IDirect3DSurface9* source = back;
+    if (div > 1) {
+        if (m_scaled == nullptr || m_scaled_w != w || m_scaled_h != h) {
+            if (m_scaled != nullptr) {
+                static_cast<IDirect3DSurface9*>(m_scaled)->Release();
+                m_scaled = nullptr;
+            }
+            IDirect3DSurface9* rt = nullptr;
+            if (SUCCEEDED(device->CreateRenderTarget(w, h, desc.Format, D3DMULTISAMPLE_NONE, 0,
+                                                     FALSE, &rt, nullptr)) &&
+                rt != nullptr) {
+                m_scaled = rt;
+                m_scaled_w = w;
+                m_scaled_h = h;
+            }
+        }
+        if (m_scaled != nullptr &&
+            SUCCEEDED(device->StretchRect(back, nullptr, static_cast<IDirect3DSurface9*>(m_scaled),
+                                          nullptr, D3DTEXF_LINEAR))) {
+            source = static_cast<IDirect3DSurface9*>(m_scaled);
+        }
+    }
+
+    // ISSUE this frame's readback, then LOCK the one issued last frame. The GPU has had a whole
+    // frame to complete it, so the lock should not stall -- which is the entire point, and the
+    // number continuous_lock_ms() reports.
+    const uint32_t issue = m_issue;
+    const uint32_t ready = issue ^ 1u;
+    device->GetRenderTargetData(source, static_cast<IDirect3DSurface9*>(m_pipe[issue]));
+    back->Release();
+
+    if (m_pipe_primed) {
+        D3DLOCKED_RECT lr{};
+        const int64_t l0 = now_ticks();
+        const HRESULT hr = static_cast<IDirect3DSurface9*>(m_pipe[ready])
+                               ->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+        m_cont_lock_ticks.store(now_ticks() - l0, std::memory_order_relaxed);
+        if (SUCCEEDED(hr)) {
+            static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();
+            m_cont_frames.fetch_add(1, std::memory_order_relaxed);
+            m_width.store(w, std::memory_order_relaxed);
+            m_height.store(h, std::memory_order_relaxed);
+        }
+    }
+    m_pipe_primed = true;
+    m_issue = ready;
 }
 
 double FrameCapture::last_stretch_ms() const {
@@ -296,5 +413,12 @@ void FrameCapture::on_shutdown() {
     if (m_scaled != nullptr) {
         static_cast<IDirect3DSurface9*>(m_scaled)->Release();
         m_scaled = nullptr;
+    }
+    m_continuous.store(false, std::memory_order_release);
+    for (auto& p : m_pipe) {
+        if (p != nullptr) {
+            static_cast<IDirect3DSurface9*>(p)->Release();
+            p = nullptr;
+        }
     }
 }

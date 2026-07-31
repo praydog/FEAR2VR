@@ -72,6 +72,29 @@ public:
     // Milliseconds for the GPU downscale, when a divisor above 1 puts one in the path.
     double last_stretch_ms() const;
 
+    // ---- CONTINUOUS, PIPELINED CAPTURE -------------------------------------
+    //
+    // THE optimisation the timing curve points at. A one-shot capture pays ~2 ms of
+    // pure GPU synchronisation -- waiting for the frame it just asked about -- and
+    // that cost is fixed regardless of resolution, so no amount of downscaling
+    // removes it.
+    //
+    // Double buffering does: issue the readback for frame N into one staging surface
+    // and lock the one issued for frame N-1, which the GPU finished during the frame
+    // that has since elapsed. Nothing waits. The cost is one frame of AGE in the
+    // captured image, which for a headset submission is the ordinary tradeoff.
+    //
+    // This is the mode a VR presenter would actually run in, which is why it is a
+    // mode rather than a benchmark: `set_continuous(true)` and read the newest
+    // completed frame each present.
+    void set_continuous(bool enabled);
+    bool continuous() const { return m_continuous.load(std::memory_order_relaxed); }
+
+    // Frames captured in continuous mode, and the lock cost in that mode -- the number
+    // that says whether the pipelining actually removed the stall.
+    uint64_t continuous_frames() const { return m_cont_frames.load(std::memory_order_relaxed); }
+    double continuous_lock_ms() const;
+
     bool request_capture();
 
     // Arm one capture AND write it to `path` as a BMP. Empty path captures without
@@ -119,6 +142,7 @@ private:
 
     static void on_present();
     void service();
+    void service_continuous();
 
     std::atomic<bool> m_registered{false};
     std::atomic<bool> m_pending{false};
@@ -130,6 +154,9 @@ private:
     std::atomic<int64_t> m_lock_ticks{0};
     std::atomic<int64_t> m_stretch_ticks{0};
     std::atomic<uint32_t> m_divisor{1};
+    std::atomic<bool> m_continuous{false};
+    std::atomic<uint64_t> m_cont_frames{0};
+    std::atomic<int64_t> m_cont_lock_ticks{0};
     std::atomic<uint32_t> m_width{0};
     std::atomic<uint32_t> m_height{0};
     std::atomic<uint32_t> m_format{0};
@@ -141,6 +168,13 @@ private:
     void* m_staging{nullptr};
     // The intermediate render target the downscale lands in, when a divisor is set.
     void* m_scaled{nullptr};
+    // Ping-pong staging for the pipelined path. Index `m_issue` receives this frame's
+    // readback; the other holds the previous frame's, already complete.
+    void* m_pipe[2]{nullptr, nullptr};
+    uint32_t m_pipe_w{0};
+    uint32_t m_pipe_h{0};
+    uint32_t m_issue{0};
+    bool m_pipe_primed{false};
     uint32_t m_scaled_w{0};
     uint32_t m_scaled_h{0};
     uint32_t m_staging_w{0};

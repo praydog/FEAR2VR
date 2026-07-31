@@ -11275,6 +11275,42 @@ int main(int argc, char** argv) {
                                               "the downscale ran rather than being ignored");
                                     }
                                     http::get(port, "/xr/capture?divisor=1", dr);
+
+                                    // ---- THE CONTINUOUS CONTRACT -------------------------
+                                    //
+                                    // Pipelined capture is how a headset submission would run:
+                                    // issue frame N's readback, lock frame N-1's. What must be
+                                    // asserted is that it STARTS and, more importantly, STOPS --
+                                    // a capture mode still running after release would tax every
+                                    // frame for the rest of the session, and the counters are the
+                                    // only way to see it.
+                                    http::get(port, "/xr/capture?divisor=4&continuous=1", dr);
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+                                    long long f0 = -1, f1 = -1, f2 = -1;
+                                    bool con = false;
+                                    if (http::get(port, "/xr/head", dr)) {
+                                        json_int(http::body_of(dr), "fc_cont_frames", f0);
+                                        json_bool(http::body_of(dr), "fc_continuous", con);
+                                    }
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                                    double clock_ms = -1.0;
+                                    if (http::get(port, "/xr/head", dr)) {
+                                        json_int(http::body_of(dr), "fc_cont_frames", f1);
+                                        json_double(http::body_of(dr), "fc_cont_lock_ms", clock_ms);
+                                    }
+                                    http::get(port, "/xr/capture?continuous=0", dr);
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                                    if (http::get(port, "/xr/head", dr)) {
+                                        json_int(http::body_of(dr), "fc_cont_frames", f2);
+                                    }
+                                    printf("[fixture] continuous capture: %lld frames while on, "
+                                           "pipelined lock %.3f ms, %lld after release\n",
+                                           f1 - f0, clock_ms, f2 - f1);
+                                    check(con && f1 > f0,
+                                          "continuous capture produces frames while enabled");
+                                    check(f2 == f1,
+                                          "and produces NONE after release -- a capture mode left "
+                                          "running would tax every frame for the session");
                                 }
 
                                 // Content is REPORTED, not asserted: a legitimately dark scene or

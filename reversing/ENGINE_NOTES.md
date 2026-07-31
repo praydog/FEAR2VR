@@ -584,6 +584,41 @@ reduction yields exactly the engine's target size divided down, and that it is g
 because that is this code's promise. Every millisecond above is reported, because asserting one
 would be testing the GPU.
 
+### Pipelining removes the stall entirely -- and the cost reappears as GPU throughput
+
+The curve said ~2 ms of the readback was pure synchronisation, so double buffering should remove
+it: issue frame N's readback into one staging surface, lock the one issued for N-1, which the GPU
+finished during the frame that has since elapsed. It does.
+
+    resolution     synchronous total     pipelined LOCK
+    2560x1440           8.806 ms             0.000 ms
+    1280x720            3.023 ms             0.000 ms
+     640x360            2.973 ms             0.000 ms
+
+**A zero is where a measurement should be doubted, not celebrated.** The lock genuinely no longer
+waits -- but the work did not evaporate, it moved into the GPU's queue, and the number a player
+feels is the FRAME RATE:
+
+    capture OFF              27.7 fps    baseline
+    continuous, divisor 1    23.0 fps    83.1%   -17%
+    continuous, divisor 2    26.0 fps    94.0%    -6%
+    continuous, divisor 4    26.7 fps    96.4%    -3.6%
+    capture OFF again        27.4 fps    recovers
+
+So the honest statement is not "pipelining makes the readback free" but "pipelining converts a
+2-9 ms stall into a 3.6-17% throughput cost, depending on resolution". A quarter-resolution
+pipelined readback at ~3.6% is a real budget for a headset submission, and it is the cheapest
+number this project has produced for getting pixels out of the engine.
+
+The instrument had to change to see this. Reading only `continuous_lock_ms` would have reported a
+flat 0.000 ms at every resolution and concluded the cost was gone -- the same shape as measuring an
+override at the field it writes rather than at the stage a consumer reads.
+
+**Asserted versus reported, again.** The suite asserts that continuous capture PRODUCES frames while
+enabled and NONE after release -- a mode left running would tax every frame for the rest of the
+session, and the counters are the only way to see that. Every millisecond and every frame rate above
+is reported.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport
