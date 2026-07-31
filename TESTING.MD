@@ -992,3 +992,36 @@ game` and `/health sdk_ready==true`. Neither was a defect -- the GAME had crashe
 running at all. `tools/resume_game.py` brought it back from cold in 75 seconds (menu ->
 Menu.StartCheckpoint -> in-world) and both subsequent ctest runs passed. Check the fixture is alive
 before reading a suite result; the first two assertions in this file exist to say so loudly.
+
+## A probe must not spend what it measures
+
+The "can the player shoot" precondition fired a burst, because before ammunition was mapped there
+was no other way to ask. It was self-defeating twice over: it consumed the reserve it was checking,
+and one successful burst only proves there was one burst left -- so strengthening it to two bursts
+spent twice as much. Reading `sdk::PlayerMgr::ammo_total` asks without spending, and asks the right
+question: not "is there a round" but "are there enough for what follows".
+
+Generalisable: if a probe's observation changes the thing observed, it is not a precondition check,
+it is part of the workload. Find a read.
+
+## In a live world, "it went down" is not an invariant
+
+Asserting that firing DECREASES ammunition failed on a real run where the count went UP: a
+checkpoint restore's loadout was still arriving and granted 19 rounds mid-burst. The effect under
+test was real and simply not isolated.
+
+Two responses, and both are needed. Fix it at source (wait for the pool to hold steady -- FOUR
+consecutive equal reads, because two caught a plateau between stages of the fill), and DETECT the
+confounder at the point of measurement, reporting NOT EXERCISED instead of a red. A red should mean
+"the mapping is wrong", never "something else touched the world".
+
+## A check written against one instance has met one instance
+
+Two muzzle-geometry checks passed for months and went red the first time the suite drained a
+magazine -- because an empty weapon makes the game auto-switch, and they had only ever seen the
+submachinegun. The bound was fine (all four weapons sit inside it at rest); what was missing was
+the at-rest gate that the check two lines above already applied.
+
+When a check depends on which THING is loaded -- weapon, level, model -- ask what happens when a
+different one is. The suite changing the world is what surfaces these, which is an argument for
+letting it change the world rather than against.

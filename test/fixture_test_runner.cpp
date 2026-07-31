@@ -110,6 +110,85 @@ bool g_can_fire = false;
 // of that. The suite died with 0xC0000409 (stack buffer overrun) immediately after the fire-ray
 // measurement. Nothing here captures anything; `port` is passed in.
 
+// Pulls a STRING field out. Deliberately minimal and non-unescaping: the only strings this suite
+// reads back are database record names, which are ASCII identifiers with no escapes in them. A
+// value containing a quote would come back truncated rather than wrong, which is the safe way for
+// a test helper to fail.
+std::string json_string(const std::string& body, const char* key) {
+    const std::string needle = std::string("\"") + key + "\":\"";
+    const auto at = body.find(needle);
+
+    if (at == std::string::npos) {
+        return std::string{};
+    }
+
+    const auto start = at + needle.size();
+    const auto end = body.find('"', start);
+
+    if (end == std::string::npos) {
+        return std::string{};
+    }
+
+    return body.substr(start, end - start);
+}
+
+// The raw text of a JSON ARRAY field, braces included. Enough for the holdings list, which is a
+// flat array of {"name","count"} objects with no nesting to balance.
+std::string json_array_of(const std::string& body, const char* key) {
+    const std::string needle = std::string("\"") + key + "\":[";
+    const auto at = body.find(needle);
+
+    if (at == std::string::npos) {
+        return std::string{};
+    }
+
+    const auto start = at + needle.size() - 1;
+    const auto end = body.find(']', start);
+
+    if (end == std::string::npos) {
+        return std::string{};
+    }
+
+    return body.substr(start, end - start + 1);
+}
+
+// {name, count} pairs out of that array.
+std::vector<std::pair<std::string, long long>> parse_holdings(const std::string& arr) {
+    std::vector<std::pair<std::string, long long>> out;
+    size_t pos = 0;
+
+    while (true) {
+        const auto n = arr.find("\"name\":\"", pos);
+        if (n == std::string::npos) {
+            break;
+        }
+        const auto ns = n + 8;
+        const auto ne = arr.find('"', ns);
+        if (ne == std::string::npos) {
+            break;
+        }
+        const auto c = arr.find("\"count\":", ne);
+        if (c == std::string::npos) {
+            break;
+        }
+        out.emplace_back(arr.substr(ns, ne - ns), strtoll(arr.c_str() + c + 8, nullptr, 10));
+        pos = c;
+    }
+
+    return out;
+}
+
+// The count for one name, or 0 when the kind is absent -- which is the truthful answer, since a
+// holding that drops to zero is dropped from the list by `ammo_held`.
+long long holding_of(const std::string& arr, const std::string& name) {
+    for (const auto& kv : parse_holdings(arr)) {
+        if (kv.first == name) {
+            return kv.second;
+        }
+    }
+    return 0;
+}
+
 bool json_flag_of(const std::string& body, const char* key) {
     bool v = false;
     return json_bool(body, key, v) && v;
@@ -123,29 +202,42 @@ bool player_alive_at(int32_t port) {
     return json_flag_of(http::body_of(resp), "ps_alive");
 }
 
-// Fires a short burst and reports whether anything came of it. This is the only reliable read on
-// "can the player actually shoot": the loadout is not exposed anywhere the SDK has mapped, and an
-// empty weapon is indistinguishable from a working one until you pull the trigger.
+// ROUNDS THE FIRING CHECKS WILL SPEND, and where the number comes from. Four bursts run below
+// (two for the fire-ray measurement, one for recoil, one for the ammo test) at roughly half a
+// second each. Measured live: a 0.6s burst from the assault rifle consumed 5 rounds, so ~8 rounds
+// per second, giving ~16 for the suite. Doubled for margin, because the rate is weapon-dependent
+// and a minigun is not a pistol.
+constexpr int64_t kRoundsTheSuiteSpends = 32;
+
+// Can the player actually shoot, and enough times to finish?
+//
+// THIS USED TO FIRE A BURST, which was the only probe available before ammunition was mapped, and
+// it was wrong in a way worth remembering: it spent the very resource it was measuring. A "yes"
+// answered by consuming the last of the reserve handed a healthy verdict to a suite that then ran
+// dry two blocks later, and the red landed on recoil. Worse, one burst only ever proved there was
+// ONE burst left, so the probe was strengthened to two bursts, which spent twice as much.
+//
+// `sdk::PlayerMgr::ammo_total` asks instead of spending, and asks the right question: not "is there
+// a round" but "are there enough". A probe that changes what it measures is not a probe.
 bool weapon_is_live_at(int32_t port) {
     std::string resp;
-    http::get(port, "/input/tap?vk=82&frames=3", resp);   // R
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-    http::get(port, "/sdk/spawns?type=6&reset=1", resp);
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    http::get(port, "/sdk/spawns?type=6", resp);
 
-    http::get(port, "/input/hold?vk=256&down=1", resp);
-    std::this_thread::sleep_for(std::chrono::milliseconds(450));
-    http::get(port, "/input/hold?vk=256&down=0", resp);
-    http::get(port, "/input/release", resp);
-    std::this_thread::sleep_for(std::chrono::milliseconds(120));
-
-    if (!http::get(port, "/sdk/spawns?type=6", resp)) {
+    if (!http::get(port, "/sdk/shader-params", resp)) {
         return false;
     }
-    long long appeared = 0;
-    json_int(http::body_of(resp), "appeared", appeared);
-    return appeared > 0;
+
+    const std::string body = http::body_of(resp);
+
+    if (!json_flag_of(body, "ammo_readable")) {
+        return false;
+    }
+
+    double total = 0.0;
+    if (!json_double(body, "ammo_total", total)) {
+        return false;
+    }
+
+    return total >= static_cast<double>(kRoundsTheSuiteSpends);
 }
 
 // Asks the MOD to drive the aim's pitch to `target` degrees, and waits for its closed loop to
@@ -153,10 +245,9 @@ bool weapon_is_live_at(int32_t port) {
 // measured-gain corrections, the settle-twice rule and the liveness gate are all its business, not
 // this file's.
 //
-// An earlier version of this ran the whole loop HERE, in the runner. That was wrong on the
-// project's own terms: the suite is supposed to exercise capabilities a mod consumer has, and a
-// closed-loop aim driver that only exists inside the test proves nothing about the shipped code
-// and gives a real consumer nothing.
+// An earlier version ran the whole loop HERE, in the runner. That was wrong on the project's own
+// terms: the suite exercises capabilities a mod consumer has, and a closed-loop aim driver that
+// only exists inside the test proves nothing about shipped code and gives a real consumer nothing.
 double drive_pitch_to(int32_t port, double target_degrees) {
     std::string resp;
     char url[128];
@@ -200,6 +291,30 @@ void restore_fixture_at(int32_t port, const char* why) {
             break;
         }
     }
+    // AND WAIT FOR THE LOADOUT TO FINISH ARRIVING. A checkpoint restore refills ammunition, and
+    // that fill is not instantaneous: measured, the pool was still RISING (275 -> 294) during a
+    // burst fired shortly afterwards, so a check asserting "firing spends ammunition" saw the
+    // total go UP. Poll until the total holds steady across two reads.
+    {
+        // FOUR consecutive equal reads, not two. The fill arrives in stages and a two-read window
+        // caught a plateau between them: the total looked settled, the suite went on, and the pool
+        // rose 275 -> 294 in the middle of a burst several checks later.
+        double last = -1.0;
+        int stable = 0;
+        for (int i = 0; i < 40 && stable < 4; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (!http::get(port, "/sdk/shader-params", resp)) {
+                continue;
+            }
+            double now = -1.0;
+            if (!json_double(http::body_of(resp), "ammo_total", now)) {
+                continue;
+            }
+            stable = (now == last) ? stable + 1 : 0;
+            last = now;
+        }
+    }
+
     // AND WAIT FOR IT TO SETTLE, not merely to exist. A checkpoint load drops the player into a
     // world that is still interpolating -- measured, the bone-displacement checks failed twice
     // straight after a restore because the skeleton had not finished arriving. `world_is_quiescent`
@@ -1929,9 +2044,18 @@ int main(int argc, char** argv) {
                           "player rather than somewhere else in the level");
                     // A muzzle is down a barrel from the grip: far enough to be a real
                     // offset, near enough to still be part of the weapon.
-                    check(mfh > 5.0 && mfh < 150.0,
-                          "the muzzle sits a BARREL LENGTH from the hand, not at it and "
-                          "not across the level");
+                    //
+                    // GATED ON THE WEAPON BEING AT REST, the same precondition the agreement
+                    // check above already establishes. It was not, and that cost a red: the
+                    // suite's own firing empties a magazine, the game AUTO-SWITCHES weapon, and
+                    // sampling mid-switch reads a composition that is still arriving. Measured
+                    // across the four weapons at rest, every one sits inside this window --
+                    // submachinegun 39.5, shotgun 37.3, assaultrifle 64.8, flamethrower 101.6 --
+                    // so the bound was never the problem; the timing was.
+                    check_gated(wa_ok && wa_still >= kStillFramesNeeded, "weapon in motion",
+                                g_skipped_motion, mfh > 5.0 && mfh < 150.0,
+                                "the muzzle sits a BARREL LENGTH from the hand, not at it and "
+                                "not across the level");
                     printf("[fixture] muzzle: %.1f from the hand; in-phase agreement worst "
                            "%.4f over %.0f still frames (cross-thread read %.3f)\n",
                            mfh, wa_worst, wa_still, wvh);
@@ -10045,6 +10169,117 @@ int main(int argc, char** argv) {
         }
 
         printf("[fixture] weapon live: %s\n", g_can_fire ? "yes" : "NO -- firing checks will report NOT EXERCISED");
+
+        // ---- AMMUNITION -----------------------------------------------------------------------
+        //
+        // The count array is CPlayerStats+248 -> int32[], indexed by the ammo record's position in
+        // the Arsenal/Ammo category. That indexing claim is the whole mapping, and it is exactly
+        // what a static read cannot establish: any wrong index still returns SOME plausible
+        // integer from a live array.
+        //
+        // Firing discriminates it. The equipped weapon has a name, its ammunition has a matching
+        // name in the database, and spending rounds must move THAT entry -- not a neighbour, not
+        // the total alone. If the index convention were off by anything, the entry that moved
+        // would carry the wrong name.
+        {
+            std::string b0;
+            if (http::get(port, "/sdk/shader-params", resp)) {
+                b0 = http::body_of(resp);
+            }
+
+            const bool readable = json_flag_of(b0, "ammo_readable");
+            check(readable, "the player's ammunition is readable -- the count array resolves "
+                            "through the stats subsystem and the database");
+
+            if (readable) {
+                double total0 = -1.0, kinds = -1.0;
+                json_double(b0, "ammo_total", total0);
+                json_double(b0, "ammo_kinds_held", kinds);
+                const std::string held0 = json_array_of(b0, "ammo_held");
+
+                check(total0 >= 0.0 && kinds >= 1.0,
+                      "and an armed player is carrying at least one kind of it, in a non-negative "
+                      "amount -- a walk that read past the allocation would not produce that");
+                check(!held0.empty() && held0.find("\"name\"") != std::string::npos,
+                      "the holdings carry NAMES, so a consumer can put a count on the weapon "
+                      "rather than reading an anonymous slot");
+
+                // THE DISCRIMINATING PART. Spend rounds and see which named kind moves.
+                //
+                // GATED ON A SHOT ACTUALLY HAPPENING, via an independent observable. `g_can_fire`
+                // checks the TOTAL across every ammo type, which is not the same question: forty
+                // rounds of pistol ammunition satisfies it while the equipped rifle is empty.
+                // Spawned effects prove a round left the barrel; given that, the count must move.
+                if (g_can_fire) {
+                    http::get(port, "/sdk/spawns?type=6&reset=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    http::get(port, "/sdk/spawns?type=6", resp);
+
+                    http::get(port, "/input/hold?vk=256&down=1", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                    http::get(port, "/input/hold?vk=256&down=0", resp);
+                    http::get(port, "/input/release", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+                    long long shot_spawns = 0;
+                    if (http::get(port, "/sdk/spawns?type=6", resp)) {
+                        json_int(http::body_of(resp), "appeared", shot_spawns);
+                    }
+                    const bool shot_fired = shot_spawns > 0;
+
+                    std::string b1;
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        b1 = http::body_of(resp);
+                    }
+                    double total1 = -1.0;
+                    json_double(b1, "ammo_total", total1);
+                    const std::string held1 = json_array_of(b1, "ammo_held");
+
+                    // Which kinds moved, and by how much.
+                    std::string moved_name;
+                    long long moved_by = 0;
+                    int moved_kinds = 0;
+                    for (const auto& before : parse_holdings(held0)) {
+                        const long long after = holding_of(held1, before.first);
+                        if (after != before.second) {
+                            ++moved_kinds;
+                            moved_name = before.first;
+                            moved_by = before.second - after;
+                        }
+                    }
+
+                    printf("[fixture] ammo: total %.0f -> %.0f | %d kind(s) moved: %s by %lld\n",
+                           total0, total1, moved_kinds,
+                           moved_name.empty() ? "(none)" : moved_name.c_str(), moved_by);
+
+                    // A RISE MEANS SOMETHING ELSE WAS MOVING THE POOL -- a pickup, a scripted
+                    // grant, or a checkpoint restore's loadout still arriving. The burst did spend
+                    // rounds, but the measurement cannot see it through a concurrent gift, so the
+                    // honest report is "not exercised" rather than a red for an effect that is
+                    // real and simply not isolated. Detected, never assumed away.
+                    const bool isolated = total1 <= total0;
+                    if (shot_fired && !isolated) {
+                        printf("[fixture] ammo: pool ROSE during the burst -- something granted "
+                               "ammunition, measurement not isolated\n");
+                    }
+                    check_armed(shot_fired && isolated, total1 < total0,
+                                "firing spends ammunition, and the mapped array sees it go -- "
+                                "which is what makes this a count and not an arbitrary integer");
+                    // EXACTLY ONE KIND. This is the claim that pins the array's meaning without
+                    // assuming which weapon is equipped: one weapon draws from one slot, so a
+                    // burst must disturb one entry and leave every other alone. An index
+                    // convention that smeared across neighbours would move two.
+                    check_armed(shot_fired && isolated, moved_kinds == 1,
+                                "and it comes out of exactly ONE named kind -- firing one weapon "
+                                "must not disturb any other, which is what pins the per-record "
+                                "indexing");
+                    check_armed(shot_fired && isolated,
+                                fabs(static_cast<double>(moved_by) - (total0 - total1)) < 0.5,
+                                "the total falls by exactly what that one kind lost, so the two "
+                                "independent walks of the array agree");
+                }
+            }
+        }
 
         // ---- AIMING THE VIEW, WHICH IN THIS GAME MEANS AIMING THE GUN -------------------------
         //

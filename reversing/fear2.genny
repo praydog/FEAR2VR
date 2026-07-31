@@ -6347,6 +6347,31 @@ class CPlayerCamera 0x18C6 {
 //
 // 1290 checks, 0 failures.
 
+// ---- CPlayerStats+248: THE AMMUNITION COUNT ARRAY ----------------------------------------------
+//
+// A POINTER, at CPlayerStats+248, to an int32 array of ammunition counts indexed by the ammo
+// record's POSITION within the Arsenal/Ammo database category (52 records live).
+//
+// Not written as a .genny field because it is a pointer to a separately-allocated, database-sized
+// array rather than an inline member -- the schema has no way to express "int32[category size]"
+// and inventing a fixed bound would be a magic value. Exposed instead as
+// sdk::PlayerMgr::ammo_count / ammo_held / ammo_total, which take the length from the database.
+//
+// EVIDENCE. CPlayerStats_GetAmmoCount (gameclient 0x10110FD0) is, in its entirety:
+//     if (this[62] && rec && (i = IDatabaseMgr->vslot21(rec)) != -1) return this[62][i];
+// this[62] == +248. HUD_UpdateAmmoCount (0x100214B0) shows what the number MEANS: it is the TOTAL
+// for that ammo type, and the HUD derives the reserve as total - clip, where clip is
+// *(weapon+184) + *(weapon+496).
+//
+// WHY THE LIVE CHECK IS ABOUT NAMES, NOT NUMBERS. A wrong index still returns a plausible integer
+// out of a live array, so "a count came back and it went down" would not discriminate. The
+// equipped weapon's NAME is the discriminator: with assaultrifle.mdl held, a 0.6s burst moved the
+// entry called 'AssaultRifle' 77 -> 71 while the total went 99 -> 93 -- the same 6, on the
+// matching name. Any off-by-anything puts the decrement on a different record.
+//
+// CONSEQUENCE FOR THE SUITE. The fixture's "can the player shoot" precondition used to FIRE a
+// burst, spending the resource it was measuring; it now reads the total. See TESTING.MD.
+
 // ---- CMoveMgr, 79 CONSOLE REGISTRATIONS, AND FIVE COMMANDS THAT DO NOTHING ----------------------
 //
 // The route that identified CPlayerStats last pass generalises: every RegisterConsoleProgram call site pairs a

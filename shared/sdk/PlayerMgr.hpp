@@ -272,6 +272,57 @@ public:
     static constexpr uintptr_t kStatsAir = 244;
     static constexpr uintptr_t kStatsHealthLost = 284;
 
+    // ---- AMMUNITION -----------------------------------------------------------------------
+    //
+    // WHY A MOD WANTS THIS. A VR player has no HUD worth reading -- a flat overlay at a fixed
+    // screen position is exactly the thing that does not survive a headset. The count has to go
+    // somewhere in the world (on the weapon, on the wrist), and to put it there a mod has to be
+    // able to READ it. It is also what any haptic or auto-reload behaviour keys off.
+    //
+    // IT IS ALSO A TESTING PRIMITIVE, and that is not a side benefit. This suite fires live
+    // rounds, the world never replaces them, and with no way to ask "is the weapon loaded" a
+    // dry magazine is indistinguishable from a broken mapping: three separate checks went red
+    // that way, none of them about weapons. The only probe available was to FIRE, which spends
+    // the very resource being measured.
+    //
+    // THE LAYOUT, from CPlayerStats_GetAmmoCount (gameclient 0x10110FD0), which is the whole
+    // function:
+    //
+    //     if (this[62] && rec && (i = IDatabaseMgr->vslot21(rec)) != -1)
+    //         return this[62][i];
+    //     return 0;
+    //
+    // So CPlayerStats+248 holds a POINTER to an int32 array, indexed by the ammo record's index
+    // within the Arsenal/Ammo category. Not a fixed-size struct member -- a separate allocation
+    // sized by the database, which is why it is a pointer and why the index must come from the
+    // database rather than from a constant here.
+    static constexpr uintptr_t kStatsAmmoArray = 248;
+
+    // Rounds of one ammo type, by its Arsenal/Ammo record name ("SMG", "Vulcan", ...).
+    // nullopt when the stats subsystem, the database, the record or the array cannot be read --
+    // never a zero standing in for "could not tell", because zero is a legitimate answer that a
+    // caller must be able to distinguish from failure.
+    // The count array's base address. Public because a consumer watching for ammo CHANGES wants to
+    // arm a watchpoint on it rather than poll, and because it is the one piece here that a
+    // diagnostic needs to report for the mapping to be checkable at all.
+    static std::optional<uintptr_t> ammo_array(unsigned index);
+
+    static std::optional<int32_t> ammo_count(unsigned index, const std::string& ammo_name);
+
+    struct AmmoHolding {
+        std::string name;
+        int32_t count;
+    };
+
+    // Everything the player is carrying a non-zero amount of. This is the form a consumer
+    // actually wants -- "what have I got" rather than 52 queries -- and it is what makes the
+    // array's indexing verifiable: fire a weapon and exactly one entry moves.
+    static std::vector<AmmoHolding> ammo_held(unsigned index);
+
+    // Total across every ammo type. A cheap "is this weapon system alive at all" probe that
+    // needs no knowledge of which weapon is equipped.
+    static std::optional<int32_t> ammo_total(unsigned index);
+
     struct PlayerStats {
         int32_t health{};
         int32_t armor{};

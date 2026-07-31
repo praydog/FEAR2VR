@@ -1780,6 +1780,143 @@ size_t PlayerMgr::named_subsystem_count() {
     return n;
 }
 
+namespace {
+
+// The Arsenal/Ammo category, and the position of a record within it. The engine indexes its count
+// array by exactly this position (IDatabaseMgr slot 21 on the record), so the enumeration order
+// here IS the array order -- an assumption the fixture discriminates rather than trusts: firing a
+// weapon must move the entry whose name matches that weapon's ammo, and no other.
+constexpr const char* kAmmoCategory = "Arsenal/Ammo";
+
+const regenny::DatabaseMgrCategory* ammo_category() {
+    auto* db = DatabaseMgr::get();
+
+    if (db == nullptr || db->entry_count() < 1) {
+        return nullptr;
+    }
+
+    auto* e = db->entry(0);
+
+    if (e == nullptr || e->record_a == nullptr) {
+        return nullptr;
+    }
+
+    return DatabaseMgr::find_category(e->record_a, kAmmoCategory);
+}
+
+} // namespace
+
+std::optional<uintptr_t> PlayerMgr::ammo_array(unsigned index) {
+    const auto sub = subsystem_by_name(index, "player stats");
+
+    if (!sub.has_value() || sub->object == 0) {
+        return std::nullopt;
+    }
+
+    const auto base = mem::read<uintptr_t>(sub->object + kStatsAmmoArray);
+
+    if (!base.has_value() || *base == 0) {
+        return std::nullopt;
+    }
+
+    return *base;
+}
+
+std::optional<int32_t> PlayerMgr::ammo_count(unsigned index, const std::string& ammo_name) {
+    const auto* cat = ammo_category();
+
+    if (cat == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto base = ammo_array(index);
+
+    if (!base.has_value()) {
+        return std::nullopt;
+    }
+
+    const size_t n = DatabaseMgr::record_count(cat);
+
+    for (size_t i = 0; i < n; ++i) {
+        auto* rec = DatabaseMgr::record(cat, i);
+
+        if (rec == nullptr || DatabaseMgr::record_name(rec) != ammo_name) {
+            continue;
+        }
+
+        return mem::read<int32_t>(*base + i * sizeof(int32_t));
+    }
+
+    return std::nullopt;
+}
+
+std::vector<PlayerMgr::AmmoHolding> PlayerMgr::ammo_held(unsigned index) {
+    std::vector<AmmoHolding> out;
+
+    const auto* cat = ammo_category();
+    const auto base = ammo_array(index);
+
+    if (cat == nullptr || !base.has_value()) {
+        return out;
+    }
+
+    const size_t n = DatabaseMgr::record_count(cat);
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto count = mem::read<int32_t>(*base + i * sizeof(int32_t));
+
+        // A guarded read that faults ends the walk rather than skipping a hole: past the end of
+        // the allocation every later index is equally unreadable, and continuing would turn one
+        // bad offset into 52 silent zeroes.
+        if (!count.has_value()) {
+            break;
+        }
+
+        if (*count == 0) {
+            continue;
+        }
+
+        auto* rec = DatabaseMgr::record(cat, i);
+
+        if (rec == nullptr) {
+            continue;
+        }
+
+        out.push_back(AmmoHolding{DatabaseMgr::record_name(rec), *count});
+    }
+
+    return out;
+}
+
+std::optional<int32_t> PlayerMgr::ammo_total(unsigned index) {
+    const auto* cat = ammo_category();
+    const auto base = ammo_array(index);
+
+    if (cat == nullptr || !base.has_value()) {
+        return std::nullopt;
+    }
+
+    const size_t n = DatabaseMgr::record_count(cat);
+    int32_t total = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto count = mem::read<int32_t>(*base + i * sizeof(int32_t));
+
+        if (!count.has_value()) {
+            return std::nullopt;
+        }
+
+        // Negative would mean the array is not what this claims; refuse rather than fold it in.
+        if (*count < 0) {
+            return std::nullopt;
+        }
+
+        total += *count;
+    }
+
+    return total;
+}
+
 std::optional<PlayerMgr::PlayerStats> PlayerMgr::player_stats(unsigned index) {
     const auto sub = subsystem_by_name(index, "player stats");
     if (!sub.has_value() || sub->object == 0) {

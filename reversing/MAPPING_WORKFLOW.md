@@ -5388,3 +5388,56 @@ symmetric +/-80 degree Euler clamp; they differ in object layout and in whether 
 into the camera's basis (local) or added in world axes. Explicitly NOT the player camera, whose
 clamp is asymmetric and state-selected -- a distinction that would be easy to conflate, since both
 sites carry a 1.3962634.
+
+## AMMUNITION: CPlayerStats+248, AND THE INDEX THAT MAKES IT MEAN SOMETHING
+
+A pointer at CPlayerStats+248 to an int32 array of counts, indexed by the ammo record's POSITION
+within the Arsenal/Ammo database category (52 records live). Found from
+`CPlayerStats_GetAmmoCount` (gameclient 0x10110FD0), which is the entire function:
+
+    if (this[62] && rec && (i = IDatabaseMgr->vslot21(rec)) != -1) return this[62][i];
+
+`HUD_UpdateAmmoCount` (0x100214B0) says what the number MEANS: it is the TOTAL for that ammo type,
+and the HUD derives the reserve as `total - clip`, where clip is `*(weapon+184) + *(weapon+496)`.
+Confirmed live -- a reload tap moves the pool by 0, so the clip is already inside the total.
+
+Exposed as `sdk::PlayerMgr::ammo_count(name)` / `ammo_held()` / `ammo_total()` / `ammo_array()`.
+Also named: `Cheat_GiveAmmo` (0x10046E60) and `CheatDispatch` (0x10047000), index 0x12.
+
+### Why the test is about NAMES, not numbers
+
+A wrong index still returns a plausible integer out of a live array, so "a count came back and it
+went down" discriminates nothing. The equipped weapon's name does: with `submachinegun.mdl` held, a
+0.6s burst moved the entry called **SMG** by exactly 9 while the total fell 220 -> 211. With
+`assaultrifle.mdl`, the entry called **AssaultRifle**. Any off-by-anything puts the decrement on a
+differently-named record.
+
+The assertion that survives without knowing which weapon is equipped: **exactly one named kind
+moves, and the total falls by exactly what that kind lost.** One weapon draws from one slot.
+
+### Three wrong versions of this test, and what each taught
+
+1. **"The largest holding decreased."** Wrong: largest is not equipped. Firing a pistol while
+   carrying 82 rifle rounds moves neither the largest entry nor its name.
+2. **"The total decreased."** Wrong in a *live* world: a checkpoint restore's loadout is still
+   arriving, and the pool ROSE 275 -> 294 mid-burst. Now detected and reported as not-isolated
+   rather than assumed away -- and fixed at source by waiting for four consecutive stable reads
+   after a restore (two caught a plateau BETWEEN stages of the fill).
+3. **"g_can_fire means this weapon can fire."** Wrong: it reads the total across every kind, so
+   forty rounds of pistol ammunition satisfies it while the equipped rifle is empty. The checks
+   now gate on spawned effects -- independent proof a round actually left the barrel.
+
+### The probe that no longer spends what it measures
+
+The suite's "can the player shoot" precondition used to FIRE a burst -- the only probe available
+before ammunition was mapped, and self-defeating: it consumed the reserve it was checking, and a
+single burst only ever proved there was ONE burst left. It now reads `ammo_total` and compares
+against the rounds the suite will spend (~16 measured, 32 with margin).
+
+### A weapon-dependent check that had never met a second weapon
+
+Two muzzle/bone checks went red once the suite started draining magazines: an empty weapon makes
+the game AUTO-SWITCH, and sampling mid-switch reads a composition still arriving. Measured at rest,
+every weapon sits inside the existing bound -- submachinegun 39.5, shotgun 37.3, assaultrifle 64.8,
+flamethrower 101.6 -- so the bound was never wrong; the check simply lacked the at-rest gate the
+comparison two lines above it already used.

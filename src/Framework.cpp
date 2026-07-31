@@ -5713,6 +5713,35 @@ std::string build_shader_params_json(bool include_write_probes) {
     {
         const auto yaw = sdk::PlayerMgr::aim_yaw(0);
         const auto pitch = sdk::PlayerMgr::aim_pitch(0);
+        // AMMUNITION. `ammo_total` is the cheap liveness probe (can this weapon system fire at
+        // all); `ammo_held` is the consumer view, and it is what makes the array's indexing
+        // checkable -- firing must move exactly the entry whose name matches the equipped weapon.
+        const auto ammo_total = sdk::PlayerMgr::ammo_total(0);
+        json_append_bool(out, "ammo_readable", ammo_total.has_value());
+        json_append_double(out, "ammo_total", static_cast<double>(ammo_total.value_or(0)), 0);
+        {
+            const auto held = sdk::PlayerMgr::ammo_held(0);
+            json_append_double(out, "ammo_kinds_held", static_cast<double>(held.size()), 0);
+            // THE WHOLE HOLDINGS LIST, name and count. Reporting only the largest was a mistake
+            // worth recording: it reads as "the equipped weapon's ammunition" and is not -- firing
+            // a pistol while carrying 82 rifle rounds moves neither the largest entry nor its
+            // name, and a check built on that proxy fails for a reason unrelated to the mapping.
+            // A consumer diffing this list can see exactly which kind moved.
+            std::string items = "[";
+            bool first = true;
+            for (const auto& h : held) {
+                if (!first) {
+                    items += ",";
+                }
+                first = false;
+                items += "{\"name\":";
+                json_escape_append(items, h.name);
+                items += ",\"count\":" + std::to_string(h.count) + "}";
+            }
+            items += "]";
+            json_append_raw(out, "ammo_held", items.c_str());
+        }
+
         const auto plim = sdk::PlayerMgr::pitch_limits(0);
         json_append_bool(out, "pitch_limits_readable", plim.has_value());
         json_append_double(out, "pitch_up_deg", plim.has_value() ? plim->up * 57.2957795 : 0.0, 3);
