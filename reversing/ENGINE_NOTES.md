@@ -457,6 +457,48 @@ one produces a confident zero -- "nothing writes this rotation" -- which is true
 
 ## Rendering and stereo
 
+### D3DPOOL survey: NOT SETTLED, and the absence of a MANAGED immediate proves nothing
+
+D3D9Ex forbids `D3DPOOL_MANAGED`, so whether this engine uses it decides whether the Ex upgrade --
+the prerequisite for sharing a surface with an OpenXR swapchain -- is a day or a month.
+
+Method: scan the create-family device vtable offsets (`+0x5C` CreateTexture, `+0x60`
+CreateVolumeTexture, `+0x64` CreateCubeTexture, `+0x68` CreateVertexBuffer, `+0x6C`
+CreateIndexBuffer) across the **90 functions that reference `g_pD3DDevice_g_Renderer`**
+(0x72E118). Intersecting with the renderer's readers is mandatory -- those displacements collide
+with ordinary member offsets, and scanning `.text` wholesale returns unrelated methods whose
+"pool" argument reads 101 or 102.
+
+13 call sites:
+
+    1   passes D3DPOOL_DEFAULT as an immediate    Renderer_CreateVertexBufferDefaultPool (0x60BCE2)
+    8   COMPUTE the pool at runtime
+    4   the push-walk lost the argument
+
+**No MANAGED immediate, and that settles nothing.** Eight sites choose the pool at runtime, which
+is precisely where a managed allocation would live. Recording "no managed pool found" here would be
+the absence-of-evidence mistake this project has made before with a tool whose blind spot aligned
+with the population being measured.
+
+The decisive test is a RUNTIME probe: hook the five create entries and record the pool actually
+passed. That is the next step for stereo, and it is cheap now that the call sites are named.
+
+Named this pass: `Renderer_CreateTextureByDimension` (0x61C177, creates volume/cube/2D by shape),
+`Renderer_CreateTexture2D` (0x618187), `Renderer_CreateVertexBufferDefaultPool` (0x60BCE2).
+
+### A scanner that returned zero, and was simply broken
+
+The first version of this sweep reported **zero indirect calls in the entire `.text`** -- for a C++
+engine, an impossible answer that should have been read as a broken tool rather than a finding. It
+used `idaapi.NN_call` with `insn.Op1` after `decode_insn` and silently matched nothing. Rewritten
+against `idc.print_insn_mnem(head) == 'call'` and `idc.get_operand_type`, the same walk finds 59311
+calls, 2799 of them indirect with a displacement.
+
+Calibrate a scanner against a population you already know the size of BEFORE believing a zero. This
+file records the same lesson from the vtable analyzer and the Present hunt; this is the third.
+
+
+
 ### Stereo is reachable through one hook, because the pass entry takes angles and a fractional rect
 
 `CLTRenderer_SetupPassPerspective` (slot 15, 0x0060B520) was already mapped as "where to hook". Hooking it
