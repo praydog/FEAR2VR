@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include <windows.h>
+
 #include <safetyhook.hpp>
 
 #include "../Hooks.hpp"
@@ -138,6 +140,20 @@ bool FireRedirect::set_direction(float x, float y, float z) {
     return true;
 }
 
+void FireRedirect::set_mode(Mode mode) {
+    m_mode.store(mode, std::memory_order_release);
+    // Absolute mode still needs a direction supplied separately; Reverse does not,
+    // so it arms itself. Off disarms both so nothing can be left applying.
+    if (mode == Mode::Off) {
+        m_armed.store(false, std::memory_order_release);
+    } else if (mode == Mode::Reverse) {
+        m_armed.store(true, std::memory_order_release);
+    }
+    LOGX("[fire] redirect mode = %s (hotkey 0x%02X)",
+         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : "absolute"),
+         m_hotkey.load(std::memory_order_relaxed));
+}
+
 void FireRedirect::clear_direction() {
     m_armed.store(false, std::memory_order_release);
 }
@@ -175,7 +191,26 @@ void FireRedirect::on_send_fire(SafetyHookContext& ctx) {
     if (!self.m_armed.load(std::memory_order_acquire)) {
         return;
     }
-    const auto dir = load3(self.m_dir);
+
+    // A hotkey, when set, gates the replacement so normal fire is one key away.
+    if (self.m_hotkey.load(std::memory_order_relaxed) != 0 &&
+        !self.m_hotkey_held.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    std::array<float, 3> dir{};
+    if (self.m_mode.load(std::memory_order_acquire) == Mode::Reverse) {
+        // Negate what the client built, in place. Done here rather than host-side so
+        // it holds whichever way the player happens to be facing.
+        const auto cur = sdk::mem::read<std::array<float, 3>>(dir_ptr);
+        if (!cur.has_value()) {
+            return;
+        }
+        dir = {-(*cur)[0], -(*cur)[1], -(*cur)[2]};
+    } else {
+        dir = load3(self.m_dir);
+    }
+
     if (sdk::mem::write<std::array<float, 3>>(dir_ptr, dir)) {
         store3(self.m_written_dir, dir[0], dir[1], dir[2]);
         self.m_writes.fetch_add(1, std::memory_order_relaxed);
@@ -274,6 +309,16 @@ std::optional<std::string> FireRedirect::on_initialize() {
 }
 
 void FireRedirect::on_frame() {
+    // Poll the hold key on the GAME thread. GetAsyncKeyState is a snapshot of
+    // physical key state, so it works while the game has focus and needs no hook
+    // into the engine's input path -- which matters because this must not perturb
+    // the very input the player is using to run the experiment.
+    if (const int vk = m_hotkey.load(std::memory_order_relaxed); vk != 0) {
+        m_hotkey_held.store((GetAsyncKeyState(vk) & 0x8000) != 0, std::memory_order_relaxed);
+    } else {
+        m_hotkey_held.store(false, std::memory_order_relaxed);
+    }
+
     if (m_hooked.load(std::memory_order_relaxed)) {
         return;
     }
@@ -308,5 +353,7 @@ void FireRedirect::on_frame() {
 void FireRedirect::on_shutdown() {
     // Disarm before hook retirement so a shot in flight during teardown gets the
     // engine's own direction rather than a stale one of ours.
+    m_mode.store(Mode::Off, std::memory_order_release);
+    m_hotkey.store(0, std::memory_order_relaxed);
     clear_direction();
 }

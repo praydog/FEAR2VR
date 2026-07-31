@@ -75,6 +75,37 @@ public:
     void on_frame() override;
     void on_shutdown() override;
 
+    // How the outgoing direction is replaced.
+    enum class Mode {
+        Off,        // pass the client's own direction through untouched
+        Absolute,   // replace it with a fixed world-space direction (set_direction)
+        Reverse,    // negate whatever the client was about to send
+    };
+
+    // REVERSE is not a novelty: it is the only redirection whose effect a HUMAN can
+    // judge without instrumentation. Point at an enemy, hold the key, and shoot --
+    // if the target still takes damage then the direction in this message does not
+    // decide where the shot goes, and if it stops taking damage it does. Nothing
+    // this project can measure from outside the process settles that, because
+    // impact EFFECTS may be client-predicted while DAMAGE is server-authoritative.
+    //
+    // It also works from any orientation with no host-side arithmetic, because the
+    // negation happens inside the hook against the value the client actually built.
+    void set_mode(Mode mode);
+    Mode mode() const { return m_mode.load(std::memory_order_relaxed); }
+
+    // Hold-to-apply. While a hotkey is set, redirection only happens for shots taken
+    // with that key DOWN, so a player keeps normal fire the rest of the time and the
+    // A/B comparison is one keypress apart. 0 disables the gate (always apply).
+    void set_hotkey(int vk) { m_hotkey.store(vk, std::memory_order_relaxed); }
+    int hotkey() const { return m_hotkey.load(std::memory_order_relaxed); }
+    bool hotkey_held() const { return m_hotkey_held.load(std::memory_order_relaxed); }
+
+    // Shots whose direction was actually replaced. The number a human needs to see
+    // before believing a negative result: "the enemy took damage" means nothing if
+    // this did not move while they were holding the key.
+    uint64_t redirected_shots() const { return m_writes.load(std::memory_order_relaxed); }
+
     // Arm with a world-space unit direction. Rejected (returns false) unless the
     // vector is finite and within 1e-3 of unit length: a non-unit direction is
     // how a mis-scaled or half-written value announces itself, and a silently
@@ -132,6 +163,9 @@ private:
     static void on_send_fire(SafetyHookContext& ctx);
 
     std::atomic<bool> m_armed{false};
+    std::atomic<Mode> m_mode{Mode::Off};
+    std::atomic<int> m_hotkey{0};
+    std::atomic<bool> m_hotkey_held{false};
     std::atomic<bool> m_hooked{false};
     std::atomic<uintptr_t> m_target{0};
     std::atomic<uintptr_t> m_last_desc{0};

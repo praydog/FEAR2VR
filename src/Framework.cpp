@@ -10338,6 +10338,19 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/fire-reverse") {
+            // HOLD-TO-SHOOT-BACKWARDS. The one experiment that can tell whether the
+            // direction in the client's fire message decides where a shot lands:
+            // point at an enemy, hold the key, fire. Damage is server-authoritative,
+            // so a target that still dies proves the field is not the trace's input,
+            // and one that stops taking damage proves it is.
+            auto& fr = FireRedirect::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                fr.set_mode(FireRedirect::Mode::Off);
+            } else {
+                fr.set_hotkey(webapi_query_int(q, "vk", 0x60)); // numpad 0 by default
+                fr.set_mode(FireRedirect::Mode::Reverse);
+            }
         } else if (route == "/xr/fire-aim") {
             // Redirect the SERVER's fire ray (see mods/FireRedirect.hpp). Takes a
             // world-space unit direction; a non-unit one is refused rather than
@@ -10481,6 +10494,10 @@ bool Framework::initialize() {
             jf.b("fr_hooked", fr.hooked())
               .b("fr_armed", fr.armed())
               .b("fr_aim_refused", fire_aim_refused)
+              .i("fr_mode", static_cast<int>(FireRedirect::get().mode()))
+              .i("fr_hotkey", FireRedirect::get().hotkey())
+              .b("fr_hotkey_held", FireRedirect::get().hotkey_held())
+              .u("fr_redirected_shots", FireRedirect::get().redirected_shots())
               .b("ak_enabled", AmmoKeeper::get().enabled())
               .b("ak_floor_refused", ammo_floor_refused)
               .i("ak_floor", AmmoKeeper::get().floor())
