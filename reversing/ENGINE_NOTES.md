@@ -514,6 +514,36 @@ number of allocations and see whether the game survived. It would have produced 
 world and cost a session, and the census answered the same question in one read with no risk. Ask
 what a resource IS before rewriting how it is allocated.
 
+### A visual oracle that is not stale, and the copy path's real cost
+
+`FrameCapture` reads the back buffer inside the present hook and can write it as a BMP. Live it
+produced a genuine 2560x1440 frame -- weapon, HUD reading 41/393, level geometry -- where every
+desktop grab this project has taken came back black or stale. It samples the buffer the engine is
+about to present, on the render thread, in phase with it, so it cannot lag the way an out-of-band
+capture does.
+
+**The strong check is a cross-check.** The dimensions come from D3D's own surface descriptor;
+`cp_target_w/h` are written by the engine's `BeginRenderTarget` and read inside the pass hook. Two
+unrelated routes agreeing on 2560x1440 is what makes the read trustworthy, and a wrong descriptor
+could not match by luck.
+
+### The readback costs ~10 ms, and the first measurement of it was wrong
+
+    GetRenderTargetData   0.002 ms
+    LockRect              9.4 - 12.0 ms
+    true readback        ~10 ms at 2560x1440  (~2.7 ns/pixel)
+
+**0.002 ms for a 14 MB GPU-to-CPU transfer is not a fast copy, it is the wrong measurement.** D3D9
+queues the transfer and the stall lands on the lock. Reporting the copy alone would have made the
+fallback stereo path look free; the two are now timed and published separately for exactly that
+reason.
+
+What it means for stereo: a full-resolution readback consumes essentially an entire 90 Hz frame
+budget (11.1 ms), so the copy-based route is not viable at native resolution. It scales with pixels,
+so it becomes affordable at reduced render resolution, and double-buffering (capture frame N, submit
+at N+1) would hide the latency at the cost of one frame of age. That is a real engineering option
+with a measured price, which is more than the D3D9Ex route has.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

@@ -1,0 +1,246 @@
+#include "FrameCapture.hpp"
+
+#include <windows.h>
+
+#include <d3d9.h>
+
+#include <cstdio>
+
+#include "Log.hpp"
+#include "RenderHook.hpp"
+#include "sdk/Render.hpp"
+
+namespace {
+
+int64_t now_ticks() {
+    LARGE_INTEGER t{};
+    ::QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+double ticks_to_ms(int64_t ticks) {
+    static LARGE_INTEGER freq = [] {
+        LARGE_INTEGER f{};
+        ::QueryPerformanceFrequency(&f);
+        return f;
+    }();
+    if (freq.QuadPart == 0) {
+        return 0.0;
+    }
+    return (static_cast<double>(ticks) * 1000.0) / static_cast<double>(freq.QuadPart);
+}
+
+// A 32-bit bottom-up BMP. Deliberately not a PNG: no dependency, no compression to get wrong, and
+// anything can open it. The engine's back buffer is X8R8G8B8 or A8R8G8B8, both of which are already
+// BGRA in memory, so the rows copy out verbatim.
+bool write_bmp(const char* path, const uint8_t* pixels, uint32_t w, uint32_t h, uint32_t pitch) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") != 0 || f == nullptr) {
+        return false;
+    }
+    const uint32_t row_bytes = w * 4;
+    const uint32_t image_bytes = row_bytes * h;
+    BITMAPFILEHEADER fh{};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    fh.bfSize = fh.bfOffBits + image_bytes;
+    BITMAPINFOHEADER ih{};
+    ih.biSize = sizeof(ih);
+    ih.biWidth = static_cast<LONG>(w);
+    ih.biHeight = static_cast<LONG>(h);  // positive: bottom-up, so rows are written in reverse
+    ih.biPlanes = 1;
+    ih.biBitCount = 32;
+    ih.biCompression = BI_RGB;
+    ih.biSizeImage = image_bytes;
+    fwrite(&fh, sizeof(fh), 1, f);
+    fwrite(&ih, sizeof(ih), 1, f);
+    for (uint32_t y = 0; y < h; ++y) {
+        fwrite(pixels + static_cast<size_t>(h - 1 - y) * pitch, row_bytes, 1, f);
+    }
+    fclose(f);
+    return true;
+}
+
+} // namespace
+
+FrameCapture& FrameCapture::get() {
+    static FrameCapture instance;
+    return instance;
+}
+
+std::optional<std::string> FrameCapture::on_initialize() {
+    return std::nullopt;
+}
+
+void FrameCapture::on_present() {
+    FrameCapture::get().service();
+}
+
+bool FrameCapture::request_capture() {
+    return request_capture_to(std::string{});
+}
+
+bool FrameCapture::request_capture_to(const std::string& path) {
+    if (!m_registered.load(std::memory_order_relaxed)) {
+        // Register lazily: RenderHook installs its own hook only once a device exists, and a
+        // callback added before that is simply never called.
+        if (!RenderHook::get().add_present_callback(&FrameCapture::on_present)) {
+            return false;
+        }
+        m_registered.store(true, std::memory_order_relaxed);
+    }
+    bool expected = false;
+    if (!m_pending.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return false;  // one already in flight
+    }
+    m_path = path;
+    return true;
+}
+
+double FrameCapture::last_copy_ms() const {
+    return ticks_to_ms(m_copy_ticks.load(std::memory_order_relaxed));
+}
+
+double FrameCapture::worst_copy_ms() const {
+    return ticks_to_ms(m_worst_ticks.load(std::memory_order_relaxed));
+}
+
+double FrameCapture::last_total_ms() const {
+    return ticks_to_ms(m_total_ticks.load(std::memory_order_relaxed));
+}
+
+double FrameCapture::last_lock_ms() const {
+    return ticks_to_ms(m_lock_ticks.load(std::memory_order_relaxed));
+}
+
+void FrameCapture::service() {
+    if (!m_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const int64_t t0 = now_ticks();
+    auto* device = sdk::Render::device();
+    if (device == nullptr) {
+        m_hr.store(-1, std::memory_order_relaxed);
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        m_pending.store(false, std::memory_order_release);
+        return;
+    }
+
+    IDirect3DSurface9* back = nullptr;
+    HRESULT hr = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back);
+    if (FAILED(hr) || back == nullptr) {
+        m_hr.store(hr, std::memory_order_relaxed);
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        m_pending.store(false, std::memory_order_release);
+        return;
+    }
+
+    D3DSURFACE_DESC desc{};
+    hr = back->GetDesc(&desc);
+    if (FAILED(hr)) {
+        back->Release();
+        m_hr.store(hr, std::memory_order_relaxed);
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        m_pending.store(false, std::memory_order_release);
+        return;
+    }
+
+    // Reuse the staging surface. Creating one per capture would make the measurement an
+    // allocation benchmark rather than a copy benchmark, and the copy is the number that decides
+    // whether this path can hold a frame budget.
+    if (m_staging == nullptr || m_staging_w != desc.Width || m_staging_h != desc.Height ||
+        m_staging_fmt != static_cast<uint32_t>(desc.Format)) {
+        if (m_staging != nullptr) {
+            static_cast<IDirect3DSurface9*>(m_staging)->Release();
+            m_staging = nullptr;
+        }
+        IDirect3DSurface9* sys = nullptr;
+        hr = device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format,
+                                                 D3DPOOL_SYSTEMMEM, &sys, nullptr);
+        if (FAILED(hr) || sys == nullptr) {
+            back->Release();
+            m_hr.store(hr, std::memory_order_relaxed);
+            m_failures.fetch_add(1, std::memory_order_relaxed);
+            m_pending.store(false, std::memory_order_release);
+            return;
+        }
+        m_staging = sys;
+        m_staging_w = desc.Width;
+        m_staging_h = desc.Height;
+        m_staging_fmt = static_cast<uint32_t>(desc.Format);
+    }
+
+    auto* staging = static_cast<IDirect3DSurface9*>(m_staging);
+
+    // THE MEASUREMENT. GetRenderTargetData is a GPU->CPU readback and a synchronisation point;
+    // everything either side of it is bookkeeping.
+    const int64_t c0 = now_ticks();
+    hr = device->GetRenderTargetData(back, staging);
+    const int64_t c1 = now_ticks();
+    back->Release();
+
+    if (FAILED(hr)) {
+        m_hr.store(hr, std::memory_order_relaxed);
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        m_pending.store(false, std::memory_order_release);
+        return;
+    }
+
+    m_copy_ticks.store(c1 - c0, std::memory_order_relaxed);
+    int64_t worst = m_worst_ticks.load(std::memory_order_relaxed);
+    while ((c1 - c0) > worst &&
+           !m_worst_ticks.compare_exchange_weak(worst, c1 - c0, std::memory_order_relaxed)) {
+    }
+    m_width.store(desc.Width, std::memory_order_relaxed);
+    m_height.store(desc.Height, std::memory_order_relaxed);
+    m_format.store(static_cast<uint32_t>(desc.Format), std::memory_order_relaxed);
+
+    D3DLOCKED_RECT lr{};
+    const int64_t l0 = now_ticks();
+    hr = staging->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+    m_lock_ticks.store(now_ticks() - l0, std::memory_order_relaxed);
+    if (SUCCEEDED(hr)) {
+        const auto* base = static_cast<const uint8_t*>(lr.pBits);
+
+        // CONTENT, not just success. A capture that reads back a black frame is exactly what the
+        // stale desktop grabs looked like, so the oracle has to be able to say "there are pixels
+        // here" independently of the copy having returned S_OK. Sampled on a grid rather than
+        // every pixel: this runs on the render thread and 3.7M pixels is not bookkeeping.
+        uint64_t nonblack = 0;
+        uint64_t sampled = 0;
+        for (uint32_t y = 0; y < desc.Height; y += 8) {
+            const auto* row = reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(y) * lr.Pitch);
+            for (uint32_t x = 0; x < desc.Width; x += 8) {
+                ++sampled;
+                if ((row[x] & 0x00FFFFFFu) != 0) {
+                    ++nonblack;
+                }
+            }
+        }
+        m_nonblack.store(nonblack, std::memory_order_relaxed);
+        m_sampled.store(sampled, std::memory_order_relaxed);
+
+        if (!m_path.empty()) {
+            write_bmp(m_path.c_str(), base, desc.Width, desc.Height,
+                      static_cast<uint32_t>(lr.Pitch));
+        }
+        staging->UnlockRect();
+    }
+
+    m_hr.store(hr, std::memory_order_relaxed);
+    m_captures.fetch_add(1, std::memory_order_relaxed);
+    m_total_ticks.store(now_ticks() - t0, std::memory_order_relaxed);
+    m_pending.store(false, std::memory_order_release);
+}
+
+void FrameCapture::on_shutdown() {
+    // The staging surface is a D3D object we own, and it must go before the image does. The
+    // present callback cannot be unregistered, so clear the pending flag first: a callback that
+    // fires during teardown then does nothing rather than touching a released surface.
+    m_pending.store(false, std::memory_order_release);
+    if (m_staging != nullptr) {
+        static_cast<IDirect3DSurface9*>(m_staging)->Release();
+        m_staging = nullptr;
+    }
+}

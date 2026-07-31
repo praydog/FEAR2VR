@@ -11162,6 +11162,85 @@ int main(int argc, char** argv) {
                     check(!da, "detach_all releases every slot, so a run leaves no cell linked");
                 }
 
+                // ---- READING THE FINISHED FRAME BACK ---------------------------
+                //
+                // The first visual oracle in this project that cannot be stale. Desktop grabs
+                // return black or last-minute frames while the engine reports a live world --
+                // conclusions drawn from them have had to be thrown away more than once. This
+                // samples the back buffer inside the present hook, on the render thread.
+                //
+                // The strong assertion is a CROSS-CHECK: the dimensions come from D3D's own
+                // surface descriptor, while cp_target_w/h are written by the engine's
+                // BeginRenderTarget and read inside the pass hook. Two unrelated routes to one
+                // pair of numbers -- a wrong descriptor read cannot agree with them by luck.
+                {
+                    std::string cr;
+                    if (http::get(port, "/xr/capture", cr)) {
+                        bool armed = false;
+                        json_bool(http::body_of(cr), "fc_armed", armed);
+                        check(armed, "a frame capture can be armed");
+
+                        // Serviced on the next present, so wait for the flag to clear rather
+                        // than assuming a fixed delay.
+                        bool done = false;
+                        long long caps = 0;
+                        for (int i = 0; i < 40 && !done; ++i) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            if (!http::get(port, "/xr/head", cr)) {
+                                continue;
+                            }
+                            bool pend = true;
+                            json_bool(http::body_of(cr), "fc_pending", pend);
+                            json_int(http::body_of(cr), "fc_captures", caps);
+                            done = !pend && caps > 0;
+                        }
+                        check(done, "the capture is serviced on the render thread and completes");
+
+                        if (done) {
+                            const std::string b = http::body_of(cr);
+                            long long hr = -1, w = -1, h = -1, nb = -1, sm = -1, fails = -1;
+                            double copy_ms = -1.0, lock_ms = -1.0;
+                            const bool have =
+                                json_int(b, "fc_hresult", hr) && json_int(b, "fc_width", w) &&
+                                json_int(b, "fc_height", h) && json_int(b, "fc_nonblack", nb) &&
+                                json_int(b, "fc_sampled", sm) && json_int(b, "fc_failures", fails) &&
+                                json_double(b, "fc_copy_ms", copy_ms) &&
+                                json_double(b, "fc_lock_ms", lock_ms);
+                            check(have, "the capture reports its result");
+                            if (have) {
+                                check(hr == 0 && fails == 0,
+                                      "the readback succeeded -- D3D accepted the surface and the "
+                                      "GetRenderTargetData/Lock pair returned S_OK");
+                                check(w > 0 && h > 0 && sm > 0,
+                                      "the captured frame has dimensions and the content sampler ran");
+
+                                // THE CROSS-CHECK. cp_target_* is the engine's own render target
+                                // size; fc_* is D3D's surface descriptor.
+                                std::string sp;
+                                long long tw = -1, th = -1;
+                                if (http::get(port, "/sdk/shader-params", sp)) {
+                                    json_int(http::body_of(sp), "cp_target_w", tw);
+                                    json_int(http::body_of(sp), "cp_target_h", th);
+                                }
+                                printf("[fixture] frame capture: %lldx%lld, readback %.2f ms "
+                                       "(copy %.3f + lock %.3f), %lld/%lld sampled pixels non-black\n",
+                                       w, h, copy_ms + lock_ms, copy_ms, lock_ms, nb, sm);
+                                check_gated(tw > 0 && th > 0, "no engine target size", g_skipped_dry,
+                                            w == tw && h == th,
+                                            "the captured surface matches the size the ENGINE says "
+                                            "it is rendering to -- two independent routes to one "
+                                            "pair of numbers");
+                                // Content is REPORTED, not asserted: a legitimately dark scene or
+                                // a fade would make a non-black floor a claim about the level.
+                                if (nb == 0) {
+                                    printf("[fixture] frame capture: NOTE the frame sampled entirely "
+                                           "black -- fade, or the readback found nothing\n");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ---- WHAT THE ENGINE ALLOCATES, AND FROM WHICH POOL -------------
                 //
                 // The D3D9Ex gate. Ex refuses D3DPOOL_MANAGED, so this decides the size of the

@@ -35,6 +35,7 @@
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
 #include "mods/AmmoKeeper.hpp"
+#include "mods/FrameCapture.hpp"
 #include "mods/ResourceWatch.hpp"
 #include "mods/FireRedirect.hpp"
 #include "mods/ViewmodelDecouple.hpp"
@@ -10135,6 +10136,7 @@ bool Framework::initialize() {
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
     Mods::get().add(&AmmoKeeper::get());
+    Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
     // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
@@ -10325,6 +10327,7 @@ bool Framework::initialize() {
         // state document instead of an HTTP status.
         bool fire_aim_refused = false;
         bool ammo_floor_refused = false;
+        bool capture_armed = false;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
@@ -10340,6 +10343,13 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/capture") {
+            // Read the finished frame back off the GPU. `path=` writes a BMP; without it the
+            // capture is timing-only. This is the project's first visual oracle that cannot be
+            // stale -- it samples the buffer the engine is about to present, on the render
+            // thread, in phase with it.
+            const std::string path = webapi_query_string(q, "path");
+            capture_armed = FrameCapture::get().request_capture_to(path);
         } else if (route == "/xr/resources") {
             // What the engine allocates, and out of which D3D pool -- the D3D9Ex gate.
             // `reset=1` starts a fresh window, which is how a caller bounds "what did THIS
@@ -10541,6 +10551,20 @@ bool Framework::initialize() {
               .f("fr_bo_x", FireRedirect::get().built_origin()[0], 2)
               .f("fr_bo_y", FireRedirect::get().built_origin()[1], 2)
               .f("fr_bo_z", FireRedirect::get().built_origin()[2], 2)
+              .b("fc_armed", capture_armed)
+              .b("fc_pending", FrameCapture::get().pending())
+              .u("fc_captures", FrameCapture::get().captures())
+              .u("fc_failures", FrameCapture::get().failures())
+              .i("fc_hresult", FrameCapture::get().last_hresult())
+              .f("fc_copy_ms", FrameCapture::get().last_copy_ms(), 3)
+              .f("fc_worst_copy_ms", FrameCapture::get().worst_copy_ms(), 3)
+              .f("fc_total_ms", FrameCapture::get().last_total_ms(), 3)
+              .f("fc_lock_ms", FrameCapture::get().last_lock_ms(), 3)
+              .u("fc_width", FrameCapture::get().width())
+              .u("fc_height", FrameCapture::get().height())
+              .u("fc_format", FrameCapture::get().format())
+              .u("fc_nonblack", FrameCapture::get().nonblack_pixels())
+              .u("fc_sampled", FrameCapture::get().sampled_pixels())
               .b("rw_hooked", ResourceWatch::get().hooked())
               .b("rw_observed_any", ResourceWatch::get().observed_any())
               .b("rw_uses_managed", ResourceWatch::get().uses_managed_pool())
