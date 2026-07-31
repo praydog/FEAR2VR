@@ -480,6 +480,52 @@ std::optional<bool> PlayerMgr::engine_object_is_registered(unsigned index) {
 }
 
 
+std::optional<bool> PlayerMgr::stance_corroborated(unsigned index) {
+    const auto mm = movement_controller(index);
+
+    if (!mm.has_value() || *mm == 0) {
+        return std::nullopt;
+    }
+
+    const auto flags = mem::read<uint32_t>(*mm + kMoveMgrFlags);
+    const auto second = mem::read<uint32_t>(*mm + kMoveMgrCrouchFlag);
+
+    if (!flags.has_value() || !second.has_value()) {
+        return std::nullopt;
+    }
+
+    return ((*flags & kMoveFlagCrouching) != 0) == (*second != 0);
+}
+
+std::optional<float> PlayerMgr::body_origin_height(unsigned index) {
+    const auto p = player(index);
+
+    if (!p.has_value() || p->model_object == 0) {
+        return std::nullopt;
+    }
+
+    std::array<float, 3> model{};
+
+    if (!mem::copy(model.data(), p->model_object + kObjectPosition, sizeof(model))) {
+        return std::nullopt;
+    }
+
+    return std::isfinite(model[1]) ? std::optional<float>(model[1]) : std::nullopt;
+}
+
+std::optional<float> PlayerMgr::eye_height(unsigned index) {
+    const auto off = eye_offset(index);
+
+    if (!off.has_value()) {
+        return std::nullopt;
+    }
+
+    // The VERTICAL component, not the vector's length: a VR consumer placing an eye wants height
+    // above the body, and the small horizontal terms (the camera sits slightly back and left) would
+    // inflate a magnitude without describing how high anything is.
+    return (*off)[1];
+}
+
 std::optional<PlayerMgr::MovementState> PlayerMgr::movement_state(unsigned index) {
     const auto ctrl = movement_controller(index);
     if (!ctrl.has_value()) {

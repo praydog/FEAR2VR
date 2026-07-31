@@ -504,6 +504,11 @@ public:
     //
     // and "moving" is CMoveMgr_IsMoving: the ENGINE's physics velocity exceeding 0.1, or flag 0x800 set.
     static constexpr uintptr_t kMoveMgrFlags = 296;
+    // The crouch bit (kMoveFlagCrouching below) is read by CMoveMgr_UpdateInputFlags at four sites
+    // (gameclient 0x10104FAE, 0x10105070, 0x10105154, 0x10105D54) and SET by
+    // CMoveMgr_ReadStateFromMessage (0x10107960), so it is replicated state, not a local input flag.
+    // A second field tracks the same stance and exists here only to corroborate it.
+    static constexpr uintptr_t kMoveMgrCrouchFlag = 368;
     static constexpr uint32_t kMoveFlagCrouching = 0x20;
     static constexpr uint32_t kMoveFlagForceMoving = 0x800;
     static constexpr float kMoveSpeedThreshold = 0.1f;
@@ -1767,6 +1772,44 @@ public:
 
     // The controller's movement state. nullopt for an empty slot or a faulted read.
     static std::optional<MovementState> movement_state(unsigned index);
+
+    // ---- STANCE, AND THE NUMBER ROOM-SCALE VR ACTUALLY NEEDS -----------------------------------
+    //
+    // is_crouching() already existed on this bit; what was missing is a way to know whether to
+    // TRUST it, and how far the eye actually moves.
+    //
+    // Do the two independently-stored stance fields agree? A differential scan of the controller's
+    // first 2400 bytes -- sampled twice in one stance to establish that exactly ONE field moves on
+    // its own, then again across a crouch toggle -- found ten fields tracking the change, of which
+    // two are stance: the flag bit and a boolean at +368. A consumer deciding whether to trust the
+    // stance can ask; this is also the check that would catch either offset moving in a patch.
+    // nullopt when the controller is unreachable.
+    static std::optional<bool> stance_corroborated(unsigned index);
+
+    // THE EYE HEIGHT: how far the camera sits above the player's own origin, as a scalar. This is
+    // what a headset pose is mapped onto -- a VR player standing 1.75 m tall wants the virtual eye
+    // at the game's standing height, and wants CROUCHING to move it by the game's own amount rather
+    // than by a number the mod invented.
+    //
+    // Measured live: 70.9 units standing. Crouching drops the world camera 63.5 units, and one unit
+    // is one centimetre (from the engine's own gravity constant), so the crouch is ~63.5 cm.
+    //
+    // This is the LENGTH of eye_offset(), exposed separately because every consumer of it was
+    // recomputing the same magnitude from the vector.
+    static std::optional<float> eye_height(unsigned index);
+
+    // THE BODY'S OWN HEIGHT IN THE WORLD -- the model object's Y. A VR mod placing a room-scale
+    // floor needs this and not just the eye: crouching moves BOTH, and by different amounts.
+    //
+    // Measured across one crouch toggle, three independently read numbers:
+    //
+    //     world camera Y   2376.04 -> 2312.53   (-63.51)
+    //     eye_height       74.978  -> 45.475    (-29.50)   camera relative to the body
+    //     body origin Y                          (-34.01)   the remainder
+    //
+    // So the body sinks ~34 and the eye drops a further ~29.5 relative to it. A consumer that
+    // treated eye_height as the whole crouch would put the floor 34 units too high.
+    static std::optional<float> body_origin_height(unsigned index);
 
     // Magnitude of the velocity above, in world units per second -- what a locomotion or comfort layer wants.
     static std::optional<float> speed(unsigned index);

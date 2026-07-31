@@ -12095,6 +12095,93 @@ int main(int argc, char** argv) {
 
     }
 
+    // ---- STANCE, AND WHERE THE EYE ACTUALLY IS ----------------------------------
+    //
+    // Room-scale VR maps a headset height onto the game's eye. Getting that wrong by the height of
+    // a crouch puts the floor through the player's knees, so this asserts the decomposition rather
+    // than a single number.
+    //
+    // The load-bearing check is an IDENTITY THE RECORD SATISFIES AGAINST ITSELF -- the strongest
+    // form available per TESTING.MD, because nothing recorded from a previous run is involved:
+    //
+    //     eye_height (camera relative to the body) + body_origin_height == world camera Y
+    //
+    // Three values, read by three different routes: an offset between two engine objects, one
+    // object's own position, and the render camera's published position. A wrong offset in any of
+    // them breaks the sum immediately.
+    {
+        auto stance_snapshot = [&](double& eye, double& body, double& cam, long long& crouch,
+                                   long long& corroborated) {
+            eye = body = cam = 0.0;
+            crouch = corroborated = -1;
+            std::string sp;
+            if (!http::get(port, "/sdk/shader-params", sp)) {
+                return false;
+            }
+            const std::string b = http::body_of(sp);
+            json_int(b, "ps_crouching", crouch);
+            json_int(b, "ps_stance_corroborated", corroborated);
+            return json_double(b, "ps_eye_height", eye) && json_double(b, "ps_body_y", body) &&
+                   json_double(b, "cam_y", cam);
+        };
+
+        // DERIVED, not chosen: cam_y is published with 2 decimals and the other two with 3, so the
+        // worst-case rounding of the sum is 0.005 + 0.0005 + 0.0005. 0.02 sits above that floor and
+        // far below the ~34 and ~29.5 unit movements the check is meant to see.
+        constexpr double kIdentityBound = 0.02;
+
+        double eye0 = 0, body0 = 0, cam0 = 0;
+        long long crouch0 = -1, corr0 = -1;
+        if (stance_snapshot(eye0, body0, cam0, crouch0, corr0)) {
+            printf("[fixture] stance: crouching=%lld eye_height=%.2f body_y=%.2f cam_y=%.2f "
+                   "(residual %+.3f)\n",
+                   crouch0, eye0, body0, cam0, eye0 + body0 - cam0);
+
+            check(corr0 == 1,
+                  "the two independently stored stance fields agree -- the flag bit and the "
+                  "boolean beside it, which is what makes the stance trustworthy rather than read");
+            check(fabs(eye0 + body0 - cam0) <= kIdentityBound,
+                  "eye_height + body origin == the world camera height, so the eye offset and the "
+                  "body position describe the same camera");
+
+            // Now MOVE it, because an identity that only holds in one stance says nothing about
+            // whether either term tracks the player.
+            std::string ir;
+            http::get(port, "/input/tap?vk=67&frames=3", ir);  // 'C' -- crouch is a TOGGLE here
+            std::this_thread::sleep_for(std::chrono::milliseconds(1800));
+
+            double eye1 = 0, body1 = 0, cam1 = 0;
+            long long crouch1 = -1, corr1 = -1;
+            if (stance_snapshot(eye1, body1, cam1, crouch1, corr1)) {
+                printf("[fixture] stance toggled: crouching=%lld eye %+.2f body %+.2f cam %+.2f\n",
+                       crouch1, eye1 - eye0, body1 - body0, cam1 - cam0);
+
+                check(crouch1 != crouch0 && crouch1 >= 0,
+                      "pressing the crouch key changes the stance the SDK reports");
+                check(corr1 == 1, "and the two stance fields still agree in the other stance");
+                check(fabs(eye1 + body1 - cam1) <= kIdentityBound,
+                      "the height identity holds in BOTH stances, so it is a relation and not a "
+                      "coincidence of one pose");
+
+                // BOTH terms move, and that is the finding a consumer needs: treating eye_height as
+                // the whole crouch would misplace a room-scale floor by the body's share (~34).
+                check(fabs(eye1 - eye0) > 5.0 && fabs(body1 - body0) > 5.0,
+                      "crouching moves the eye AND the body -- a VR floor placed from the eye alone "
+                      "would be wrong by the body's share of the drop");
+
+                // Put the stance back; the blocks after this one are entitled to the pose they
+                // started with.
+                http::get(port, "/input/tap?vk=67&frames=3", ir);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1800));
+                double eye2 = 0, body2 = 0, cam2 = 0;
+                long long crouch2 = -1, corr2 = -1;
+                if (stance_snapshot(eye2, body2, cam2, crouch2, corr2)) {
+                    check(crouch2 == crouch0, "and the block restores the stance it found");
+                }
+            }
+        }
+    }
+
     // ---- LAST, BECAUSE IT CHANGES THE WEAPON ------------------------------------
     //
     // This block is at the END of the suite on purpose. Its load-bearing check presses weapon keys,

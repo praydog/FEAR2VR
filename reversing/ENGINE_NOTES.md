@@ -782,6 +782,38 @@ DLL plainly present.
 definitive split applied to the module table rather than to a function-local static. After it,
 injecting at the menu and loading a world gives `fr_hooked=true` within seconds.
 
+### Crouching moves the eye AND the body, by different amounts
+
+Room-scale VR maps a headset height onto the game's eye, so the crouch has to be decomposed rather
+than taken as one number. Measured across a single toggle, three independently read values:
+
+    world camera Y   2376.03 -> 2312.52    -63.50
+    eye_height        74.98  ->   45.48    -29.50    the camera RELATIVE to the body
+    body origin Y   2301.05  -> 2267.04    -34.00    the remainder
+
+**A floor placed from the eye alone would be 34 units out.** The body sinks about 34 and the eye
+drops a further 29.5 relative to it. One unit is one centimetre, so the whole crouch is ~63.5 cm.
+
+The relation is asserted as an identity the record satisfies against ITSELF -- no baseline, nothing
+recorded from a previous run:
+
+    eye_height + body_origin_height == world camera Y
+
+Three routes: an offset between two engine objects, one object's own position, and the render
+camera's published position. It holds in BOTH stances to within 0.003, which is the rounding of the
+published decimals (cam_y at 2 dp, the others at 3) and not a disagreement.
+
+**Mechanism.** The crouch bit is CMoveMgr flags & 0x20, already used by movement_state(). What was
+missing is whether to trust it: a differential scan of the controller's first 2400 bytes -- sampled
+twice in one stance to establish that exactly ONE field moves on its own, then again across a toggle
+-- found ten fields tracking the change, of which two are stance. The flag bit is read by
+`CMoveMgr_UpdateInputFlags` at four sites and SET by `CMoveMgr_ReadStateFromMessage`
+(gameclient 0x10107960), so it is replicated state rather than a local input flag; the boolean at
++368 corroborates it. `sdk::PlayerMgr::stance_corroborated()` exposes the agreement.
+
+**The crouch key is 'C', and it is a TOGGLE, not a hold.** Holding and releasing leaves the player
+crouched, which is worth knowing before wiring a VR crouch gesture to a held button.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

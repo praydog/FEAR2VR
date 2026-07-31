@@ -5334,6 +5334,22 @@ std::string build_shader_params_json(bool include_write_probes) {
             json_append_bool(out, "ps_limits", st->limits_respected());
             json_append_bool(out, "ps_air_range", st->air_in_range());
             json_append_bool(out, "ps_alive", st->alive());
+        }
+        {
+            // STANCE, and the eye height a room-scale consumer maps a headset onto. is_crouching()
+            // already existed; what was missing is whether to TRUST it (two independently stored
+            // fields, found by a differential scan) and how far the eye actually moves.
+            const auto crouch = sdk::PlayerMgr::is_crouching(0);
+            json_append_raw(out, "ps_crouching", crouch.has_value() ? (*crouch ? "1" : "0") : "-1");
+            const auto corr = sdk::PlayerMgr::stance_corroborated(0);
+            json_append_raw(out, "ps_stance_corroborated",
+                            corr.has_value() ? (*corr ? "1" : "0") : "-1");
+            const auto eh = sdk::PlayerMgr::eye_height(0);
+            json_append_double(out, "ps_eye_height",
+                               eh.has_value() ? static_cast<double>(*eh) : -1.0, 3);
+            const auto bh = sdk::PlayerMgr::body_origin_height(0);
+            json_append_double(out, "ps_body_y",
+                               bh.has_value() ? static_cast<double>(*bh) : -1.0, 3);
             // THE MISPAIRING THE PREVIOUS PASS USED also satisfies an ordering check, which is why the check
             // was not evidence. Reported so the suite can assert the guard is non-discriminating rather than
             // leave that as a claim in a comment.
