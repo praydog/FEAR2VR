@@ -1321,6 +1321,32 @@ differenced against the current `last_seen_position`. It is zeroed on attach now
 meaningless unless `writes > 0` -- the absence-reading-as-a-value trap, in a field this project
 added itself.
 
+### VR drives BOTH hands now
+
+`VR::drive_hand` services one hand into one BoneControl slot, and `update_hands` calls it for the
+right (slot 0, RightHand, node 38) and the left (slot 1, LeftHand, node 18). Each hand keeps its OWN
+rest pose -- sharing one would make every offset a delta from wherever the other hand happened to
+start.
+
+    both at rest              right ( +0.00,  +0.00)   left ( +0.00,  +0.00)
+    right +0.25 m in X        right (+25.00,  +0.00)   left ( +0.00,  +0.00)
+    left  +0.25 m in Y        right ( +0.00,  +0.00)   left ( +0.00, +25.00)
+    both together             right (+25.00,  +0.00)   left ( +0.00, +25.00)
+    back to rest              right ( +0.00,  +0.00)   left ( +0.00,  +0.00)
+
+Zero cross-axis bleed, and 0.25 m arriving as exactly 25.00 units re-confirms the engine's
+centimetre scale from a third direction.
+
+**The first run of this measurement was wrong and the code was fine.** It reported 5.00 units for
+the right hand and 45.00 for the left on identical 0.25 m moves, because the rest pose is captured
+when hands are ENABLED and a previous block had left the controllers parked somewhere unknown. Park
+the controllers, THEN enable, then measure -- the precondition rule, arrived at by breaking it.
+
+**A second self-inflicted failure worth recording.** The new block finished by disabling hands,
+which detached the bone, and the NEXT block's controller-rotation check went red with nothing wrong
+with it -- the rotation had no attached cell to reach. A block must leave the world as it found it,
+which is the "runs must not inherit each other's world" rule applied between blocks of a single run.
+
 ### The shot can leave the BARREL instead of the eye
 
 The engine starts the ray at the player's eye, which is right for a crosshair game and wrong for one

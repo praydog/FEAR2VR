@@ -10625,6 +10625,100 @@ int main(int argc, char** argv) {
                       "and the attachment chain carries it, which is the mechanism a VR hand needs");
             }
 
+            // ---- BOTH CONTROLLERS DRIVE BOTH HANDS ---------------------------------------------
+            //
+            // VR drove only the right hand until BoneControl grew slots. What must hold now is
+            // that each controller moves its OWN hand and nothing else -- a two-handed grip is
+            // built on that isolation, and aliased slots would move together while a check that
+            // watched one hand reported success.
+            //
+            // PRECONDITION FIRST: the rest pose is captured when hands are enabled, so the
+            // controllers are parked and hands re-enabled before measuring. Skipping that
+            // measures a delta from wherever a previous block happened to leave them -- which it
+            // did, reporting 5.00 and 45.00 units for one identical 0.25 m move.
+            {
+                std::string hr;
+                auto slot_offset = [&](int slot, double* dx, double* dy) {
+                    char url[48];
+                    snprintf(url, sizeof(url), "/vr/bone?slot=%d", slot);
+                    if (!http::get(port, url, hr)) {
+                        return false;
+                    }
+                    const std::string b = http::body_of(hr);
+                    double sx = 0.0, sy = 0.0, wx = 0.0, wy = 0.0;
+                    long long writes = -1;
+                    if (!json_double(b, "seen_x", sx) || !json_double(b, "seen_y", sy) ||
+                        !json_double(b, "wrote_x", wx) || !json_double(b, "wrote_y", wy) ||
+                        !json_int(b, "writes", writes)) {
+                        return false;
+                    }
+                    // wrote is meaningless before the first write -- see BoneControl::Observed.
+                    *dx = writes > 0 ? wx - sx : 0.0;
+                    *dy = writes > 0 ? wy - sy : 0.0;
+                    return true;
+                };
+                http::get(port, "/xr/hands?on=0", hr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                http::get(port, "/xr/hand?side=right&x=0&y=1&z=0", hr);
+                http::get(port, "/xr/hand?side=left&x=0&y=1&z=0", hr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                http::get(port, "/xr/hands?on=1", hr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+                long long rn = -1, ln = -1;
+                bool ra = false, la = false;
+                if (http::get(port, "/vr/bone?slot=0", hr)) {
+                    json_int(http::body_of(hr), "node", rn);
+                    json_bool(http::body_of(hr), "attached", ra);
+                }
+                if (http::get(port, "/vr/bone?slot=1", hr)) {
+                    json_int(http::body_of(hr), "node", ln);
+                    json_bool(http::body_of(hr), "attached", la);
+                }
+                check(ra && la && rn != ln,
+                      "enabling VR hands attaches BOTH, to different bones");
+
+                if (ra && la && rn != ln) {
+                    // Move the right controller only, on X.
+                    http::get(port, "/xr/hand?side=right&x=0.25&y=1&z=0", hr);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                    double r_dx = 0.0, r_dy = 0.0, l_dx = 0.0, l_dy = 0.0;
+                    const bool got = slot_offset(0, &r_dx, &r_dy) && slot_offset(1, &l_dx, &l_dy);
+                    printf("[fixture] vr hands: right +0.25 m -> right (%+.2f, %+.2f) left (%+.2f, %+.2f) units\n",
+                           r_dx, r_dy, l_dx, l_dy);
+                    // 0.25 m is 25 units at the engine's measured scale of one unit per
+                    // centimetre, so this doubles as a check on that constant.
+                    check(got && fabs(r_dx - 25.0) < 0.1,
+                          "the right controller moves the right hand by exactly the metres it "
+                          "travelled, at the engine's own scale");
+                    check(got && fabs(l_dx) < 0.1 && fabs(l_dy) < 0.1,
+                          "the LEFT hand did not move while only the right controller did");
+
+                    // Now both, on different axes.
+                    http::get(port, "/xr/hand?side=left&x=0&y=1.25&z=0", hr);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                    const bool got2 = slot_offset(0, &r_dx, &r_dy) && slot_offset(1, &l_dx, &l_dy);
+                    check(got2 && fabs(r_dx - 25.0) < 0.1 && fabs(r_dy) < 0.1 &&
+                              fabs(l_dy - 25.0) < 0.1 && fabs(l_dx) < 0.1,
+                          "driven together, each hand keeps its OWN axis -- no cross-talk between "
+                          "the slots");
+
+                    http::get(port, "/xr/hand?side=right&x=0&y=1&z=0", hr);
+                    http::get(port, "/xr/hand?side=left&x=0&y=1&z=0", hr);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                    const bool got3 = slot_offset(0, &r_dx, &r_dy) && slot_offset(1, &l_dx, &l_dy);
+                    check(got3 && fabs(r_dx) < 0.1 && fabs(r_dy) < 0.1 && fabs(l_dx) < 0.1 &&
+                              fabs(l_dy) < 0.1,
+                          "returning both controllers to rest returns both hands exactly");
+                }
+                // LEAVE HANDS AS THIS BLOCK FOUND THEM -- enabled. Disabling here detached the
+                // bone and the NEXT block's controller-rotation check went red with nothing
+                // wrong with it: the rotation had no attached cell to reach. Same rule as
+                // normalising world state on entry, applied between blocks of one run.
+                http::get(port, "/xr/hands?on=1", hr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+            }
+
             // ---- CONTROLLER ORIENTATION -> THE WEAPON ------------------------------------------
             //
             // Turning the controller must turn the gun, and it must do so as a RIGID BODY. That is

@@ -141,5 +141,10 @@ private:
     VR() = default;
 
     void update_hands();
+
+    // One hand. `slot` is the BoneControl slot it drives, and each hand keeps its own rest
+    // pose -- sharing one would make every offset a delta from wherever the OTHER hand
+    // happened to start.
+    void drive_hand(vr::VRRuntime::Hand which, uint32_t slot, const char* socket);
     void update_trigger();
 };

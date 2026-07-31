@@ -18,19 +18,19 @@ std::atomic<uint64_t> g_applied{0};
 std::atomic<bool> g_head_valid{false};
 std::atomic<bool> g_hands{false};
 std::atomic<uint64_t> g_hand_applied{0};
-std::atomic<float> g_hand_off[3]{};
-std::atomic<bool> g_hand_attached{false};
+std::atomic<float> g_hand_off[2][3]{};
+std::atomic<bool> g_hand_attached[2]{};
 
 // The controller pose the hand offset is measured FROM. Captured the first time hands are armed,
 // so "no movement" means the hand sits exactly where the animation put it.
-std::atomic<float> g_hand_rest[3]{};
-std::atomic<bool> g_have_rest{false};
+std::atomic<float> g_hand_rest[2][3]{};
+std::atomic<bool> g_have_rest[2]{};
 
 // And the orientation it is measured from, for the same reason: BoneControl composes our rotation
 // with the animation's, so an ABSOLUTE controller orientation would fight the animation instead of
 // riding it. What the bone wants is "how far has the controller turned since rest".
-std::atomic<float> g_hand_rest_rot[4]{};
-std::atomic<float> g_hand_rot[4]{};
+std::atomic<float> g_hand_rest_rot[2][4]{};
+std::atomic<float> g_hand_rot[2][4]{};
 std::atomic<bool> g_trigger{false};
 std::atomic<bool> g_firing{false};
 std::atomic<uint64_t> g_pulls{0};
@@ -103,11 +103,15 @@ void VR::set_hands_enabled(bool enabled) {
         // Release the bone outright. Clearing the offset alone would leave our callback registered
         // on the engine's list contributing an identity, which is a different state from "not
         // driving the hand" and one the suite can tell apart.
-        BoneControl::get().clear_offset();
-        BoneControl::get().clear_rotation();
-        BoneControl::get().detach();
-        g_hand_attached.store(false, std::memory_order_relaxed);
-        g_have_rest.store(false, std::memory_order_relaxed);
+        // BOTH hands -- releasing one and leaving the other registered is exactly the
+        // asymmetry BoneControl::detach_all exists to prevent.
+        for (uint32_t slot = 0; slot < 2; ++slot) {
+            BoneControl::get().clear_offset(slot);
+            BoneControl::get().clear_rotation(slot);
+            BoneControl::get().detach(slot);
+            g_hand_attached[slot].store(false, std::memory_order_relaxed);
+            g_have_rest[slot].store(false, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -239,46 +243,55 @@ void VR::update_hands() {
     if (!g_hands.load(std::memory_order_relaxed)) {
         return;
     }
+    // BOTH HANDS. Index 0 is the right, 1 the left, matching BoneControl's slots -- a
+    // two-handed grip and every off-hand interaction needs the pair driven together, and
+    // until BoneControl grew slots only one of them could be.
+    drive_hand(vr::VRRuntime::Hand::RIGHT, 0, "RightHand");
+    drive_hand(vr::VRRuntime::Hand::LEFT, 1, "LeftHand");
+}
 
+void VR::drive_hand(vr::VRRuntime::Hand which, uint32_t slot, const char* socket) {
     auto& rt = vr::simulated_runtime();
-    const auto right = rt.hand(vr::VRRuntime::Hand::RIGHT);
+    const auto hand = rt.hand(which);
 
-    if (!right.active || !right.aim.valid) {
+    if (!hand.active || !hand.aim.valid) {
         return;
     }
 
     auto& bc = BoneControl::get();
 
-    if (!g_hand_attached.load(std::memory_order_relaxed)) {
-        if (!bc.attach_to_player_socket("RightHand")) {
+    if (!g_hand_attached[slot].load(std::memory_order_relaxed)) {
+        if (!bc.attach_to_player_socket(socket, slot)) {
             return;
         }
-        g_hand_attached.store(true, std::memory_order_relaxed);
+        g_hand_attached[slot].store(true, std::memory_order_relaxed);
     }
 
-    if (!g_have_rest.load(std::memory_order_relaxed)) {
+    // REST IS PER HAND. Sharing one rest pose would make each hand's offset a delta from
+    // wherever the OTHER one happened to start.
+    if (!g_have_rest[slot].load(std::memory_order_relaxed)) {
         for (size_t i = 0; i < 3; ++i) {
-            g_hand_rest[i].store(right.aim.position[i], std::memory_order_relaxed);
+            g_hand_rest[slot][i].store(hand.aim.position[i], std::memory_order_relaxed);
         }
         for (size_t i = 0; i < 4; ++i) {
-            g_hand_rest_rot[i].store(right.aim.orientation[i], std::memory_order_relaxed);
+            g_hand_rest_rot[slot][i].store(hand.aim.orientation[i], std::memory_order_relaxed);
         }
-        g_have_rest.store(true, std::memory_order_relaxed);
+        g_have_rest[slot].store(true, std::memory_order_relaxed);
     }
 
     // DELTA FROM REST, converted into the engine's space and units.
     const std::array<float, 3> delta{
-        right.aim.position[0] - g_hand_rest[0].load(std::memory_order_relaxed),
-        right.aim.position[1] - g_hand_rest[1].load(std::memory_order_relaxed),
-        right.aim.position[2] - g_hand_rest[2].load(std::memory_order_relaxed)};
+        hand.aim.position[0] - g_hand_rest[slot][0].load(std::memory_order_relaxed),
+        hand.aim.position[1] - g_hand_rest[slot][1].load(std::memory_order_relaxed),
+        hand.aim.position[2] - g_hand_rest[slot][2].load(std::memory_order_relaxed)};
 
     const auto engine_delta = runtime_to_engine_position(delta);
 
     for (size_t i = 0; i < 3; ++i) {
-        g_hand_off[i].store(engine_delta[i], std::memory_order_relaxed);
+        g_hand_off[slot][i].store(engine_delta[i], std::memory_order_relaxed);
     }
 
-    bc.set_offset(engine_delta[0], engine_delta[1], engine_delta[2]);
+    bc.set_offset(engine_delta[0], engine_delta[1], engine_delta[2], slot);
 
     // ---- ORIENTATION, AS A DELTA IN THE ENGINE'S SPACE -------------------------------------
     //
@@ -286,22 +299,21 @@ void VR::update_hands() {
     // DELTA rather than each pose separately matters: the mirror-along-Z conversion is not a
     // rotation, so converting two poses and subtracting afterwards is not the same operation and
     // gets the handedness wrong in a way that only shows on the off-axes.
-    const auto& rr = g_hand_rest_rot;
-    const regenny::LTRotation rest_inv{-rr[0].load(std::memory_order_relaxed),
-                                       -rr[1].load(std::memory_order_relaxed),
-                                       -rr[2].load(std::memory_order_relaxed),
-                                       rr[3].load(std::memory_order_relaxed)};
-    const regenny::LTRotation now{right.aim.orientation[0], right.aim.orientation[1],
-                                  right.aim.orientation[2], right.aim.orientation[3]};
+    const regenny::LTRotation rest_inv{-g_hand_rest_rot[slot][0].load(std::memory_order_relaxed),
+                                       -g_hand_rest_rot[slot][1].load(std::memory_order_relaxed),
+                                       -g_hand_rest_rot[slot][2].load(std::memory_order_relaxed),
+                                       g_hand_rest_rot[slot][3].load(std::memory_order_relaxed)};
+    const regenny::LTRotation now{hand.aim.orientation[0], hand.aim.orientation[1],
+                                  hand.aim.orientation[2], hand.aim.orientation[3]};
     const auto turned = sdk::multiply_rotations(rest_inv, now);
 
     const auto engine_rot = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
 
     for (size_t i = 0; i < 4; ++i) {
-        g_hand_rot[i].store(engine_rot[i], std::memory_order_relaxed);
+        g_hand_rot[slot][i].store(engine_rot[i], std::memory_order_relaxed);
     }
 
-    bc.set_rotation(engine_rot[0], engine_rot[1], engine_rot[2], engine_rot[3]);
+    bc.set_rotation(engine_rot[0], engine_rot[1], engine_rot[2], engine_rot[3], slot);
     g_hand_applied.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -318,10 +330,10 @@ VR::State VR::state() const {
     s.pulls = g_pulls.load(std::memory_order_relaxed);
     s.hand_applied = g_hand_applied.load(std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
-        s.hand_offset[i] = g_hand_off[i].load(std::memory_order_relaxed);
+        s.hand_offset[i] = g_hand_off[0][i].load(std::memory_order_relaxed);
     }
     for (size_t i = 0; i < 4; ++i) {
-        s.hand_rotation[i] = g_hand_rot[i].load(std::memory_order_relaxed);
+        s.hand_rotation[i] = g_hand_rot[0][i].load(std::memory_order_relaxed);
     }
 
     for (size_t i = 0; i < 4; ++i) {
