@@ -130,6 +130,17 @@ void FrameCapture::set_continuous(bool enabled) {
         m_pipe_primed = false;
     }
     m_continuous.store(enabled, std::memory_order_release);
+
+    // RELEASING GIVES THE SLOT BACK, when nothing else still needs it. This is deliberately the
+    // same primitive the shutdown path depends on: exercising it on every release means the
+    // teardown's correctness is covered by ordinary use, instead of resting on a code path that
+    // runs twice per suite and never in normal play.
+    if (!enabled && !m_pending.load(std::memory_order_acquire) &&
+        m_registered.load(std::memory_order_relaxed)) {
+        if (RenderHook::get().remove_present_callback(&FrameCapture::on_present)) {
+            m_registered.store(false, std::memory_order_relaxed);
+        }
+    }
     LOGX("[capture] continuous readback %s", enabled ? "ON (pipelined)" : "off");
 }
 
@@ -402,10 +413,27 @@ void FrameCapture::service() {
 }
 
 void FrameCapture::on_shutdown() {
-    // The staging surface is a D3D object we own, and it must go before the image does. The
-    // present callback cannot be unregistered, so clear the pending flag first: a callback that
-    // fires during teardown then does nothing rather than touching a released surface.
+    // DEREGISTER FIRST, THEN FREE. The previous version cleared flags and released -- and released
+    // m_scaled BEFORE clearing m_continuous, so the render thread could still be inside
+    // service_continuous() using a surface that had just gone away. A flag is not synchronisation:
+    // the callback can already be past the check when the release lands.
+    //
+    // remove_present_callback() returns only once the slot is empty AND no dispatch pass is still
+    // running, which is the actual precondition for freeing what the callback touches.
     m_pending.store(false, std::memory_order_release);
+    m_continuous.store(false, std::memory_order_release);
+
+    if (m_registered.load(std::memory_order_relaxed)) {
+        if (!RenderHook::get().remove_present_callback(&FrameCapture::on_present)) {
+            // Fail-closed, matching the framework's rule: a callback that may still be executing
+            // means the surfaces must NOT be released. Leaking them is survivable; a use-after-free
+            // on the render thread is not.
+            LOGX("[capture] present callback still in flight -- leaking surfaces deliberately");
+            return;
+        }
+        m_registered.store(false, std::memory_order_relaxed);
+    }
+
     if (m_staging != nullptr) {
         static_cast<IDirect3DSurface9*>(m_staging)->Release();
         m_staging = nullptr;
@@ -414,7 +442,6 @@ void FrameCapture::on_shutdown() {
         static_cast<IDirect3DSurface9*>(m_scaled)->Release();
         m_scaled = nullptr;
     }
-    m_continuous.store(false, std::memory_order_release);
     for (auto& p : m_pipe) {
         if (p != nullptr) {
             static_cast<IDirect3DSurface9*>(p)->Release();

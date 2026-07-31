@@ -206,8 +206,24 @@ def is_ready(sp):
     while the game sat on the load screen's "press to continue" prompt with the engine clock paused. Every
     frame-dependent check downstream -- the head-tracking probe, the in-phase samplers, the pass census --
     measures nothing in that state and fails in ways that look like code faults.
+
+    A LIVE PLAYER IS PART OF IT. `ws_world_ready` and a running clock are both true of a world
+    containing a corpse, and the suite then fails ~40 checks from one cause: the camera stops
+    tracking, the in-detour samplers report nothing to sample, the loadout empties so the weapon
+    normalisation finds no firearm, and every one of those reads as a defect somewhere else. This
+    exact state cost a full suite run, and the script had reported "already in-world and running --
+    nothing to do" immediately beforehand.
+
+    Same lesson the clock check above encodes: the readiness a harness exports must be the
+    readiness the tests depend on, or it manufactures false failures faster than it saves setup.
     """
-    return bool(sp.get("ws_world_ready")) and not sp.get("eng_clock_paused", True)
+    if not bool(sp.get("ws_world_ready")) or sp.get("eng_clock_paused", True):
+        return False
+    # ps_alive is absent on builds/states that cannot report it; absent must not read as dead, or
+    # this would loop reloading a perfectly good world.
+    if "ps_alive" in sp and not sp.get("ps_alive"):
+        return False
+    return True
 
 
 def main():
@@ -247,6 +263,35 @@ def main():
     if is_ready(sp):
         print("[resume] already in-world and running -- nothing to do")
         return 0
+
+    # A DEAD PLAYER IN A LOADED WORLD is its own case: the world is fine, so Menu.StartCheckpoint
+    # (a MENU command) is not the route -- `LoadCheckpoint` is, and it only works from inside a
+    # world, which is exactly where we are. AGENT.MD records the mode split: Menu.StartCheckpoint
+    # is mode 8, LoadCheckpoint mode 9, and each refuses the other's context.
+    if sp.get("ws_world_loaded") and "ps_alive" in sp and not sp.get("ps_alive"):
+        print("[resume] in-world but the player is DEAD -- reloading the checkpoint")
+        r = try_get(args.port, "/console/run?cmd=LoadCheckpoint")
+        if r is None or not r.get("ok"):
+            print("[resume] FAILED: could not queue LoadCheckpoint: %s" % r)
+            return 1
+        # DO NOT RETURN HERE. The reload leaves the same "press to continue" prompt the initial
+        # load does, with the engine clock PAUSED -- measured: ps_alive false, eng_clock_paused
+        # true, last_outcome "ran". The first version of this branch waited for readiness that
+        # could not arrive and reported the reload as failed while it was merely waiting for a
+        # key. Fall through to the shared dismissal loop at the bottom, which already handles it.
+        deadline = time.time() + args.load_timeout
+        while time.time() < deadline:
+            time.sleep(1.0)
+            sp = try_get(args.port, "/sdk/shader-params") or {}
+            if is_ready(sp):
+                print("[resume] revived and in-world: %s" % (sp.get("world_name") or "(unnamed)"))
+                return 0
+            if sp.get("eng_clock_paused"):
+                print("[resume] checkpoint reloaded -- dismissing the prompt")
+                break
+        else:
+            print("[resume] FAILED: the checkpoint reload never came back")
+            return 1
 
     if not sp.get("ws_world_loaded"):
         print("[resume] at the menu -- invoking Menu.StartCheckpoint")

@@ -52,12 +52,34 @@ public:
     // not allocate, and must not call back into the framework's locks: a frame boundary is the worst place in
     // the process to introduce a wait.
     //
-    // Fixed capacity and no removal on purpose. Mods live for the whole injection and are retired together, so
-    // an unregister path would be an unused code path guarding a lifetime that cannot happen; the hook is
-    // removed wholesale by Hooks::retire(). Returns false when full.
+    // Fixed capacity. Returns false when full.
     using PresentCallback = void (*)();
     static constexpr size_t kMaxCallbacks = 8;
     bool add_present_callback(PresentCallback cb);
+
+    // ---- AND REMOVAL, WHICH THIS DELIBERATELY DID NOT HAVE -------------------------------------
+    //
+    // The original comment here said removal was unnecessary because "mods live for the whole
+    // injection and are retired together, so an unregister path would guard a lifetime that cannot
+    // happen". THAT PREMISE IS FALSE, and the teardown order is where it fails:
+    //
+    //     Framework::shutdown()  ->  Mods::on_shutdown()   (mods free their resources)
+    //                            ->  Hooks::retire()       (the present detour stops firing)
+    //
+    // Between those two lines the detour is STILL LIVE and every registered callback is still
+    // reachable, while the mod that owns one has already released what that callback touches.
+    // FrameCapture releases D3D surfaces there; a present landing in that window uses freed COM
+    // pointers. Clearing an "enabled" flag first does not close it -- the render thread can already
+    // be past the flag check when the release happens. A flag is not synchronisation.
+    //
+    // So: remove the slot, then WAIT for the dispatcher to finish any pass that could already be
+    // running it. After this returns, `cb` is unreachable and not executing, which is the condition
+    // a caller needs before freeing anything the callback reads.
+    //
+    // Callbacks must not block (see above), so the drain is microseconds; it is bounded anyway
+    // because a teardown path must never hang. Returns false if the wait timed out -- the caller
+    // should then stay dormant rather than free, which is the framework's existing fail-closed rule.
+    bool remove_present_callback(PresentCallback cb, uint32_t timeout_ms = 250);
 
     struct Stats {
         bool hooked{};

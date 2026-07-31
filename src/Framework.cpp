@@ -10446,8 +10446,14 @@ bool Framework::initialize() {
             if (q.find("divisor") != q.end()) {
                 FrameCapture::get().set_divisor(static_cast<uint32_t>(webapi_query_int(q, "divisor", 1)));
             }
-            const std::string path = webapi_query_string(q, "path");
-            capture_armed = FrameCapture::get().request_capture_to(path);
+            // A ONE-SHOT IS A SEPARATE COMMAND FROM THE CONTINUOUS TOGGLE. Requesting one on every
+            // call meant "?continuous=0" also armed a capture, which left a one-shot pending and
+            // silently blocked the callback release that stopping continuous is supposed to
+            // perform. The occupancy stayed at 4 with nothing in the log to say why.
+            if (q.find("continuous") == q.end()) {
+                const std::string path = webapi_query_string(q, "path");
+                capture_armed = FrameCapture::get().request_capture_to(path);
+            }
         } else if (route == "/xr/resources") {
             // What the engine allocates, and out of which D3D pool -- the D3D9Ex gate.
             // `reset=1` starts a fresh window, which is how a caller bounds "what did THIS

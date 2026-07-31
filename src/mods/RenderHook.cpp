@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cinttypes>
 
 #include "sdk/Render.hpp"
@@ -25,6 +27,9 @@ std::atomic<int64_t> g_qpc_freq{0};
 
 std::atomic<RenderHook::PresentCallback> g_callbacks[RenderHook::kMaxCallbacks]{};
 std::atomic<uint32_t> g_callback_count{0};
+// Non-zero while the dispatcher is inside the callback loop. remove_present_callback() waits on
+// this so a caller can free what its callback touches.
+std::atomic<uint32_t> g_dispatch_in_flight{0};
 
 // __thiscall(this) in the original; the detour form for x86 is __fastcall with the edx placeholder
 // (AGENT.MD rule 1). Returns int, which the engine's own tail call produces.
@@ -68,12 +73,14 @@ int __fastcall present_detour(void* self, void* /*edx*/) {
 
     // Consumers run BEFORE the engine presents -- that is the whole point of the boundary. Read the count once
     // so a registration racing with a frame cannot make this loop read past what was published.
+    g_dispatch_in_flight.fetch_add(1, std::memory_order_acquire);
     const uint32_t n = g_callback_count.load(std::memory_order_acquire);
     for (uint32_t i = 0; i < n && i < RenderHook::kMaxCallbacks; ++i) {
-        if (auto cb = g_callbacks[i].load(std::memory_order_relaxed)) {
+        if (auto cb = g_callbacks[i].load(std::memory_order_acquire)) {
             cb();
         }
     }
+    g_dispatch_in_flight.fetch_sub(1, std::memory_order_release);
 
     auto* hook = Hooks::get().find(kHookName);
     if (hook == nullptr) {
@@ -124,6 +131,42 @@ bool RenderHook::add_present_callback(PresentCallback cb) {
     return true;
 }
 
+bool RenderHook::remove_present_callback(PresentCallback cb, uint32_t timeout_ms) {
+    if (cb == nullptr) {
+        return false;
+    }
+
+    // Clear every slot holding it. The count is NOT decremented: slots are addressed by index and a
+    // live dispatcher may already be iterating, so shrinking the range under it would be the very
+    // race this function exists to remove. An emptied slot simply dispatches nothing.
+    bool found = false;
+
+    for (size_t i = 0; i < kMaxCallbacks; ++i) {
+        auto expected = cb;
+        if (g_callbacks[i].compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel)) {
+            found = true;
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    // The slot is empty, so no dispatch STARTING from here can reach it. What remains is a pass that
+    // began before the clear and may be inside it right now -- wait for that to finish.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+
+    while (g_dispatch_in_flight.load(std::memory_order_acquire) != 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            LOGX("[render] present callback drain TIMED OUT -- caller must not free");
+            return false;
+        }
+        std::this_thread::yield();
+    }
+
+    return true;
+}
+
 RenderHook::Stats RenderHook::stats() const {
     Stats out;
     out.target = sdk::Render::engine_present_fn();
@@ -133,6 +176,15 @@ RenderHook::Stats RenderHook::stats() const {
     out.samples = g_samples.load(std::memory_order_relaxed);
     out.state_at_present = g_last_state.load(std::memory_order_relaxed);
     out.state_not_one = g_state_not_one.load(std::memory_order_relaxed);
-    out.callbacks = g_callback_count.load(std::memory_order_relaxed);
+    // OCCUPANCY, not the high-water registration count. The count only ever grows (slots are
+    // addressed by index, so it must), which would make a removal invisible -- and a diagnostic that
+    // cannot show a callback leaving is no way to check the teardown primitive below.
+    uint32_t occupied = 0;
+    for (size_t i = 0; i < kMaxCallbacks; ++i) {
+        if (g_callbacks[i].load(std::memory_order_relaxed) != nullptr) {
+            ++occupied;
+        }
+    }
+    out.callbacks = occupied;
     return out;
 }
