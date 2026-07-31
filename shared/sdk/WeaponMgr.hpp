@@ -18,30 +18,40 @@ namespace sdk {
 
 // ---- THE PLAYER'S WEAPONS ---------------------------------------------------------------------
 //
-// A VR weapon wheel needs three things the rest of the SDK could not yet answer: what the player is
-// holding, what the game could hand them, and how to change it. All three live around the WEAPON
-// CHOOSER, the subsystem at player slot +244 whose console variables ('KeepCurrentAmmo',
-// 'ChooserAutoSwitchTime', 'ChooserAutoSwitchFreq') named it in an earlier pass.
+// A VR weapon wheel needs three things: what the player is holding, what they are carrying, and
+// what the game could hand them. All of it hangs off the WEAPON CHOOSER -- the subsystem at player
+// slot +244, named by its console variables ('KeepCurrentAmmo', 'ChooserAutoSwitchTime',
+// 'ChooserAutoSwitchFreq') and confirmed by its first ~350 bytes being exactly the fourteen
+// listener records WeaponChooser_Init (gameclient 0x101361D0) builds.
 //
-// HOW THE CURRENT-WEAPON FIELD WAS ESTABLISHED, because "a pointer that looks like a weapon" is a
-// weak claim and this project has been burned by those:
+// THE CHOOSER'S LAYOUT, from CClientWeaponMgr_ChangeWeapon (gameclient 0x10136850):
 //
-//   1. Every field of the chooser was swept for a pointer whose +0x10 (DatabaseMgrRecord's
-//      owner_category) resolves to a category whose name contains "Weapon". That is a TYPED test
-//      against the database's own back-pointer, not a guess from a plausible-looking value -- an
-//      earlier sweep keyed only on "has a record at +668" returned "GhostAttack1" and
-//      "book_chunk_red2", which is exactly the false positive the category check removes.
+//     +400   CClientWeapon** array base, indexed by weapon index
+//     +408   current weapon INDEX (uint16; 0xFFFF = none)
+//     +412   current CClientWeapon*  -- its +668 is the weapon RECORD
+//     +512   LAST weapon record (quick-switch slot)
 //
-//   2. Two fields survived: +420 read "Unarmed" and +512 read "Assault Rifle".
+// ---- A CORRECTION, KEPT BECAUSE THE MISTAKE WAS CONVINCING -------------------------------------
 //
-//   3. THE DISCRIMINATOR WAS BEHAVIOUR. Tapping the weapon-slot keys moved +512 to "Submachinegun"
-//      while +420 stayed "Unarmed". A field that follows the player's weapon IS the current weapon;
-//      one that does not is something else. Neither the offsets' values nor their neighbourhood
-//      could have told these apart -- only making the game change one of them.
+// An earlier pass exposed +512 as `current_weapon()`. It was wrong, and every piece of evidence
+// offered for it was real:
 //
-// +420 is NOT named "holster" or "default" here. It held "Unarmed" across every switch, which is
-// consistent with several roles the reference source suggests (m_hDefaultWeapon, m_hHolsterWeapon)
-// and distinguishes none of them. It is exposed as what it is: a second, stable handle.
+//   * +512 holds a record from the weapon category. True.
+//   * +512 CHANGES when the player presses a weapon key. Also true.
+//   * A fixture check asserting "the held weapon follows a slot key" passed. It did -- against +512.
+//
+// What was missing is that none of those distinguish "the weapon in hand" from "the weapon you were
+// holding a moment ago", and the test could not catch it because it read the same field it was
+// validating. The disproof needed an INDEPENDENT route to the same quantity:
+//
+//     chooser+412 -> CClientWeapon -> +668  ==  "Shotgun_Clip"     (actually held)
+//     chooser+512                           ==  "Submachinegun"    (held before that)
+//
+// The mechanism then confirms it: every call to the +512 setter is gated by Weapon_CanLastWeapon
+// (0x10134DF0), which reads the database attribute "CanLastWeapon". +512 is the QUICK-SWITCH slot.
+//
+// +668 is not a fourth guess either -- it is the field the FIRE PATH reads to decide what is being
+// fired, so the weapon the engine shoots and the weapon this reports are the same value.
 class WeaponMgr {
 public:
     // The weapon chooser subsystem for a player slot, or 0 when there is no player (menu, loading).
@@ -49,15 +59,71 @@ public:
 
     // ---- WHAT THE PLAYER IS HOLDING ------------------------------------------------------------
     //
-    // The database record for the weapon in hand. nullptr when there is no player, or when the
-    // field does not hold a record from the weapon category -- never a wrong record, because the
-    // category is re-checked on every read rather than trusted from when the offset was found.
+    // The live CClientWeapon, and the database record it carries. nullptr when there is no player,
+    // no weapon is equipped, or the record is not from the weapon category -- the category is
+    // re-checked on every read rather than trusted from when the offset was found.
+    static uintptr_t current_weapon_object(unsigned player_index = 0);
     static regenny::DatabaseMgrRecord* current_weapon(unsigned player_index = 0);
     static std::string current_weapon_name(unsigned player_index = 0);
 
-    // The stable second handle described above. Same guarantees, no claimed role.
-    static regenny::DatabaseMgrRecord* stable_weapon(unsigned player_index = 0);
-    static std::string stable_weapon_name(unsigned player_index = 0);
+    // The chooser's own index for the held weapon, or nullopt when nothing is equipped (0xFFFF).
+    // This indexes the CARRIED array below, NOT the database category.
+    static std::optional<unsigned> current_slot(unsigned player_index = 0);
+
+    // ---- WHAT THEY ARE CARRYING ----------------------------------------------------------------
+    //
+    // THE LOADOUT: the weapons the player actually holds, from CPlayerStats' own vector
+    // (schema: weapon_slots_begin/end). This is what a VR weapon wheel should show, and it is a
+    // different set from both of the other two populations, which is exactly why it needed
+    // separating:
+    //
+    //     loadout   4   Assault Rifle, Submachinegun, Shotgun_Clip, FlameThrower
+    //     arsenal  31   every CClientWeapon the client instantiated -- includes Turret_Helicopter
+    //                   and the MP weapons, which the player is plainly not carrying
+    //     catalogue 56  every record in the database category
+    //
+    // `slot` is 1-BASED to match the keys the player presses: slot 1 is the '1' key, which
+    // CClientWeaponMgr_HandleCommand maps to command 30 and thence to element 0 of this vector.
+    // Verified three for three live -- '1'/'2'/'3' selected Assault Rifle/Submachinegun/Shotgun_Clip.
+    static size_t loadout_count(unsigned player_index = 0);
+    static regenny::DatabaseMgrRecord* loadout_weapon(unsigned slot, unsigned player_index = 0);
+    static std::vector<std::string> loadout_names(unsigned player_index = 0);
+
+    // The slot a named weapon occupies, or nullopt when the player is not carrying it. This is the
+    // lookup a wheel performs: it has a name and needs the key that selects it.
+    static std::optional<unsigned> loadout_slot_of(std::string_view name, unsigned player_index = 0);
+
+    // The key press that selects a carried weapon by name -- the whole read-side answer to "how do
+    // I switch to this", in one call. nullopt when it is not carried or its slot has no bound key.
+    static std::optional<uint8_t> key_for_weapon(std::string_view name, unsigned player_index = 0);
+
+    // ---- THE CLIENT'S ARSENAL OBJECT TABLE -----------------------------------------------------
+    //
+    // The chooser's CClientWeapon* array, indexed by WEAPON INDEX (which is what current_slot()
+    // returns -- not a loadout slot). Exposed because the live object is where per-weapon state
+    // lives, including the record the fire path reads.
+    //
+    // The count is the engine's OWN: the arsenal keeps a begin/end pair, so this is a stored count
+    // rather than a scan that stops when something stops looking like a weapon.
+    static uintptr_t arsenal_array(unsigned player_index = 0);
+    static uintptr_t arsenal_object(unsigned index, unsigned player_index = 0);
+    static regenny::DatabaseMgrRecord* arsenal_weapon(unsigned index, unsigned player_index = 0);
+    static std::optional<size_t> arsenal_count();
+    static std::vector<std::string> arsenal_names(unsigned player_index = 0);
+
+    // Does the chooser's bookkeeping agree with itself? `arsenal_object(current_slot())` must BE
+    // `current_weapon_object()` -- array, index and pointer are three fields written by one
+    // function, so a wrong offset in any of them breaks this at once. Nothing external involved.
+    static std::optional<bool> current_slot_indexes_current_weapon(unsigned player_index = 0);
+
+    static constexpr unsigned kNoSlot = 0xFFFF;
+
+    // ---- THE QUICK-SWITCH SLOT -----------------------------------------------------------------
+    //
+    // What "last weapon" would switch back to. Named for what gates it (the CanLastWeapon database
+    // attribute), not for what an earlier pass hoped it was.
+    static regenny::DatabaseMgrRecord* last_weapon(unsigned player_index = 0);
+    static std::string last_weapon_name(unsigned player_index = 0);
 
     // ---- WHAT THE GAME COULD HAND THEM ---------------------------------------------------------
     //
@@ -111,10 +177,20 @@ public:
     static constexpr unsigned kMaxBoundSlot = 9;
 
     // Offsets, public because a consumer probing a build this SDK has not seen wants to check them.
-    static constexpr uintptr_t kChooserSlot = 244;      // player slot -> chooser
-    static constexpr uintptr_t kCurrentWeapon = 512;    // chooser -> record, FOLLOWS the player
-    static constexpr uintptr_t kStableWeapon = 420;     // chooser -> record, did not follow
+    static constexpr uintptr_t kChooserSlot = 244;        // player slot -> chooser
+    static constexpr uintptr_t kArsenalArray = 400;       // chooser -> CClientWeapon**
+    static constexpr uintptr_t kCurrentSlot = 408;        // chooser -> uint16 index
+    static constexpr uintptr_t kCurrentWeaponObject = 412; // chooser -> CClientWeapon*
+    static constexpr uintptr_t kWeaponObjectRecord = 668;  // CClientWeapon -> record (the fire path's field)
+    static constexpr uintptr_t kLastWeapon = 512;         // chooser -> record, quick-switch slot
     static constexpr uintptr_t kRecordOwnerCategory = 0x10;
+
+    // The arsenal's own begin/end pair, reached through a gameclient global. Weapon_CanLastWeapon
+    // (0x10134DF0) reads the arsenal through this global; Arsenal_GetWeaponIndex (0x10175B50)
+    // derives its bound from the vector at +392/+396.
+    static constexpr uintptr_t kArsenalGlobalOffset = 0x204530;
+    static constexpr uintptr_t kArsenalVectorBegin = 392;
+    static constexpr uintptr_t kArsenalVectorEnd = 396;
 
     static constexpr std::string_view kWeaponCategory = "Arsenal/Weapons";
 };

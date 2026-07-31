@@ -6382,7 +6382,7 @@ class CPlayerCamera 0x18C6 {
 // fields are read.
 namespace regenny {
 
-class CPlayerStats 0x120 {
+class CPlayerStats 0x158 {
     int32_t health        @0xE4   // +228. CONFIRMED by CPlayerStats_SetHealth, which clamps it to max_health
     int32_t armor         @0xE8   // +232. CONFIRMED by CPlayerStats_SetArmor, which clamps it to max_armor
     int32_t max_health    @0xEC   // +236. The clamp target the health setter reads
@@ -6390,6 +6390,22 @@ class CPlayerStats 0x120 {
     float air             @0xF4   // +244. A FRACTION in [0,1] -- the 'Air' console handler passes atof(arg)/100
     int32_t* ammo_counts  @0xF8   // +248. CONFIRMED: a POINTER to an int32 array of ammunition counts, indexed by the ammo record's POSITION within the Arsenal/Ammo database category. CPlayerStats_GetAmmoCount (gameclient 0x10110FD0) is, entirely: `if (this[62] && rec && (i = IDatabaseMgr->vslot21(rec)) != -1) return this[62][i];`. The array length is the category's record count (52 live), so it is deliberately NOT declared with a fixed bound -- read it through sdk::PlayerMgr::ammo_count/ammo_held, which take the length from the database. Verified behaviourally by NAME rather than by value: with submachinegun.mdl equipped a 0.6s burst moved the entry called 'SMG' by 9 while the total fell 220 -> 211, and with assaultrifle.mdl the entry called 'AssaultRifle'. A wrong index still returns a plausible integer, so only the name discriminates.
     int32_t health_lost   @0x11C  // +284. Cumulative: SetHealth adds (old - new) whenever health drops
+
+    // ---- THE PLAYER'S CARRIED WEAPONS -------------------------------------------------------
+    // +336/+340. A std::vector<HWEAPON>'s begin/end: the weapons the player is actually CARRYING,
+    // which is a different set from the client's arsenal object table (31 entries, including
+    // turrets and MP weapons) and from the database category (56 records).
+    //
+    // CONFIRMED from CPlayerStats_GetWeaponInSlot (gameclient 0x10111450), which is exactly
+    // `if (i >= (end-begin)>>2) return 0; return begin[i];` -- so the element size is 4 and the
+    // count is the pointer difference. CClientWeaponMgr_HandleCommand (0x10137E00) calls it with
+    // (command - 30) for commands 30..39, which is the WEAPON SLOT KEY path.
+    //
+    // Verified behaviourally, three for three: live the vector read
+    // [Assault Rifle, Submachinegun, Shotgun_Clip, FlameThrower] and tapping '1'/'2'/'3' selected
+    // exactly elements 0/1/2. Read it through sdk::WeaponMgr::loadout_* rather than directly.
+    DatabaseMgrRecord** weapon_slots_begin  @0x150
+    DatabaseMgrRecord** weapon_slots_end    @0x154
 }
 
 }

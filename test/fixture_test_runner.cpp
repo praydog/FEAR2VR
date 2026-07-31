@@ -1068,6 +1068,66 @@ int main(int argc, char** argv) {
             printf("[fixture] view levelled at start: %+.3f deg\n", before);
         }
 
+        // ---- AND FROM A WEAPON THE FIRING CHECKS CAN USE ---------------------------------------
+        //
+        // Same reasoning as the pitch, and the same failure history. The firing half of this suite
+        // depends on the held weapon, and the game auto-switches on a dry magazine, so a run
+        // inherits whatever the last one finished with. Measured cost of not doing this: a run that
+        // began holding a FlameThrower failed "firing spawns effects the SDK can give a direction
+        // for" and the bone-release check -- neither of which has anything to do with the code
+        // under test, and both of which read as regressions. A run beginning on "Shotgun_Clip", a
+        // record that selects and reports as a weapon but fires nothing observable, failed three
+        // more in three other subsystems.
+        //
+        // This is TESTING.MD's "establish preconditions; do not assume the engine restores them",
+        // and it is only possible now because sdk::WeaponMgr::key_for_weapon() makes the selection
+        // DETERMINISTIC -- ask which key carries the weapon we want, press it, confirm.
+        {
+            static const char* const kPreferred[] = {"Assault Rifle", "Submachinegun",
+                                                     "Semi-auto rifle", "Pistol"};
+            std::string wr;
+            std::string held;
+            if (http::get(port, "/sdk/weapons?limit=0", wr)) {
+                held = json_string(http::body_of(wr), "current");
+            }
+
+            std::string chosen;
+            for (const char* want : kPreferred) {
+                std::string q;
+                const std::string route =
+                    std::string("/sdk/weapons?limit=0&key_for=") + want;
+                if (!http::get(port, route.c_str(), q)) {
+                    break;
+                }
+                long long vk = -1;
+                json_int(http::body_of(q), "key_for_requested", vk);
+                if (vk <= 0) {
+                    continue;  // not carried
+                }
+                if (held == want) {
+                    chosen = want;
+                    break;
+                }
+                std::string ir;
+                const std::string tap = std::string("/input/tap?vk=") + std::to_string(vk);
+                http::get(port, tap.c_str(), ir);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+                std::string after;
+                if (http::get(port, "/sdk/weapons?limit=0", after)) {
+                    if (json_string(http::body_of(after), "current") == want) {
+                        chosen = want;
+                        break;
+                    }
+                }
+            }
+
+            printf("[fixture] weapon normalised at start: %s -> %s\n", held.c_str(),
+                   chosen.empty() ? "(none of the preferred firearms is carried)" : chosen.c_str());
+            check_gated(!chosen.empty(), "no preferred firearm carried", g_skipped_dry, true,
+                        "the suite starts on a standard firearm, so the firing checks are not "
+                        "measuring whichever weapon the previous run left behind");
+        }
+
         // (Per the no-RPM rule at the top of this file: every value below is
         // computed IN-PROCESS by the SDK and reported over IPC; the host only
         // validates shape/invariants and OS-level ground truth.)
@@ -11951,103 +12011,161 @@ int main(int argc, char** argv) {
     // the fix that does not depend on guessing how long that takes.
     // ---- WHAT THE PLAYER IS HOLDING ---------------------------------------------
     //
-    // sdk::WeaponMgr. The offset for the current weapon was found by sweeping the chooser for
-    // fields whose record belongs to the weapon category, and then -- the part that actually
-    // settled it -- by pressing weapon keys and seeing which field moved. These checks defend
-    // that: the TYPE test must refuse things that are not weapons, and the field must still
-    // FOLLOW a switch, because an offset that stops following is the failure this would hit.
+    // sdk::WeaponMgr. The previous version of this block asserted "the held weapon follows a
+    // slot key" against chooser+512 and PASSED -- while +512 is the QUICK-SWITCH slot, not the
+    // held weapon. It could not have caught that, because it validated a field using the same
+    // field. The checks below are built so that cannot recur:
+    //
+    //   * the held weapon is read through the weapon OBJECT (+412 -> +668), which is the field
+    //     the fire path reads, so this and what the engine shoots cannot disagree;
+    //   * `last` is asserted to LAG `current` across a switch, which is a relation between two
+    //     independently-read fields and is exactly what the old check was missing;
+    //   * the chooser's array/index/pointer triple is asserted to agree with itself.
     {
         std::string wr;
-        if (http::get(port, "/sdk/weapons?limit=4", wr)) {
+        if (http::get(port, "/sdk/weapons?limit=0", wr)) {
             const std::string wb = http::body_of(wr);
             bool ok = false, is_w = false, overflow_refused = false;
             bool missing_refused = false, null_refused = false;
-            long long count = -1, named = -1, index = -1, vk1 = -1;
+            long long catalogue = -1, named = -1, loadout = -1, arsenal = -1;
+            long long slot_agrees = -1, cur_slot = -1, lo_slot = -1, key_cur = -1;
             json_bool(wb, "ok", ok);
             json_bool(wb, "current_is_weapon", is_w);
             json_bool(wb, "slot_overflow_refused", overflow_refused);
             json_bool(wb, "missing_weapon_refused", missing_refused);
             json_bool(wb, "null_refused", null_refused);
-            json_int(wb, "count", count);
+            json_int(wb, "count", catalogue);
             json_int(wb, "named", named);
-            json_int(wb, "current_index", index);
-            json_int(wb, "slot1_vk", vk1);
+            json_int(wb, "loadout", loadout);
+            json_int(wb, "arsenal", arsenal);
+            json_int(wb, "slot_agrees", slot_agrees);
+            json_int(wb, "current_slot", cur_slot);
+            json_int(wb, "loadout_slot_of_current", lo_slot);
+            json_int(wb, "key_for_current", key_cur);
             const std::string current = json_string(wb, "current");
-            const std::string stable = json_string(wb, "stable");
+            const std::string last = json_string(wb, "last");
 
-            printf("[fixture] weapons: holding %s (index %lld of %lld), stable %s\n",
-                   current.c_str(), index, count, stable.c_str());
+            printf("[fixture] weapons: holding %s (loadout slot %lld, arsenal index %lld), "
+                   "last %s\n",
+                   current.c_str(), lo_slot, cur_slot, last.c_str());
+            printf("[fixture] weapons: %lld carried, %lld in the arsenal, %lld in the database\n",
+                   loadout, arsenal, catalogue);
 
             if (ok) {
-                check(count > 0, "the weapon category resolves and is not empty");
-                check(named == count,
-                      "EVERY weapon record has a readable name -- a nameless one means the "
-                      "category pointer is wrong, not that a weapon is anonymous");
+                check(catalogue > 0 && named == catalogue,
+                      "every weapon record in the category has a readable name");
                 check(!current.empty() && is_w,
-                      "the held weapon is a record from the weapon category, re-checked on read "
-                      "rather than trusted from when the offset was found");
-                check(index >= 0 && index < count,
-                      "and its index round-trips through the category it claims to be in");
+                      "the held weapon reads through the weapon OBJECT and is a weapon record");
 
-                // The type check must REFUSE. A predicate that says yes to everything would pass
-                // every check above while being worthless.
+                // THREE POPULATIONS, and conflating them is what made an earlier pass call a
+                // 31-entry object table "carried". They nest, and asserting the nesting is what
+                // keeps them distinguishable.
+                check(loadout > 0 && arsenal > 0,
+                      "the loadout and the arsenal are both populated");
+                check(loadout <= arsenal && arsenal <= catalogue,
+                      "loadout <= arsenal <= catalogue -- three different sets, not one");
+
+                // Self-consistency of the chooser's own bookkeeping: array[index] IS the object.
+                check(slot_agrees == 1,
+                      "the chooser's array, index and current pointer agree with each other");
+
+                // The read-side wheel API resolves end to end for the weapon in hand.
+                check(lo_slot >= 1 && lo_slot <= loadout,
+                      "the held weapon occupies a slot in the player's own loadout");
+                check(key_cur == static_cast<long long>('0') + lo_slot,
+                      "and key_for_weapon() returns that slot's number key");
+
                 check(missing_refused, "a weapon that does not exist resolves to nothing");
                 check(null_refused, "and is_weapon(nullptr) is false rather than a crash");
-
-                // The slot mapping is knowledge, not timing: bounded, and refusing past the bound.
-                check(vk1 == static_cast<long long>('1'),
-                      "slot 1 maps to the '1' key, which is what the discriminator pressed");
                 check(overflow_refused,
-                      "and a slot past the bound returns nothing rather than a guessed key code");
+                      "a slot past the bound returns nothing rather than a guessed key code");
 
-                // ---- THE ONE THAT MATTERS: DOES IT STILL FOLLOW? ------------------------------
+                // ---- THE WHEEL, DRIVEN THE WAY A CONSUMER WOULD -------------------------------
                 //
-                // Presses weapon keys until the held weapon changes. This MUTATES the player's
-                // loadout, so it restores afterwards and asserts the restoration -- a suite that
-                // leaves the rig on a different weapon breaks whatever runs next.
-                const std::string original = current;
-                std::string switched;
-                for (int attempt = 0; attempt < 6 && switched.empty(); ++attempt) {
-                    std::string ir;
-                    const std::string tap =
-                        std::string("/input/tap?vk=") + std::to_string('1' + (attempt % 3));
-                    http::get(port, tap.c_str(), ir);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(900));
-                    std::string wr2;
-                    if (http::get(port, "/sdk/weapons?limit=0", wr2)) {
-                        const std::string now = json_string(http::body_of(wr2), "current");
-                        if (!now.empty() && now != original) {
-                            switched = now;
+                // For every carried weapon: ask the SDK which key selects it, press exactly that,
+                // and require the game to hand over that weapon. This is the whole feature, and it
+                // is destructive, which is why the block sits at the end of the suite.
+                std::vector<std::string> names;
+                {
+                    const std::string key = "\"loadout_names\":[";
+                    const auto p = wb.find(key);
+                    if (p != std::string::npos) {
+                        size_t i = p + key.size();
+                        while (i < wb.size() && wb[i] != ']') {
+                            if (wb[i] == '"') {
+                                const auto e = wb.find('"', i + 1);
+                                if (e == std::string::npos) {
+                                    break;
+                                }
+                                names.push_back(wb.substr(i + 1, e - i - 1));
+                                i = e + 1;
+                            } else {
+                                ++i;
+                            }
                         }
                     }
                 }
-                printf("[fixture] weapons: %s -> %s on a slot key\n", original.c_str(),
-                       switched.empty() ? "(no change)" : switched.c_str());
-                check(!switched.empty(),
-                      "the held weapon FOLLOWS a slot key -- this is the property that "
-                      "identified the field, and an offset that stops following fails here");
+                check(static_cast<long long>(names.size()) == loadout,
+                      "the published loadout list is as long as the loadout count");
 
-                std::string restored;
-                for (int attempt = 0; attempt < 8 && restored != original; ++attempt) {
+                const std::string original = current;
+                long long selected = 0;
+                std::string prev_seen = current;
+                bool lag_held = true;
+                for (size_t i = 0; i < names.size(); ++i) {
                     std::string ir;
                     const std::string tap =
-                        std::string("/input/tap?vk=") + std::to_string('1' + (attempt % 3));
+                        std::string("/input/tap?vk=") + std::to_string('1' + static_cast<int>(i));
                     http::get(port, tap.c_str(), ir);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+
+                    std::string wr2;
+                    if (!http::get(port, "/sdk/weapons?limit=0", wr2)) {
+                        continue;
+                    }
+                    const std::string b2 = http::body_of(wr2);
+                    const std::string now = json_string(b2, "current");
+                    const std::string now_last = json_string(b2, "last");
+
+                    if (now == names[i]) {
+                        ++selected;
+                    }
+                    // THE LAG RELATION. After a real switch the quick-switch slot must hold the
+                    // weapon we were just holding. Two independently-read fields, which is what
+                    // makes this able to fail when the previous check could not.
+                    if (now != prev_seen && now_last != prev_seen) {
+                        lag_held = false;
+                    }
+                    prev_seen = now;
+                }
+                printf("[fixture] weapons: %lld of %zu slots handed over the weapon the SDK "
+                       "named for their key\n",
+                       selected, names.size());
+                check(selected == static_cast<long long>(names.size()),
+                      "EVERY carried weapon is selected by the key key_for_weapon() names -- the "
+                      "read-side of a VR weapon wheel, end to end");
+                check(lag_held,
+                      "and after each switch the quick-switch slot holds the weapon just left, "
+                      "which is the relation that identifies +512 as last-weapon and not current");
+
+                // Put the loadout back where it was found.
+                const auto want = std::find(names.begin(), names.end(), original);
+                if (want != names.end()) {
+                    std::string ir;
+                    const std::string tap =
+                        std::string("/input/tap?vk=") +
+                        std::to_string('1' + static_cast<int>(want - names.begin()));
+                    http::get(port, tap.c_str(), ir);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1400));
                     std::string wr3;
+                    std::string restored;
                     if (http::get(port, "/sdk/weapons?limit=0", wr3)) {
                         restored = json_string(http::body_of(wr3), "current");
                     }
+                    check(restored == original,
+                          "and the block puts the original weapon back, deterministically, "
+                          "because the mapping tells it which key to press");
                 }
-                check(restored == original,
-                      "and the block puts the original weapon back, because the next block is "
-                      "entitled to the loadout it started with");
-
-                // RESTORING THE NAME IS NOT RESTORING THE STATE. The first run of this block put
-                // the weapon back and still broke the next one ("the override writes on every
-                // shot"), because a weapon that has just been selected is mid-DEPLOY and will not
-                // fire. The name is the last thing to change, not the last thing to settle.
-                std::this_thread::sleep_for(std::chrono::milliseconds(2500));
             }
         }
     }

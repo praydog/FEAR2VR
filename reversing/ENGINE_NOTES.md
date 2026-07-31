@@ -619,35 +619,78 @@ enabled and NONE after release -- a mode left running would tax every frame for 
 session, and the counters are the only way to see that. Every millisecond and every frame rate above
 is reported.
 
-### The player's weapons, and which field is the one in hand
+### The player's weapons: the loadout, the arsenal, and the catalogue
 
-`sdk::WeaponMgr`. The weapon chooser is the subsystem at player slot **+244**, named in an earlier
-pass by its console variables (`KeepCurrentAmmo`, `ChooserAutoSwitchTime`, `ChooserAutoSwitchFreq`)
-and confirmed here: its first ~350 bytes are exactly the fourteen listener records
+`sdk::WeaponMgr`. The weapon chooser is the subsystem at player slot **+244**, named by its console
+variables and confirmed by its first ~350 bytes being exactly the fourteen listener records
 `WeaponChooser_Init` (gameclient `0x101361D0`) builds.
 
-Two of its fields hold weapon records:
+**Three populations, and they are genuinely different sets.** Conflating them is how the first pass
+went wrong:
 
-    chooser+420   "Unarmed"          did NOT move
-    chooser+512   "Assault Rifle" -> "Submachinegun"    MOVED
+    loadout    4   Assault Rifle, Submachinegun, Shotgun_Clip, FlameThrower
+    arsenal   31   every CClientWeapon the client instantiated -- includes Turret_Helicopter
+                   and the MP weapons, which the player is plainly not carrying
+    catalogue 56   every record in the Arsenal/Weapons database category
 
-**The discriminator was behaviour, not layout.** Both fields hold a record from `Arsenal/Weapons`,
-sit in the same object, and look identical to any structural test. Pressing the weapon-slot keys
-moved one and not the other, and the one that follows the player IS the current weapon. Nothing
-about the offsets or their neighbourhood could have separated them.
+The **loadout** is `CPlayerStats`' own `weapon_slots_begin/end` vector (schema, +0x150/+0x154). It is
+what the number keys index: `CClientWeaponMgr_HandleCommand` (`0x10137E00`) maps commands 30..39 to
+`CPlayerStats_GetWeaponInSlot(stats, cmd - 30)`. Verified four for four -- asking
+`key_for_weapon(name)` and pressing exactly that key handed over exactly that weapon, for every
+carried weapon.
 
-The sweep that found them keys on the record's OWN back-pointer (`DatabaseMgrRecord.owner_category`
-at +0x10) resolving to the weapon category. An earlier sweep keyed only on "has a record pointer at
-+668" -- the offset the fire path reads -- and returned `GhostAttack1` and `book_chunk_red2`. The
-typed check is what makes the difference, and `is_weapon()` re-runs it on EVERY read rather than
-trusting the offset from when it was found.
+The **arsenal** is the chooser's `CClientWeapon*` array at +400, indexed by weapon index, with its
+count stored by the engine itself (`Arsenal_GetWeaponIndex`'s begin/end pair, 31 -- which matched a
+scan exactly, so the stored count is used rather than the scan).
 
-+420 is deliberately **not** named "holster" or "default". It held "Unarmed" across every switch,
-which several roles in the reference source would explain equally well, so it is exposed as what it
-is: a second, stable handle.
+### The field that looked like "current weapon" for a whole session, and was not
 
-Named in IDA: `WeaponChooser_Init`, `Arsenal_FindWeaponRecordByName` (`0x10176640`, name -> record),
-`CheatCmd_GiveWeapon` (`0x10046BC0`).
+The first pass exposed **chooser+512** as the held weapon. Every piece of evidence offered for it
+was true, and the conclusion was still wrong:
+
+  * +512 holds a record from the weapon category -- true;
+  * +512 CHANGES when the player presses a weapon key -- also true;
+  * a fixture check asserting "the held weapon follows a slot key" passed -- it did, against +512.
+
+None of those distinguishes *the weapon in hand* from *the weapon you were holding a moment ago*,
+and the check could not catch the difference because it validated a field by reading that same
+field. This is pitfall 7 in MAPPING_WORKFLOW.MD -- an instrument that can only confirm things about
+what it measures.
+
+**What settled it was an independent route to the same quantity**, which is what the first pass
+never obtained:
+
+    chooser+412 -> CClientWeapon -> +668  ==  "Shotgun_Clip"    (actually held)
+    chooser+512                           ==  "Submachinegun"   (held before that)
+
+Then the mechanism explained it. A hardware write watch on the live +512 -- Phase 1b, not a scan --
+trapped a five-instruction `__thiscall` setter (`CClientWeaponMgr_SetLastWeapon`, `0x10134E20`) with
+`ecx` = the chooser, and **every call site is gated by `Weapon_CanLastWeapon` (`0x10134DF0`), which
+reads the database attribute "CanLastWeapon"**. +512 is the QUICK-SWITCH slot.
+
+The relation is now asserted rather than assumed: after each switch, `last` must hold the weapon
+just left. That is a comparison between two independently-read fields, and it is exactly the check
+the earlier version could not express.
+
+`+668` is not a fourth guess either -- it is the field the FIRE PATH reads to decide what is being
+fired, so the weapon the engine shoots and the weapon the SDK reports are the same value.
+
+Named in IDA: `CClientWeaponMgr_ChangeWeapon` (`0x10136850` -- `(HWEAPON, HAMMO, int, bool, bool)`,
+matching FEAR 1's signature exactly), `CClientWeaponMgr_SetLastWeapon`, `CClientWeaponMgr_HandleCommand`,
+`CClientWeaponMgr_OnCommandMessage`, `Weapon_CanLastWeapon`, `Arsenal_GetWeaponIndex`,
+`Arsenal_GetWeaponRecord`, `CPlayerStats_GetWeaponInSlot`.
+
+### The suite now establishes its weapon instead of inheriting one
+
+Three separate sessions have lost runs to the held weapon: `Shotgun_Clip` (selects and reports as a
+weapon, fires nothing observable) took out three checks in three subsystems, and a run beginning on
+`FlameThrower` took out two more. Every one read as a regression somewhere unrelated.
+
+The fix is TESTING.MD's own rule -- establish the precondition, do not assume the engine restores it
+-- and it only became possible once `key_for_weapon()` made selection deterministic. The suite now
+picks a standard firearm at entry, presses the key the SDK names for it, and confirms:
+
+    [fixture] weapon normalised at start: FlameThrower -> Submachinegun
 
 ### A record the chooser reports as a weapon is not necessarily a gun that works
 

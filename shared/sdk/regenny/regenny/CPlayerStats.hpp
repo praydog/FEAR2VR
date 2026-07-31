@@ -1,5 +1,8 @@
 #pragma once
 namespace regenny {
+class DatabaseMgrRecord;
+}
+namespace regenny {
 #pragma pack(push, 1)
 class CPlayerStats {
 public:
@@ -12,6 +15,9 @@ public:
     int32_t* ammo_counts; // 0xf8
     private: char pad_fc[0x20]; public:
     int32_t health_lost; // 0x11c
-}; // Size: 0x120
+    private: char pad_120[0x30]; public:
+    regenny::DatabaseMgrRecord** weapon_slots_begin; // 0x150
+    regenny::DatabaseMgrRecord** weapon_slots_end; // 0x154
+}; // Size: 0x158
 #pragma pack(pop)
 }

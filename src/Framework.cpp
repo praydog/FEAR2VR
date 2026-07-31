@@ -9059,41 +9059,75 @@ std::string build_weapons_json(const std::string& request_target) {
 
     const auto chooser = sdk::WeaponMgr::chooser(0);
     const auto current = sdk::WeaponMgr::current_weapon_name(0);
-    const auto stable = sdk::WeaponMgr::stable_weapon_name(0);
+    const auto last = sdk::WeaponMgr::last_weapon_name(0);
+    const auto slot = sdk::WeaponMgr::current_slot(0);
     const auto index = sdk::WeaponMgr::current_weapon_index(0);
+    const auto agrees = sdk::WeaponMgr::current_slot_indexes_current_weapon(0);
+    const auto loadout = sdk::WeaponMgr::loadout_names(0);
+    const auto arsenal = sdk::WeaponMgr::arsenal_count();
     const auto names = sdk::WeaponMgr::weapon_names();
 
     std::string out = "{";
     json_append_bool(out, "ok", chooser != 0);
     json_append_raw(out, "chooser", std::to_string(static_cast<uint64_t>(chooser)).c_str());
+    json_append_raw(out, "weapon_object",
+                    std::to_string(static_cast<uint64_t>(sdk::WeaponMgr::current_weapon_object(0))).c_str());
     json_append_string(out, "current", current.c_str());
-    json_append_string(out, "stable", stable.c_str());
+
+    // The QUICK-SWITCH slot, published beside `current` on purpose: an earlier pass reported this
+    // field AS the current weapon, and seeing both makes the difference visible instead of a claim.
+    json_append_string(out, "last", last.c_str());
     json_append_bool(out, "current_is_weapon", sdk::WeaponMgr::current_weapon(0) != nullptr);
+    json_append_raw(out, "current_slot",
+                    std::to_string(slot.has_value() ? static_cast<int64_t>(*slot) : -1).c_str());
     json_append_raw(out, "current_index",
                     std::to_string(index.has_value() ? static_cast<int64_t>(*index) : -1).c_str());
+
+    // The loadout's self-consistency: array[index] must BE the current object.
+    json_append_raw(out, "slot_agrees",
+                    agrees.has_value() ? (*agrees ? "1" : "0") : "-1");
+    json_append_raw(out, "loadout", std::to_string(loadout.size()).c_str());
+    json_append_raw(out, "arsenal",
+                    std::to_string(arsenal.has_value() ? static_cast<int64_t>(*arsenal) : -1).c_str());
+    // The whole read-side answer to "how do I switch to this weapon", for the held one.
+    // "Which key selects this weapon?" -- the wheel's own question, answered for any name the
+    // caller passes rather than only for the weapon in hand.
+    const auto requested = webapi_query_string(q, "key_for");
+    if (!requested.empty()) {
+        const auto vk = sdk::WeaponMgr::key_for_weapon(requested, 0);
+        json_append_raw(out, "key_for_requested",
+                        std::to_string(vk.has_value() ? static_cast<int>(*vk) : -1).c_str());
+        const auto rs = sdk::WeaponMgr::loadout_slot_of(requested, 0);
+        json_append_raw(out, "slot_for_requested",
+                        std::to_string(rs.has_value() ? static_cast<int64_t>(*rs) : -1).c_str());
+    }
+    const auto key_cur = sdk::WeaponMgr::key_for_weapon(current, 0);
+    json_append_raw(out, "key_for_current",
+                    std::to_string(key_cur.has_value() ? static_cast<int>(*key_cur) : -1).c_str());
+    const auto slot_cur = sdk::WeaponMgr::loadout_slot_of(current, 0);
+    json_append_raw(out, "loadout_slot_of_current",
+                    std::to_string(slot_cur.has_value() ? static_cast<int64_t>(*slot_cur) : -1).c_str());
     json_append_raw(out, "count", std::to_string(sdk::WeaponMgr::weapon_count()).c_str());
     json_append_raw(out, "named", std::to_string(names.size()).c_str());
 
-    // The slot->key mapping, so a consumer does not have to hardcode what the SDK already knows.
     const auto k1 = sdk::WeaponMgr::slot_virtual_key(1);
     json_append_raw(out, "slot1_vk",
                     std::to_string(k1.has_value() ? static_cast<int>(*k1) : -1).c_str());
     const auto kbad = sdk::WeaponMgr::slot_virtual_key(sdk::WeaponMgr::kMaxBoundSlot + 1);
-
-    // THE NEGATIVE CASE FOR THE TYPE CHECK. is_weapon() is what separates a real weapon from the
-    // "GhostAttack1"/"book_chunk_red2" false positives an untyped sweep produced, so a consumer
-    // deciding whether to trust it wants to see it REFUSE something. An ammo record is a record from
-    // a sibling category: structurally identical, semantically not a weapon.
-    auto* foreign = sdk::WeaponMgr::find_weapon("__no_such_weapon__");
-    json_append_bool(out, "missing_weapon_refused", foreign == nullptr);
+    json_append_bool(out, "slot_overflow_refused", !kbad.has_value());
+    auto* missing = sdk::WeaponMgr::find_weapon("__no_such_weapon__");
+    json_append_bool(out, "missing_weapon_refused", missing == nullptr);
     json_append_bool(out, "null_refused", !sdk::WeaponMgr::is_weapon(nullptr));
     json_append_bool(out, "muzzle_resolvable", sdk::WeaponMgr::muzzle_resolvable(0));
-    json_append_bool(out, "slot_overflow_refused", !kbad.has_value());
 
-    // json_append_* writes a TRAILING comma and json_escape_append writes its own quotes. Adding
-    // either by hand produced ",," and ""name"" in the first two live responses -- which is why this
-    // was checked against the raw body before a test was written around it.
-    out += "\"names\":[";
+    out += "\"loadout_names\":[";
+    for (size_t i = 0; i < loadout.size(); ++i) {
+        if (i != 0) {
+            out += ',';
+        }
+        json_escape_append(out, loadout[i]);
+    }
+    out += "],\"names\":[";
     for (size_t i = 0; i < names.size() && i < limit; ++i) {
         if (i != 0) {
             out += ',';
