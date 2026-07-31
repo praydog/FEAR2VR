@@ -179,6 +179,54 @@ LONG WINAPI global_exception_handler(EXCEPTION_POINTERS* ei) {
     auto* rec = ei->ExceptionRecord;
     auto* ctx = ei->ContextRecord;
 
+    // ---- THE DUMB RECORD, WRITTEN FIRST -------------------------------------------------
+    //
+    // Before touching the logger, because the logger may BE the problem. Two crashes were reported
+    // by WER inside our own DLL -- one in memcpy_s, one in common_vsprintf, i.e. inside printf-style
+    // formatting -- and this handler logged nothing for either. That is the expected outcome if the
+    // handler's first act (LOGX, which formats) re-enters the very code that faulted: it faults
+    // again, and a fault inside an exception filter takes the process down with no output at all.
+    //
+    // So the essentials go out through hand-rolled hex and a raw WriteFile: no varargs, no
+    // formatting, no heap, nothing that can fail the same way twice.
+    {
+        char raw[256];
+        size_t n = 0;
+        auto put = [&](const char* text) {
+            while (*text != '\0' && n < sizeof(raw) - 1) {
+                raw[n++] = *text++;
+            }
+        };
+        auto put_hex = [&](uintptr_t v) {
+            static const char* digits = "0123456789ABCDEF";
+            put("0x");
+            for (int shift = 28; shift >= 0; shift -= 4) {
+                if (n < sizeof(raw) - 1) {
+                    raw[n++] = digits[(v >> shift) & 0xF];
+                }
+            }
+        };
+
+        put("[crash] code=");
+        put_hex(rec->ExceptionCode);
+        put(" eip=");
+        put_hex(reinterpret_cast<uintptr_t>(rec->ExceptionAddress));
+        put(" esp=");
+        put_hex(ctx->Esp);
+        put("\r\n");
+
+        const auto path = dump_path();
+        std::string txt = path.substr(0, path.size() - 4) + "_first.txt";
+        auto* fh = CreateFileA(txt.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (fh != nullptr && fh != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(fh, raw, static_cast<DWORD>(n), &written, nullptr);
+            FlushFileBuffers(fh);
+            CloseHandle(fh);
+        }
+    }
+
     LOGX("[crash] ================ UNHANDLED EXCEPTION ================");
     LOGX("[crash] code 0x%08lX at %s", rec->ExceptionCode,
          describe(reinterpret_cast<uintptr_t>(rec->ExceptionAddress)).c_str());

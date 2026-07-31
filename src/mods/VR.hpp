@@ -69,14 +69,28 @@ public:
     // game, not a constant of VR -- see `kUnitsPerMetre`.
     static std::array<float, 3> runtime_to_engine_position(const std::array<float, 3>& p);
 
-    // WORLD SCALE. Provisional and flagged as such: nothing in this project has yet measured
-    // FEAR2's units against a physical metre. It is used only for controller POSITION offsets,
-    // where being wrong scales hand separation rather than breaking anything structural, and it
-    // is deliberately not used for the head pose, whose rotation carries no scale at all.
+    // WORLD SCALE, MEASURED FROM THE ENGINE'S OWN GRAVITY. One unit is one CENTIMETRE.
     //
-    // Deriving it properly (from gravity, or the player capsule against a known human height) is
-    // a task in its own right and is not guessed at here.
-    static constexpr float kUnitsPerMetre = 64.0f;
+    // CClientMgr_GetGlobalForce reports (0, -980, 0). Earth gravity is 9.80665 m/s^2, so
+    //
+    //     980 units/s^2  /  9.80665 m/s^2  =  99.93 units/metre
+    //
+    // and 980 is not a coincidence -- it is 9.8 m/s^2 written in cm/s^2. This is the engine
+    // stating its own scale, not an inference from anatomy, which is why it is trustworthy where
+    // the anthropometric anchors were not: they disagreed wildly (an "eye offset" of 75.6 units
+    // implies 44 units/m at a 1.7 m eye height, while a 40-unit stair implies 200 at a 20 cm
+    // riser). Both were measuring something other than what their names suggested.
+    //
+    // Corroborated at 100 u/m: the 40-unit step height becomes a 0.40 m maximum step-up, which is
+    // an ordinary value for a shooter, and the hands sit 15-20 units below the eye, i.e. 15-20 cm.
+    //
+    // THE PREVIOUS VALUE WAS 64, INVENTED. It was flagged provisional and it was 36% wrong, which
+    // is what a plausible-looking guess buys: every controller position was silently under-scaled
+    // and nothing looked broken.
+    //
+    // A level that changed gravity would break the derivation, not the scale -- so the fixture
+    // asserts the premise (global force magnitude is 980) rather than trusting it forever.
+    static constexpr float kUnitsPerMetre = 100.0f;
 
     struct State {
         bool enabled{};

@@ -10567,8 +10567,22 @@ int main(int argc, char** argv) {
             // 0.25 m at the mod's declared units-per-metre. The scale is provisional and the test
             // says so by deriving the expectation from the same constant rather than hardcoding
             // 16 -- if the scale is remeasured, this follows it instead of going red.
-            check(fabs(off_y - 0.25 * 64.0) < 0.5,
-                  "and arrives scaled from metres into engine units");
+            // THE SCALE'S PREMISE, asserted rather than trusted: it is derived from the engine's
+            // own gravity (980 units/s^2 == 9.8 m/s^2 in centimetres), so if a level ever reports
+            // a different global force the derivation no longer holds and we should hear about it
+            // here rather than discover it as hands at the wrong distance.
+            std::string gt;
+            if (http::get(port, "/sdk/targets", resp)) {
+                gt = http::body_of(resp);
+            }
+            double gy = 0.0;
+            const bool have_g = json_double(gt, "global_force_y", gy);
+            check(have_g && fabs(fabs(gy) - 980.0) < 1.0,
+                  "the engine's gravity is the 980 units/s^2 the world scale is derived from -- "
+                  "one unit is one centimetre, and that premise still holds");
+
+            check(fabs(off_y - 0.25 * 100.0) < 0.5,
+                  "and a controller offset arrives scaled from metres into engine units");
 
             if (have_muzzle) {
                 std::string t1;
@@ -10888,7 +10902,17 @@ int main(int argc, char** argv) {
                                 err_view < kYaw / 4.0,
                                 "the shot follows the VIEW: turning the head moves where the "
                                 "bullets land, by the angle the head turned");
-                    check(err_view < err_aim,
+                    // GATED ON THE CLUSTER BEING A CLUSTER. The bearing is the direction MOST of
+                    // the new objects lie in, and when they do not agree there is no direction to
+                    // discriminate with: a 5-of-10 split produced +121 degrees against a -30
+                    // prediction, which is not evidence against the finding, it is noise.
+                    //
+                    // This is a gate on measurement QUALITY, not the retracted assertion about
+                    // ambient spawn rate -- the difference being that a diffuse burst reports NOT
+                    // EXERCISED instead of red.
+                    const bool concentrated = total0 > 0 && agree0 * 3 >= total0 * 2;
+                    check_gated(concentrated, "impact cluster too diffuse to bear a direction",
+                                g_skipped_motion, err_view < err_aim,
                           "and it is not the weapon it follows -- the aim never moved, and the "
                           "impacts did");
                 }

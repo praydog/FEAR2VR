@@ -1401,7 +1401,7 @@ std::string build_targets_json() {
              // KEEPS RUNNING while the game is paused -- the distinction a VR mod
              "\"shell_game_time\":%f,\"shell_real_time\":%f,\"shell_clocks_ok\":%s,"
              "\"local_client_count\":%d,\"local_client_0\":%d,\"frame_interval\":%f,"
-             "\"global_force\":[%f,%f,%f],\"global_force_ok\":%s,"
+             "\"global_force\":[%f,%f,%f],\"global_force_y\":%.3f,\"global_force_ok\":%s,"
              // The console-variable table, walked the way a mod would. A NAMED probe is
              // included because "the table has entries" and "I can find the one I want"
              // are different claims.
@@ -1508,6 +1508,9 @@ std::string build_targets_json() {
              force.value_or(sdk::Engine::ForceVector{}).x,
              force.value_or(sdk::Engine::ForceVector{}).y,
              force.value_or(sdk::Engine::ForceVector{}).z,
+             // Y ALSO AS A SCALAR. It is the world's scale statement -- 980 units/s^2 is 9.8 m/s^2
+             // in centimetres -- and a consumer checking that premise wants a number, not a list.
+             force.value_or(sdk::Engine::ForceVector{}).y,
              force.has_value() ? "true" : "false",
              convars.size(), convars_named, convar_probed, convar_roundtrip,
              static_cast<int>(player_n.value_or(0)),
