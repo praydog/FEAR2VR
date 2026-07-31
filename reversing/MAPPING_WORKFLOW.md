@@ -5672,3 +5672,47 @@ runs at default `/W1`, so that checking is normally off -- re-enable `/W4` on `f
 clean, so it needs something the suite does.
 
 Still open. It reproduces roughly once in five to ten suite runs.
+
+## THE CRASH REPORTER PAID FOR ITSELF, and the answer was not what we assumed
+
+First fully captured crash, 2026-07-31. Every layer fired: the formatting-free first record, the
+full register dump, a symbolised stack, and a 430 KB minidump.
+
+    code 0xC0000005 at MSVCR80.dll+0x173D0 -- tried to WRITE 0x254E8000
+    EDI 0x254E8000 (destination)   EAX 0x25497080   -- 0x50F80 apart
+    #02 FEAR2.exe+0x6AF2A   StreamReader_Read
+    #03 FEAR2.exe+0x6B092
+    #04 FEAR2.exe+0x6B1B7
+    #05 FEAR2.exe+0x3FFF6
+    #06 ntdll  (thread start)
+
+**It is not our code.** The entire stack is FEAR2.exe and its own CRT (MSVCR80), on a worker
+thread. We had two earlier crashes that WER attributed to Fear2vr.dll (memcpy_s, common_vsprintf),
+so there appear to be TWO populations, and assuming one cause for all three would have been wrong.
+
+`StreamReader_Read` is a buffered read out of a 64 KB window, and it carries two latent hazards
+visible in its own decompilation:
+
+- `this[3] - this[4]` (end - pos) is UNSIGNED, so any state with pos > end underflows to a ~4 GB
+  length and memcpy runs off the destination -- which is precisely the observed signature.
+- the refill triggers on `pos == 0x10000` EXACTLY rather than >=, so a pos that steps over the
+  boundary without landing on it never refills.
+
+Observed while the suite was driving repeated `LoadCheckpoint` restores, which hammer asset
+streaming. A load-path race in the game is the leading explanation, and it means our restore-heavy
+fixture is provoking a pre-existing engine bug rather than one of ours.
+
+### What made this diagnosable
+
+Three things, each of which had been necessary and absent at some point:
+
+1. **Symbol resolution that works** -- the `SizeOfStruct` off-by-one had been silently returning
+   "no symbol" for everything.
+2. **A handler that survives its own subject.** Two earlier crashes produced NOTHING because the
+   handler's first act was LOGX, and the fault was inside printf formatting; it re-entered and
+   double-faulted. The hand-rolled hex record now goes out first.
+3. **Re-asserting the filter every frame**, because the engine installs its own and there is one
+   slot, not a chain.
+
+Module+offset in the log pastes straight into the right IDB, which is how four anonymous addresses
+became a named function in one lookup.

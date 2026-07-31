@@ -10685,6 +10685,67 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // ---- THE TRIGGER, AND THE LOOP IT CLOSES ------------------------------------------
+            //
+            // A controller trigger pulls the weapon's trigger. What makes this assertable rather
+            // than a hope is that ammunition is mapped: the consequence of firing is a number we
+            // can read, so "the trigger fired the gun" is measurable end to end without watching
+            // the screen.
+            //
+            // The threshold has HYSTERESIS -- press at 0.5, release at 0.35 -- because the engine's
+            // fire input is a button and a single threshold chatters at the boundary. Both sides
+            // are checked: a half-pull must NOT fire, which is the half a naive test omits.
+            {
+                http::get(port, "/xr/reset", resp);
+                http::get(port, "/xr/trigger?on=1", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+                double ammo0 = -1.0;
+                if (http::get(port, "/xr/head", resp)) {
+                    json_double(http::body_of(resp), "ammo_total", ammo0);
+                }
+
+                http::get(port, "/xr/input?side=right&trigger=0.30", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                bool firing_half = true;
+                if (http::get(port, "/xr/head", resp)) {
+                    firing_half = json_flag_of(http::body_of(resp), "firing");
+                }
+                check(!firing_half,
+                      "a half-pulled trigger does not fire -- the threshold is a threshold, not a "
+                      "cast to bool");
+
+                http::get(port, "/xr/input?side=right&trigger=0.90", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                bool firing_full = false;
+                double ammo1 = -1.0;
+                if (http::get(port, "/xr/head", resp)) {
+                    const std::string b = http::body_of(resp);
+                    firing_full = json_flag_of(b, "firing");
+                    json_double(b, "ammo_total", ammo1);
+                }
+
+                http::get(port, "/xr/input?side=right&trigger=0.0", resp);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                bool firing_after = true;
+                if (http::get(port, "/xr/head", resp)) {
+                    firing_after = json_flag_of(http::body_of(resp), "firing");
+                }
+
+                printf("[fixture] xr trigger: ammo %.0f -> %.0f, firing %s then %s\n",
+                       ammo0, ammo1, firing_full ? "yes" : "no", firing_after ? "yes" : "no");
+
+                check_armed(g_can_fire, firing_full,
+                            "a full pull fires -- the controller's trigger reaches the engine's");
+                check_armed(g_can_fire && ammo0 > 0.0, ammo1 < ammo0,
+                            "and it SPENDS AMMUNITION, which is the consequence that makes this a "
+                            "shot rather than a button state we set ourselves");
+                check(!firing_after,
+                      "releasing stops it, so the suite cannot leave the weapon firing itself");
+
+                http::get(port, "/xr/trigger?on=0", resp);
+            }
+
             http::get(port, "/xr/reset", resp);
             http::get(port, "/xr/hands?on=0", resp);
             std::this_thread::sleep_for(std::chrono::milliseconds(700));

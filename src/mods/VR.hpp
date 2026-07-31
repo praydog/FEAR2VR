@@ -105,6 +105,10 @@ public:
         uint64_t hand_applied{};
         std::array<float, 3> hand_offset{};   // engine units, applied to the RightHand socket
         std::array<float, 4> hand_rotation{};  // engine-space delta from the controller's rest pose
+
+        bool trigger{};
+        bool firing{};
+        uint64_t pulls{};
     };
 
     // ---- CONTROLLERS -> THE WEAPON HAND -----------------------------------------------------
@@ -119,6 +123,15 @@ public:
     // an absolute mapping would fling the hand across the level on the first frame. A delta means
     // "however you are holding it, move the hand by that much", which is both correct at rest and
     // the only mapping that works before world scale is measured.
+    // The right controller's trigger pulls the weapon's trigger. Edge-triggered against a
+    // threshold rather than passed through as an analogue value, because the engine's firing input
+    // is a BUTTON -- there is no partial-pull semantics to preserve, and re-asserting a held button
+    // every frame would suppress the press edge the engine actually consumes.
+    //
+    // Inert until a runtime reports a non-zero trigger, so it cannot fire by merely existing.
+    void set_trigger_enabled(bool enabled);
+    bool trigger_enabled() const;
+
     void set_hands_enabled(bool enabled);
     bool hands_enabled() const;
 
@@ -128,4 +141,5 @@ private:
     VR() = default;
 
     void update_hands();
+    void update_trigger();
 };

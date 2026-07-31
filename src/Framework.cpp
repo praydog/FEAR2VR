@@ -10319,6 +10319,16 @@ bool Framework::initialize() {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/reset") {
             rt.reset();
+        } else if (route == "/xr/trigger") {
+            mod.set_trigger_enabled(webapi_query_int(q, "on", 1) != 0);
+        } else if (route == "/xr/input") {
+            const std::string side = webapi_query_string(q, "side");
+            const auto which = (side == "left") ? vr::VRRuntime::Hand::LEFT : vr::VRRuntime::Hand::RIGHT;
+            const auto cur = rt.hand(which);
+            rt.set_hand_inputs(which,
+                               static_cast<float>(webapi_query_double(q, "trigger", cur.trigger)),
+                               static_cast<float>(webapi_query_double(q, "squeeze", cur.squeeze)),
+                               cur.thumbstick, cur.buttons);
         } else if (route == "/xr/hands") {
             mod.set_hands_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/hand") {
@@ -10404,6 +10414,9 @@ bool Framework::initialize() {
               .f("hand_rot_y", st.hand_rotation[1], 5)
               .f("hand_rot_z", st.hand_rotation[2], 5)
               .f("hand_rot_w", st.hand_rotation[3], 5)
+              .b("trigger_armed", st.trigger).b("firing", st.firing)
+              .u("pulls", static_cast<size_t>(st.pulls))
+              .f("ammo_total", static_cast<double>(sdk::PlayerMgr::ammo_total(0).value_or(-1)), 0)
               .f("aim_yaw_deg", sdk::PlayerMgr::aim_yaw(0).value_or(0.0f) * 57.2957795, 4)
               .f("aim_pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4);
 

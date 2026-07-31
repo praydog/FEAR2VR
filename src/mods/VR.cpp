@@ -4,8 +4,10 @@
 #include <cmath>
 
 #include "sdk/PlayerMgr.hpp"
+#include "sdk/Input.hpp"
 #include "sdk/Object.hpp"
 #include "BoneControl.hpp"
+#include "SyntheticInput.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
 
@@ -29,6 +31,18 @@ std::atomic<bool> g_have_rest{false};
 // riding it. What the bone wants is "how far has the controller turned since rest".
 std::atomic<float> g_hand_rest_rot[4]{};
 std::atomic<float> g_hand_rot[4]{};
+std::atomic<bool> g_trigger{false};
+std::atomic<bool> g_firing{false};
+std::atomic<uint64_t> g_pulls{0};
+
+// Half-pull. A single threshold would chatter at the boundary, so release is lower than press --
+// the standard hysteresis a physical trigger needs when it is being read as a button.
+constexpr float kTriggerPress = 0.5f;
+constexpr float kTriggerRelease = 0.35f;
+
+// The engine's fire button, in the encoding SyntheticInput uses: mouse buttons live above the
+// virtual-key range, and 0x100 is the left one.
+constexpr uint8_t kMouseFire = 0;
 
 // Last head orientation seen, in both spaces. Reported so a consumer -- or the fixture -- can
 // check the conversion against its input without recomputing it, which would just be asserting
@@ -54,6 +68,7 @@ void VR::on_shutdown() {
     // Release the view. HeadTracking composes rather than overrides, so clearing is enough -- the
     // engine's own identity write stands on the very next frame and there is nothing to restore.
     HeadTracking::get().clear();
+    set_trigger_enabled(false);
     set_hands_enabled(false);
     vr::simulated_runtime().destroy();
 }
@@ -65,6 +80,20 @@ std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& 
 
 std::array<float, 3> VR::runtime_to_engine_position(const std::array<float, 3>& p) {
     return {p[0] * kUnitsPerMetre, p[1] * kUnitsPerMetre, -p[2] * kUnitsPerMetre};
+}
+
+void VR::set_trigger_enabled(bool enabled) {
+    g_trigger.store(enabled, std::memory_order_relaxed);
+
+    if (!enabled && g_firing.exchange(false, std::memory_order_relaxed)) {
+        // NEVER LEAVE THE TRIGGER HELD. A latched fire button outlives this mod -- the engine keeps
+        // the state -- and would burn the magazine with nobody driving it.
+        sdk::Input::send_mouse_button(kMouseFire, false);
+    }
+}
+
+bool VR::trigger_enabled() const {
+    return g_trigger.load(std::memory_order_relaxed);
 }
 
 void VR::set_hands_enabled(bool enabled) {
@@ -117,6 +146,7 @@ void VR::on_frame() {
     rt.update_input();
 
     update_hands();
+    update_trigger();
 
     const auto head = rt.head();
     g_head_valid.store(head.valid, std::memory_order_relaxed);
@@ -179,6 +209,30 @@ void VR::on_frame() {
 
     HeadTracking::get().set_head_rotation({outer.x, outer.y, outer.z, outer.w});
     g_applied.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VR::update_trigger() {
+    if (!g_trigger.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    const auto right = vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT);
+    const bool was = g_firing.load(std::memory_order_relaxed);
+    const bool now = was ? (right.trigger > kTriggerRelease) : (right.trigger > kTriggerPress);
+
+    if (now == was) {
+        return;
+    }
+
+    // EDGE ONLY. The engine consumes a press edge; re-asserting every frame would keep overwriting
+    // the transition it is looking for -- the same reason SyntheticInput applies keys after the
+    // engine's own poll rather than before it.
+    sdk::Input::send_mouse_button(kMouseFire, now);
+    g_firing.store(now, std::memory_order_relaxed);
+
+    if (now) {
+        g_pulls.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void VR::update_hands() {
@@ -259,6 +313,9 @@ VR::State VR::state() const {
     s.applied = g_applied.load(std::memory_order_relaxed);
     s.head_valid = g_head_valid.load(std::memory_order_relaxed);
     s.hands = g_hands.load(std::memory_order_relaxed);
+    s.trigger = g_trigger.load(std::memory_order_relaxed);
+    s.firing = g_firing.load(std::memory_order_relaxed);
+    s.pulls = g_pulls.load(std::memory_order_relaxed);
     s.hand_applied = g_hand_applied.load(std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
         s.hand_offset[i] = g_hand_off[i].load(std::memory_order_relaxed);
