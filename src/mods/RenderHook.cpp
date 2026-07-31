@@ -71,6 +71,10 @@ int __fastcall present_detour(void* self, void* /*edx*/) {
 
     g_frames.fetch_add(1, std::memory_order_relaxed);
 
+    // Establish WHICH thread this is, once, and prime anything only this thread may read. The
+    // device is single-threaded here, so every other thread depends on this having happened.
+    sdk::Render::note_render_thread();
+
     // Consumers run BEFORE the engine presents -- that is the whole point of the boundary. Read the count once
     // so a registration racing with a frame cannot make this loop read past what was published.
     g_dispatch_in_flight.fetch_add(1, std::memory_order_acquire);

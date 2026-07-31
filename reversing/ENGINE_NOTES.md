@@ -972,6 +972,47 @@ runtime. Also: resolving `xrGetInstanceProcAddr` through a NULL instance returns
 (XR_ERROR_HANDLE_INVALID) and that is the runtime being CORRECT -- a null instance may serve only the
 globals. An early probe read the refusal as a fault.
 
+### THE DEVICE IS SINGLE-THREADED, and three bugs came out of not knowing it
+
+Read from the live device with `GetCreationParameters` rather than inferred from the engine's
+creation code, because a wrapper or overlay that got there first can change it:
+
+    BehaviorFlags 0x42 = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE
+    D3DCREATE_MULTITHREADED (0x4) is NOT set
+
+One bit, and it governs every cross-thread decision this mod makes. It was unmapped until a crash
+forced the question, and finding it immediately explained three separate failures.
+
+**ONE: releasing surfaces from the unload thread killed the game.** `FrameCapture::on_shutdown` runs
+on the unload thread and released five surfaces while the renderer was still submitting. It surfaced
+as an access violation on an `nvd3dum.dll` worker thread immediately after
+`[main] unload requested; retiring`, with NO frame of ours anywhere on the stack -- which is what an
+off-thread D3D call looks like when it lands. The teardown now HANDS the release to the render
+thread while the present callback is still installed and waits, bounded, for a frame to service it;
+if none does, the surfaces are leaked deliberately. Same doctrine as the callback rule already
+there: leaking is survivable, releasing off-thread is not.
+
+**TWO: reading the flags off-thread broke the thing that measured them.** The status route called
+`GetCreationParameters` three times per poll from the IPC thread, and the suite polls constantly.
+Frame capture stopped working entirely. Creation parameters never change, so they are now cached and
+primed by the render hook on the first frame; off the render thread the accessor returns the cache
+or `nullopt`, never a cross-thread call. `sdk::Render::render_thread_id()` is recorded there too,
+from the thread that actually presents.
+
+**THREE, AND THE WORST: our resources made device loss PERMANENT.** The mirror, scaled and pipe
+surfaces are `CreateRenderTarget`, which is implicitly `D3DPOOL_DEFAULT`, and D3D9 refuses to `Reset`
+a device while any default-pool resource is alive. So an ordinary alt-tab became unrecoverable: every
+later `GetBackBuffer` returned `D3DERR_DEVICELOST` with the window visible, not minimised, and frames
+still counting. Nothing short of restarting the game fixed it, and for a while it looked like a
+regression in the capture code. `on_present` now checks `TestCooperativeLevel()` and drops every
+device resource the moment it stops being `D3D_OK`; they are all created lazily, so recovery is
+automatic. `?drop=1` forces the same drop on demand, because detection cannot really be got wrong
+but the REBUILD can -- so the rebuild is what the suite exercises.
+
+**The general rule this leaves.** A mod sharing someone else's device owns two obligations it did
+not ask for: touch it only from the thread that created it, and never hold a default-pool resource
+across a loss. Both are invisible until they are catastrophic, and both are now asserted.
+
 ### The resident proxy: how the runtime stays without pinning the mod
 
 The door is no longer one-way. `fear2xr.dll` loads the OpenXR runtime and never leaves; the mod

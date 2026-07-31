@@ -12141,6 +12141,106 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- LETTING GO OF THE DEVICE, WHICH THIS MOD ONCE REFUSED TO DO ------------
+    //
+    // The mirror, scaled and pipe surfaces are CreateRenderTarget -- implicitly D3DPOOL_DEFAULT --
+    // and D3D9 refuses to Reset a device while any default-pool resource is alive. Holding them
+    // across an alt-tab made the loss PERMANENT: every later GetBackBuffer returned
+    // D3DERR_DEVICELOST with the window visible and frames still counting, and nothing recovered
+    // short of restarting the game. A mod that allocates default-pool resources must drop them the
+    // moment the device stops being OK.
+    //
+    // Detection is trivial and cannot be got wrong; the REBUILD is the half that breaks, so that is
+    // what is exercised here -- on demand, rather than by minimising someone's window.
+    {
+        std::string r;
+        long long w0 = 0, h0 = 0, fails0 = 0, lost0 = -1;
+        double luma0 = 0.0;
+
+        http::get(port, "/xr/capture?stage=present", r);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        if (http::get(port, "/xr/head", r)) {
+            const std::string b = http::body_of(r);
+            json_int(b, "fc_width", w0);
+            json_int(b, "fc_height", h0);
+            json_int(b, "fc_failures", fails0);
+            json_int(b, "fc_device_lost", lost0);
+            json_double(b, "fc_mean_luma", luma0);
+        }
+
+        bool drop_ok = false;
+
+        if (http::get(port, "/xr/capture?drop=1", r)) {
+            json_bool(http::body_of(r), "fc_drop_ok", drop_ok);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        http::get(port, "/xr/capture?stage=present", r);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        long long w1 = 0, h1 = 0, fails1 = 0;
+        double luma1 = 0.0;
+
+        if (http::get(port, "/xr/head", r)) {
+            const std::string b = http::body_of(r);
+            json_int(b, "fc_width", w1);
+            json_int(b, "fc_height", h1);
+            json_int(b, "fc_failures", fails1);
+            json_double(b, "fc_mean_luma", luma1);
+        }
+
+        printf("[fixture] device resources: %lldx%lld luma %.2f -> dropped -> %lldx%lld luma %.2f "
+               "(losses %lld)\n", w0, h0, luma0, w1, h1, luma1, lost0);
+
+        check(w0 > 0 && h0 > 0, "a capture succeeds before the drop, so the comparison has a "
+                                "baseline rather than measuring two failures against each other");
+        check(drop_ok, "the resource drop is accepted");
+        check(w1 == w0 && h1 == h0,
+              "and the surfaces are REBUILT after being dropped -- which is what makes recovery "
+              "from a real device loss automatic instead of a restart");
+        check(luma1 > 1.0,
+              "and the rebuilt surfaces carry the actual frame, not the blank memory a surface "
+              "nothing has issued into hands back");
+        check(fails1 == fails0,
+              "with no capture failing across the drop, so letting go costs nothing");
+    }
+
+    // ---- WHO IS ALLOWED TO TOUCH THE DEVICE -------------------------------------
+    //
+    // One bit of BehaviorFlags governs every cross-thread decision this mod makes, and it was
+    // unmapped until a crash forced the question. D3DCREATE_MULTITHREADED (0x4) is NOT set here:
+    // the device is single-threaded, so anything that calls into it -- or releases something it
+    // owns -- must run on the render thread. FrameCapture's teardown hands its surfaces to the
+    // present callback for exactly this reason.
+    //
+    // Read from the LIVE device via GetCreationParameters rather than inferred from the engine's
+    // creation code, because a wrapper or overlay that got there first can change it.
+    {
+        std::string r;
+        long long flags = -1;
+        bool multithreaded = true;
+
+        if (http::get(port, "/xr/head", r)) {
+            const std::string b = http::body_of(r);
+            json_int(b, "d3d_behavior_flags", flags);
+            json_bool(b, "d3d_multithreaded", multithreaded);
+        }
+
+        printf("[fixture] d3d device: BehaviorFlags 0x%llX multithreaded=%d\n",
+               static_cast<unsigned long long>(flags < 0 ? 0 : flags),
+               static_cast<int>(multithreaded));
+
+        check(flags > 0,
+              "the live device's creation parameters are readable, which is what makes the "
+              "threading rule a measurement rather than an assumption");
+        // The convenience accessor and the raw flags must agree. A wrong mask here would not fail
+        // loudly -- it would quietly authorise every off-thread call the mod makes.
+        check(multithreaded == ((flags & 0x4) != 0),
+              "and sdk::Render::is_multithreaded() agrees with the D3DCREATE_MULTITHREADED bit in "
+              "the raw flags");
+    }
+
     // ---- THE RESIDENT PROXY, WHICH IS WHAT KEEPS THIS SUITE POSSIBLE ------------
     //
     // Loading an OpenXR runtime into the mod strands its threads in our module, and the unload

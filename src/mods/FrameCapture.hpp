@@ -156,6 +156,18 @@ public:
     // Armed separately from the readback because they answer different questions and a consumer
     // submitting frames does not want a 10 ms stall attached.
     void set_gpu_mirror(bool enabled);
+
+    // ---- DEVICE LOSS -------------------------------------------------------------------------
+    //
+    // How many times this mod has seen the device leave D3D_OK and dropped its resources for it.
+    // Worth exposing: a consumer that allocates its own DEFAULT-pool resources needs to know the
+    // device went away, and a rising count with no recovery is a real symptom.
+    uint32_t device_lost_events() const { return m_device_lost.load(std::memory_order_relaxed); }
+
+    // Drop every device resource at the next frame, as a device loss would. Exists so the REBUILD
+    // path -- the half that actually breaks -- can be exercised on demand instead of only when
+    // someone alt-tabs. Returns false if no frame can service it.
+    bool request_resource_drop();
     bool gpu_mirror() const { return m_mirror_on.load(std::memory_order_relaxed); }
 
     // The live surface. Null until the mirror has run at least once. Valid on the render thread;
@@ -237,9 +249,20 @@ private:
     void service();
     void service_continuous();
     void service_mirror();
+
+    // Free every D3D surface this mod owns. MUST run on the render thread -- see on_shutdown().
+    void release_surfaces();
+
+    // Free the surfaces but KEEP the caller's intent, so they are rebuilt on the next frame that
+    // needs them. This is what device loss requires -- see the device-lost handling in on_present.
+    void free_device_resources();
     bool verify_gpu_mirror();
 
     std::atomic<bool> m_registered{false};
+    std::atomic<bool> m_release_requested{false};
+    std::atomic<bool> m_released{false};
+    std::atomic<uint32_t> m_device_lost{0};
+    std::atomic<bool> m_drop_requested{false};
     std::atomic<bool> m_pending{false};
     std::atomic<uint64_t> m_captures{0};
     std::atomic<uint64_t> m_failures{0};

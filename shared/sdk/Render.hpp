@@ -77,6 +77,34 @@ public:
     // Live: 5120x1440, BackBufferFormat 21 (A8R8G8B8), BackBufferCount 1.
     static std::optional<D3DPRESENT_PARAMETERS> present_params();
 
+    // ---- HOW THE DEVICE WAS CREATED, WHICH DECIDES WHO MAY TOUCH IT ----------------------------
+    //
+    // D3DDEVICE_CREATION_PARAMETERS carries BehaviorFlags, and one bit of it governs every
+    // cross-thread decision this mod makes: D3DCREATE_MULTITHREADED (0x4). Without it, D3D9 is NOT
+    // free-threaded -- calling into the device, or releasing anything it owns, from a thread other
+    // than the one driving it races the renderer and lands in the display driver.
+    //
+    // This is read from the LIVE DEVICE rather than inferred from the engine's creation code, which
+    // is the only way to be sure: the flags can be adjusted by the engine, a wrapper, or an overlay
+    // that got there first.
+    //
+    // CACHED, AND ONLY READ FROM THE RENDER THREAD. Creation parameters never change for the life
+    // of a device, and calling into a single-threaded device from elsewhere is the exact hazard
+    // this accessor exists to expose -- an early version polled it from the IPC thread on every
+    // status request and broke frame capture. Off the render thread this returns the cached value,
+    // or nullopt until the first frame has primed it.
+    static std::optional<D3DDEVICE_CREATION_PARAMETERS> creation_params();
+
+    // The thread the engine presents on, recorded by the render hook the first time it dispatches.
+    // Zero until a frame has been observed. This is the only thread allowed to touch the device
+    // when it is not multithreaded.
+    static uint32_t render_thread_id();
+    static void note_render_thread();
+
+    // The one question a consumer actually asks. `nullopt` means the device could not be read at
+    // all -- which a caller must treat as "assume not", never as "probably fine".
+    static std::optional<bool> is_multithreaded();
+
     // ---- WHO IS IN FRONT OF D3D9 ----------------------------------------------------
     //
     // WHICH MODULE IMPLEMENTS AN INTERFACE'S METHODS -- the question a mod must answer

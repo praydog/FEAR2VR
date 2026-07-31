@@ -73,6 +73,38 @@ std::optional<std::string> FrameCapture::on_initialize() {
 }
 
 void FrameCapture::on_present() {
+    // Teardown runs HERE, on the thread that owns the device, because the device is single-threaded
+    // (BehaviorFlags 0x42, measured). See on_shutdown() for what this is preventing.
+    if (FrameCapture::get().m_release_requested.load(std::memory_order_acquire)) {
+        FrameCapture::get().release_surfaces();
+        FrameCapture::get().m_released.store(true, std::memory_order_release);
+        return;
+    }
+
+    // ---- DEVICE LOSS, WHICH THIS MOD CAN CAUSE TO BE PERMANENT -----------------------------
+    //
+    // Our mirror, scaled and pipe surfaces are CreateRenderTarget, which is implicitly
+    // D3DPOOL_DEFAULT -- and D3D9 refuses to Reset a device while ANY default-pool resource is
+    // alive. So an ordinary alt-tab, which loses the device and makes the engine reset it, turns
+    // into a device that can never be reset again: every subsequent GetBackBuffer returns
+    // D3DERR_DEVICELOST and the game renders nothing this mod can read for the rest of the session.
+    // Observed exactly that way, with the window visible and frames still counting.
+    //
+    // Holding these is therefore not merely wasteful, it is destructive, and the fix is to let go
+    // the moment the device stops being OK. They are all created lazily, so recovery is automatic.
+    if (auto* dev = sdk::Render::device(); dev != nullptr) {
+        if (dev->TestCooperativeLevel() != D3D_OK) {
+            FrameCapture::get().free_device_resources();
+            FrameCapture::get().m_device_lost.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+
+    // The same drop, on demand, so the rebuild path can be tested without alt-tabbing.
+    if (FrameCapture::get().m_drop_requested.exchange(false, std::memory_order_acq_rel)) {
+        FrameCapture::get().free_device_resources();
+    }
+
     FrameCapture::get().service_continuous();
     // A capture aimed at an earlier stage is serviced there instead; servicing here too would read
     // the finished frame and quietly answer a different question than the one that was asked.
@@ -486,6 +518,11 @@ void FrameCapture::service() {
     IDirect3DSurface9* back = nullptr;
     HRESULT hr = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back);
     if (FAILED(hr) || back == nullptr) {
+        // WHICH THREAD asked matters more than the HRESULT: this device is single-threaded
+        // (BehaviorFlags 0x42), so a call from anywhere but the render thread can fail for reasons
+        // that have nothing to do with the swap chain.
+        LOGX("[capture] GetBackBuffer hr=0x%08X on tid %lu (render tid %lu)",
+             static_cast<unsigned>(hr), ::GetCurrentThreadId(), sdk::Render::render_thread_id());
         m_hr.store(hr, std::memory_order_relaxed);
         m_failures.fetch_add(1, std::memory_order_relaxed);
         m_pending.store(false, std::memory_order_release);
@@ -661,28 +698,16 @@ void FrameCapture::service() {
     m_pending.store(false, std::memory_order_release);
 }
 
-void FrameCapture::on_shutdown() {
-    // DEREGISTER FIRST, THEN FREE. The previous version cleared flags and released -- and released
-    // m_scaled BEFORE clearing m_continuous, so the render thread could still be inside
-    // service_continuous() using a surface that had just gone away. A flag is not synchronisation:
-    // the callback can already be past the check when the release lands.
-    //
-    // remove_present_callback() returns only once the slot is empty AND no dispatch pass is still
-    // running, which is the actual precondition for freeing what the callback touches.
-    m_pending.store(false, std::memory_order_release);
-    m_continuous.store(false, std::memory_order_release);
-
-    if (m_registered.load(std::memory_order_relaxed)) {
-        if (!RenderHook::get().remove_present_callback(&FrameCapture::on_present)) {
-            // Fail-closed, matching the framework's rule: a callback that may still be executing
-            // means the surfaces must NOT be released. Leaking them is survivable; a use-after-free
-            // on the render thread is not.
-            LOGX("[capture] present callback still in flight -- leaking surfaces deliberately");
-            return;
-        }
-        m_registered.store(false, std::memory_order_relaxed);
+bool FrameCapture::request_resource_drop() {
+    if (!m_registered.load(std::memory_order_relaxed)) {
+        return false;
     }
 
+    m_drop_requested.store(true, std::memory_order_release);
+    return true;
+}
+
+void FrameCapture::free_device_resources() {
     if (m_staging != nullptr) {
         static_cast<IDirect3DSurface9*>(m_staging)->Release();
         m_staging = nullptr;
@@ -697,9 +722,72 @@ void FrameCapture::on_shutdown() {
             p = nullptr;
         }
     }
-    m_mirror_on.store(false, std::memory_order_release);
     if (m_mirror != nullptr) {
         static_cast<IDirect3DSurface9*>(m_mirror)->Release();
         m_mirror = nullptr;
     }
+
+    // The pipeline has to re-prime: its surfaces are gone, and reading one that nothing has issued
+    // into would hand back whatever the driver left in fresh memory.
+    m_pipe_primed = false;
+}
+
+void FrameCapture::release_surfaces() {
+    // Shutdown: drop the intent as well, so nothing rebuilds behind us.
+    m_mirror_on.store(false, std::memory_order_release);
+    free_device_resources();
+}
+
+void FrameCapture::on_shutdown() {
+    // ---- FREE ON THE THREAD THAT OWNS THE DEVICE -----------------------------------------------
+    //
+    // Two separate hazards, and an earlier version fixed only the first.
+    //
+    // ONE: a callback that may still be executing must not have its surfaces freed underneath it.
+    // remove_present_callback() returns only once the slot is empty AND no dispatch pass is still
+    // running, which is the actual precondition -- a flag is not synchronisation.
+    //
+    // TWO, AND THIS ONE KILLED THE GAME: the device is SINGLE-THREADED. Measured live through
+    // GetCreationParameters, BehaviorFlags is 0x42 -- HARDWARE_VERTEXPROCESSING | FPU_PRESERVE,
+    // with no D3DCREATE_MULTITHREADED. on_shutdown runs on the UNLOAD thread, so releasing device
+    // children here races the renderer inside the display driver even when no callback of ours is
+    // running. It showed up as an access violation on an nvd3dum.dll worker thread immediately
+    // after "unload requested; retiring", with no frame of ours anywhere on the stack.
+    //
+    // So the release is HANDED to the render thread while the present callback is still installed,
+    // and this thread waits for it. Deregistering first would remove the only thread allowed to do
+    // the work.
+    m_pending.store(false, std::memory_order_release);
+    m_continuous.store(false, std::memory_order_release);
+
+    if (!m_registered.load(std::memory_order_relaxed)) {
+        // Never registered means no other thread has ever touched these, so this thread is the
+        // only one that could -- and it is safe to do it here.
+        release_surfaces();
+        return;
+    }
+
+    m_released.store(false, std::memory_order_relaxed);
+    m_release_requested.store(true, std::memory_order_release);
+
+    // Bounded: a game that is not presenting -- minimised, paused, already dying -- would otherwise
+    // hang the unload forever, and a stuck unload is worse than a leak.
+    for (int i = 0; i < 200 && !m_released.load(std::memory_order_acquire); ++i) {
+        ::Sleep(5);
+    }
+
+    m_release_requested.store(false, std::memory_order_release);
+
+    if (!m_released.load(std::memory_order_acquire)) {
+        // Fail-closed, the same doctrine as the callback rule: leaking is survivable, releasing
+        // off-thread is not. The leak lasts until the game exits, which is a price worth paying.
+        LOGX("[capture] no frame serviced the release -- leaking surfaces deliberately");
+    }
+
+    if (!RenderHook::get().remove_present_callback(&FrameCapture::on_present)) {
+        LOGX("[capture] present callback still in flight -- leaving the slot installed");
+        return;
+    }
+
+    m_registered.store(false, std::memory_order_relaxed);
 }

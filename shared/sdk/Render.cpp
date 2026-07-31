@@ -1,5 +1,7 @@
 #include "Render.hpp"
 
+#include <atomic>
+
 #include "Memory.hpp"
 #include "Modules.hpp"
 
@@ -91,6 +93,68 @@ std::optional<D3DCAPS9> Render::device_caps() {
         return std::nullopt;
     }
     return out;
+}
+
+namespace {
+
+std::atomic<uint32_t> g_render_tid{0};
+std::atomic<bool> g_creation_cached{false};
+D3DDEVICE_CREATION_PARAMETERS g_creation{};
+
+}  // namespace
+
+uint32_t Render::render_thread_id() {
+    return g_render_tid.load(std::memory_order_acquire);
+}
+
+void Render::note_render_thread() {
+    const uint32_t self = ::GetCurrentThreadId();
+
+    if (g_render_tid.load(std::memory_order_relaxed) != self) {
+        g_render_tid.store(self, std::memory_order_release);
+    }
+
+    // Prime the cache here, where it is legal, so every other thread can read it for free.
+    if (!g_creation_cached.load(std::memory_order_acquire)) {
+        auto* dev = device();
+
+        if (dev != nullptr && SUCCEEDED(dev->GetCreationParameters(&g_creation))) {
+            g_creation_cached.store(true, std::memory_order_release);
+        }
+    }
+}
+
+std::optional<D3DDEVICE_CREATION_PARAMETERS> Render::creation_params() {
+    if (g_creation_cached.load(std::memory_order_acquire)) {
+        return g_creation;
+    }
+
+    // Not primed yet. Only the render thread may ask the device directly; anyone else gets nullopt
+    // rather than a cross-thread call into a single-threaded device.
+    const uint32_t tid = g_render_tid.load(std::memory_order_acquire);
+
+    if (tid != 0 && ::GetCurrentThreadId() != tid) {
+        return std::nullopt;
+    }
+
+    auto* dev = device();
+
+    if (dev == nullptr || FAILED(dev->GetCreationParameters(&g_creation))) {
+        return std::nullopt;
+    }
+
+    g_creation_cached.store(true, std::memory_order_release);
+    return g_creation;
+}
+
+std::optional<bool> Render::is_multithreaded() {
+    const auto p = creation_params();
+
+    if (!p.has_value()) {
+        return std::nullopt;
+    }
+
+    return (p->BehaviorFlags & D3DCREATE_MULTITHREADED) != 0;
 }
 
 std::optional<D3DPRESENT_PARAMETERS> Render::present_params() {

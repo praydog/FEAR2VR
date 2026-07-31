@@ -10474,6 +10474,7 @@ bool Framework::initialize() {
         bool fire_aim_refused = false;
         bool ammo_floor_refused = false;
         bool capture_armed = false;
+        bool capture_drop_ok = false;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
@@ -10552,6 +10553,11 @@ bool Framework::initialize() {
             // thread, in phase with it.
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
+            }
+            if (webapi_query_int(q, "drop", 0) != 0) {
+                // Force the device-loss path's resource drop, so the REBUILD half can be exercised
+                // without minimising the window.
+                capture_drop_ok = FrameCapture::get().request_resource_drop();
             }
             if (webapi_query_int(q, "verify_mirror", 0) != 0) {
                 FrameCapture::get().request_gpu_mirror_verify();
@@ -10725,7 +10731,13 @@ bool Framework::initialize() {
               .f("head_pos_y", head.position[1], 4)
               .b("xr_rt_discovered", sdk::OpenXR::get().discovered())
               .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
+              .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())
+              .u("d3d_behavior_flags",
+                 static_cast<size_t>(sdk::Render::creation_params().has_value()
+                                         ? sdk::Render::creation_params()->BehaviorFlags
+                                         : 0u))
+              .b("d3d_multithreaded", sdk::Render::is_multithreaded().value_or(false))
               .u("xr_rt_handle",
                  static_cast<size_t>(sdk::OpenXR::get().persisted_handle(
                      webapi_query_string(q, "fetch").c_str())))
@@ -10795,6 +10807,7 @@ bool Framework::initialize() {
               .f("fr_bo_y", FireRedirect::get().built_origin()[1], 2)
               .f("fr_bo_z", FireRedirect::get().built_origin()[2], 2)
               .b("fc_armed", capture_armed)
+              .b("fc_drop_ok", capture_drop_ok)
               .b("fc_pending", FrameCapture::get().pending())
               .u("fc_captures", FrameCapture::get().captures())
               .u("fc_failures", FrameCapture::get().failures())
