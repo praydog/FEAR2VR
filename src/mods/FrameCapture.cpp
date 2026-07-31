@@ -74,7 +74,15 @@ std::optional<std::string> FrameCapture::on_initialize() {
 
 void FrameCapture::on_present() {
     FrameCapture::get().service_continuous();
-    FrameCapture::get().service();
+    // A capture aimed at an earlier stage is serviced there instead; servicing here too would read
+    // the finished frame and quietly answer a different question than the one that was asked.
+    if (FrameCapture::get().stage() == FrameCapture::Stage::Present) {
+        FrameCapture::get().service();
+    }
+}
+
+void FrameCapture::service_now() {
+    service();
 }
 
 bool FrameCapture::request_capture() {

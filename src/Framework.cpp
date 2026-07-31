@@ -10493,6 +10493,12 @@ bool Framework::initialize() {
             // capture is timing-only. This is the project's first visual oracle that cannot be
             // stale -- it samples the buffer the engine is about to present, on the render
             // thread, in phase with it.
+            if (q.find("stage") != q.end()) {
+                const auto st = webapi_query_string(q, "stage");
+                FrameCapture::get().set_stage(st == "second_eye"
+                                                  ? FrameCapture::Stage::AfterSecondEye
+                                                  : FrameCapture::Stage::Present);
+            }
             if (q.find("continuous") != q.end()) {
                 FrameCapture::get().set_continuous(webapi_query_int(q, "continuous", 0) != 0);
             }

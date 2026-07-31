@@ -8,6 +8,7 @@
 #include "sdk/SceneCamera.hpp"
 
 #include "Hooks.hpp"
+#include "FrameCapture.hpp"
 #include "RenderHook.hpp"
 #include "Log.hpp"
 
@@ -439,6 +440,13 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
 
     draw_original(a1, a2);
     g_second_draws.fetch_add(1, std::memory_order_relaxed);
+
+    // A capture aimed at THIS stage reads the back buffer here, before anything downstream of the
+    // scene draw can touch it. That is the difference between "the right eye drew wrong" and
+    // "something later overwrote it", which the finished frame cannot distinguish.
+    if (FrameCapture::get().stage() == FrameCapture::Stage::AfterSecondEye) {
+        FrameCapture::get().service_now();
+    }
     return first;
 }
 

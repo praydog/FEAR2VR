@@ -126,6 +126,26 @@ public:
     double last_right_luma() const;
     double last_mean_luma() const;
 
+    // ---- WHERE IN THE FRAME THE PICTURE IS TAKEN -----------------------------------------------
+    //
+    // By default the readback happens at PRESENT, which is the finished frame. That is the right
+    // answer for a screenshot and the wrong one for diagnosing a render path, because everything
+    // between a draw and the present has already happened to the pixels.
+    //
+    // AfterSecondEye reads the back buffer INSIDE the pass hook, immediately after the second eye's
+    // draw returns. Comparing the two answers "did this stage produce the picture, or did something
+    // later change it" -- which no amount of staring at the final frame can settle.
+    enum class Stage : uint32_t {
+        Present = 0,
+        AfterSecondEye = 1,
+    };
+    void set_stage(Stage s) { m_stage.store(static_cast<uint32_t>(s), std::memory_order_release); }
+    Stage stage() const { return static_cast<Stage>(m_stage.load(std::memory_order_acquire)); }
+
+    // Perform a pending readback right now. MUST be called on the render thread; it is what the
+    // present callback calls, exposed so another stage can call it at its own point in the frame.
+    void service_now();
+
     bool request_capture();
 
     // Arm one capture AND write it to `path` as a BMP. Empty path captures without
@@ -186,6 +206,7 @@ private:
     std::atomic<int64_t> m_stretch_ticks{0};
     std::atomic<uint32_t> m_divisor{1};
     std::atomic<bool> m_continuous{false};
+    std::atomic<uint32_t> m_stage{0};
     std::atomic<uint64_t> m_signature{0};
     std::atomic<int64_t> m_mean_luma_milli{0};
     std::atomic<int64_t> m_left_luma_milli{0};

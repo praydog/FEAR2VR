@@ -938,6 +938,53 @@ so it never reached `capture_viewport()` or `record_pass()`: the census reported
 frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
 one. It is recorded now, which is what made the table above possible.
 
+### A SUBMITTABLE STEREO PAIR EXISTS -- it is destroyed after it is drawn
+
+Capturing the back buffer INSIDE the pass hook, immediately after the second eye's draw returns,
+instead of at present. Same frame, same configuration, two stages:
+
+    stage               left half vs mono   right half vs mono
+    after second eye          3.48                 3.48        <- both correct
+    at present                1.24                13.55        <- right corrupted
+
+And at present the right half's own two quarters read 2.95 against each other -- near-identical,
+i.e. TILED -- where immediately after the draw they read 11.51, properly different content.
+
+**So the right eye renders correctly and something downstream of the scene draw destroys it.** The
+frame a headset would submit already exists inside the frame.
+
+The pair itself, measured at that stage with both halves in ONE capture, so no temporal confound of
+any kind:
+
+    ipd 0.0  (control)   whole-half diff 0.04    far dx +0 px   near dx  +0 px
+    ipd 3.2  (human)     whole-half diff 6.56    far dx -3 px   near dx -10 px
+
+Identical at zero separation; depth-ordered parallax with the correct sign at a human baseline. That
+is a complete stereo verification -- null control, signal, and depth ordering -- with time removed
+from the experiment rather than controlled for.
+
+**This reframes the endgame.** A VR consumer does not need the downstream corruption fixed, and does
+not need per-eye render targets: it takes the frame at this stage and hands it to the compositor.
+`FrameCapture::Stage::AfterSecondEye` is that hook, and `/xr/capture?stage=second_eye` drives it.
+
+The suite's stereo check was rewritten on top of it. The old one captured one eye then the other,
+which is separated in time, so a flickering corridor could exceed the eye separation and the block
+gated itself off -- often. The new one reads both halves of a single capture, where flicker lands on
+both and cancels: the null control repeated 0.006 three times running.
+
+### A check that passed standalone and failed in the suite, again
+
+The new stereo check went red in the suite while passing by hand on the same build: the null control
+read 2.17 where it should read ~0. The second eye WAS drawing (+538 draws), so the pair was real.
+
+An earlier block drives the per-eye frustum centre to +/-0.12 and leaves it there. A non-zero centre
+offsets the right eye's projection, so the halves differ even at zero eye separation. The block now
+sets `centre_x=0&centre_y=0` alongside the IPD it is testing.
+
+Third time this project has hit the same shape (pitch left in a clamp, weapon left on a flamethrower,
+frustum centre left at 0.12). The rule keeps earning its place: **establish every input the claim
+depends on, not just the one under test.**
+
 ### The right half holds TWO copies, from ONE draw
 
 Splitting the halves out of a capture and looking at them stacked settles what four sessions of
