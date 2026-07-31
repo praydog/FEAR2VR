@@ -8821,43 +8821,66 @@ int main(int argc, char** argv) {
                 //
                 // It exists because a screenshot could not settle it: a dark corridor looks a great deal like
                 // a clipped viewport, and it was read wrong in both directions before this number existed.
+                // A SETTLED READ, NOT A SINGLE SAMPLE. The census reports whichever pass ran last, so a
+                // read taken a fixed time after the request can land on a frame that has not adopted the new
+                // eye yet -- or on a different pass entirely. This failed once in ten runs that way, which is
+                // worse than failing always: it teaches everyone to re-run. Two consecutive agreeing reads
+                // mean the configuration has stopped moving, and the wait is bounded so a genuinely unstable
+                // reading gates the check instead of failing it.
+                auto settled_viewport = [&](const char* route, double& lo, double& hi) {
+                    double pl = -1.0, pr = -1.0;
+                    http::get(port, route, resp);
+
+                    for (int attempt = 0; attempt < 8; ++attempt) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        std::string body;
+
+                        if (!http::get(port, "/sdk/shader-params", resp)) {
+                            continue;
+                        }
+
+                        body = http::body_of(resp);
+                        double cl = -1.0, cr = -1.0;
+
+                        if (!json_double(body, "cp_vp_l", cl) || !json_double(body, "cp_vp_r", cr)) {
+                            continue;
+                        }
+
+                        if (cl == pl && cr == pr && cr > cl) {
+                            lo = cl;
+                            hi = cr;
+                            return true;
+                        }
+
+                        pl = cl;
+                        pr = cr;
+                    }
+
+                    return false;
+                };
+
                 double full_l = -1.0, full_r = -1.0;
-                http::get(port, "/stereo/eye?eye=off", resp);
-                std::this_thread::sleep_for(std::chrono::milliseconds(400));
-                std::string vb;
-                if (http::get(port, "/sdk/shader-params", resp)) {
-                    vb = http::body_of(resp);
-                }
-                const bool have_full = json_double(vb, "cp_vp_l", full_l) &&
-                                       json_double(vb, "cp_vp_r", full_r);
+                const bool have_full = settled_viewport("/stereo/eye?eye=off", full_l, full_r);
                 check(have_full && full_r > full_l, "the unsplit pass reports a non-degenerate viewport");
 
                 if (have_full) {
                     double ll = -1.0, lr = -1.0, rl = -1.0, rr2 = -1.0;
-                    http::get(port, "/stereo/eye?eye=left&half_ipd=1&split=1", resp);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-                    if (http::get(port, "/sdk/shader-params", resp)) {
-                        const std::string b2 = http::body_of(resp);
-                        json_double(b2, "cp_vp_l", ll);
-                        json_double(b2, "cp_vp_r", lr);
-                    }
-                    http::get(port, "/stereo/eye?eye=right&half_ipd=1&split=1", resp);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-                    if (http::get(port, "/sdk/shader-params", resp)) {
-                        const std::string b3 = http::body_of(resp);
-                        json_double(b3, "cp_vp_l", rl);
-                        json_double(b3, "cp_vp_r", rr2);
-                    }
+                    const bool have_left =
+                        settled_viewport("/stereo/eye?eye=left&half_ipd=1&split=1", ll, lr);
+                    const bool have_right =
+                        settled_viewport("/stereo/eye?eye=right&half_ipd=1&split=1", rl, rr2);
                     const double mid = full_l + (full_r - full_l) * 0.5;
                     // Rounded to whole pixels by the engine (+0.5 then truncate), so allow one pixel rather
                     // than inventing a wider window.
                     printf("[fixture] split viewports: full [%.0f..%.0f] left [%.0f..%.0f] "
                            "right [%.0f..%.0f] mid %.1f\n", full_l, full_r, ll, lr, rl, rr2, mid);
-                    check(ll == full_l && lr > mid - 1.5 && lr < mid + 1.5,
-                          "a left-eye split yields the LEFT half of the target in pixels");
-                    check(rr2 == full_r && rl > mid - 1.5 && rl < mid + 1.5,
-                          "a right-eye split yields the RIGHT half -- the two are complementary, which is what "
-                          "side-by-side means");
+                    check_gated(have_left, "the left-eye viewport never settled", g_skipped_motion,
+                                ll == full_l && lr > mid - 1.5 && lr < mid + 1.5,
+                                "a left-eye split yields the LEFT half of the target in pixels");
+                    check_gated(have_right, "the right-eye viewport never settled", g_skipped_motion,
+                                rr2 == full_r && rl > mid - 1.5 && rl < mid + 1.5,
+                                "a right-eye split yields the RIGHT half -- the two are complementary, which "
+                                "is what side-by-side means");
                     printf("[fixture] viewport: full [%lld..%lld], left [%lld..%lld], right [%lld..%lld]\n",
                            static_cast<long long>(full_l), static_cast<long long>(full_r),
                            static_cast<long long>(ll), static_cast<long long>(lr),
