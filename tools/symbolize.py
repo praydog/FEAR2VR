@@ -28,6 +28,21 @@ class SYMBOL_INFO(ctypes.Structure):
     ]
 
 
+class MODULE_INFO(ctypes.Structure):
+    """Only needed to answer "did the PDB actually load, and does it match?" -- the question that
+    distinguishes a bad lookup from a bad build."""
+    _fields_ = [("SizeOfStruct", wt.DWORD), ("BaseOfImage", ctypes.c_ulonglong),
+                ("ImageSize", wt.DWORD), ("TimeDateStamp", wt.DWORD), ("CheckSum", wt.DWORD),
+                ("NumSyms", wt.DWORD), ("SymType", ctypes.c_int),
+                ("ModuleName", ctypes.c_char * 32), ("ImageName", ctypes.c_char * 256),
+                ("LoadedImageName", ctypes.c_char * 256), ("LoadedPdbName", ctypes.c_char * 256),
+                ("CVSig", wt.DWORD), ("CVData", ctypes.c_char * (260 * 3)), ("PdbSig", wt.DWORD),
+                ("PdbSig70", ctypes.c_byte * 16), ("PdbAge", wt.DWORD), ("PdbUnmatched", wt.BOOL),
+                ("DbgUnmatched", wt.BOOL), ("LineNumbers", wt.BOOL), ("GlobalSymbols", wt.BOOL),
+                ("TypeInfo", wt.BOOL), ("SourceIndexed", wt.BOOL), ("Publics", wt.BOOL),
+                ("MachineType", wt.DWORD), ("Reserved", wt.DWORD)]
+
+
 class IMAGEHLP_LINE64(ctypes.Structure):
     _fields_ = [("SizeOfStruct", wt.ULONG), ("Key", ctypes.c_void_p),
                 ("LineNumber", wt.ULONG), ("FileName", ctypes.c_char_p),
@@ -38,7 +53,7 @@ def main(offsets):
     dbghelp = ctypes.WinDLL("dbghelp.dll")
     proc = ctypes.c_void_p(0x1234)  # a fake but unique handle: we never touch a live process
 
-    dbghelp.SymSetOptions(0x00000004 | 0x00000010)  # DEFERRED_LOADS | LOAD_LINES
+    dbghelp.SymSetOptions(0x00000002 | 0x00000010)  # UNDNAME | LOAD_LINES
     # SEARCH PATH EXPLICITLY. Deferred loading will not go looking beside the image on its own
     # when the "process" is a fabricated handle with no loaded modules to infer a path from.
     search = os.path.abspath(os.path.dirname(DLL)).encode()
@@ -55,14 +70,25 @@ def main(offsets):
                                         ctypes.c_void_p, wt.DWORD]
     base = dbghelp.SymLoadModuleEx(proc, None, os.path.abspath(DLL).encode(), None,
                                    0x10000000, 0, None, 0)
-    print("  module base: 0x%X" % base)
     if not base:
         print("could not load symbols for", DLL); return 1
 
+    mi = MODULE_INFO()
+    mi.SizeOfStruct = ctypes.sizeof(MODULE_INFO)
+    dbghelp.SymGetModuleInfo64.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong, ctypes.POINTER(MODULE_INFO)]
+    if dbghelp.SymGetModuleInfo64(proc, ctypes.c_ulonglong(base), ctypes.byref(mi)):
+        kinds = {0: "None", 1: "Coff", 2: "Cv", 3: "Pdb", 4: "Export", 5: "Deferred", 6: "Sym", 7: "Dia"}
+        print("  symbols: %s from %s%s" % (
+            kinds.get(mi.SymType, mi.SymType), mi.LoadedPdbName.decode(errors="replace"),
+            "  *** PDB DOES NOT MATCH THE BINARY ***" if mi.PdbUnmatched else ""))
     for off in offsets:
         addr = 0x10000000 + off
         buf = SYMBOL_INFO()
-        buf.SizeOfStruct = ctypes.sizeof(SYMBOL_INFO) - (MAX_SYM_NAME + 1)
+        # SizeOfStruct is the size with Name declared as CHAR[1], not CHAR[0]. Getting this one
+        # byte wrong makes SymFromAddr fail with GetLastError() == 0 -- no symbol, no error, no
+        # clue -- which reads exactly like "the PDB did not match" and cost a detour through
+        # timestamps and search paths before SymGetModuleInfo64 showed the PDB was loaded fine.
+        buf.SizeOfStruct = ctypes.sizeof(SYMBOL_INFO) - (MAX_SYM_NAME + 1) + 1
         buf.MaxNameLen = MAX_SYM_NAME
         disp = ctypes.c_ulonglong(0)
 

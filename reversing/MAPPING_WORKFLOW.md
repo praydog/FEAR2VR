@@ -5571,3 +5571,44 @@ Gotcha for the next class: a class written at the file's top level generates to
 
 Remaining debt after this: 78 hardcoded layout offsets across `shared/sdk/*.hpp`, 52 of them still
 in PlayerMgr.hpp (the camera holder's pose fields are the big cluster).
+
+## Crash reporting, and a one-byte bug that hid the symbols
+
+`src/ExceptionHandler.cpp` (ported from re2-barebones) installs an unhandled-exception filter that
+logs registers, a symbolised call stack in module+offset form, and a minidump.
+
+**It does not fight Watchpoints**, and the reason is dispatch order: vectored handlers run FIRST
+(so every hardware-breakpoint STATUS_SINGLE_STEP is still claimed and continued by Watchpoints),
+SEH frames next, and the unhandled filter LAST -- meaning it only ever sees exceptions nobody
+handled, which is the definition of a crash.
+
+Three things it needed that the original did not:
+
+- **x86 registers**, obviously, but also ECX called out in its own log line: `__thiscall` puts
+  `this` there, and "which object" is usually the question a crash in engine code raises.
+- **A separate thread for STATUS_STACK_OVERFLOW.** The faulting thread has one guard page left,
+  and MiniDumpWriteDump plus a 48-frame symbolising walk does not fit in it -- the dump attempt
+  faults again and nothing is written, for the one crash class where the stack IS the evidence.
+- **Periodic re-assertion.** THE GAME INSTALLS ITS OWN FILTER, and there is one slot, not a chain.
+  Measured: an access violation inside Fear2vr.dll was reported by WER with NOTHING in our log,
+  because the engine had taken the slot back. There is no Get* counterpart, but Set* returns the
+  outgoing filter, so re-asserting once per frame doubles as the detector.
+
+### `SymFromAddr` fails silently when SizeOfStruct is one byte short
+
+`tools/symbolize.py` resolves a WER offset against our PDB. It returned `<no symbol>` for a PDB
+that `SymGetModuleInfo64` reported as `SymType: Pdb, PdbUnmatched: False` -- i.e. loaded and
+matched. The cause: `SYMBOL_INFO.SizeOfStruct` must be the size with `Name` declared `CHAR[1]`,
+and it had been computed as `CHAR[0]`. dbghelp rejects the struct and returns FALSE with
+`GetLastError() == 0` -- no symbol, no error code, nothing to search for.
+
+That one byte cost a detour through build timestamps and symbol search paths, both of which were
+fine. The lesson worth keeping: when a Win32 call fails with no error set, suspect the size or
+alignment of a struct you are passing, not the data you are asking about. The tool now prints the
+module's symbol status on every run so the next failure says which half is wrong.
+
+First use: WER's `faulting_module=Fear2vr.dll offset=0xE7B10` resolves to
+`memcpy_s +0x62 (corecrt_memcpy_s.h:58)`. That is a leaf, so it names the fault but not the cause
+-- `sdk::mem::copy` wraps its memcpy in SEH and would have swallowed a fault there, so the caller
+is an UNGUARDED bulk copy. The in-process handler now resolves names and source lines for our own
+frames while leaving engine frames as module+offset, so the next occurrence names its own caller.

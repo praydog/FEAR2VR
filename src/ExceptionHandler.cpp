@@ -95,7 +95,28 @@ void log_callstack(CONTEXT* ctx) {
             break;
         }
 
-        LOGX("[crash]   #%02d %s", i, describe(static_cast<uintptr_t>(frame.AddrPC.Offset)).c_str());
+        // NAME THE FRAME IF WE CAN. dbghelp is already initialised, and our own frames have a
+        // PDB beside the DLL -- so ours resolve to functions and source lines while the engine's
+        // stay as module+offset for pasting into IDA. Both halves of a mixed stack stay useful.
+        char symbuf[sizeof(SYMBOL_INFO) + 512]{};
+        auto* sym = reinterpret_cast<SYMBOL_INFO*>(symbuf);
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 511;
+        DWORD64 disp = 0;
+
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof(line);
+        DWORD ldisp = 0;
+        const bool have_line = SymGetLineFromAddr64(GetCurrentProcess(), frame.AddrPC.Offset, &ldisp, &line) != FALSE;
+
+        if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &disp, sym)) {
+            LOGX("[crash]   #%02d %s  -> %s+0x%IX%s%s", i,
+                 describe(static_cast<uintptr_t>(frame.AddrPC.Offset)).c_str(), sym->Name,
+                 static_cast<uintptr_t>(disp), have_line ? "  " : "",
+                 have_line ? line.FileName : "");
+        } else {
+            LOGX("[crash]   #%02d %s", i, describe(static_cast<uintptr_t>(frame.AddrPC.Offset)).c_str());
+        }
     }
 }
 
@@ -178,7 +199,7 @@ LONG WINAPI global_exception_handler(EXCEPTION_POINTERS* ei) {
     // "which object" is usually the question a crash in engine code raises.
     LOGX("[crash] ESI 0x%08lX  EDI 0x%08lX   (ECX is `this` for a __thiscall frame)", ctx->Esi, ctx->Edi);
 
-    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);
 
     if (rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
