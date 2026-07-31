@@ -10625,6 +10625,66 @@ int main(int argc, char** argv) {
                       "and the attachment chain carries it, which is the mechanism a VR hand needs");
             }
 
+            // ---- CONTROLLER ORIENTATION -> THE WEAPON ------------------------------------------
+            //
+            // Turning the controller must turn the gun, and it must do so as a RIGID BODY. That is
+            // testable without knowing any distance: for a rotation of theta about a fixed pivot at
+            // radius r, the muzzle moves along a chord of 2*r*sin(theta/2). So fit r from ONE angle
+            // and it must predict the others -- if the transform were doing anything other than
+            // rotating (scaling the offset, applying euler terms in the wrong order, compounding
+            // frames) the implied r would not stay constant.
+            //
+            // Measured live at 30/60/90/-45 degrees, the implied radius agreed to three decimals.
+            {
+                auto swing_for = [&](int deg, double& swing) -> bool {
+                    http::get(port, "/xr/reset", resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                    std::string a;
+                    if (http::get(port, "/sdk/targets", resp)) { a = http::body_of(resp); }
+                    double ax = 0.0, ay = 0.0, az = 0.0;
+                    if (!json_double(a, "muzzle_x", ax)) { return false; }
+                    json_double(a, "muzzle_y", ay);
+                    json_double(a, "muzzle_z", az);
+
+                    char url[128];
+                    snprintf(url, sizeof(url), "/xr/hand?side=right&yaw=%d", deg);
+                    http::get(port, url, resp);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+
+                    std::string b;
+                    if (http::get(port, "/sdk/targets", resp)) { b = http::body_of(resp); }
+                    double bx = 0.0, by = 0.0, bz = 0.0;
+                    if (!json_double(b, "muzzle_x", bx)) { return false; }
+                    json_double(b, "muzzle_y", by);
+                    json_double(b, "muzzle_z", bz);
+                    swing = sqrt((bx-ax)*(bx-ax) + (by-ay)*(by-ay) + (bz-az)*(bz-az));
+                    return true;
+                };
+
+                double s30 = 0.0, s60 = 0.0, s90 = 0.0;
+                const bool got_all = swing_for(30, s30) && swing_for(60, s60) && swing_for(90, s90);
+                check_armed(got_all, got_all && s30 > 1.0,
+                            "turning the controller turns the WEAPON -- the rotation reaches the "
+                            "bone and the attachment carries it");
+
+                if (got_all && s30 > 1.0) {
+                    // r implied by each angle, from chord = 2 r sin(theta/2).
+                    const double r30 = s30 / (2.0 * sin(30.0 * 3.14159265 / 360.0));
+                    const double r60 = s60 / (2.0 * sin(60.0 * 3.14159265 / 360.0));
+                    const double r90 = s90 / (2.0 * sin(90.0 * 3.14159265 / 360.0));
+                    printf("[fixture] xr hand rotation: swings %.2f/%.2f/%.2f -> implied radius "
+                           "%.2f/%.2f/%.2f units\n", s30, s60, s90, r30, r60, r90);
+                    // 5% of the mean, which is wider than the measured spread and far tighter than
+                    // any non-rotation would produce -- a scaled offset gives r growing with theta.
+                    const double mean = (r30 + r60 + r90) / 3.0;
+                    check_gated(mean > 1.0, "no measurable swing", g_skipped_motion,
+                                fabs(r30 - mean) < mean * 0.05 && fabs(r60 - mean) < mean * 0.05 &&
+                                    fabs(r90 - mean) < mean * 0.05,
+                                "and it is a RIGID rotation: one pivot radius explains the swing at "
+                                "every angle, which nothing but a real rotation does");
+                }
+            }
+
             http::get(port, "/xr/reset", resp);
             http::get(port, "/xr/hands?on=0", resp);
             std::this_thread::sleep_for(std::chrono::milliseconds(700));

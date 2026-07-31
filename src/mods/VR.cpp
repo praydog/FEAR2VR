@@ -24,6 +24,12 @@ std::atomic<bool> g_hand_attached{false};
 std::atomic<float> g_hand_rest[3]{};
 std::atomic<bool> g_have_rest{false};
 
+// And the orientation it is measured from, for the same reason: BoneControl composes our rotation
+// with the animation's, so an ABSOLUTE controller orientation would fight the animation instead of
+// riding it. What the bone wants is "how far has the controller turned since rest".
+std::atomic<float> g_hand_rest_rot[4]{};
+std::atomic<float> g_hand_rot[4]{};
+
 // Last head orientation seen, in both spaces. Reported so a consumer -- or the fixture -- can
 // check the conversion against its input without recomputing it, which would just be asserting
 // the same arithmetic twice.
@@ -200,6 +206,9 @@ void VR::update_hands() {
         for (size_t i = 0; i < 3; ++i) {
             g_hand_rest[i].store(right.aim.position[i], std::memory_order_relaxed);
         }
+        for (size_t i = 0; i < 4; ++i) {
+            g_hand_rest_rot[i].store(right.aim.orientation[i], std::memory_order_relaxed);
+        }
         g_have_rest.store(true, std::memory_order_relaxed);
     }
 
@@ -216,6 +225,29 @@ void VR::update_hands() {
     }
 
     bc.set_offset(engine_delta[0], engine_delta[1], engine_delta[2]);
+
+    // ---- ORIENTATION, AS A DELTA IN THE ENGINE'S SPACE -------------------------------------
+    //
+    // rest^-1 * current is "how far the controller has turned", in runtime space. Converting the
+    // DELTA rather than each pose separately matters: the mirror-along-Z conversion is not a
+    // rotation, so converting two poses and subtracting afterwards is not the same operation and
+    // gets the handedness wrong in a way that only shows on the off-axes.
+    const auto& rr = g_hand_rest_rot;
+    const regenny::LTRotation rest_inv{-rr[0].load(std::memory_order_relaxed),
+                                       -rr[1].load(std::memory_order_relaxed),
+                                       -rr[2].load(std::memory_order_relaxed),
+                                       rr[3].load(std::memory_order_relaxed)};
+    const regenny::LTRotation now{right.aim.orientation[0], right.aim.orientation[1],
+                                  right.aim.orientation[2], right.aim.orientation[3]};
+    const auto turned = sdk::multiply_rotations(rest_inv, now);
+
+    const auto engine_rot = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
+
+    for (size_t i = 0; i < 4; ++i) {
+        g_hand_rot[i].store(engine_rot[i], std::memory_order_relaxed);
+    }
+
+    bc.set_rotation(engine_rot[0], engine_rot[1], engine_rot[2], engine_rot[3]);
     g_hand_applied.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -230,6 +262,9 @@ VR::State VR::state() const {
     s.hand_applied = g_hand_applied.load(std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
         s.hand_offset[i] = g_hand_off[i].load(std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        s.hand_rotation[i] = g_hand_rot[i].load(std::memory_order_relaxed);
     }
 
     for (size_t i = 0; i < 4; ++i) {

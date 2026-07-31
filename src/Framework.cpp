@@ -10333,6 +10333,23 @@ bool Framework::initialize() {
             aim.position = {static_cast<float>(webapi_query_double(q, "x", aim.position[0])),
                             static_cast<float>(webapi_query_double(q, "y", aim.position[1])),
                             static_cast<float>(webapi_query_double(q, "z", aim.position[2]))};
+
+            // Orientation, when asked for. Absent yaw/pitch/roll leaves the current orientation
+            // alone so a caller can move a controller without also levelling it.
+            if (q.find("yaw") != q.end() || q.find("pitch") != q.end() || q.find("roll") != q.end()) {
+                const double cyaw = webapi_query_double(q, "yaw", 0.0) * kDeg;
+                const double cpitch = webapi_query_double(q, "pitch", 0.0) * kDeg;
+                const double croll = webapi_query_double(q, "roll", 0.0) * kDeg;
+                const double cy = cos(cyaw * 0.5), sy = sin(cyaw * 0.5);
+                const double cp = cos(cpitch * 0.5), sp = sin(cpitch * 0.5);
+                const double cr = cos(croll * 0.5), sr = sin(croll * 0.5);
+                aim.orientation = {
+                    static_cast<float>(cy * sp * cr + sy * cp * sr),
+                    static_cast<float>(sy * cp * cr - cy * sp * sr),
+                    static_cast<float>(cy * cp * sr - sy * sp * cr),
+                    static_cast<float>(cy * cp * cr + sy * sp * sr)};
+            }
+
             aim.valid = true;
             aim.tracked = true;
             rt.set_hand_pose(which, aim, aim);
@@ -10383,6 +10400,10 @@ bool Framework::initialize() {
               .f("hand_off_x", st.hand_offset[0], 3)
               .f("hand_off_y", st.hand_offset[1], 3)
               .f("hand_off_z", st.hand_offset[2], 3)
+              .f("hand_rot_x", st.hand_rotation[0], 5)
+              .f("hand_rot_y", st.hand_rotation[1], 5)
+              .f("hand_rot_z", st.hand_rotation[2], 5)
+              .f("hand_rot_w", st.hand_rotation[3], 5)
               .f("aim_yaw_deg", sdk::PlayerMgr::aim_yaw(0).value_or(0.0f) * 57.2957795, 4)
               .f("aim_pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4);
 

@@ -104,6 +104,7 @@ public:
         bool hands{};
         uint64_t hand_applied{};
         std::array<float, 3> hand_offset{};   // engine units, applied to the RightHand socket
+        std::array<float, 4> hand_rotation{};  // engine-space delta from the controller's rest pose
     };
 
     // ---- CONTROLLERS -> THE WEAPON HAND -----------------------------------------------------
