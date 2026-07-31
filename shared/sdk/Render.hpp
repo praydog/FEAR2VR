@@ -168,6 +168,21 @@ public:
     // Slot 16. A stereo path provokes resets (resolution/mode changes), and a hook on the device must be
     // reinstated after one -- so a consumer needs to see this call too, not just Present.
     static std::optional<uintptr_t> reset_fn();
+    // ---- RESOURCE CREATION, WHICH IS THE D3D9Ex GATE --------------------------------
+    //
+    // D3D9Ex REFUSES D3DPOOL_MANAGED. Sharing a surface with an OpenXR swapchain needs Ex, so
+    // whether this engine allocates managed resources decides how large that change is -- and a
+    // static sweep could not answer it: of the 13 create call sites in the exe, eight compute
+    // the pool at runtime (reversing/ENGINE_NOTES.md).
+    //
+    // These are the entries a consumer hooks to find out, and later to REMAP a pool on the way
+    // through. Slot numbers are IDirect3DDevice9's fixed COM layout: 23..27.
+    static std::optional<uintptr_t> create_texture_fn();
+    static std::optional<uintptr_t> create_volume_texture_fn();
+    static std::optional<uintptr_t> create_cube_texture_fn();
+    static std::optional<uintptr_t> create_vertex_buffer_fn();
+    static std::optional<uintptr_t> create_index_buffer_fn();
+
     // Slots 41 and 42, the scene brackets. Where per-eye render state has to be established.
     static std::optional<uintptr_t> begin_scene_fn();
     static std::optional<uintptr_t> end_scene_fn();

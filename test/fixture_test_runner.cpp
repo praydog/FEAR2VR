@@ -11162,6 +11162,53 @@ int main(int argc, char** argv) {
                     check(!da, "detach_all releases every slot, so a run leaves no cell linked");
                 }
 
+                // ---- WHAT THE ENGINE ALLOCATES, AND FROM WHICH POOL -------------
+                //
+                // The D3D9Ex gate. Ex refuses D3DPOOL_MANAGED, so this decides the size of the
+                // stereo work, and a static sweep could not answer it -- eight of thirteen call
+                // sites compute the pool at runtime.
+                //
+                // Asserted here are the things that must hold whatever the scene does: the hooks
+                // installed, the partition adds up, and NO allocation lands outside D3DPOOL's
+                // 0..3. That last one is a check on OUR OWN parsing rather than on the engine --
+                // a value in the overflow bucket would mean the argument was misread, which is
+                // how a confident wrong answer to the pool question would present.
+                //
+                // The managed COUNT is reported, never asserted: it depends entirely on whether a
+                // level load happened while the hooks were up.
+                {
+                    std::string rr;
+                    if (http::get(port, "/xr/head", rr)) {
+                        const std::string b = http::body_of(rr);
+                        bool hooked = false, any = false, managed = false;
+                        long long total = -1, pdef = -1, pman = -1, psys = -1, pscr = -1, poth = -1;
+                        const bool have =
+                            json_bool(b, "rw_hooked", hooked) && json_bool(b, "rw_observed_any", any) &&
+                            json_bool(b, "rw_uses_managed", managed) && json_int(b, "rw_total", total) &&
+                            json_int(b, "rw_pool_default", pdef) && json_int(b, "rw_pool_managed", pman) &&
+                            json_int(b, "rw_pool_sysmem", psys) && json_int(b, "rw_pool_scratch", pscr) &&
+                            json_int(b, "rw_pool_other", poth);
+                        check(have, "the resource watch reports its pool census");
+                        if (have) {
+                            check(hooked, "the d3d9 resource-creation entries are hooked -- the "
+                                          "device exists whenever a world is rendering");
+                            check(poth == 0, "every allocation reports a pool inside D3DPOOL's own "
+                                             "range -- a value outside it would mean the argument "
+                                             "was misread, not that D3D grew a pool");
+                            check(pdef + pman + psys + pscr + poth == total,
+                                  "the per-pool counts partition the total exactly");
+                            printf("[fixture] d3d pools: %lld allocations seen -- default %lld, "
+                                   "managed %lld, sysmem %lld, scratch %lld%s\n",
+                                   total, pdef, pman, psys, pscr,
+                                   any ? "" : " (nothing created while watching)");
+                            if (any && managed) {
+                                printf("[fixture] d3d pools: MANAGED IN USE -- D3D9Ex would reject "
+                                       "these, so a stereo bring-up must remap them\n");
+                            }
+                        }
+                    }
+                }
+
                 // ---- THE SHOT LEAVES THE BARREL, NOT THE EYE -------------------
                 //
                 // FireRedirect can start the ray at the weapon's muzzle. The contract has

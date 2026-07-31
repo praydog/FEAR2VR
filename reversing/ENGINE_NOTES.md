@@ -457,6 +457,50 @@ one produces a confident zero -- "nothing writes this rotation" -- which is true
 
 ## Rendering and stereo
 
+### ANSWERED: the engine allocates almost everything MANAGED, so D3D9Ex is not a drop-in
+
+The static survey below could not settle this and said so. The runtime probe settles it. Hooking
+the five device create entries and forcing a level load with the hooks already installed:
+
+    635 allocations during one level load
+        D3DPOOL_DEFAULT      6
+        D3DPOOL_MANAGED    629      <-- 99%
+        SYSTEMMEM / SCRATCH  0
+        outside 0..3         0      (so the argument was read correctly)
+
+    512 managed textures, 47 managed vertex buffers, 47 managed index buffers
+
+**D3D9Ex REFUSES D3DPOOL_MANAGED.** Sharing a surface with an OpenXR swapchain needs Ex, so this is
+the measured size of that work: every one of those allocations has to be remapped to
+D3DPOOL_DEFAULT with an explicit upload, plus device-lost handling that managed resources currently
+get for free. It is the expensive answer, and it is now a number rather than a worry.
+
+**The interception point is already built.** `ResourceWatch` hooks exactly the five entries a remap
+would act on, so the mechanism for the expensive path exists -- what is missing is the restore
+policy, not the hook.
+
+Why it had to be a runtime probe: at idle the counters stay at zero, because resources are created
+at LOAD time. Injecting into a running session and reading the counts answers nothing; the hooks
+have to be up BEFORE a level load. That is also why the suite reports this census rather than
+asserting a count -- a normal run does not force a load.
+
+The hooks go on d3d9.dll's method BODIES rather than the device vtable, because the vtable is a heap
+allocation whose address does not survive a device reset -- and a stereo path provokes resets
+deliberately. The cost is scope: this sees every device in the process rather than only the
+engine's.
+
+### The 57-failure scare that was the world, not the code
+
+Immediately after the forced level load, a suite run went from green to **57 failures** -- spatial
+records, player models, camera pose, sockets. None of it was a regression. `LoadCheckpoint` had
+landed a DIFFERENT level (`m05_outershell`) and `ws_still_frames` read 0, i.e. the world was in
+motion. Waiting for it to settle (still_frames climbing 0 -> 563) and re-running gave 1695 checks,
+0 failures, with nothing changed.
+
+Check the fixture's state before reading a suite result. A wall of plausible failures after
+anything that moves the world is the state, and this file has now recorded that from three
+different directions.
+
 ### D3DPOOL survey: NOT SETTLED, and the absence of a MANAGED immediate proves nothing
 
 D3D9Ex forbids `D3DPOOL_MANAGED`, so whether this engine uses it decides whether the Ex upgrade --

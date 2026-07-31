@@ -176,6 +176,26 @@ std::optional<uintptr_t> Render::device_method(size_t slot) {
 // The slot numbers live here, once, named -- see the header for why a bare index at a call site is a defect
 // rather than a style preference.
 std::optional<uintptr_t> Render::present_fn() { return device_method(17); }
+
+std::optional<uintptr_t> Render::create_texture_fn() {
+    return device_method(23);
+}
+
+std::optional<uintptr_t> Render::create_volume_texture_fn() {
+    return device_method(24);
+}
+
+std::optional<uintptr_t> Render::create_cube_texture_fn() {
+    return device_method(25);
+}
+
+std::optional<uintptr_t> Render::create_vertex_buffer_fn() {
+    return device_method(26);
+}
+
+std::optional<uintptr_t> Render::create_index_buffer_fn() {
+    return device_method(27);
+}
 std::optional<uintptr_t> Render::reset_fn() { return device_method(16); }
 std::optional<uintptr_t> Render::begin_scene_fn() { return device_method(41); }
 std::optional<uintptr_t> Render::end_scene_fn() { return device_method(42); }

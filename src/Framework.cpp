@@ -35,6 +35,7 @@
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
 #include "mods/AmmoKeeper.hpp"
+#include "mods/ResourceWatch.hpp"
 #include "mods/FireRedirect.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
@@ -10134,6 +10135,7 @@ bool Framework::initialize() {
     // Drives a skeleton node directly -- the mechanism a VR hand or weapon rides on.
     Mods::get().add(&BoneControl::get());
     Mods::get().add(&AmmoKeeper::get());
+    Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
     // Owns the writer that rotates the first-person rig, so head-look stops swinging the weapon.
     Mods::get().add(&ViewmodelDecouple::get());
@@ -10338,6 +10340,13 @@ bool Framework::initialize() {
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
             }
+        } else if (route == "/xr/resources") {
+            // What the engine allocates, and out of which D3D pool -- the D3D9Ex gate.
+            // `reset=1` starts a fresh window, which is how a caller bounds "what did THIS
+            // level load create" rather than reading a total since injection.
+            if (webapi_query_int(q, "reset", 0) != 0) {
+                ResourceWatch::get().reset_counts();
+            }
         } else if (route == "/xr/fire-origin") {
             // Start the ray at the weapon's muzzle instead of the player's eye.
             // Independent of the aim mode on purpose: it changes what the shot can
@@ -10532,6 +10541,18 @@ bool Framework::initialize() {
               .f("fr_bo_x", FireRedirect::get().built_origin()[0], 2)
               .f("fr_bo_y", FireRedirect::get().built_origin()[1], 2)
               .f("fr_bo_z", FireRedirect::get().built_origin()[2], 2)
+              .b("rw_hooked", ResourceWatch::get().hooked())
+              .b("rw_observed_any", ResourceWatch::get().observed_any())
+              .b("rw_uses_managed", ResourceWatch::get().uses_managed_pool())
+              .u("rw_total", ResourceWatch::get().total())
+              .u("rw_pool_default", ResourceWatch::get().pool_total(0))
+              .u("rw_pool_managed", ResourceWatch::get().pool_total(1))
+              .u("rw_pool_sysmem", ResourceWatch::get().pool_total(2))
+              .u("rw_pool_scratch", ResourceWatch::get().pool_total(3))
+              .u("rw_pool_other", ResourceWatch::get().pool_total(4))
+              .u("rw_tex_managed", ResourceWatch::get().count(ResourceWatch::Kind::Texture, 1))
+              .u("rw_vb_managed", ResourceWatch::get().count(ResourceWatch::Kind::VertexBuffer, 1))
+              .u("rw_ib_managed", ResourceWatch::get().count(ResourceWatch::Kind::IndexBuffer, 1))
               .b("fr_origin_weapon", FireRedirect::get().origin_from_weapon())
               .b("fr_origin_valid", FireRedirect::get().origin_valid())
               .u("fr_origin_writes", FireRedirect::get().origin_writes())
