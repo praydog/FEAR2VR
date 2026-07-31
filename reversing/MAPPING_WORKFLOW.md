@@ -5742,3 +5742,59 @@ Two API notes worth keeping:
   `GetForegroundWindow()` afterwards if the answer matters.
 - Picking "the game window" needs a size filter. FEAR2.exe owns three: the real one at 2566x1460,
   plus zero-sized `Default IME` and `MSCTFIME UI` helpers that are also owned and also enumerable.
+
+## The fire ray is traced SERVER-SIDE, and that resolves three failed hunts
+
+`Weapon_FireServer` at gameserver.dll `0x101062B0`.
+
+Three rw-watchpoint experiments looked for a memory read that happens only while the trigger is
+down, and all three came back empty:
+
+| watched                                    | idle hits | firing hits | fire-only accessors |
+|--------------------------------------------|-----------|-------------|---------------------|
+| camera holder pose (+244 / +324 / +552)     | --        | --          | 0                   |
+| shell player object rotation (+0x20)        | 7806      | 7784        | 0                   |
+| camera object rotation (+0x20)              | 2442      | 2614        | 0                   |
+
+The reason is not a subtle one, and it is worth stating plainly so nobody repeats the sweep: the
+client replicates its rotation to the server **every frame regardless of firing**, so pulling the
+trigger adds no client-side read of any rotation. Nothing about the shot is decided in the client.
+The ray is built and traced in `gameserver.dll`.
+
+### The fire descriptor
+
+`Weapon_FireServer(weapon, edi, desc)` receives a descriptor whose first two fields are what a VR
+mod needs. The layout is not guessed -- it falls out of the function's own arithmetic:
+
+    v57       = FireOffset * (*(float*)(desc+0)) + *(float*)(desc+12);   // and y, z
+    v81[0..2] = *(desc+12..20);        // segment START
+    v81[3..5] = v57, v58, v59;         // segment END = START + DIR * FireOffset
+    physics->vtbl[148](physics, v81, v80)
+
+A scalar multiplies `desc+0` and the product is added to `desc+12`. Only a direction can be scaled
+and added to a point, so:
+
+    +0x00  float[3]  DIRECTION (unit) -- rewritten per pellet with spread applied
+    +0x0C  float[3]  ORIGIN
+    +0x24            firing object handle
+    +0x54..+0x57     flags, spline index, stance
+
+`VectorsPerRound` from the weapon database is the pellet count and drives the loop; `Type` selects
+hitscan (0, `Weapon_FireHitscanVector`) or projectile (1, `Weapon_SpawnProjectile`).
+
+### What this means for hand-aimed shooting
+
+Writing `desc+0` on entry to `Weapon_FireServer` redirects the shot, and it is the right place
+rather than merely a workable one:
+
+- It is **downstream of spread and pellet generation**, so one write redirects the entire shot,
+  shotguns included, instead of correcting each pellet.
+- It does **not fight head tracking**. The alternative -- overriding the player's aim rotation --
+  is the same mistake catalogued at the top of this document under "THE FIELD IS RECLAIMED": seize
+  a composed value and every consumer that derived from it has to be re-derived by hand.
+- `desc+0x0C` optionally moves the muzzle origin to the hand, which is the other half of a weapon
+  that points where you hold it.
+
+The hook target is in a different module from everything the mod currently touches. `gameserver.dll`
+is loaded in single player -- FEAR 2 runs a local server -- so this is reachable, but the mod's
+module scanning presently looks at the exe and gameclient only.
