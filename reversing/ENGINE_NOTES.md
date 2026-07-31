@@ -879,6 +879,48 @@ Fixed by owning what we started: once a slot has ever been armed, the handler cl
 the rest of the session and resumes, reporting nothing because there is no live slot to attribute
 them to.
 
+### The null control that makes the stereo claim causal
+
+The previous pass showed left and right differ and called it stereo. That is not a proof: two
+captures of a live scene differ for a dozen reasons, and nothing in the comparison distinguished an
+eye offset from a flickering light. The missing measurement is the NULL CONTROL -- at `half_ipd = 0`
+the two eyes ARE the same camera, so any separation must vanish.
+
+    ipd  0.0   separation 0.061   within-eye spread 0.047    indistinguishable
+    ipd  3.2   separation 1.821   within-eye spread 0.459
+    ipd 10.0   separation 4.571   within-eye spread 0.769
+
+Separation is absent at zero, present at a human baseline, and GROWS with the baseline. That is what
+makes the eye offset the cause rather than a correlate, and all three are now asserted with bounds
+taken from the same-eye spread measured in the same run.
+
+### `both=1&split=1` does NOT currently produce a stereo pair
+
+The side-by-side mode is the format a headset consumes, and it puts both eyes in ONE frame, which
+removes the temporal confound entirely. `second_eye_draws` climbs (28 per capture), and a captured
+frame plainly shows two views of the corridor.
+
+**But the halves do not differ because of the eyes.** Comparing left half against right half within
+a single frame, across three baselines:
+
+    half_ipd  0.0   halves differ 15.98      <- must be ZERO if the halves are an eye pair
+    half_ipd  3.2   halves differ 15.90
+    half_ipd 10.0   halves differ 15.63
+
+Flat. Measured on a world-only band (upper 45%, excluding the weapon and the HUD, which appears in
+only one half) and with no single horizontal offset aligning them -- the best global alignment
+improves the residual from 17.17 to 15.74, which is nothing.
+
+So the second eye IS being drawn and the two halves ARE different, but the difference does not
+depend on the eye separation. Whatever distinguishes the halves in split mode is a viewport or
+projection artefact, not parallax. **The single-eye path is the one with verified stereo geometry;
+the split path is not yet a valid pair, and building headset submission on it would ship a picture
+that looks stereoscopic and is not.**
+
+Worth stating plainly because the frame LOOKS right: two panels, two viewpoints, correct framing.
+The IPD sweep is the only thing that separates that from an actual stereo pair, and it takes three
+captures.
+
 ### The two eyes really do render different pictures, and the parallax is depth-ordered
 
 Everything this project could previously say about stereo was STRUCTURAL -- asymmetric frustum

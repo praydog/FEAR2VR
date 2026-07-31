@@ -12097,28 +12097,30 @@ int main(int argc, char** argv) {
 
     // ---- DO THE TWO EYES ACTUALLY RENDER DIFFERENTLY? ---------------------------
     //
-    // Everything this project could previously say about stereo was STRUCTURAL: the frustum centres
-    // are asymmetric, a second draw group is issued, the viewport splits. None of that shows the two
-    // eyes produce different PICTURES, which is the only property a headset cares about.
+    // Everything this project could previously say about stereo was STRUCTURAL: asymmetric frustum
+    // centres, a second draw group, a splitting viewport. None of that shows the eyes produce
+    // different PICTURES, which is the only property a headset cares about.
     //
-    // Now that a frame can be read back, it can be measured. Captured per eye and compared:
-    // same-eye captures differ by a mean of 1.3 (animation and flicker) and the two eyes by 15.3,
-    // with no overlap -- and the difference image shows two of every edge, which is parallax. At a
-    // human 6.4 cm baseline the disparity is depth-ordered: near -16 px, mid -4, far -4.
+    // The first version of this check compared left against right and asserted they differ. That is
+    // NOT a proof of stereo -- two captures of a live scene differ for a dozen reasons, and the
+    // check could not tell an eye offset from a flickering light. What makes it causal is the NULL
+    // CONTROL: at half_ipd = 0 the two eyes ARE the same camera, so any separation must vanish.
     //
-    // The fixture asserts the cheap version of that: mean luminance clusters per eye and the other
-    // eye falls outside the cluster. THE BOUND IS THE CLUSTER'S OWN SPREAD, measured in the same
-    // run, so a busier scene widens it by exactly as much as the scene is busy.
+    //     ipd  0.0   separation 0.061   within-eye spread 0.047    <- indistinguishable
+    //     ipd  3.2   separation 1.821   within-eye spread 0.459
+    //     ipd 10.0   separation 4.571   within-eye spread 0.769
+    //
+    // Three claims, in increasing strength: the eyes differ, they do NOT differ when the offset is
+    // zero, and the difference GROWS with the offset. Together those say the eye separation causes
+    // it. Every bound is the same-eye spread measured in the same run.
     {
-        auto capture_luma = [&](const char* eye, double& luma) {
+        auto eye_luma = [&](const char* eye, const char* ipd, double& luma) {
             std::string r;
-            if (eye != nullptr) {
-                const std::string route =
-                    std::string("/stereo/eye?half_ipd=3.2&eye=") + eye;
-                http::get(port, route.c_str(), r);
-            }
+            const std::string route =
+                std::string("/stereo/eye?half_ipd=") + ipd + "&eye=" + eye;
+            http::get(port, route.c_str(), r);
             http::get(port, "/xr/capture", r);
-            for (int i = 0; i < 40; ++i) {
+            for (int i = 0; i < 60; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 if (!http::get(port, "/xr/head", r)) {
                     continue;
@@ -12131,35 +12133,42 @@ int main(int argc, char** argv) {
             }
             return false;
         };
+        // Separation between the eyes at one IPD, plus the same-eye spread that bounds it.
+        auto measure = [&](const char* ipd, double& separation, double& spread, bool& ok) {
+            double l[2] = {0, 0}, rr[2] = {0, 0};
+            ok = eye_luma("left", ipd, l[0]) && eye_luma("right", ipd, rr[0]) &&
+                 eye_luma("left", ipd, l[1]) && eye_luma("right", ipd, rr[1]);
+            if (!ok) {
+                return;
+            }
+            separation = fabs((l[0] + l[1]) / 2.0 - (rr[0] + rr[1]) / 2.0);
+            spread = fabs(l[0] - l[1]) > fabs(rr[0] - rr[1]) ? fabs(l[0] - l[1]) : fabs(rr[0] - rr[1]);
+        };
 
-        double l0 = 0, l1 = 0, l2 = 0, rr = 0;
-        const bool got = capture_luma("left", l0) && capture_luma(nullptr, l1) &&
-                         capture_luma(nullptr, l2) && capture_luma("right", rr);
-        // Release the eye whatever happened -- a suite must not leave the view on one eye.
+        double sep0 = 0, spr0 = 0, sep1 = 0, spr1 = 0, sep2 = 0, spr2 = 0;
+        bool ok0 = false, ok1 = false, ok2 = false;
+        measure("0", sep0, spr0, ok0);
+        measure("3.2", sep1, spr1, ok1);
+        measure("10", sep2, spr2, ok2);
         {
             std::string r;
-            http::get(port, "/stereo/eye?eye=off&half_ipd=0", r);
+            http::get(port, "/stereo/eye?eye=off&half_ipd=0", r);  // never leave the view on one eye
         }
 
-        if (got) {
-            const double lmean = (l0 + l1 + l2) / 3.0;
-            const double lmin = l0 < l1 ? (l0 < l2 ? l0 : l2) : (l1 < l2 ? l1 : l2);
-            const double lmax = l0 > l1 ? (l0 > l2 ? l0 : l2) : (l1 > l2 ? l1 : l2);
-            const double spread = lmax - lmin;      // the SAME-eye variation, measured not assumed
-            const double separation = fabs(rr - lmean);
-            printf("[fixture] stereo eyes: left luma %.3f/%.3f/%.3f (spread %.3f), right %.3f "
-                   "-> separation %.3f\n",
-                   l0, l1, l2, spread, rr, separation);
+        if (ok0 && ok1 && ok2) {
+            printf("[fixture] stereo: separation ipd0 %.3f (spread %.3f), ipd3.2 %.3f (%.3f), "
+                   "ipd10 %.3f (%.3f)\n",
+                   sep0, spr0, sep1, spr1, sep2, spr2);
 
-            // A dark or featureless view makes this vacuous rather than false, so require the
-            // picture to have content before believing either number.
-            check_gated(lmean > 1.0, "view too dark to compare", g_skipped_motion,
-                        separation > 3.0 * spread + 0.05,
-                        "the two eyes render DIFFERENT pictures -- separation exceeds the same-eye "
-                        "spread measured in this very run, which is what makes stereo more than a "
-                        "pair of configured frustums");
+            check(sep0 <= 3.0 * spr0 + 0.10,
+                  "NULL CONTROL: with the eye offset at zero the two eyes are indistinguishable, "
+                  "which is what makes any separation below attributable to the offset");
+            check(sep1 > 3.0 * spr1 + 0.10,
+                  "at a human 6.4 cm baseline the two eyes render measurably different pictures");
+            check(sep2 > sep1,
+                  "and a wider baseline separates them FURTHER -- the difference tracks the offset "
+                  "rather than merely existing");
 
-            // And the eye must be RELEASED, or every later check runs on one eye.
             std::string sr;
             if (http::get(port, "/stereo/state", sr)) {
                 long long eye_after = -1;
