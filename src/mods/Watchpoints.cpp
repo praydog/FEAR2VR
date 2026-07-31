@@ -46,6 +46,24 @@ struct Record {
 SlotState g_slots[kSlots];
 Record g_table[kTableSize];
 std::atomic<uint64_t> g_dropped{0};      // hits we could not aggregate because the table was full
+// SLOTS WE HAVE EVER ARMED. Once we have put a debug register into this process we own traps from
+// it for the rest of the session, because nothing else here uses them and an UNCLAIMED one is
+// fatal: an unhandled STATUS_SINGLE_STEP terminates the process.
+//
+// The race this closes, caught with a crash dump: disarm() clears the hardware across every thread
+// and only then drops `armed`, which is the right order -- but a trap RAISED just before a thread's
+// DR7 was cleared can still be DELIVERED after. The handler then found the slot not armed, declined
+// it ("leave it for whoever did"), and nobody else was going to. Measured:
+//
+//     [watch] slot 0 armed at 0x00468976 size 1 rw 0 across 117 thread(s)
+//     [crash] code 0x80000004 at 0x0046897B  FEAR2.exe+0x6897B
+//
+// 0x00468976 is LTClient_IsClientActive, a TWO-instruction function (`mov eax, g_ClientGlob_
+// bClientActive` / `retn`) that the suite watches precisely because it runs ~380 times a second.
+// 0x8000_0004 is STATUS_SINGLE_STEP and 0x0046897B is its `retn` -- the instruction after the read,
+// which is where a DATA watch reports. So the trap was ours; we simply refused it a moment too late.
+std::atomic<uint32_t> g_ever_armed{0};
+
 std::atomic<bool> g_need_disarm{false};  // a handler auto-disarmed and wants the cross-thread clear
 std::atomic<uint32_t> g_pending_disarm{0};
 void* g_veh{nullptr};
@@ -295,7 +313,14 @@ LONG CALLBACK watch_veh(EXCEPTION_POINTERS* info) {
             continue;
         }
         if (!g_slots[i].armed.load(std::memory_order_acquire)) {
-            continue;  // a slot fired that we did not arm; leave it for whoever did
+            // NOT ARMED NOW -- but if we ever armed this slot, the trap is still ours (see
+            // g_ever_armed). Claim it and resume: the alternative is an unhandled STATUS_SINGLE_STEP,
+            // which kills the game. Deliberately no report, because there is no live slot to
+            // attribute it to and inventing one would corrupt the accessor table.
+            if ((g_ever_armed.load(std::memory_order_acquire) & (1u << i)) != 0) {
+                claimed = true;
+            }
+            continue;
         }
         claimed = true;
 
@@ -476,6 +501,7 @@ Watchpoints::ArmResult Watchpoints::arm(uintptr_t address, uint8_t size, Access 
     }
 
     const size_t i = static_cast<size_t>(free_slot);
+    g_ever_armed.fetch_or(1u << i, std::memory_order_release);
     g_slots[i].address.store(address, std::memory_order_relaxed);
     g_slots[i].size.store(size, std::memory_order_relaxed);
     g_slots[i].access.store(rw, std::memory_order_relaxed);

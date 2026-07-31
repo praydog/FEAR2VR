@@ -128,6 +128,65 @@ std::optional<unsigned> WeaponMgr::current_slot(unsigned player_index) {
     return static_cast<unsigned>(*raw);
 }
 
+std::optional<int32_t> WeaponMgr::magazine_rounds(unsigned player_index) {
+    const auto obj = current_weapon_object(player_index);
+
+    if (obj == 0) {
+        return std::nullopt;
+    }
+
+    const auto v = mem::read<int32_t>(obj + kWeaponObjectMagazine);
+
+    if (!v.has_value() || *v < 0) {
+        return std::nullopt;
+    }
+
+    return *v;
+}
+
+std::optional<int32_t> WeaponMgr::spare_rounds(unsigned player_index) {
+    const auto mag = magazine_rounds(player_index);
+    const auto name = current_ammo_name(player_index);
+
+    if (!mag.has_value() || name.empty()) {
+        return std::nullopt;
+    }
+
+    const auto pool = PlayerMgr::ammo_count(player_index, name);
+
+    if (!pool.has_value()) {
+        return std::nullopt;
+    }
+
+    return *pool > *mag ? *pool - *mag : 0;
+}
+
+regenny::DatabaseMgrRecord* WeaponMgr::current_ammo(unsigned player_index) {
+    const auto obj = current_weapon_object(player_index);
+
+    if (obj == 0) {
+        return nullptr;
+    }
+
+    const auto value = mem::read_ptr(obj + kWeaponObjectAmmo);
+
+    if (!value.has_value() || *value == 0) {
+        return nullptr;
+    }
+
+    // NOT is_weapon(): this is an AMMO record, from a sibling category. Validated by its name
+    // resolving rather than by a category it does not belong to.
+    auto* rec = reinterpret_cast<regenny::DatabaseMgrRecord*>(*value);
+
+    return DatabaseMgr::record_name(rec).empty() ? nullptr : rec;
+}
+
+std::string WeaponMgr::current_ammo_name(unsigned player_index) {
+    auto* r = current_ammo(player_index);
+
+    return r == nullptr ? std::string() : DatabaseMgr::record_name(r);
+}
+
 regenny::DatabaseMgrRecord* WeaponMgr::pending_weapon(unsigned player_index) {
     return weapon_at(chooser(player_index), kPendingWeapon);
 }

@@ -480,22 +480,6 @@ std::optional<bool> PlayerMgr::engine_object_is_registered(unsigned index) {
 }
 
 
-std::optional<bool> PlayerMgr::stance_corroborated(unsigned index) {
-    const auto mm = movement_controller(index);
-
-    if (!mm.has_value() || *mm == 0) {
-        return std::nullopt;
-    }
-
-    const auto flags = mem::read<uint32_t>(*mm + kMoveMgrFlags);
-    const auto second = mem::read<uint32_t>(*mm + kMoveMgrCrouchFlag);
-
-    if (!flags.has_value() || !second.has_value()) {
-        return std::nullopt;
-    }
-
-    return ((*flags & kMoveFlagCrouching) != 0) == (*second != 0);
-}
 
 std::optional<float> PlayerMgr::body_origin_height(unsigned index) {
     const auto p = player(index);

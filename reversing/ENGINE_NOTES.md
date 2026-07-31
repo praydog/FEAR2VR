@@ -814,6 +814,71 @@ twice in one stance to establish that exactly ONE field moves on its own, then a
 **The crouch key is 'C', and it is a TOGGLE, not a hold.** Holding and releasing leaves the player
 crouched, which is worth knowing before wiring a VR crouch gesture to a held button.
 
+### The magazine is not the pool, and the pool already contains the magazine
+
+The HUD shows two numbers ("26/385") and everything mapped until now was the second one.
+`CClientWeapon+184` is the first: rounds LOADED. Found by differential scan across a burst -- it
+fell 26 -> 19 for seven shots -- and per-weapon, as it must be: the assault rifle read 30 while the
+submachinegun read 41 at the same instant.
+
+The ammunition TYPE is on the weapon object too, at **+672**, sibling to the weapon record at +668;
+`CClientWeaponMgr_ChangeWeapon` reads exactly that when deciding whether the ammo type changed. The
+chooser's own +520 was tried first and reads empty, because ChangeWeapon only writes it inside a
+conditional branch.
+
+**What the pool actually counts.** Measured, and not what was assumed:
+
+    firing 7 rounds     magazine -7    pool -7      both fall together
+    reloading           magazine +10   pool  0      the pool already counted them
+
+So `PlayerMgr::ammo_count()` is a TOTAL that includes the loaded magazine, and a readout showing it
+as "spare" double-counts. `WeaponMgr::spare_rounds()` does the subtraction once, live 27/413/386.
+
+Both relations are asserted, because each pits two independently mapped values against each other:
+a field on the live CClientWeapon versus the pool array PlayerMgr already owned.
+
+**A neighbour that looked like capacity is deliberately unnamed.** +200 read 31 beside a magazine of
+26 -- exactly what a capacity looks like -- and read 31 on the submachinegun too, whose magazine held
+41. Checking a second weapon is the whole reason it is not in the SDK under a wrong name.
+
+### A retracted stance field, and why the check that killed it was worth writing
+
+The previous pass published a second, "corroborating" crouch field at CMoveMgr+368: a differential
+scan showed it 0 standing and 1 crouched, and `stance_corroborated()` asserted it agreed with the
+crouch bit.
+
+It failed on the very next session and was right to. +368 read **407684864** there -- neither 0 nor
+1, and in the range this process uses for heap pointers. It is not a boolean; it merely held 0 and
+then 1 while the stance happened to change.
+
+MAPPING_WORKFLOW pitfall 3, exactly: a predicate testing a value's APPEARANCE when the question is
+its ROLE. **A field that CHANGES with a toggle has not been shown to MEAN the toggle**, and a
+two-sample differential cannot tell those apart. The accessor, the offset and the assertion are all
+removed. The crouch bit itself is unaffected -- it was established from the four sites that CONSUME
+it, not from the fact that it moved.
+
+### An unclaimed hardware trap kills the process
+
+A suite run died mid-way and the crash reporter named it precisely:
+
+    [watch] slot 0 armed at 0x00468976 size 1 rw 0 across 117 thread(s)
+    [crash] code 0x80000004 at 0x0046897B  FEAR2.exe+0x6897B
+
+0x00468976 is `LTClient_IsClientActive`, a TWO-instruction function (`mov eax,
+g_ClientGlob_bClientActive` / `retn`) that the suite watches precisely because it runs ~380 times a
+second. 0x80000004 is STATUS_SINGLE_STEP, and 0x0046897B is its `retn` -- the instruction AFTER the
+read, which is where a DATA watch reports. The trap was OURS.
+
+`disarm()` clears the hardware across every thread and only then drops `armed`, which is the right
+order -- but a trap RAISED just before a thread's DR7 is cleared can still be DELIVERED after it.
+The handler then found the slot not armed, declined it ("leave it for whoever did"), and nothing
+else in this process claims debug-register traps. An unhandled STATUS_SINGLE_STEP terminates the
+process.
+
+Fixed by owning what we started: once a slot has ever been armed, the handler claims its traps for
+the rest of the session and resumes, reporting nothing because there is no live slot to attribute
+them to.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport

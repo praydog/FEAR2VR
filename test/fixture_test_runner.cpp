@@ -12095,6 +12095,82 @@ int main(int argc, char** argv) {
 
     }
 
+    // ---- THE MAGAZINE, AND WHAT THE POOL ACTUALLY COUNTS ------------------------
+    //
+    // Everything mapped before this was the ammunition POOL. The magazine is a different number --
+    // the HUD shows both -- and a VR ammo readout on the gun needs the loaded one.
+    //
+    // The two checks are conservation relations between INDEPENDENTLY mapped values (a field on the
+    // live CClientWeapon versus the pool array PlayerMgr already owned), which is why they are worth
+    // asserting: no baseline, and a wrong offset on either side breaks the arithmetic at once.
+    {
+        auto ammo_snapshot = [&](long long& mag, long long& pool, long long& spare,
+                                 std::string& type) {
+            mag = pool = spare = -1;
+            type.clear();
+            std::string wr;
+            if (!http::get(port, "/sdk/weapons?limit=0", wr)) {
+                return false;
+            }
+            const std::string b = http::body_of(wr);
+            type = json_string(b, "ammo_type");
+            return json_int(b, "magazine", mag) && json_int(b, "reserve", pool) &&
+                   json_int(b, "spare", spare);
+        };
+
+        long long m0 = -1, p0 = -1, s0 = -1;
+        std::string type;
+        if (ammo_snapshot(m0, p0, s0, type) && m0 > 0 && p0 > 0) {
+            printf("[fixture] ammo: %s magazine %lld, pool %lld, spare %lld\n", type.c_str(), m0,
+                   p0, s0);
+            check(!type.empty(),
+                  "the held weapon names the ammunition it consumes, which is what pairs the "
+                  "magazine with a pool");
+            check(s0 == p0 - m0,
+                  "spare == pool - magazine, because the pool is a TOTAL that already includes the "
+                  "loaded rounds -- showing it as 'spare' double-counts the magazine");
+
+            // FIRE: both fall, by the same amount. Gated on the weapon actually firing, since a
+            // weapon that spends nothing makes this vacuous rather than false.
+            if (g_can_fire) {
+                std::string ir;
+                http::get(port, "/input/hold?vk=256&down=1", ir);
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                http::get(port, "/input/hold?vk=256&down=0", ir);
+                http::get(port, "/input/release", ir);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+                long long m1 = -1, p1 = -1, s1 = -1;
+                std::string t1;
+                if (ammo_snapshot(m1, p1, s1, t1)) {
+                    printf("[fixture] ammo: fired -> magazine %+lld, pool %+lld\n", m1 - m0,
+                           p1 - p0);
+                    check_armed(g_can_fire, m1 < m0,
+                                "firing empties the MAGAZINE, not just the pool");
+                    check_armed(g_can_fire && m1 < m0, (m0 - m1) == (p0 - p1),
+                                "and takes the same rounds out of the pool -- two independently "
+                                "mapped values moving together is what makes either trustworthy");
+
+                    // RELOAD: the magazine rises and the pool does NOT, because those rounds were
+                    // already counted. This is the half that establishes what the pool means.
+                    http::get(port, "/input/tap?vk=82&frames=3", ir);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+
+                    long long m2 = -1, p2 = -1, s2 = -1;
+                    std::string t2;
+                    if (ammo_snapshot(m2, p2, s2, t2)) {
+                        printf("[fixture] ammo: reloaded -> magazine %+lld, pool %+lld\n", m2 - m1,
+                               p2 - p1);
+                        check_armed(g_can_fire, m2 > m1, "reloading refills the magazine");
+                        check_armed(g_can_fire && m2 > m1, p2 == p1,
+                                    "and leaves the pool UNCHANGED -- it is a total that already "
+                                    "counted those rounds, which is why spare subtracts");
+                    }
+                }
+            }
+        }
+    }
+
     // ---- STANCE, AND WHERE THE EYE ACTUALLY IS ----------------------------------
     //
     // Room-scale VR maps a headset height onto the game's eye. Getting that wrong by the height of
@@ -12110,17 +12186,15 @@ int main(int argc, char** argv) {
     // object's own position, and the render camera's published position. A wrong offset in any of
     // them breaks the sum immediately.
     {
-        auto stance_snapshot = [&](double& eye, double& body, double& cam, long long& crouch,
-                                   long long& corroborated) {
+        auto stance_snapshot = [&](double& eye, double& body, double& cam, long long& crouch) {
             eye = body = cam = 0.0;
-            crouch = corroborated = -1;
+            crouch = -1;
             std::string sp;
             if (!http::get(port, "/sdk/shader-params", sp)) {
                 return false;
             }
             const std::string b = http::body_of(sp);
             json_int(b, "ps_crouching", crouch);
-            json_int(b, "ps_stance_corroborated", corroborated);
             return json_double(b, "ps_eye_height", eye) && json_double(b, "ps_body_y", body) &&
                    json_double(b, "cam_y", cam);
         };
@@ -12131,15 +12205,12 @@ int main(int argc, char** argv) {
         constexpr double kIdentityBound = 0.02;
 
         double eye0 = 0, body0 = 0, cam0 = 0;
-        long long crouch0 = -1, corr0 = -1;
-        if (stance_snapshot(eye0, body0, cam0, crouch0, corr0)) {
+        long long crouch0 = -1;
+        if (stance_snapshot(eye0, body0, cam0, crouch0)) {
             printf("[fixture] stance: crouching=%lld eye_height=%.2f body_y=%.2f cam_y=%.2f "
                    "(residual %+.3f)\n",
                    crouch0, eye0, body0, cam0, eye0 + body0 - cam0);
 
-            check(corr0 == 1,
-                  "the two independently stored stance fields agree -- the flag bit and the "
-                  "boolean beside it, which is what makes the stance trustworthy rather than read");
             check(fabs(eye0 + body0 - cam0) <= kIdentityBound,
                   "eye_height + body origin == the world camera height, so the eye offset and the "
                   "body position describe the same camera");
@@ -12151,14 +12222,13 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1800));
 
             double eye1 = 0, body1 = 0, cam1 = 0;
-            long long crouch1 = -1, corr1 = -1;
-            if (stance_snapshot(eye1, body1, cam1, crouch1, corr1)) {
+            long long crouch1 = -1;
+            if (stance_snapshot(eye1, body1, cam1, crouch1)) {
                 printf("[fixture] stance toggled: crouching=%lld eye %+.2f body %+.2f cam %+.2f\n",
                        crouch1, eye1 - eye0, body1 - body0, cam1 - cam0);
 
                 check(crouch1 != crouch0 && crouch1 >= 0,
                       "pressing the crouch key changes the stance the SDK reports");
-                check(corr1 == 1, "and the two stance fields still agree in the other stance");
                 check(fabs(eye1 + body1 - cam1) <= kIdentityBound,
                       "the height identity holds in BOTH stances, so it is a relation and not a "
                       "coincidence of one pose");
@@ -12174,8 +12244,8 @@ int main(int argc, char** argv) {
                 http::get(port, "/input/tap?vk=67&frames=3", ir);
                 std::this_thread::sleep_for(std::chrono::milliseconds(1800));
                 double eye2 = 0, body2 = 0, cam2 = 0;
-                long long crouch2 = -1, corr2 = -1;
-                if (stance_snapshot(eye2, body2, cam2, crouch2, corr2)) {
+                long long crouch2 = -1;
+                if (stance_snapshot(eye2, body2, cam2, crouch2)) {
                     check(crouch2 == crouch0, "and the block restores the stance it found");
                 }
             }

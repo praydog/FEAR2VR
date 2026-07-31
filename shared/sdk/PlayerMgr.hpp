@@ -507,8 +507,7 @@ public:
     // The crouch bit (kMoveFlagCrouching below) is read by CMoveMgr_UpdateInputFlags at four sites
     // (gameclient 0x10104FAE, 0x10105070, 0x10105154, 0x10105D54) and SET by
     // CMoveMgr_ReadStateFromMessage (0x10107960), so it is replicated state, not a local input flag.
-    // A second field tracks the same stance and exists here only to corroborate it.
-    static constexpr uintptr_t kMoveMgrCrouchFlag = 368;
+
     static constexpr uint32_t kMoveFlagCrouching = 0x20;
     static constexpr uint32_t kMoveFlagForceMoving = 0x800;
     static constexpr float kMoveSpeedThreshold = 0.1f;
@@ -1775,17 +1774,21 @@ public:
 
     // ---- STANCE, AND THE NUMBER ROOM-SCALE VR ACTUALLY NEEDS -----------------------------------
     //
-    // is_crouching() already existed on this bit; what was missing is a way to know whether to
-    // TRUST it, and how far the eye actually moves.
+    // A RETRACTED CLAIM, kept because the mistake is the instructive part.
     //
-    // Do the two independently-stored stance fields agree? A differential scan of the controller's
-    // first 2400 bytes -- sampled twice in one stance to establish that exactly ONE field moves on
-    // its own, then again across a crouch toggle -- found ten fields tracking the change, of which
-    // two are stance: the flag bit and a boolean at +368. A consumer deciding whether to trust the
-    // stance can ask; this is also the check that would catch either offset moving in a patch.
-    // nullopt when the controller is unreachable.
-    static std::optional<bool> stance_corroborated(unsigned index);
-
+    // A differential scan across a crouch toggle found ten fields changing, and a boolean at +368
+    // read 0 standing and 1 crouched. That was published as a second, corroborating stance field
+    // with a stance_corroborated() accessor and a fixture check asserting the two agree.
+    //
+    // The check failed on the very next session, and it was right to: +368 read 407684864 there --
+    // neither 0 nor 1, and in the range this process uses for heap pointers. It is not a boolean and
+    // never was; it merely held 0 and then 1 while the stance happened to change.
+    //
+    // This is MAPPING_WORKFLOW pitfall 3 exactly -- a predicate testing a value's APPEARANCE when
+    // the question is its ROLE. A field that CHANGES with a toggle has not thereby been shown to
+    // MEAN the toggle, and a two-sample differential cannot tell those apart. The crouch bit itself
+    // (kMoveFlagCrouching, read by CMoveMgr_UpdateInputFlags at four sites) is unaffected: it was
+    // established from the code that consumes it, not from the fact that it moved.
     // THE EYE HEIGHT: how far the camera sits above the player's own origin, as a scalar. This is
     // what a headset pose is mapped onto -- a VR player standing 1.75 m tall wants the virtual eye
     // at the game's standing height, and wants CROUCHING to move it by the game's own amount rather

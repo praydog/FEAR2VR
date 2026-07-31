@@ -5341,9 +5341,6 @@ std::string build_shader_params_json(bool include_write_probes) {
             // fields, found by a differential scan) and how far the eye actually moves.
             const auto crouch = sdk::PlayerMgr::is_crouching(0);
             json_append_raw(out, "ps_crouching", crouch.has_value() ? (*crouch ? "1" : "0") : "-1");
-            const auto corr = sdk::PlayerMgr::stance_corroborated(0);
-            json_append_raw(out, "ps_stance_corroborated",
-                            corr.has_value() ? (*corr ? "1" : "0") : "-1");
             const auto eh = sdk::PlayerMgr::eye_height(0);
             json_append_double(out, "ps_eye_height",
                                eh.has_value() ? static_cast<double>(*eh) : -1.0, 3);
@@ -9098,6 +9095,21 @@ std::string build_weapons_json(const std::string& request_target) {
     json_append_string(out, "pending", sdk::WeaponMgr::pending_weapon_name(0).c_str());
     json_append_bool(out, "equipped", sdk::WeaponMgr::equipped(0));
     json_append_bool(out, "switching", sdk::WeaponMgr::switching(0));
+
+    // THE MAGAZINE AND ITS RESERVE -- the two halves of the HUD's "26/385", read together so a
+    // consumer comparing them is not comparing two instants.
+    const auto mag = sdk::WeaponMgr::magazine_rounds(0);
+    json_append_raw(out, "magazine",
+                    std::to_string(mag.has_value() ? static_cast<int64_t>(*mag) : -1).c_str());
+    const auto ammo_name = sdk::WeaponMgr::current_ammo_name(0);
+    json_append_string(out, "ammo_type", ammo_name.c_str());
+    const auto reserve = ammo_name.empty() ? std::nullopt
+                                           : sdk::PlayerMgr::ammo_count(0, ammo_name);
+    json_append_raw(out, "reserve",
+                    std::to_string(reserve.has_value() ? static_cast<int64_t>(*reserve) : -1).c_str());
+    const auto spare = sdk::WeaponMgr::spare_rounds(0);
+    json_append_raw(out, "spare",
+                    std::to_string(spare.has_value() ? static_cast<int64_t>(*spare) : -1).c_str());
 
     // ---- THE WHEEL ITSELF --------------------------------------------------------------------
     //

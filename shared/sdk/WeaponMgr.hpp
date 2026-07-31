@@ -118,6 +118,52 @@ public:
 
     static constexpr unsigned kNoSlot = 0xFFFF;
 
+    // ---- THE MAGAZINE, WHICH IS NOT THE RESERVE ------------------------------------------------
+    //
+    // Two different numbers, and the HUD shows both ("26/385"). Everything mapped until now was the
+    // RESERVE -- sdk::PlayerMgr::ammo_count() and AmmoKeeper, which tops up the pool and explicitly
+    // does NOT refill the magazine, so a player kept stocked by it still has to reload.
+    //
+    // A VR mod needs the magazine specifically: an ammo readout on the gun shows rounds LOADED, and
+    // a reload gesture has to know when the magazine is empty rather than when the pool is.
+    //
+    // Found by differential scan of the live CClientWeapon across a burst: +184 fell 26 -> 19 for
+    // seven shots. Per-weapon, as it must be -- the assault rifle read 30 while the submachinegun
+    // read 41 at the same instant.
+    //
+    // A NEIGHBOUR THAT LOOKED LIKE CAPACITY IS NOT NAMED HERE. +200 read 31 alongside a magazine of
+    // 26, which is exactly what a capacity would look like -- and it read 31 on the submachinegun
+    // too, whose magazine held 41. A value that plausible is why the second weapon was checked.
+    static std::optional<int32_t> magazine_rounds(unsigned player_index = 0);
+
+    // ---- AND THE POOL ALREADY INCLUDES IT ------------------------------------------------------
+    //
+    // sdk::PlayerMgr::ammo_count() is a TOTAL, not a spare count. Measured on one weapon:
+    //
+    //     firing 10 rounds   magazine -10   pool -10     both fall together
+    //     reloading          magazine +10   pool   0     the pool already counted them
+    //
+    // So a readout showing the pool as "spare" DOUBLE-COUNTS whatever is loaded. This is the number
+    // a magazine/spare display actually wants, and the subtraction lives here rather than in every
+    // consumer that would otherwise have to rediscover the semantics above.
+    //
+    // nullopt when either half is unavailable; clamped at zero, because a pool momentarily behind
+    // the magazine during a reload is a sampling artefact and not a negative quantity of bullets.
+    static std::optional<int32_t> spare_rounds(unsigned player_index = 0);
+
+    // The ammunition TYPE the held weapon consumes, which is what turns the magazine into a pair
+    // with a reserve: sdk::PlayerMgr::ammo_count(current_ammo_name()) is the other half of the HUD.
+    //
+    // On the WEAPON OBJECT at +672, sibling to the weapon record at +668 -- CClientWeaponMgr_ChangeWeapon
+    // reads exactly that (`v21 = *(*(this+412) + 672)`) when deciding whether the ammo type changed.
+    // The chooser's own +520 was tried first and reads empty: ChangeWeapon only writes it inside a
+    // conditional branch, so it is not the live value.
+    static regenny::DatabaseMgrRecord* current_ammo(unsigned player_index = 0);
+    static std::string current_ammo_name(unsigned player_index = 0);
+
+    static constexpr uintptr_t kWeaponObjectMagazine = 184;  // CClientWeapon -> rounds loaded
+    static constexpr uintptr_t kWeaponObjectAmmo = 672;      // CClientWeapon -> ammo record
+
     // ---- IS A SWITCH IN FLIGHT? ----------------------------------------------------------------
     //
     // Changing weapon is NOT instantaneous, and a VR mod that ignores that gets wrong answers the
