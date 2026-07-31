@@ -914,7 +914,53 @@ Two changes, both of which this file already prescribes elsewhere:
 Two consecutive ctest runs green afterwards. The tell for this class: a check that passes when run
 by hand and fails in the suite, on the same binary, is measuring the world rather than the code.
 
-### `both=1&split=1` renders THREE panels, and a single eye renders a quarter
+### RETRACTED: the split rect does NOT compound, and the setup is correct
+
+The previous pass concluded that the engine's `rect` composes with the bound viewport, so applying
+the split per SetupPass compounded into a quarter-width render. **That is wrong.** The evidence for
+it was a brightness threshold over a dark corridor -- an instrument that measures where the bright
+pixels are, not where the render ends.
+
+The per-pass census answers it directly, because it records the rect the engine was HANDED and the
+pixel viewport it DERIVED:
+
+    pass 0  aux    rect [0.00, 1.00]  ->  vp [0    .. 640 ] x [0..360 ]
+    pass 1  LEFT   rect [0.00, 0.50]  ->  vp [0    .. 1280] x [0..1440]
+    pass 2  RIGHT  rect [0.50, 1.00]  ->  vp [1280 .. 2560] x [0..1440]
+
+Exactly half of 2560 each, full height, and the auxiliary pass untouched. The rect is ABSOLUTE and
+the engine derives precisely what was asked. The eye cameras in that same frame sit at
+(2133.31, -7839.13) and (2129.65, -7844.38) -- **6.40 units apart, exactly 2 x half_ipd**. The
+stereo camera maths and the viewport split are both correct.
+
+**The census had been lying by omission.** The second-eye replay goes straight down the trampoline,
+so it never reached `capture_viewport()` or `record_pass()`: the census reported TWO passes in a
+frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
+one. It is recorded now, which is what made the table above possible.
+
+### Where the split defect actually is: the right half's PIXELS, not its setup
+
+With the setup proven correct, the defect narrows sharply. Comparing each half against a monocular
+capture of the same view, squeezed to half width (which is what an unchanged FOV in a half viewport
+must produce):
+
+    left  half vs mono squeezed 2x    1.27      <- correct
+    right half vs mono squeezed 2x   13.53
+    right half, drawn ALONE          20.09      <- not depth contention from the left eye
+
+Ruled out, each by measurement rather than reasoning:
+
+  * eye separation -- the asymmetry is identical at half_ipd = 0;
+  * depth contention -- drawing the right eye with no left eye first is no better;
+  * the frustum centre -- requested and applied both read 0.00 for every eye;
+  * extra replays -- 0.98 second-eye draws per present frame;
+  * the auxiliary pass -- `main_only` is on and the census shows it untouched.
+
+So: a viewport anchored at x=0 renders correctly and a mirrored one anchored at x=half does not,
+from the same camera, with the engine's own derived viewport correct in both cases. That is the next
+question, and it is a much smaller one than "why is stereo broken".
+
+### Superseded: the earlier three-panel reading
 
 The side-by-side mode is the format a headset consumes, so it is the last thing between the mapped
 view chain and a submittable frame. It does not work, and the failure is now pinned to a mechanism.

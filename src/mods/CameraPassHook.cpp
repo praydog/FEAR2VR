@@ -428,6 +428,15 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
         return first;
     }
     apply_frustum_centre(CameraPassHook::Eye::Right);
+
+    // RECORD THE SECOND EYE TOO. The replay goes straight down the trampoline, so until now it
+    // never reached capture_viewport() or record_pass() -- the census reported TWO passes in a
+    // frame where three setups had happened, and the one pass a stereo bug would live in was the
+    // invisible one. A diagnostic that omits the interesting case is how the split defect stayed
+    // unexplained for two sessions.
+    capture_viewport();
+    record_pass(&cam, fov, rect, g_pristine.depth_min, g_pristine.depth_max);
+
     draw_original(a1, a2);
     g_second_draws.fetch_add(1, std::memory_order_relaxed);
     return first;
