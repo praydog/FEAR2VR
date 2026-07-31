@@ -620,3 +620,16 @@ pass; sampling it from the IPC thread aliases anything periodic and produced byt
 "measurements" for two different walks. `CameraPassHook::reset_height_excursion()` plus
 `observed().height_min/max` accumulate one sample per pass, which is what makes a negative result
 trustworthy.
+
+## sdk::ObjectWatch -- differences, not snapshots
+
+`CClientMgr` answers "what exists now". Most of what a mod reacts to is a CHANGE in that set:
+projectiles, impacts, bodies, pickups. `sdk::ObjectWatch` owns that difference so no consumer
+re-invents the identity rule -- objects are matched on (address, handle) TOGETHER, because the
+allocator reuses freed object memory and 335 of 3583 live objects carry `kNoHandle`.
+
+Sort-and-search, not a nested scan: OT_NORMAL alone runs to ~1900 objects and the pairwise form
+would rule the class out of the per-frame use it exists for.
+
+It reports nothing on the first sample. Reporting the whole world as "appeared" because nobody
+looked before is a lie every consumer would then work around.

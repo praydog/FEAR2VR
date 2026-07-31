@@ -901,3 +901,59 @@ The rule this yields, which generalises past angles:
   intended while no longer sampling luck.
 - The tell is a residual that hovers at the SAME magnitude as the bound. If the two are within a
   factor of two of each other, suspect the floor before suspecting the environment.
+
+## Destructive checks run LAST, and consume nothing they cannot replace
+
+Firing is the only thing this suite does that the LEVEL reacts to, and it broke the suite in four
+distinct ways before the shape of the problem was clear. Each failure looked like a bug somewhere
+else, which is what makes this worth writing down.
+
+1. **A probe at the top of the suite started a firefight 1500 checks early.** The viewmodel-decouple
+   and roll-arc checks then failed on every ctest invocation while passing standalone. Neither has
+   anything to do with weapons; they were simply the two checks least tolerant of a view that would
+   not sit still. **Fix: destructive blocks run after every observational check.** The ordering is
+   load-bearing -- moving any of them back up reintroduces failures that look unrelated.
+
+2. **A resource the world does not replace.** Ammunition drains across runs against one long-lived
+   game process. The magazine emptied, the game auto-switched to a flamethrower, and three checks
+   went red at once with nothing wrong with any of them. A probe that answers "yes, there is ammo"
+   by spending the last of it hands a healthy verdict to a suite that runs dry two blocks later.
+   **Fix: each firing check verifies its OWN burst** (did anything spawn?) rather than trusting a
+   flag set at startup, so a run that goes dry reports NOT EXERCISED instead of a false red.
+
+3. **Restoring unconditionally traded one flake for a worse one.** A checkpoint load leaves the
+   world briefly PAUSED -- and a paused world is perfectly still, so the suite's own quiescence
+   predicate calls it settled. The shell's real-clock check then failed three runs straight.
+   Quiescence alone is not readiness; a settled world is one that is still AND running.
+
+4. **The player can die.** A corpse's aim is frozen, which reads as "recoil is broken": measured as
+   `pitch +1.9293 -> peak +4.3183 -> +4.3183`, where the final reading equalling the peak EXACTLY is
+   the tell that nothing was decaying. Liveness is checked at the point of use, not at startup.
+
+### Establish preconditions; do not assume the engine restores them
+
+An aim resting at +8.6 degrees shoots the ceiling. No impacts spawn, and every measurement that
+depends on where shots land fails -- three consecutive runs failed three DIFFERENT ways from that
+single cause. The aim is now levelled before the measurement and driven back after it, both through
+the public look primitive with a measured gain.
+
+The general rule: if a check needs the world in a particular state, PUT IT THERE and assert the
+placement worked. Do not assume the engine returns it, and do not discover the assumption years
+later through a failure somewhere else.
+
+### A threshold on the environment is not a test
+
+The fire-ray block originally required the impact cluster to be a strict MAJORITY of everything that
+appeared. That is a claim about how much unrelated scenery happened to emit while the burst was in
+the air -- not about the SDK or the engine. It duly failed on a busy scene while the measurement it
+was protecting was perfectly good: that run reported -32.82 degrees against a -30 prediction, and
+the relationship check passed. Replaced with a claim that carries information (the direction has
+support from more than one spawn) plus the ratio PRINTED as evidence.
+
+### Deriving a tolerance from the hypotheses
+
+The fire-ray test discriminates two hypotheses: shots follow the weapon (bearing shift 0) or the
+camera (shift -yaw). They are `yaw` degrees apart, so agreeing with one to within a QUARTER of that
+separation rules the other out with three quarters of the gap to spare. The bound comes from the
+experiment's own structure rather than from a number that looked about right -- which is the only
+way to satisfy this file's ban on invented tolerances while still asserting something quantitative.
