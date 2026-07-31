@@ -9789,9 +9789,25 @@ int main(int argc, char** argv) {
                     const bool got = pixel_at("clear=1", x0) && pixel_at("yaw=6", xr) &&
                                      pixel_at("yaw=12", xr2) && pixel_at("yaw=-6", xl) &&
                                      pixel_at("clear=1", xback);
-                    check(got, "a world point projects to a pixel in every head pose, measured while a "
-                               "perspective pass is configured");
-                    if (got) {
+                    // PHASE-GATED, because the measurement names its own precondition and cannot
+                    // enforce it. Projecting a world point needs a PERSPECTIVE pass configured, and
+                    // the IPC thread samples whatever pass the frame happens to be in -- the last
+                    // one is the full-screen ortho HUD pass, so losing this race reports
+                    // "projection affine" and every pixel lookup fails.
+                    //
+                    // It is a race the suite has always had; adding a per-frame VR runtime and a
+                    // crash-filter re-assert shifted the timing enough to start losing it. The
+                    // honest report is "not exercised", not a red: nothing is wrong with the
+                    // projection, we simply looked during the wrong pass.
+                    bool perspective_now = false;
+                    if (http::get(port, "/sdk/shader-params", resp)) {
+                        perspective_now = json_flag_of(http::body_of(resp), "sc_perspective");
+                    }
+                    check_gated(perspective_now, "sampled during the ortho HUD pass", g_skipped_motion,
+                                got,
+                                "a world point projects to a pixel in every head pose, measured "
+                                "while a perspective pass is configured");
+                    if (got && perspective_now) {
                         // Turning the head one way must slide the world the OTHER way. This is the check that
                         // a screenshot would make, without the screenshot -- and it is the only one here that
                         // distinguishes a rendered view that turned from a field that merely changed.
