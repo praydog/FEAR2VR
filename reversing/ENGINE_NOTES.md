@@ -938,6 +938,49 @@ so it never reached `capture_viewport()` or `record_pass()`: the census reported
 frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
 one. It is recorded now, which is what made the table above possible.
 
+### The right half holds TWO copies, from ONE draw
+
+Splitting the halves out of a capture and looking at them stacked settles what four sessions of
+metrics could not: the LEFT half contains one correct copy of the scene, and the RIGHT half contains
+**two copies side by side**, each at half the width of that half.
+
+And it is not extra draws. Measured per present frame:
+
+    split OFF   draw_calls 2.00   passes 2.00   second_eye 0.00
+    split ON    draw_calls 2.00   passes 2.00   second_eye 1.00
+
+Three scene renders in total -- the 640x360 auxiliary pass, the left eye, the right eye -- with the
+census confirming each one's derived viewport is exactly right. **One draw into the right viewport
+produced two copies inside it.**
+
+[INFERENCE, not established] Duplication from a single draw is the signature of TILED SAMPLING: some
+downstream stage samples the scene with texture coordinates that no longer match the viewport it was
+rendered into, and a wrapping sampler repeats the content. That would also explain why the left half
+is unaffected -- coordinates below 1.0 do not wrap.
+
+An attempt to test that by disabling post-processing FAILED and is recorded as a non-result: the
+console rejected both levers (`Perf_HDR_Enable` returned "none", `EnableMotionBlur` "not_found"), so
+post-processing was never actually off and the unchanged right half (13.49 against 13.53) says
+nothing either way.
+
+What this does establish, and it reshapes the stereo plan: **viewport splitting cannot be the route
+to a side-by-side frame in this engine** unless whatever samples the scene is corrected too. Each
+eye rendering to its OWN full-size target avoids the question entirely, and the eye/camera maths
+that would feed it is already verified.
+
+### Measuring a frame's halves without leaving the process
+
+`FrameCapture::last_left_luma()` / `last_right_luma()`, accumulated in the same readback walk as the
+signature. Every diagnosis above needed a host-side image library to ask a question the mod can now
+answer for itself, which is the difference between a check that runs in the suite and one that runs
+when a human is watching.
+
+Validated against the host-side computation on the same frames -- in-process 26.976/22.460 versus
+27.645/22.946 for mono, the small gap being the 8-pixel sampling grid. The suite asserts the
+identity that needs no baseline: the two halves are equal-sized samples of one grid, so their mean
+IS the whole frame's mean, and all three come from a single capture so scene flicker cannot move
+them apart. Live: left 26.401, right 22.263, mean 24.332, halves average 24.332.
+
 ### Where the split defect actually is: the right half's PIXELS, not its setup
 
 With the setup proven correct, the defect narrows sharply. Comparing each half against a monocular

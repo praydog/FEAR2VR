@@ -110,6 +110,20 @@ public:
     // A consumer bringing up a headset wants exactly this check at startup: render left, render
     // right, and refuse to claim stereo if the signatures match.
     uint64_t last_signature() const { return m_signature.load(std::memory_order_relaxed); }
+
+    // ---- THE TWO HALVES, WHICH IS WHAT A SIDE-BY-SIDE PAIR IS MADE OF --------------------------
+    //
+    // Mean luminance of the left and right halves of the captured frame, accumulated in the same
+    // readback walk as everything else. A stereo bring-up compares them constantly: a side-by-side
+    // submission is only a PAIR if the halves carry the same scene from two viewpoints, and the
+    // cheapest thing that distinguishes "two viewpoints" from "one view and some garbage" is that
+    // the halves are of comparable brightness while not being identical.
+    //
+    // This exists because every diagnosis of the split path so far has needed a host-side image
+    // library to answer a question the mod could answer for itself. Live, with the split active and
+    // the right half known-bad, the two differ by roughly a third; mono, they differ by the scene.
+    double last_left_luma() const;
+    double last_right_luma() const;
     double last_mean_luma() const;
 
     bool request_capture();
@@ -174,6 +188,8 @@ private:
     std::atomic<bool> m_continuous{false};
     std::atomic<uint64_t> m_signature{0};
     std::atomic<int64_t> m_mean_luma_milli{0};
+    std::atomic<int64_t> m_left_luma_milli{0};
+    std::atomic<int64_t> m_right_luma_milli{0};
     std::atomic<uint64_t> m_cont_frames{0};
     std::atomic<int64_t> m_cont_lock_ticks{0};
     std::atomic<uint32_t> m_width{0};

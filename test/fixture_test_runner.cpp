@@ -12095,6 +12095,52 @@ int main(int argc, char** argv) {
 
     }
 
+    // ---- THE FRAME'S TWO HALVES, MEASURED IN PROCESS ----------------------------
+    //
+    // FrameCapture::last_left_luma()/last_right_luma(). A side-by-side submission is only a PAIR if
+    // the halves carry the same scene from two viewpoints, and every diagnosis of the split path so
+    // far has needed a host-side image library to ask that. Now the mod answers it.
+    //
+    // The assertion is an identity the record satisfies against ITSELF -- the halves are equal-sized
+    // samples of the same grid, so their mean must be the whole frame's mean. Nothing recorded from
+    // a previous run is involved, and unlike the luminance comparison below it does not care how
+    // much the scene flickers, because all three numbers come from ONE capture.
+    {
+        std::string r;
+        http::get(port, "/xr/capture", r);
+        bool got = false;
+        double lum = 0, lhalf = 0, rhalf = 0;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (!http::get(port, "/xr/head", r)) {
+                continue;
+            }
+            bool pending = true;
+            json_bool(http::body_of(r), "fc_pending", pending);
+            if (!pending) {
+                got = json_double(http::body_of(r), "fc_mean_luma", lum) &&
+                      json_double(http::body_of(r), "fc_left_luma", lhalf) &&
+                      json_double(http::body_of(r), "fc_right_luma", rhalf);
+                break;
+            }
+        }
+        if (got && lum > 0.0) {
+            const double avg = (lhalf + rhalf) / 2.0;
+            printf("[fixture] frame halves: left %.3f right %.3f, mean %.3f (halves average %.3f)\n",
+                   lhalf, rhalf, lum, avg);
+            // Bound from the publication: three decimals on each of three values, plus the
+            // integer-milli rounding each accumulator does. 0.05 sits above that and far below any
+            // real disagreement, which would be a whole half of the picture.
+            check(fabs(avg - lum) <= 0.05,
+                  "the two half-frame luminances average to the whole frame's -- one capture, three "
+                  "accumulators over the same grid, so this fails only if the halves are not "
+                  "halves");
+            check(lhalf > 0.0 && rhalf > 0.0,
+                  "and BOTH halves carry light, so the identity above is not being satisfied by an "
+                  "empty half");
+        }
+    }
+
     // ---- DO THE TWO EYES ACTUALLY RENDER DIFFERENTLY? ---------------------------
     //
     // Everything this project could previously say about stereo was STRUCTURAL: asymmetric frustum

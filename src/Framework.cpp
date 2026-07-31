@@ -10724,6 +10724,8 @@ bool Framework::initialize() {
               .raw("fc_signature",
                    std::to_string(FrameCapture::get().last_signature()).c_str())
               .f("fc_mean_luma", FrameCapture::get().last_mean_luma(), 3)
+              .f("fc_left_luma", FrameCapture::get().last_left_luma(), 3)
+              .f("fc_right_luma", FrameCapture::get().last_right_luma(), 3)
               .f("fc_cont_lock_ms", FrameCapture::get().continuous_lock_ms(), 3)
               .u("fc_width", FrameCapture::get().width())
               .u("fc_height", FrameCapture::get().height())

@@ -241,6 +241,14 @@ void FrameCapture::service_continuous() {
     m_issue = ready;
 }
 
+double FrameCapture::last_left_luma() const {
+    return static_cast<double>(m_left_luma_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
+double FrameCapture::last_right_luma() const {
+    return static_cast<double>(m_right_luma_milli.load(std::memory_order_relaxed)) / 1000.0;
+}
+
 double FrameCapture::last_mean_luma() const {
     return static_cast<double>(m_mean_luma_milli.load(std::memory_order_relaxed)) / 1000.0;
 }
@@ -396,6 +404,9 @@ void FrameCapture::service() {
         // content merely moved, which is precisely the difference a stereo check must detect.
         uint64_t sig = 1469598103934665603ull;  // FNV-1a offset basis
         uint64_t luma_sum = 0;
+        uint64_t luma_left = 0, luma_right = 0;
+        uint64_t n_left = 0, n_right = 0;
+        const uint32_t mid_x = desc.Width / 2;
         for (uint32_t y = 0; y < desc.Height; y += 8) {
             const auto* row = reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(y) * lr.Pitch);
             for (uint32_t x = 0; x < desc.Width; x += 8) {
@@ -407,7 +418,16 @@ void FrameCapture::service() {
                 sig = (sig ^ px) * 1099511628211ull;
                 // Rec. 601 weights in integer form; the exact curve does not matter, only that two
                 // different pictures give two different numbers.
-                luma_sum += ((px >> 16 & 0xFF) * 77 + (px >> 8 & 0xFF) * 150 + (px & 0xFF) * 29) >> 8;
+                const uint64_t luma =
+                    ((px >> 16 & 0xFF) * 77 + (px >> 8 & 0xFF) * 150 + (px & 0xFF) * 29) >> 8;
+                luma_sum += luma;
+                if (x < mid_x) {
+                    luma_left += luma;
+                    ++n_left;
+                } else {
+                    luma_right += luma;
+                    ++n_right;
+                }
             }
         }
         m_nonblack.store(nonblack, std::memory_order_relaxed);
@@ -416,6 +436,11 @@ void FrameCapture::service() {
         m_mean_luma_milli.store(sampled == 0 ? 0
                                              : static_cast<int64_t>((luma_sum * 1000ull) / sampled),
                                 std::memory_order_relaxed);
+        m_left_luma_milli.store(n_left == 0 ? 0 : static_cast<int64_t>((luma_left * 1000ull) / n_left),
+                                std::memory_order_relaxed);
+        m_right_luma_milli.store(
+            n_right == 0 ? 0 : static_cast<int64_t>((luma_right * 1000ull) / n_right),
+            std::memory_order_relaxed);
 
         if (!m_path.empty()) {
             write_bmp(m_path.c_str(), base, desc.Width, desc.Height,
