@@ -1,9 +1,9 @@
 #pragma once
 namespace regenny {
-class LTVisPortal;
+class LTVisSector;
 }
 namespace regenny {
-class LTVisSector;
+class LTVisPortal;
 }
 namespace regenny {
 class LTVisTreeNode;

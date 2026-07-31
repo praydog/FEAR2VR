@@ -1484,6 +1484,57 @@ public:
     // belongs on the game thread -- do not call it from the IPC thread.
     static std::optional<PitchLimits> pitch_limits(unsigned index);
 
+    // ---- TURNING THE VIEW WITHOUT TOUCHING THE CURSOR --------------------------------------
+    //
+    // `Input::send_mouse_look` drives the engine's own mouse handler, which is the right stimulus
+    // when the question is "does the input pipeline work" -- sensitivity, acceleration and the
+    // pitch clamp all apply exactly as they do for a player.
+    //
+    // It is the WRONG primitive for anything that has to work unattended, and the reason is not
+    // "it uses the mouse" -- it never touched OS input; it calls an engine entry point directly.
+    // The reason is that the entry point is POSITIONAL: it takes an absolute client point, and the
+    // engine derives the look delta as (point - client centre) before recentring the cursor. So
+    // the delta we inject competes with the real cursor, and while the window is unfocused the
+    // engine's own poll re-reads that cursor every frame and overwrites us. Measured: with the
+    // window alt-tabbed and the pointer parked 976px left of centre, the engine reported a
+    // constant look delta of -976 and a synthetic dx=200 moved the aim by 0.00 degrees, while
+    // keyboard input kept working because it is written into the key bank instead.
+    //
+    // This is the cursor-independent route: `CPlayerCamera_ApplyLookToRotation` takes a three
+    // float delta, applies it to the camera quaternion and COMMITS it:
+    //
+    //     v7 = camera[81..84]                     // the rotation at +324
+    //     ApplyLookDelta(camera, v7, delta, &out)
+    //     camera[81..84] = out
+    //
+    // WHAT IT DOES NOT DO, stated because a caller will otherwise assume it: it applies no
+    // sensitivity curve and consults no clamp -- it is the rotation step alone. Whether the
+    // camera's own update later re-derives the rotation and overwrites this is a property of the
+    // engine, not of the call, and `apply_look_delta_persists` reports it rather than assuming.
+    //
+    // RADIANS, ONE FOR ONE. The axis assignment is MEASURED, not read off the decompiler, which
+    // only shows three anonymous floats. Driving each component alone with +0.05 rad, window
+    // unfocused:
+    //
+    //     component 0  ->  pitch -2.865 deg   (0.05 rad = 2.8648 deg, and DOWN is positive)
+    //     component 1  ->  yaw   +2.865 deg
+    //     component 2  ->  nothing measurable
+    //
+    // So the gain is exactly 1 -- no sensitivity curve, no acceleration, unlike the mouse path
+    // where dx=200 turns ~28.5 degrees and dx=400 turns less than twice that. A caller asking for
+    // an angle gets that angle, which is why this needs no closed loop to hit a heading.
+    //
+    // It PERSISTS: +0.2 rad of yaw measured +11.459 deg (0.2 rad = 11.4592) and stayed there, so
+    // the camera's own update does not re-derive the rotation and undo it.
+    //
+    // `pitch` is negated at the call so this signature reads in `aim_pitch`'s convention --
+    // POSITIVE IS UP for both, rather than up here and down one layer down.
+    //
+    // NO CLAMP IS APPLIED. The engine's per-state pitch limits are not consulted by this path, so
+    // a caller driving pitch must clamp against `pitch_limits()` itself or it will push the view
+    // somewhere the engine would never allow.
+    static bool apply_look_delta(unsigned index, float pitch_radians, float yaw_radians);
+
     // ---- WHERE THE PLAYER IS ACTUALLY GOING --------------------------------------------
     //
     // MEASURED, and it is the fact a VR locomotion scheme has to start from: movement is

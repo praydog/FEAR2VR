@@ -10650,6 +10650,26 @@ bool Framework::initialize() {
         auto& si = SyntheticInput::get();
 
         std::string err;
+        if (route == "/input/look-direct") {
+            // THE CURSOR-INDEPENDENT ROUTE. Calls CPlayerCamera_ApplyLookToRotation on the game
+            // thread rather than feeding the engine's positional mouse handler, so it works with
+            // the window unfocused -- which the mouse path provably does not.
+            const WebApiQuery q = webapi_parse_query(request_target);
+            const auto a = static_cast<float>(webapi_query_double(q, "pitch", 0.0));
+            const auto b = static_cast<float>(webapi_query_double(q, "yaw", 0.0));
+            const float c = 0.0f;
+            const bool sent = sdk::PlayerMgr::apply_look_delta(0, a, b);
+            std::string out;
+            {
+                JsonFields jf(out);
+                jf.b("ok", sent)
+                  .f("pitch", a, 5).f("yaw", b, 5).f("unused", c, 5)
+                  .f("yaw_deg", sdk::PlayerMgr::aim_yaw(0).value_or(0.0f) * 57.2957795, 4)
+                  .f("pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4);
+            }
+            return out;
+        }
+
         if (route == "/input/look") {
             // A LOOK DELTA through the engine's own move handler -- the VR stick-turn primitive.
             // Queued onto the game thread rather than called here: it mutates device state the

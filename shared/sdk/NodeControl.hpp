@@ -1,5 +1,7 @@
 #pragma once
 
+#include "regenny/regenny/LTNodeControlCell.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -41,18 +43,12 @@ namespace sdk {
 
 // The 12-byte cell the engine allocates per registration.
 //
-// MIRRORS `LTNodeControlCell` in reversing/fear2.genny. It is declared here rather than
-// included from shared/sdk/regenny because CODE GENERATION IS CURRENTLY BROKEN -- ReGenny's
-// `regenny.sdk()` Lua binding lacks the null-check its own UI path has (`action_generate_sdk`
-// guards `m_sdk == nullptr`) and takes the process down, reproducibly, on the UNMODIFIED
-// schema. The static_assert below is the guard against the two definitions drifting: when
-// codegen is restored, delete this and include the generated header.
-struct NodeControlCell {
-    void* fn;
-    void* userdata;
-    NodeControlCell* next;
-};
-static_assert(sizeof(NodeControlCell) == 12, "must match LTNodeControlCell in fear2.genny");
+// THE GENERATED TYPE, not a copy of it. This was hand-declared for several sessions beside a
+// static_assert, because codegen was believed broken; it was not (the crash needs a null `m_sdk`,
+// i.e. an instance where no schema ever parsed -- see AGENT.MD 9a). The hand-written mirror is
+// gone and the schema owns the layout, which is the rule: `reversing/fear2.genny` is ground truth
+// for structure, and the SDK should not restate a field order the generator can emit.
+using NodeControlCell = regenny::LTNodeControlCell;
 
 // ---- THE RECORD THE CALLBACK RECEIVES ----------------------------------------------------
 //

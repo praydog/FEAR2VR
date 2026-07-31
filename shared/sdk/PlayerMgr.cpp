@@ -822,6 +822,68 @@ bool seh_get_camera_clamp(GetActiveCameraClampFn fn, uintptr_t holder, float* ou
 
 } // namespace
 
+namespace {
+
+// CPlayerCamera_ApplyLookToRotation -- gameclient.dll .text+0xE0830.
+//
+//   sub esp, 20h ; push esi ; mov esi, ecx ; mov ecx, [esp+24h+arg_0]
+//   fld dword ptr [ecx] ; fldz ; fucom st(1) ; fnstsw ax ; fstp st(1) ; test ah, 44h
+//
+// No absolute addresses, so nothing needs wildcarding.
+constexpr const char* kApplyLookToRotation =
+    "83 EC 20 56 8B F1 8B 4C 24 28 D9 01 D9 EE DD E1 DF E0 DD D9 F6 C4 44 7A 1A D9 41 04 DD E9 DF E0";
+
+using ApplyLookToRotationFn = void(__thiscall*)(void* camera, float* delta);
+
+ApplyLookToRotationFn apply_look_fn() {
+    // RETRYABLE: gameclient may not be mapped yet (AGENT.MD rule 5).
+    static ApplyLookToRotationFn s_fn = nullptr;
+
+    if (s_fn == nullptr) {
+        s_fn = reinterpret_cast<ApplyLookToRotationFn>(
+            Modules::get().scan_game_client(kApplyLookToRotation, "CPlayerCamera::ApplyLookToRotation"));
+    }
+
+    return s_fn;
+}
+
+bool seh_apply_look(ApplyLookToRotationFn fn, uintptr_t camera, float* delta) {
+    bool ok = false;
+    KANANLIB_SEH_TRY {
+        fn(reinterpret_cast<void*>(camera), delta);
+        ok = true;
+    }
+    KANANLIB_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
+} // namespace
+
+bool PlayerMgr::apply_look_delta(unsigned index, float pitch_radians, float yaw_radians) {
+    auto* fn = apply_look_fn();
+
+    if (fn == nullptr) {
+        return false;
+    }
+
+    const auto p = player(index);
+
+    if (!p.has_value() || p->holder == 0) {
+        return false;
+    }
+
+    // The engine early-outs on an all-zero delta, so a caller passing zeros gets a truthful "the
+    // call happened and changed nothing" rather than a failure.
+    // Component 0 is pitch and grows DOWNWARD; component 1 is yaw; component 2 does nothing
+    // measurable. Negating here keeps the public signature in aim_pitch's upward-positive
+    // convention -- see the header for the measurement.
+    float delta[3]{-pitch_radians, yaw_radians, 0.0f};
+
+    return seh_apply_look(fn, p->holder, delta);
+}
+
 std::optional<PlayerMgr::PitchLimits> PlayerMgr::pitch_limits(unsigned index) {
     auto* fn = get_active_camera_clamp_fn();
 

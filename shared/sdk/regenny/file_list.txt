@@ -48,8 +48,15 @@
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTModelRecord.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\StdString.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTNodeTransform.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTNodeControlCell.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTModelBlock120.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTModelBlock130.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTModelObject.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTParticleSystemObject.hpp" \
 "I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTSpriteObject.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\CLTInput.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTInputDeviceKeyboard.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\LTInputDeviceMouse.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\GameTimer.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\CPlayerCamera.hpp" \
+"I:/Programming/projects/fear2/shared/sdk/regenny\regenny\PlayerZoom.hpp" \

@@ -5494,3 +5494,61 @@ the game AUTO-SWITCH, and sampling mid-switch reads a composition still arriving
 every weapon sits inside the existing bound -- submachinegun 39.5, shotgun 37.3, assaultrifle 64.8,
 flamethrower 101.6 -- so the bound was never wrong; the check simply lacked the at-rest gate the
 comparison two lines above it already used.
+
+## TURNING THE VIEW WITHOUT THE CURSOR: CPlayerCamera_ApplyLookToRotation
+
+`Input::send_mouse_look` was the only way to turn the player, and it is the WRONG instrument for
+anything unattended -- not because it uses "the mouse" (it never touched OS input; both SendInput
+and window messages were measured dead, and it calls the engine's own device entry point directly)
+but because that entry point is **positional**. It takes an absolute client point and the engine
+derives the delta against the window centre, then recentres the cursor.
+
+So the injected value competes with the real cursor. Alt-tabbed, with the pointer parked 976px left
+of centre, the engine reported a constant look delta of **-976** every frame and a synthetic
+dx=200 moved the aim **0.00 degrees**. Keyboard kept working, because keys are written into the
+bank rather than derived from a position. That single environmental fact took down NINE checks
+(snap turn, look primitive, pitch clamp both ends, aim_to) none of which had anything wrong.
+
+The cursor-independent route, gameclient .text+0xE0830:
+
+```c
+void __thiscall ApplyLookToRotation(float* camera, float delta[3]) {
+    if (delta[0] || delta[1] || delta[2]) {
+        v7 = camera[81..84];               // the quaternion at +324
+        ApplyLookDelta(camera, v7, delta, &out);
+        camera[81..84] = out;              // commits
+    }
+}
+```
+
+Exposed as `sdk::PlayerMgr::apply_look_delta(index, pitch, yaw)`. Axis assignment MEASURED, since
+the decompiler shows three anonymous floats -- driving each alone with +0.05 rad, unfocused:
+
+| component | effect |
+|---|---|
+| 0 | pitch **-2.865 deg** (0.05 rad = 2.8648; DOWN is positive) |
+| 1 | yaw **+2.865 deg** |
+| 2 | nothing measurable |
+
+**The gain is exactly 1**, unlike the mouse path where dx=200 turns ~28.5 deg and dx=400 turns less
+than twice that. And it PERSISTS: +0.2 rad measured +11.459 deg (0.2 rad = 11.4592) and stayed, so
+the camera update does not re-derive the rotation and undo it. It applies NO clamp, so a caller
+driving pitch must consult `pitch_limits()` itself.
+
+`TurnController` now drives this instead of queueing a mouse move; snap turns converge in 4
+corrections with the window unfocused. The mouse path stays, because it is the right stimulus for
+testing the input PIPELINE -- those two checks are now focus-gated and report NOT EXERCISED.
+
+### A sign error that only appeared at a clamp
+
+`kPitchRadiansPerUnit` is already signed for the mouse convention (positive dy looks down), and
+`apply_look_delta` takes pitch upward-positive. Negating a second time asked for +85 degrees and
+drove the view to -80 -- the two conventions cancelled, and the only check that could see it was
+the one that compares against the engine's reported clamp at BOTH ends.
+
+### The fire-ray test measured the right thing about the wrong quantity
+
+It asserts the impact bearing shifts by the head yaw, which assumes the AIM holds still between the
+two bursts. It does not always: a run measured -79.03 against a -30 prediction with 6 of 6 spawns
+agreeing on the direction -- a clean measurement of aim drift plus head yaw. The prediction now
+subtracts the measured heading drift, and reports when it exceeds a degree.

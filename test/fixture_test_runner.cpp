@@ -98,6 +98,10 @@ int64_t g_skipped_world = 0;
 // Firing consumes ammunition the world does not replace. Tallied apart from the others because the
 // remedy is different again: not 'stand still' or 'load a level' but 'restore the loadout'.
 int64_t g_skipped_dry = 0;
+// The engine's MOUSE path needs the window focused, and that is a property of the desktop rather
+// than of the mod. Tallied apart because the remedy is neither "stand still" nor "load a level"
+// nor "restore the loadout" -- it is "focus the game", which an unattended run cannot do.
+int64_t g_skipped_unfocused = 0;
 // Set once, early, by the loadout probe: can the player actually shoot? Suite-wide because the
 // probe has to run BEFORE the first assertion (a dead player fails checks that have nothing to do
 // with weapons) while the firing checks that consume it are thousands of lines further down.
@@ -373,6 +377,19 @@ void check_quiescent(bool quiescent, bool ok, const char* name) {
 // measuring an empty gun.
 void check_armed(bool armed, bool ok, const char* name) {
     check_gated(armed, "no loaded weapon", g_skipped_dry, ok, name);
+}
+
+// Checks that drive the engine's POSITIONAL mouse handler. That entry point derives its delta
+// against the client centre and the engine recentres the cursor each frame; with the window
+// unfocused the real cursor is wherever the user left it, the engine re-asserts that stale offset
+// every frame, and an injected delta is overwritten before the camera reads it. Measured: a
+// constant -976 reported delta and dx=200 moving the aim 0.00 degrees.
+//
+// This does NOT gate aiming in general -- `PlayerMgr::apply_look_delta` goes through
+// CPlayerCamera_ApplyLookToRotation and works unfocused. Only the tests OF the mouse pipeline
+// need the window.
+void check_focused(bool focused, bool ok, const char* name) {
+    check_gated(focused, "window not focused", g_skipped_unfocused, ok, name);
 }
 
 // IS THERE A WORLD AND A PLAYER AT ALL? At a main menu there is neither, and 145 checks in this file treated
@@ -9105,9 +9122,16 @@ int main(int argc, char** argv) {
                       "a queued look delta is DELIVERED to the engine on the game thread, carrying "
                       "the value asked for");
                 const double turned = turned_ok ? ang_delta(y1, y0) : 0.0;
-                check(fabs(turned) > 2.0,
-                      "and it turns the PLAYER -- the aim's heading changes, which a view-only "
-                      "override could not do");
+                // FOCUS-GATED from here down. Delivery above is unconditional -- the call reaches
+                // the engine either way -- but whether it MOVES the view depends on the cursor,
+                // and the cursor belongs to the desktop.
+                bool focused = false;
+                if (http::get(port, "/sdk/shader-params", resp)) {
+                    focused = !json_flag_of(http::body_of(resp), "input_lost_focus");
+                }
+                check_focused(focused, fabs(turned) > 2.0,
+                              "and it turns the PLAYER -- the aim's heading changes, which a "
+                              "view-only override could not do");
 
                 // DIRECTION IS AN INVARIANT even though magnitude is not: a positive dx must not
                 // turn the player the other way, whatever the sensitivity curve does to the size.
@@ -9115,9 +9139,9 @@ int main(int argc, char** argv) {
                 double y2 = 0.0;
                 if (yaw_now(&y2)) {
                     const double again = ang_delta(y2, y1);
-                    check(again * turned > 0.0,
-                          "a second delta of the same sign turns the same way, so the axis has a "
-                          "consistent direction even where its gain is not constant");
+                    check_focused(focused, again * turned > 0.0,
+                                  "a second delta of the same sign turns the same way, so the axis "
+                                  "has a consistent direction even where its gain is not constant");
                 }
 
                 // RESTORE BY CLOSED LOOP. Equal-and-opposite is not reliable here, so the suite
@@ -10425,6 +10449,14 @@ int main(int argc, char** argv) {
             const double levelled = drive_pitch_to(port, 0.0);
             printf("[fixture] fire ray: aim levelled to %+.3f deg before measuring\n", levelled);
 
+            // The aim's heading is captured alongside each bearing. The prediction below is
+            // "the impacts follow the VIEW", and the view is aim PLUS head -- so if the player's
+            // heading drifts between the two bursts (enemies shooting back, a nudge from an
+            // earlier check) that drift lands in the bearing too and must be subtracted. Measured
+            // failing exactly that way: a -79.03 shift against a -30 prediction, with 6 of 6
+            // spawns agreeing on the direction, i.e. a clean measurement of the wrong quantity.
+            double aim_at_measure = 0.0;
+
             auto fire_and_measure = [&](int32_t head_yaw, double& bearing_out,
                                         long long& agree_out, long long& total_out) -> bool {
                 char url[160];
@@ -10459,6 +10491,9 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 const std::string body = http::body_of(resp);
+                if (http::get(port, "/vr/turn", resp)) {
+                    json_double(http::body_of(resp), "yaw_deg", aim_at_measure);
+                }
                 return json_double(body, "bearing_deg", bearing_out) &&
                        json_int(body, "bearing_count", agree_out) &&
                        json_int(body, "appeared", total_out);
@@ -10494,13 +10529,26 @@ int main(int argc, char** argv) {
                       "the measured direction has support from more than one spawn, so it is a "
                       "direction rather than a single object's position");
 
+                const double aim0 = aim_at_measure;
                 const bool got1 = fire_and_measure(kYaw, b1, agree1, total1);
+                const double aim1 = aim_at_measure;
                 check(got1, "the same measurement is available with the head turned");
 
                 if (got1) {
                     double shift = b1 - b0;
                     while (shift > 180.0) { shift -= 360.0; }
                     while (shift < -180.0) { shift += 360.0; }
+
+                    // Remove any heading drift. A bearing is atan2(dz,dx) and engine yaw runs the
+                    // other way, so an aim that moved +d degrees shows up as -d of bearing.
+                    double aim_drift = aim1 - aim0;
+                    while (aim_drift > 180.0) { aim_drift -= 360.0; }
+                    while (aim_drift < -180.0) { aim_drift += 360.0; }
+                    shift += aim_drift;
+                    if (fabs(aim_drift) > 1.0) {
+                        printf("[fixture] fire ray: aim drifted %+.2f deg between bursts, corrected\n",
+                               aim_drift);
+                    }
 
                     const double err_view = fabs(shift - (-1.0 * kYaw));
                     const double err_aim = fabs(shift);
@@ -10704,6 +10752,11 @@ int main(int argc, char** argv) {
     // a large number here means the run was weak however green it looks.
     if (g_not_exercised > 0) {
         printf("[fixture] %lld check(s) NOT EXERCISED", static_cast<long long>(g_not_exercised));
+        if (g_skipped_unfocused > 0) {
+            printf("[fixture]   %lld needing the game window FOCUSED (the engine's mouse handler is "
+                   "cursor-relative; aiming via apply_look_delta is unaffected)\n",
+                   static_cast<long long>(g_skipped_unfocused));
+        }
         if (g_skipped_dry > 0) {
             printf("[fixture]   %lld for want of a loaded weapon (the loadout ran dry and the checkpoint "
                    "restore did not bring it back)\n", static_cast<long long>(g_skipped_dry));

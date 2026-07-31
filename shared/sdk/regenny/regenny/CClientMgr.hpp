@@ -5,10 +5,10 @@
 #include "LTConVarTable.hpp"
 #include "LTObjectHandleTable.hpp"
 namespace regenny {
-class CClientShell;
+class CClientMgrCounterNode;
 }
 namespace regenny {
-class CClientMgrCounterNode;
+class CClientShell;
 }
 namespace regenny {
 #pragma pack(push, 1)

@@ -147,10 +147,9 @@ std::optional<size_t> NodeControl::registered_count(const regenny::LTObject* mod
     if (!read_block(model, &block, &count) || node >= count) {
         return std::nullopt;
     }
-    // field 0 of the block is the per-node head array; the schema still calls it unk_00
-    // because codegen is blocked (see NodeControl.hpp). Its MEANING is recorded in
-    // fear2.genny as node_control_heads, with the allocator, writer and reader all cited.
-    const auto head_array = reinterpret_cast<uintptr_t>(block.unk_00);
+    // The per-node head array, NAMED BY THE SCHEMA now that codegen is restored -- it used to be
+    // reached as `unk_00` with the meaning recorded only in a comment.
+    const auto head_array = reinterpret_cast<uintptr_t>(block.node_control_heads);
     if (head_array == 0) {
         return std::nullopt;
     }
@@ -197,7 +196,7 @@ std::optional<bool> NodeControl::is_registered(const regenny::LTObject* model, u
     if (!read_block(model, &block, &count) || node >= count) {
         return std::nullopt;
     }
-    const auto head_array = reinterpret_cast<uintptr_t>(block.unk_00);
+    const auto head_array = reinterpret_cast<uintptr_t>(block.node_control_heads);
     if (head_array == 0) {
         return std::nullopt;
     }

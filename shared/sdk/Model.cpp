@@ -154,7 +154,7 @@ bool seh_resolve(const regenny::LTObject* obj, SkelRaw* out) {
     // pointer the engine carves out lands inside the result on
     // 215/215 models, including the bone palette's full extent.
     const auto align4 = [](uint32_t v) { return v + 3u - ((v + 3u) & 3u); };
-    const uint32_t c08 = asset_copy.region_count_a;
+    const uint32_t c08 = asset_copy.physics_node_count;
     const uint32_t c10 = asset_copy.region_count_b;
     uint32_t size = align4(34u * n) + align4(31u * n + 4u * (c08 + c10)) +
                     align4(28u * asset_copy.material_count);
@@ -756,8 +756,8 @@ SocketRaw seh_socket(const void* base, size_t index, size_t count, size_t node_c
 namespace {
 
 // Offsets named by the LogModels CSV header; see Model.hpp for the derivation. Read as raw offsets rather
-// than through the schema because two of the three are fields the schema still calls region_count_a and
-// unk_52 -- renaming those is a separate change to fear2.genny and its generated headers.
+// than through the schema because two of the three are fields the schema still calls physics_node_count and
+// child_model_count -- renaming those is a separate change to fear2.genny and its generated headers.
 constexpr uintptr_t kAssetPhysicsNodeCount = 0x08;
 constexpr uintptr_t kAssetWeightSetCount = 0x38;
 constexpr uintptr_t kAssetChildModelCount = 0x52;  // u16

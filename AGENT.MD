@@ -286,6 +286,21 @@ inject → test → uninject with the game never restarting.
     `LTInputDeviceKeyboard`, `LTNodeControlCell`, `PlayerZoom`). Regenerate deliberately, migrate
     the callsites in the same commit, and run the suite. Full record in
     `reversing/MAPPING_WORKFLOW.MD`.
+9b. **The SCHEMA owns layout. Codegen is unfrozen -- regenerate rather than hand-declare.**
+    `shared/sdk/regenny/` is generated again (see 9a). The rule that follows from it: a structure
+    or class layout belongs in `reversing/fear2.genny` and reaches the SDK through generated
+    headers. Do NOT restate a field order, and do not add a `static constexpr uintptr_t kThing =
+    N` for something the schema could name.
+    - Recipe: open the schema, confirm `parse_status == ok`, `regenny:sdk():generate(...)`, then
+      re-attach (generation's `open_file` sibling detaches).
+    - Migrate renamed fields in the SAME commit as the regeneration. The five-file drift found
+      when this was unfrozen (`unk_14` -> `name_hash` and friends, ~17 callsites) accumulated
+      purely because the old rule said "don't regenerate" instead of "regenerate and migrate".
+    - `Primitives.hpp` stays hand-written; codegen does not emit it.
+    - DEBT, measured at the unfreeze: 85 hardcoded layout offsets remain in `shared/sdk/*.hpp`,
+      59 of them in `PlayerMgr.hpp` (CPlayerStats' fields, the camera holder's pose offsets, the
+      ammo array). Each is a candidate to become a schema class. Convert opportunistically when
+      touching one -- do not add more.
 10. **Build system is cmkr.** Edit `cmake.toml`, never `CMakeLists.txt`
     (regenerated). cmkr skips regeneration when `CI` is set in the environment;
     `build.bat` clears it — beware when invoking cmake by hand. cmkr expands

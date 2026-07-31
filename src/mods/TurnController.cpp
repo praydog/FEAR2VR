@@ -223,10 +223,28 @@ void TurnController::on_frame() {
         }
     }
 
-    // ONE delta for both axes. They share the queue anyway (SyntheticInput accumulates), so
-    // issuing them separately would only guarantee they land in the same frame with extra steps.
+    // ONE delta for both axes, through the CURSOR-INDEPENDENT path.
+    //
+    // This used to queue a synthetic mouse move, and that was the wrong instrument for a control
+    // loop even though it is the right one for testing the input pipeline. The engine's mouse
+    // entry point is POSITIONAL -- it takes a client point and derives the delta against the
+    // window centre -- so the injected value competes with the real cursor, and with the window
+    // unfocused the engine's own poll overwrites it every frame. Measured: dx=200 moved the aim
+    // 0.00 degrees while alt-tabbed, taking nine turn/pitch checks down with it, none of which
+    // had anything wrong.
+    //
+    // `apply_look_delta` calls CPlayerCamera_ApplyLookToRotation instead: radians in, the same
+    // radians out, no cursor and no window state. The steps below are still computed through the
+    // loop rather than applied in one jump, because the loop also owns the clamp re-check, the
+    // liveness gate and the settle rule -- but the GAIN is now exactly 1.
     if (dx != 0 || dy != 0) {
-        SyntheticInput::get().queue_look(dx, dy);
+        // NO EXTRA NEGATION. `kPitchRadiansPerUnit` is already signed for the mouse convention
+        // (positive dy looks DOWN, hence the negative constant), and `apply_look_delta` takes
+        // pitch in the upward-positive convention, so the constant's own sign is the conversion.
+        // Negating a second time asked for +85 degrees and drove the view to -80 -- the two
+        // conventions cancelled into a sign error that only showed at a clamp.
+        sdk::PlayerMgr::apply_look_delta(0, static_cast<float>(dy) * kPitchRadiansPerUnit,
+                                         static_cast<float>(dx) * kRadiansPerUnit);
         g_cooldown.store(kSettleFrames, std::memory_order_relaxed);
     }
 }
