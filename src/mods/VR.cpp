@@ -1,0 +1,160 @@
+#include "VR.hpp"
+
+#include <atomic>
+#include <cmath>
+
+#include "sdk/PlayerMgr.hpp"
+#include "sdk/Object.hpp"
+#include "HeadTracking.hpp"
+#include "Log.hpp"
+
+namespace {
+
+std::atomic<bool> g_enabled{false};
+std::atomic<uint64_t> g_applied{0};
+std::atomic<bool> g_head_valid{false};
+
+// Last head orientation seen, in both spaces. Reported so a consumer -- or the fixture -- can
+// check the conversion against its input without recomputing it, which would just be asserting
+// the same arithmetic twice.
+std::atomic<float> g_head_rt[4]{};
+std::atomic<float> g_head_eng[4]{};
+
+} // namespace
+
+VR& VR::get() {
+    static VR inst{};
+    return inst;
+}
+
+std::optional<std::string> VR::on_initialize() {
+    vr::simulated_runtime().initialize();
+    LOGX("VR: simulated runtime up ({})", vr::simulated_runtime().name());
+    return std::nullopt;
+}
+
+void VR::on_shutdown() {
+    g_enabled.store(false, std::memory_order_relaxed);
+    // Release the view. HeadTracking composes rather than overrides, so clearing is enough -- the
+    // engine's own identity write stands on the very next frame and there is nothing to restore.
+    HeadTracking::get().clear();
+    vr::simulated_runtime().destroy();
+}
+
+std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& q) {
+    // Mirror along Z: conjugating a rotation by diag(1,1,-1) negates X and Y, leaves Z and W.
+    return {-q[0], -q[1], q[2], q[3]};
+}
+
+std::array<float, 3> VR::runtime_to_engine_position(const std::array<float, 3>& p) {
+    return {p[0] * kUnitsPerMetre, p[1] * kUnitsPerMetre, -p[2] * kUnitsPerMetre};
+}
+
+void VR::set_enabled(bool enabled) {
+    g_enabled.store(enabled, std::memory_order_relaxed);
+
+    if (!enabled) {
+        HeadTracking::get().clear();
+    }
+}
+
+bool VR::enabled() const {
+    return g_enabled.load(std::memory_order_relaxed);
+}
+
+vr::VRRuntime& VR::runtime() const {
+    return vr::simulated_runtime();
+}
+
+void VR::on_frame() {
+    auto& rt = vr::simulated_runtime();
+
+    if (!rt.ready()) {
+        return;
+    }
+
+    // Advance the runtime every frame regardless of whether we are driving the engine. A frame
+    // counter that only ticks while enabled would make "is the runtime alive" and "is the mod
+    // armed" the same question, and they are not.
+    rt.synchronize_frame();
+    rt.update_poses();
+    rt.update_input();
+
+    const auto head = rt.head();
+    g_head_valid.store(head.valid, std::memory_order_relaxed);
+
+    const auto engine = runtime_to_engine_rotation(head.orientation);
+
+    for (size_t i = 0; i < 4; ++i) {
+        g_head_rt[i].store(head.orientation[i], std::memory_order_relaxed);
+        g_head_eng[i].store(engine[i], std::memory_order_relaxed);
+    }
+
+    if (!g_enabled.load(std::memory_order_relaxed) || !head.valid) {
+        return;
+    }
+
+    // THE HEAD POSE, COMPOSED. HeadTracking writes the camera's OUTER operand, so the result is
+    // `head * aim`: the view turns and the body, the aim and the weapon stay where the player put
+    // them. Position is deliberately not applied -- the outer operand is a rotation, and moving
+    // the camera's origin is a separate mechanism with separate consequences (clipping through
+    // geometry, and the body offset) that is not in scope here.
+    // ---- INTO THE BODY'S FRAME, NOT THE WORLD'S ------------------------------------------
+    //
+    // The engine composes `outer * inner`, where inner is the player's aim. Writing the head
+    // rotation straight into outer applies it about WORLD axes, which is wrong for every axis
+    // except yaw: pitching 20 degrees while the body faced 26.86 degrees produced 17.851 of
+    // pitch, and 20*cos(26.86) = 17.84. Roll cross-talked into both yaw and pitch. Yaw alone
+    // survived because both spaces share +Y up, which is exactly why this bug is easy to ship.
+    //
+    // Conjugating by the aim fixes it: with outer = aim * head * aim^-1, the engine's own
+    // composition collapses to
+    //
+    //     outer * inner = (aim * head * aim^-1) * aim = aim * head
+    //
+    // i.e. the head applied in the BODY's frame, which is what a headset on a turning body does.
+    const auto operands = sdk::PlayerMgr::camera_rotation_operands(0);
+
+    if (!operands.has_value()) {
+        return;
+    }
+
+    // THE BASIS IS THE BODY'S HEADING, NOT ITS FULL ORIENTATION. Conjugating by the whole aim was
+    // measurably better than not conjugating at all -- pitch went exact -- but it left yaw at
+    // 30.164 degrees with 0.884 of pitch drift, because the aim carries the player's PITCH too
+    // (-6.578 here) and yawing about a tilted axis is not yawing.
+    //
+    // A neck does not work that way. Head yaw is about the spine, which stays vertical however far
+    // up or down you happen to be looking, so the correct basis is the heading alone.
+    const auto heading = sdk::PlayerMgr::aim_yaw(0);
+
+    if (!heading.has_value()) {
+        return;
+    }
+
+    const float half = *heading * 0.5f;
+    const regenny::LTRotation aim{0.0f, std::sin(half), 0.0f, std::cos(half)};
+    const regenny::LTRotation aim_inv{0.0f, -std::sin(half), 0.0f, std::cos(half)};
+    const regenny::LTRotation head_local{engine[0], engine[1], engine[2], engine[3]};
+
+    const auto outer = sdk::multiply_rotations(sdk::multiply_rotations(aim, head_local), aim_inv);
+
+    HeadTracking::get().set_head_rotation({outer.x, outer.y, outer.z, outer.w});
+    g_applied.fetch_add(1, std::memory_order_relaxed);
+}
+
+VR::State VR::state() const {
+    State s{};
+    s.enabled = g_enabled.load(std::memory_order_relaxed);
+    s.runtime_name = std::string(vr::simulated_runtime().name());
+    s.runtime_frames = vr::simulated_runtime().frame_count();
+    s.applied = g_applied.load(std::memory_order_relaxed);
+    s.head_valid = g_head_valid.load(std::memory_order_relaxed);
+
+    for (size_t i = 0; i < 4; ++i) {
+        s.head_runtime[i] = g_head_rt[i].load(std::memory_order_relaxed);
+        s.head_engine[i] = g_head_eng[i].load(std::memory_order_relaxed);
+    }
+
+    return s;
+}

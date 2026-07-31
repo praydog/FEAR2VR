@@ -36,6 +36,8 @@
 #include "mods/BoneControl.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
+#include "mods/VR.hpp"
+#include "mods/vr/runtimes/SimulatedRuntime.hpp"
 #include "mods/Comfort.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/SyntheticInput.hpp"
@@ -10124,6 +10126,9 @@ bool Framework::initialize() {
     Mods::get().add(&Comfort::get());
     // AFTER RenderHook: its on_initialize registers a present callback, so the hook must exist first.
     Mods::get().add(&ConsoleRunner::get());
+    // Owns the VR runtime and pushes its poses into the engine. Added before Watchpoints so its
+    // on_frame runs in the same order every session.
+    Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());
     Mods::get().on_initialize();
 
@@ -10278,6 +10283,87 @@ bool Framework::initialize() {
             jf.f("height_min", cp.height_min, 4).f("height_max", cp.height_max, 4)
               .f("height_pp", cp.height_max - cp.height_min, 4)
               .u("height_samples", static_cast<size_t>(cp.height_samples));
+        }
+        return out;
+    };
+
+    // ---- /xr/* -- DRIVING THE SIMULATED RUNTIME ------------------------------------------
+    //
+    // This is the headset and the controllers. With no hardware reachable at 32-bit, these routes
+    // ARE the tracking system: a pose set here is what the runtime reports, and what the VR mod
+    // then pushes into the engine. Angles in DEGREES for the same reason every other route uses
+    // them -- a human reads them, and the radian conversion belongs in one place.
+    handlers.xr = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        const std::string route = request_target.substr(0, request_target.find('?'));
+        auto& rt = vr::simulated_runtime();
+        auto& mod = VR::get();
+        constexpr double kDeg = 3.14159265358979 / 180.0;
+
+        if (route == "/xr/enable") {
+            mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
+        } else if (route == "/xr/reset") {
+            rt.reset();
+        } else if (route == "/xr/head") {
+            // Yaw/pitch/roll in RUNTIME space, converted to a quaternion here so a caller never
+            // has to build one by hand. Order is yaw * pitch * roll, which matches how a headset
+            // is naturally described (turn, then look up, then tilt).
+            const double yaw = webapi_query_double(q, "yaw", 0.0) * kDeg;
+            const double pitch = webapi_query_double(q, "pitch", 0.0) * kDeg;
+            const double roll = webapi_query_double(q, "roll", 0.0) * kDeg;
+
+            const double cy = cos(yaw * 0.5), sy = sin(yaw * 0.5);
+            const double cp = cos(pitch * 0.5), sp = sin(pitch * 0.5);
+            const double cr = cos(roll * 0.5), sr = sin(roll * 0.5);
+
+            vr::Pose pose{};
+            pose.orientation = {
+                static_cast<float>(cy * sp * cr + sy * cp * sr),
+                static_cast<float>(sy * cp * cr - cy * sp * sr),
+                static_cast<float>(cy * cp * sr - sy * sp * cr),
+                static_cast<float>(cy * cp * cr + sy * sp * sr)};
+            pose.position = {static_cast<float>(webapi_query_double(q, "x", 0.0)),
+                             static_cast<float>(webapi_query_double(q, "y", 1.7)),
+                             static_cast<float>(webapi_query_double(q, "z", 0.0))};
+            pose.valid = true;
+            pose.tracked = true;
+            rt.set_head_pose(pose);
+        }
+
+        const auto st = mod.state();
+        const auto head = rt.head();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true)
+              .s("runtime", st.runtime_name)
+              .b("enabled", st.enabled)
+              .b("head_valid", st.head_valid)
+              .u("frames", static_cast<size_t>(st.runtime_frames))
+              .u("applied", static_cast<size_t>(st.applied))
+              .f("head_rt_x", st.head_runtime[0], 5).f("head_rt_y", st.head_runtime[1], 5)
+              .f("head_rt_z", st.head_runtime[2], 5).f("head_rt_w", st.head_runtime[3], 5)
+              .f("head_eng_x", st.head_engine[0], 5).f("head_eng_y", st.head_engine[1], 5)
+              .f("head_eng_z", st.head_engine[2], 5).f("head_eng_w", st.head_engine[3], 5)
+              .f("head_pos_y", head.position[1], 4)
+              .f("aim_yaw_deg", sdk::PlayerMgr::aim_yaw(0).value_or(0.0f) * 57.2957795, 4)
+              .f("aim_pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4);
+
+            // WHERE THE VIEW IS LOOKING, signed and in world terms. The aim's own yaw/pitch above
+            // are the BODY's; these are the composed head pose's, and the difference between them
+            // is the whole feature. Signed because a magnitude cannot catch an inverted axis --
+            // the classic way a handedness bug survives review is that yaw looks right while
+            // pitch is upside down, and only a sign shows it.
+            if (const auto d = sdk::PlayerMgr::aim_vs_view(0)) {
+                const float fx = d->view_forward[0];
+                const float fy = d->view_forward[1];
+                const float fz = d->view_forward[2];
+                jf.b("view_readable", true)
+                  .f("view_yaw_deg", atan2f(fx, fz) * 57.2957795f, 4)
+                  .f("view_pitch_deg", asinf(fy < -1.0f ? -1.0f : (fy > 1.0f ? 1.0f : fy)) * 57.2957795f, 4);
+            } else {
+                jf.b("view_readable", false);
+            }
         }
         return out;
     };
