@@ -12,6 +12,59 @@ Two things to know before reading:
   the observation that distinguishes the wrong answer from the correct one -- not in the conclusion.
 - **Nothing is deleted when it is superseded.** A retraction is filed under the claim it corrects.
 
+## "Alive" is not "responding", and the wrong oracle reported five clean runs
+
+Trying to reproduce a teardown crash, a loop injected, armed continuous frame capture, unloaded, and
+checked the game with `tasklist | grep FEAR2`. Five cycles, five "game ALIVE". The game was hung --
+`tasklist /V` said **Status: Not Responding** -- and had been for some of them.
+
+A hung Win32 process matches every liveness test that only asks whether the PID exists. Three
+readings were available and only the last one distinguished the states:
+
+    PID exists                     yes   (true of a hung process)
+    IPC answers                    yes   (our server thread outlives the game's own)
+    engine clock advancing          NO   <- the only one that was true only when healthy
+
+TESTING.MD already says "a frozen fixture answers IPC perfectly" about the second row. The first row
+is the same error one level cruder, and it is easier to make because `tasklist` feels like ground
+truth. When the question is "is it working", the oracle has to be something that only advances while
+it works.
+
+## A premise in a comment is a claim, and this one was false
+
+`RenderHook` documented that its present callback needed no removal: "mods live for the whole
+injection and are retired together, so an unregister path would be an unused code path guarding a
+lifetime that cannot happen."
+
+`Framework::shutdown()` runs `Mods::on_shutdown()` and THEN `Hooks::retire()`. Between those two
+lines the premise is false, and a mod that frees what its callback reads -- FrameCapture's D3D
+surfaces -- has a live detour pointing at it.
+
+Nothing about this needed a debugger: the claim and its refutation are twelve lines apart in two
+files. The tell is a comment justifying an ABSENT safeguard by asserting something about a different
+file's ordering. Those are worth checking whenever the other file changes, and nothing makes that
+happen automatically.
+
+Corollary that made the fix worth more than the bug: the removal path is now exercised by ordinary
+use (releasing continuous capture deregisters), not only by unload. A teardown-only primitive is
+tested twice per suite and never in play, which is the wrong ratio for the code that decides whether
+the process survives.
+
+## A bound with no control measurement, in a window the test itself disturbs
+
+`back < 1.0` asserted that releasing a bone override returned the weapon to where the animation had
+it. It failed intermittently for three sessions. The release was fine.
+
+The two samples straddle a window in which THAT SAME BLOCK FIRES THE WEAPON, so the comparison
+measures recoil recovery, and 1.0 bears no relation to how far a recovering arm travels. TESTING.MD
+had already prescribed the remedy -- measure the self-motion over the same window and judge against
+it -- and the sibling hand check already used it; this one simply never got it.
+
+The general form is worth naming: **when a check disturbs the thing it later measures, the control
+measurement is not optional.** A tolerance chosen without one is a guess about how much the game
+moves, and it will be right until the scene changes.
+
+
 ## Contents
 
 - [Tools and predicates](#tools-and-predicates) -- 5
