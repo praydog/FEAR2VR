@@ -11230,6 +11230,53 @@ int main(int argc, char** argv) {
                                             "the captured surface matches the size the ENGINE says "
                                             "it is rendering to -- two independent routes to one "
                                             "pair of numbers");
+                                // ---- THE DIVISOR CONTRACT --------------------------------
+                                //
+                                // A reduced-resolution capture is how a copy-based stereo path
+                                // affords its readback, so the size it produces is a promise this
+                                // code makes. Asserted as exact integer division of the target,
+                                // which is OUR contract; the TIMINGS below are the machine's and
+                                // are only reported -- asserting a millisecond count would be
+                                // testing the GPU.
+                                if (tw > 0 && th > 0) {
+                                    std::string dr;
+                                    http::get(port, "/xr/capture?divisor=4", dr);
+                                    bool ddone = false;
+                                    long long dw = -1, dh = -1, ddiv = -1, dhr = -1;
+                                    double dstretch = -1.0, dlock = -1.0, dcopy = -1.0;
+                                    for (int i = 0; i < 40 && !ddone; ++i) {
+                                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                        if (!http::get(port, "/xr/head", dr)) {
+                                            continue;
+                                        }
+                                        bool p2 = true;
+                                        json_bool(http::body_of(dr), "fc_pending", p2);
+                                        ddone = !p2;
+                                    }
+                                    const std::string db = http::body_of(dr);
+                                    if (ddone && json_int(db, "fc_width", dw) &&
+                                        json_int(db, "fc_height", dh) &&
+                                        json_int(db, "fc_divisor", ddiv) &&
+                                        json_int(db, "fc_hresult", dhr) &&
+                                        json_double(db, "fc_stretch_ms", dstretch) &&
+                                        json_double(db, "fc_copy_ms", dcopy) &&
+                                        json_double(db, "fc_lock_ms", dlock)) {
+                                        printf("[fixture] frame capture: divisor 4 -> %lldx%lld, "
+                                               "stretch %.3f + copy %.3f + lock %.3f ms\n",
+                                               dw, dh, dstretch, dcopy, dlock);
+                                        check(ddiv == 4 && dhr == 0,
+                                              "a reduced-resolution capture is accepted and succeeds");
+                                        check(dw == tw / 4 && dh == th / 4,
+                                              "the divisor produces exactly the engine target size "
+                                              "divided down -- the resolution a consumer asks for is "
+                                              "the resolution it gets");
+                                        check(dw < tw && dh < th,
+                                              "and it is genuinely smaller than the full frame, so "
+                                              "the downscale ran rather than being ignored");
+                                    }
+                                    http::get(port, "/xr/capture?divisor=1", dr);
+                                }
+
                                 // Content is REPORTED, not asserted: a legitimately dark scene or
                                 // a fade would make a non-black floor a claim about the level.
                                 if (nb == 0) {

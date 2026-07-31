@@ -113,6 +113,16 @@ double FrameCapture::last_lock_ms() const {
     return ticks_to_ms(m_lock_ticks.load(std::memory_order_relaxed));
 }
 
+double FrameCapture::last_stretch_ms() const {
+    return ticks_to_ms(m_stretch_ticks.load(std::memory_order_relaxed));
+}
+
+void FrameCapture::set_divisor(uint32_t divisor) {
+    // Clamped rather than refused: a caller asking for an absurd reduction wants the
+    // smallest useful frame, and 16 already takes 2560x1440 to 160x90.
+    m_divisor.store(divisor < 1 ? 1 : (divisor > 16 ? 16 : divisor), std::memory_order_relaxed);
+}
+
 void FrameCapture::service() {
     if (!m_pending.load(std::memory_order_acquire)) {
         return;
@@ -146,6 +156,46 @@ void FrameCapture::service() {
         return;
     }
 
+    // ---- OPTIONAL GPU DOWNSCALE -----------------------------------------------------
+    //
+    // With a divisor set, the readback source becomes a smaller render target rather than the
+    // back buffer. StretchRect does the filtering on the GPU, so what follows measures the
+    // readback of a realistic eye-sized surface instead of the desktop.
+    IDirect3DSurface9* source = back;
+    const uint32_t div = m_divisor.load(std::memory_order_relaxed);
+    m_stretch_ticks.store(0, std::memory_order_relaxed);
+    if (div > 1) {
+        const uint32_t sw = desc.Width / div;
+        const uint32_t sh = desc.Height / div;
+        if (m_scaled == nullptr || m_scaled_w != sw || m_scaled_h != sh) {
+            if (m_scaled != nullptr) {
+                static_cast<IDirect3DSurface9*>(m_scaled)->Release();
+                m_scaled = nullptr;
+            }
+            IDirect3DSurface9* rt = nullptr;
+            // A RENDER TARGET, not an offscreen plain surface: StretchRect from a render target
+            // requires the destination to be one too.
+            hr = device->CreateRenderTarget(sw, sh, desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &rt,
+                                            nullptr);
+            if (SUCCEEDED(hr) && rt != nullptr) {
+                m_scaled = rt;
+                m_scaled_w = sw;
+                m_scaled_h = sh;
+            }
+        }
+        if (m_scaled != nullptr) {
+            const int64_t s0 = now_ticks();
+            hr = device->StretchRect(back, nullptr, static_cast<IDirect3DSurface9*>(m_scaled),
+                                     nullptr, D3DTEXF_LINEAR);
+            m_stretch_ticks.store(now_ticks() - s0, std::memory_order_relaxed);
+            if (SUCCEEDED(hr)) {
+                source = static_cast<IDirect3DSurface9*>(m_scaled);
+                desc.Width = sw;
+                desc.Height = sh;
+            }
+        }
+    }
+
     // Reuse the staging surface. Creating one per capture would make the measurement an
     // allocation benchmark rather than a copy benchmark, and the copy is the number that decides
     // whether this path can hold a frame budget.
@@ -176,7 +226,7 @@ void FrameCapture::service() {
     // THE MEASUREMENT. GetRenderTargetData is a GPU->CPU readback and a synchronisation point;
     // everything either side of it is bookkeeping.
     const int64_t c0 = now_ticks();
-    hr = device->GetRenderTargetData(back, staging);
+    hr = device->GetRenderTargetData(source, staging);
     const int64_t c1 = now_ticks();
     back->Release();
 
@@ -242,5 +292,9 @@ void FrameCapture::on_shutdown() {
     if (m_staging != nullptr) {
         static_cast<IDirect3DSurface9*>(m_staging)->Release();
         m_staging = nullptr;
+    }
+    if (m_scaled != nullptr) {
+        static_cast<IDirect3DSurface9*>(m_scaled)->Release();
+        m_scaled = nullptr;
     }
 }

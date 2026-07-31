@@ -52,6 +52,26 @@ public:
     // Arm ONE capture, serviced on the next present. Returns false if a capture is
     // already pending -- a caller that fires twice should know its first is still
     // in flight rather than silently losing one.
+    // ---- CAPTURING AT A REDUCED RESOLUTION ---------------------------------
+    //
+    // The readback costs ~10 ms at 2560x1440, which is an entire 90 Hz frame budget,
+    // and it scales with PIXELS. So the question for a copy-based stereo path is not
+    // "is it affordable" but "at what resolution", and answering that needs the
+    // engine's own downscale in the path rather than arithmetic on a single sample.
+    //
+    // `divisor` of 1 reads the back buffer directly; 2 halves each axis (a quarter of
+    // the pixels), and so on. The downscale is a StretchRect on the GPU into a
+    // DEFAULT-pool render target -- which is what a real VR path would do anyway,
+    // since an eye texture is rarely the desktop's resolution.
+    //
+    // This is the consumer knob: a mod submitting frames to a headset picks the
+    // resolution its budget allows, and the timings below say what that budget buys.
+    void set_divisor(uint32_t divisor);
+    uint32_t divisor() const { return m_divisor.load(std::memory_order_relaxed); }
+
+    // Milliseconds for the GPU downscale, when a divisor above 1 puts one in the path.
+    double last_stretch_ms() const;
+
     bool request_capture();
 
     // Arm one capture AND write it to `path` as a BMP. Empty path captures without
@@ -108,6 +128,8 @@ private:
     std::atomic<int64_t> m_worst_ticks{0};
     std::atomic<int64_t> m_total_ticks{0};
     std::atomic<int64_t> m_lock_ticks{0};
+    std::atomic<int64_t> m_stretch_ticks{0};
+    std::atomic<uint32_t> m_divisor{1};
     std::atomic<uint32_t> m_width{0};
     std::atomic<uint32_t> m_height{0};
     std::atomic<uint32_t> m_format{0};
@@ -117,6 +139,10 @@ private:
 
     // Guarded by the render thread only: the present callback is the sole writer.
     void* m_staging{nullptr};
+    // The intermediate render target the downscale lands in, when a divisor is set.
+    void* m_scaled{nullptr};
+    uint32_t m_scaled_w{0};
+    uint32_t m_scaled_h{0};
     uint32_t m_staging_w{0};
     uint32_t m_staging_h{0};
     uint32_t m_staging_fmt{0};

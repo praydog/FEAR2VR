@@ -544,6 +544,46 @@ so it becomes affordable at reduced render resolution, and double-buffering (cap
 at N+1) would hide the latency at the cost of one frame of age. That is a real engineering option
 with a measured price, which is more than the D3D9Ex route has.
 
+### The readback does NOT scale with pixels: ~2 ms is a fixed sync stall
+
+Timing the capture through a GPU downscale (StretchRect into a smaller render target, then read
+THAT) gives the curve the single full-resolution sample could not:
+
+    div  resolution    stretch   copy    lock    TOTAL     Mpx    ns/px
+     1   2560x1440      0.000   0.002   8.738   8.740     3.69    2.37
+     2   1280x720       0.001   0.002   3.792   3.795     0.92    4.12
+     3    853x480       0.001   0.002   2.852   2.855     0.41    6.97
+     4    640x360       0.001   0.002   2.834   2.836     0.23   12.31
+     6    426x240       0.001   0.002   2.312   2.315     0.10   22.64
+     8    320x180       0.001   0.002   2.158   2.161     0.06   37.52
+
+**Sixty times fewer pixels buys a four times speedup.** Fitted, the cost is
+
+    readback ~= 2.05 ms fixed  +  1.81 ms per megapixel
+
+so the ns/px column climbing from 2.37 to 37.52 is not the small captures being inefficient -- it is
+a constant being divided by a shrinking pixel count. The fixed ~2 ms is the GPU SYNCHRONISATION,
+i.e. waiting for the frame to finish, not the transfer.
+
+The downscale itself is free at this scale (0.001 ms), because StretchRect is queued like any other
+GPU command.
+
+### What that means for the copy-based stereo path
+
+Reducing resolution alone cannot make this cheap: 2 ms is 19% of a 90 Hz frame budget even at
+320x180. What removes the fixed cost is DOUBLE BUFFERING -- read back frame N-1 while N renders, so
+nothing waits on the GPU -- and this measurement is what says that is the load-bearing optimisation
+rather than resolution. Resolution then buys the marginal 1.81 ms/Mpx on top.
+
+A 1280x720 capture at 3.8 ms synchronous, or roughly 1.7 ms pipelined, is a real budget for a
+72-90 Hz path. That makes the copy route the cheaper of the two stereo options by a wide margin,
+against a D3D9Ex upgrade needing a COM proxy for 512 static managed textures per level load.
+
+**What is asserted versus reported.** The suite asserts the DIVISOR CONTRACT -- that asking for a
+reduction yields exactly the engine's target size divided down, and that it is genuinely smaller --
+because that is this code's promise. Every millisecond above is reported, because asserting one
+would be testing the GPU.
+
 ### What this leaves for stereo
 
 Both eyes already render (the pass group is re-issued into the engine's own target and the viewport
