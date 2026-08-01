@@ -1042,6 +1042,30 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### DEBT: controller actions go through SYNTHETIC KEYS, and should not forever
+
+Fire, jump, reload, sprint, melee and stick locomotion are all delivered by writing the engine's
+KEYBOARD and MOUSE device state (`sdk::Input`, `SyntheticInput`). That is the right FIRST
+implementation and it is not an accident: keys inherit the game's own binding table, cooldowns,
+animation gating and aim-relative movement for free, which is the same argument that makes
+`send_mouse_look` correct for turning.
+
+**But it is wrong as an endpoint**, and the owner has flagged it. Three concrete costs:
+- **It depends on the player's bindings.** Sprint is Shift and melee is V ON THIS MACHINE. Anyone
+  who rebinds gets silence. They are exposed as settings (`/xr/capture?sprint_vk=&melee_vk=`)
+  precisely because a constant would be a lie.
+- **It cannot express anything the keyboard cannot.** An analogue stick becomes four digital keys,
+  so walking has one speed and one of eight directions.
+- **It is a level the engine also writes**, so every hold races the engine's own poll and has to be
+  applied in the poll detour rather than whenever we like.
+
+The replacement is to call the game's own action handlers directly. The groundwork exists:
+`sdk::UiCommands` already maps gameclient's table of 52 `{name, handler, flag}` command rows by
+scanning for a POINTER to a known command name, which is the same shape a player-action table would
+have. `CMoveMgr_SetInputDirectionFlags` is already mapped and is the analogue movement input.
+
+**Not done yet, deliberately.** Making it work came first.
+
 ### Motion controllers: the host publishes, the mod already knew what to do with them
 
 The game side was almost entirely built already -- `drive_hand` drives the hand bones through

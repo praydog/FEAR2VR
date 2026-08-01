@@ -200,6 +200,38 @@ public:
     uint64_t stick_turns() const { return m_stick_turns.load(std::memory_order_relaxed); }
     uint32_t locomotion_keys() const { return m_loco_keys.load(std::memory_order_relaxed); }
 
+    // ---- FACE BUTTONS --------------------------------------------------------------------------
+    //
+    // A jumps, B reloads, both on the right controller. Sent as KEY TAPS through SyntheticInput
+    // rather than as engine calls, so they go down the same path a keyboard does and inherit the
+    // game's own bindings, cooldowns and animation gating. A direct call to a reload function would
+    // work exactly once and then desynchronise the weapon state machine.
+    //
+    // Counted per action, because "the button does nothing" and "the button fires and the game
+    // refuses" look identical from inside a headset.
+    uint64_t jumps() const { return m_jumps.load(std::memory_order_relaxed); }
+    uint64_t reloads() const { return m_reloads.load(std::memory_order_relaxed); }
+
+    // ---- STICK CLICKS: SPRINT AND MELEE ----------------------------------------------------------
+    //
+    // Left stick in sprints, right stick in melees.
+    //
+    // SPRINT IS A LEVEL AND MELEE IS AN EDGE, and they are not interchangeable. Sprint has to be held
+    // for as long as the wearer holds the stick down, so it tracks the button's state; melee is a
+    // single swing the engine takes off a press transition, and re-asserting it every frame would
+    // overwrite the very edge it is looking for.
+    //
+    // THE KEYS ARE SETTINGS, NOT CONSTANTS, because the game lets the player rebind them -- a
+    // hardcoded VK is correct only for a default profile and fails silently for anyone else.
+    // Defaults are this machine's measured bindings: Shift sprints, V melees.
+    void set_sprint_vk(uint32_t vk) { m_sprint_vk.store(vk, std::memory_order_relaxed); }
+    void set_melee_vk(uint32_t vk) { m_melee_vk.store(vk, std::memory_order_relaxed); }
+    uint32_t sprint_vk() const { return m_sprint_vk.load(std::memory_order_relaxed); }
+    uint32_t melee_vk() const { return m_melee_vk.load(std::memory_order_relaxed); }
+
+    bool sprinting() const { return m_sprinting.load(std::memory_order_relaxed); }
+    uint64_t melees() const { return m_melees.load(std::memory_order_relaxed); }
+
     void set_snap_degrees(float deg) { m_snap_deg.store(deg, std::memory_order_relaxed); }
     float snap_degrees() const { return m_snap_deg.load(std::memory_order_relaxed); }
 
@@ -334,6 +366,13 @@ private:
     std::atomic<float> m_snap_deg{30.0f};
     bool m_snap_armed{true};
     uint32_t m_held_keys{0};
+    uint32_t m_last_buttons{0};
+    std::atomic<uint64_t> m_jumps{0};
+    std::atomic<uint64_t> m_reloads{0};
+    std::atomic<uint64_t> m_melees{0};
+    std::atomic<bool> m_sprinting{false};
+    std::atomic<uint32_t> m_sprint_vk{0xA0};  // VK_LSHIFT
+    std::atomic<uint32_t> m_melee_vk{'V'};
     uint32_t m_last_hands_sequence{0};
     float m_last_room_xz[2]{};
     bool m_have_last_room{false};
@@ -365,6 +404,7 @@ private:
 
     void update_hands();
     void update_locomotion();
+    void update_buttons();
 
     // One hand. `slot` is the BoneControl slot it drives, and each hand keeps its own rest
     // pose -- sharing one would make every offset a delta from wherever the OTHER hand

@@ -10609,6 +10609,12 @@ bool Framework::initialize() {
             if (q.find("locomotion") != q.end()) {
                 VR::get().set_locomotion(webapi_query_int(q, "locomotion", 0) != 0);
             }
+            if (q.find("sprint_vk") != q.end()) {
+                VR::get().set_sprint_vk(static_cast<uint32_t>(webapi_query_int(q, "sprint_vk", 0xA0)));
+            }
+            if (q.find("melee_vk") != q.end()) {
+                VR::get().set_melee_vk(static_cast<uint32_t>(webapi_query_int(q, "melee_vk", 'V')));
+            }
             if (q.find("snap_deg") != q.end()) {
                 VR::get().set_snap_degrees(static_cast<float>(webapi_query_double(q, "snap_deg", 30.0)));
             }
@@ -10728,10 +10734,18 @@ bool Framework::initialize() {
             const std::string side = webapi_query_string(q, "side");
             const auto which = (side == "left") ? vr::VRRuntime::Hand::LEFT : vr::VRRuntime::Hand::RIGHT;
             const auto cur = rt.hand(which);
+            // Buttons and stick are injectable too, so every controller input has a route that
+            // exercises the REAL consumer path without a headset. A test that can only reach half the
+            // inputs leaves the other half proven by inspection, which is not proven.
+            std::array<float, 2> stick{
+                static_cast<float>(webapi_query_double(q, "stick_x", cur.thumbstick[0])),
+                static_cast<float>(webapi_query_double(q, "stick_y", cur.thumbstick[1]))};
             rt.set_hand_inputs(which,
                                static_cast<float>(webapi_query_double(q, "trigger", cur.trigger)),
                                static_cast<float>(webapi_query_double(q, "squeeze", cur.squeeze)),
-                               cur.thumbstick, cur.buttons);
+                               stick,
+                               static_cast<uint32_t>(webapi_query_int(q, "buttons",
+                                                                      static_cast<int>(cur.buttons))));
         } else if (route == "/xr/hands") {
             mod.set_hands_enabled(webapi_query_int(q, "on", 1) != 0);
         } else if (route == "/xr/hand") {
@@ -10966,6 +10980,12 @@ bool Framework::initialize() {
               .b("vr_locomotion", VR::get().locomotion())
               .u("vr_loco_keys", static_cast<size_t>(VR::get().locomotion_keys()))
               .u("vr_stick_turns", static_cast<size_t>(VR::get().stick_turns()))
+              .u("vr_jumps", static_cast<size_t>(VR::get().jumps()))
+              .u("vr_reloads", static_cast<size_t>(VR::get().reloads()))
+              .u("vr_melees", static_cast<size_t>(VR::get().melees()))
+              .b("vr_sprinting", VR::get().sprinting())
+              .u("vr_sprint_vk", static_cast<size_t>(VR::get().sprint_vk()))
+              .u("vr_melee_vk", static_cast<size_t>(VR::get().melee_vk()))
               .f("vr_snap_deg", VR::get().snap_degrees(), 1)
               .b("hands_block", FramePublisher::get().hands_state() != nullptr)
               .u("hands_seq", [] {

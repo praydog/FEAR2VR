@@ -31,6 +31,11 @@ std::atomic<bool> g_hands{false};
 // stays aim-relative and animation-correct. Order matches the bit order in update_locomotion.
 constexpr std::array<uint32_t, 4> kLocoKeys{'W', 'S', 'A', 'D'};
 
+// The game's own default bindings. Sent as keys so the engine's binding table, cooldowns and
+// animation gating all apply exactly as they do for a keyboard player.
+constexpr uint32_t kKeyJump = 0x20;    // VK_SPACE
+constexpr uint32_t kKeyReload = 0x52;  // 'R'
+
 constexpr float kStickDeadZone = 0.30f;
 constexpr float kSnapFire = 0.70f;   // beyond this, a snap fires
 constexpr float kSnapRearm = 0.30f;  // and the stick must return inside this before the next one
@@ -118,6 +123,11 @@ void VR::set_trigger_enabled(bool enabled) {
         // NEVER LEAVE THE TRIGGER HELD. A latched fire button outlives this mod -- the engine keeps
         // the state -- and would burn the magazine with nobody driving it.
         sdk::Input::send_mouse_button(kMouseFire, false);
+        if (m_sprinting.exchange(false, std::memory_order_relaxed)) {
+            // Engine state OUTLIVES this DLL, so a held key is ours to put back. Leaving Shift down
+            // through an uninject leaves the player sprinting with no controller attached to it.
+            SyntheticInput::get().hold(m_sprint_vk.load(std::memory_order_relaxed), false);
+        }
     }
 }
 
@@ -476,6 +486,7 @@ void VR::on_frame() {
     update_hands();
     update_trigger();
     update_locomotion();
+    update_buttons();
 
     const auto head = rt.head();
     g_head_valid.store(head.valid, std::memory_order_relaxed);
@@ -648,6 +659,61 @@ void VR::update_locomotion() {
         m_snap_armed = false;
     } else if (!m_snap_armed && rx < kSnapRearm && rx > -kSnapRearm) {
         m_snap_armed = true;
+    }
+}
+
+void VR::update_buttons() {
+    // Deliberately NOT gated on the locomotion switch: jumping and reloading are not locomotion, and
+    // a wearer who turns the sticks off should not silently lose their face buttons too.
+    if (!g_hands.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto& rt = vr::simulated_runtime();
+    const auto right = rt.hand(vr::VRRuntime::Hand::RIGHT);
+    const auto left = rt.hand(vr::VRRuntime::Hand::LEFT);
+    auto& si = SyntheticInput::get();
+
+    // ---- SPRINT: A LEVEL, TRACKED IN BOTH DIRECTIONS -------------------------------------------
+    //
+    // Handled before the active check, and RELEASED when the controller goes away: a sprint key left
+    // down because a controller slept is a player who sprints forever with nothing to let go of.
+    const bool want_sprint = left.active && (left.buttons & vr::VRRuntime::kButtonThumbstick) != 0u;
+
+    if (want_sprint != m_sprinting.load(std::memory_order_relaxed)) {
+        si.hold(m_sprint_vk.load(std::memory_order_relaxed), want_sprint);
+        m_sprinting.store(want_sprint, std::memory_order_relaxed);
+    }
+
+    if (!right.active) {
+        // Do not clear the remembered mask here. A controller that sleeps mid-press would otherwise
+        // come back looking like a fresh press of every button that was down when it went away.
+        return;
+    }
+
+    const uint32_t now = right.buttons;
+    const uint32_t pressed = now & ~m_last_buttons;  // rising edges only
+    m_last_buttons = now;
+
+    // A TAP, NOT A HOLD. The engine consumes a press EDGE for both of these, and re-asserting the
+    // key every frame overwrites the very transition it is looking for -- the same reason
+    // SyntheticInput applies keys after the engine's own poll rather than before it.
+    if ((pressed & vr::VRRuntime::kButtonA) != 0u) {
+        if (si.tap(kKeyJump)) {
+            m_jumps.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    if ((pressed & vr::VRRuntime::kButtonB) != 0u) {
+        if (si.tap(kKeyReload)) {
+            m_reloads.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    if ((pressed & vr::VRRuntime::kButtonThumbstick) != 0u) {
+        if (si.tap(m_melee_vk.load(std::memory_order_relaxed))) {
+            m_melees.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 }
 
