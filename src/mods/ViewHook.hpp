@@ -62,8 +62,13 @@ public:
     //
     // `obj` 0 disarms. Position is ADDED and rotation is COMPOSED onto the engine's own value, so
     // recoil, sway and the weapon's rest angle all survive.
+    //
+    // `absolute` REPLACES the engine's transform instead of amending it. Amending keeps recoil,
+    // sway and the weapon's rest angle -- which is the wrong answer when the caller wants the gun
+    // welded to a controller, because every one of those is then still moving it. Replacing throws
+    // all of it away deliberately: the gun goes exactly where it is put and nothing else touches it.
     void set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
-                          const std::array<float, 4>& rot);
+                          const std::array<float, 4>& rot, bool absolute = false);
     uint64_t weapon_amendments() const;
 
     // ---- LEVELLING THE BODY, SO THE HEAD CAN TURN ----------------------------------------------

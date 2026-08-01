@@ -1069,6 +1069,36 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### WELDING the weapon: replace the transform, do not amend it
+
+Amending was wrong for this feature and the owner's description said exactly why: "headset rotation
+is still getting applied to it, weapon animations also affect it". Both were TRUE and both were by
+construction -- an amended transform still carries everything the engine wanted the gun to do, so
+the controller's contribution arrives on top of the camera's rotation, the recoil, the sway and the
+weapon animation. Nobody calls that attached to their hand.
+
+**So the engine's value is discarded.** `set_weapon_amend(..., absolute)` overwrites all seven
+floats instead of adding to three and composing the other four. Everything the engine wanted is
+thrown away deliberately, which is the point rather than a side effect.
+
+**The pose is built from the HEAD, not from a captured rest pose.** The physical headset-to-
+controller offset is the thing the wearer can see: hold the controller a foot right of your face and
+the gun is a foot right of the view, at any facing, with no calibration step and nothing to drift.
+
+```
+offset_world = R(body_yaw) * to_engine(controller_pos - head_pos)
+position     = camera_object.position + offset_world
+rotation     = R(body_yaw) * to_engine(controller_orientation)
+```
+
+**The BODY's yaw, never the view's** -- putting the view back in is the bug being removed.
+
+**Measured:** a 40 cm controller move relocates the published placement by ~32 units along the body's
+right axis and changes 141,930 pixels. Before the change the same move produced 1,191 -- noise.
+
+**Camera POSITION still anchors it, and should.** The gun belongs near the player; what must not
+enter is camera ROTATION, and it no longer does.
+
 ### A controller delta is in PLAY space; the thing it amends is in WORLD space
 
 Both halves of the weapon override were initially applied in the wrong frame, and the symptom was

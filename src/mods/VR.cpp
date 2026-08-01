@@ -782,81 +782,66 @@ void VR::update_weapon() {
     // LTObject_SetPosRot is what does the rebuilding -- found by arming a hardware write watch on
     // the object's position, which reported 115 hits from a single accessor at FEAR2.exe+0x202C7
     // with ecx holding the weapon object.
-    // ---- THE CONTROLLER, AS A DELTA FROM ITS REST POSE -------------------------------------
+    // ---- THE CONTROLLER, IN WORLD SPACE ----------------------------------------------------
     //
-    // A delta rather than an absolute pose, for the same reason drive_hand takes one: the engine
-    // puts the gun where the weapon animation wants it, and what a wearer means by "the gun follows
-    // my hand" is that MOVING the hand moves the gun by the same amount -- not that the gun
-    // teleports to the controller's position in play space, which has no relationship to where the
-    // weapon belongs on screen.
+    // ABSOLUTE, NOT A DELTA. An amended transform still carries everything the engine wanted the
+    // gun to do -- the camera's rotation, recoil, sway, the weapon animation -- so the wearer sees
+    // their controller's contribution ON TOP of all of it and, correctly, does not call that
+    // "attached to my hand". Welding it means discarding the engine's value entirely.
     //
-    // The rest pose is captured the first frame a valid aim exists, so it is whatever the wearer
-    // was holding when tracking came up.
+    // The pose is built relative to the HEAD rather than to a captured rest pose, because the
+    // physical offset from headset to controller is the thing the wearer can actually see: hold the
+    // controller a foot to the right of your face and the gun should be a foot to the right of the
+    // view, at any facing, with no calibration step.
     float px = m_weapon_probe[0].load(std::memory_order_relaxed);
     float py = m_weapon_probe[1].load(std::memory_order_relaxed);
     float pz = m_weapon_probe[2].load(std::memory_order_relaxed);
     std::array<float, 4> turn{0.0f, 0.0f, 0.0f, 1.0f};
+    bool absolute = false;
 
-    const auto hand = vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT);
+    auto& rt = vr::simulated_runtime();
+    const auto hand = rt.hand(vr::VRRuntime::Hand::RIGHT);
+    const auto head = rt.head();
+    const auto objs = sdk::PlayerMgr::engine_objects(0);
+    const auto cam = (objs.has_value() && objs->camera != 0)
+                         ? sdk::object_info(reinterpret_cast<const regenny::LTObject*>(objs->camera))
+                         : std::nullopt;
 
-    if (hand.active && hand.aim.valid) {
-        if (!m_have_weapon_rest) {
-            m_weapon_rest = hand.aim.position;
-            m_weapon_rest_rot = hand.aim.orientation;
-            m_have_weapon_rest = true;
-        }
+    if (hand.active && hand.aim.valid && head.valid && cam.has_value()) {
+        // The physical headset-to-controller offset, in the engine's axes and units.
+        const std::array<float, 3> from_head{hand.aim.position[0] - head.position[0],
+                                             hand.aim.position[1] - head.position[1],
+                                             hand.aim.position[2] - head.position[2]};
+        const auto e = runtime_to_engine_position(from_head);
 
-        const std::array<float, 3> moved{hand.aim.position[0] - m_weapon_rest[0],
-                                         hand.aim.position[1] - m_weapon_rest[1],
-                                         hand.aim.position[2] - m_weapon_rest[2]};
-        // ---- INTO THE BODY'S FRAME ---------------------------------------------------------
-        //
-        // The controller delta is measured in PLAY space, which is bolted to the room. The value it
-        // amends is in WORLD space. Between them sits the player's heading, and leaving it out is
-        // what made the gun depend on where the headset was pointing: a fixed room-space offset
-        // points a fixed world direction, so it is only ever correct for one facing, and every
-        // other facing gets it rotated by however far the body has turned since.
-        //
-        // The BODY's heading, not the camera's. The gun hangs off the player, and using the view
-        // would make looking around re-aim the offset -- which is the symptom this fixes.
+        // Into the world, by the BODY's heading. Using the view here would put the head back into
+        // the result, which is the whole thing being removed.
         const auto yaw = sdk::PlayerMgr::aim_yaw(0);
         const float cy = yaw.has_value() ? cosf(*yaw) : 1.0f;
         const float sy = yaw.has_value() ? sinf(*yaw) : 0.0f;
 
-        const auto engine_move = runtime_to_engine_position(moved);
-        px += engine_move[0] * cy + engine_move[2] * sy;
-        py += engine_move[1];
-        pz += -engine_move[0] * sy + engine_move[2] * cy;
+        px += cam->position.x + e[0] * cy + e[2] * sy;
+        py += cam->position.y + e[1];
+        pz += cam->position.z + (-e[0] * sy + e[2] * cy);
 
-        // CONVERT THE DELTA, never the two poses separately: the runtime-to-engine mapping is a
-        // mirror, not a rotation, so converting each pose and subtracting afterwards is a different
-        // operation and gets the handedness wrong on the off-axes.
-        const regenny::LTRotation rest_inv{-m_weapon_rest_rot[0], -m_weapon_rest_rot[1],
-                                           -m_weapon_rest_rot[2], m_weapon_rest_rot[3]};
-        const regenny::LTRotation now{hand.aim.orientation[0], hand.aim.orientation[1],
-                                      hand.aim.orientation[2], hand.aim.orientation[3]};
-        const auto turned = sdk::multiply_rotations(rest_inv, now);
-        const auto engine_turn = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
-
-        // THE SAME CHANGE OF FRAME, for the rotation: conjugate the play-space turn by the body's
-        // heading so it names an axis in the world rather than an axis in the room.
-        //   q_world = R(yaw) * q_play * conj(R(yaw))
+        // The controller's ABSOLUTE orientation, converted and then turned into the world by the
+        // same heading. No rest pose and no delta: whatever the controller points at, the gun does.
+        const auto q = runtime_to_engine_rotation(hand.aim.orientation);
         const float half = yaw.value_or(0.0f) * 0.5f;
         const regenny::LTRotation ry{0.0f, sinf(half), 0.0f, cosf(half)};
-        const regenny::LTRotation ry_inv{-ry.x, -ry.y, -ry.z, ry.w};
-        const regenny::LTRotation q_play{engine_turn[0], engine_turn[1], engine_turn[2],
-                                         engine_turn[3]};
-        const auto q_world = sdk::multiply_rotations(sdk::multiply_rotations(ry, q_play), ry_inv);
-        turn = {q_world.x, q_world.y, q_world.z, q_world.w};
-    } else {
-        m_have_weapon_rest = false;
+        const auto world = sdk::multiply_rotations(ry, regenny::LTRotation{q[0], q[1], q[2], q[3]});
+        turn = {world.x, world.y, world.z, world.w};
+        absolute = true;
     }
-
 
     // ONE OWNER: ViewHook already hooks LTObject_SetPosRot, so the amendment is handed to it
     // rather than hooked a second time. Installing a second inline hook on that address crashed
     // the game on unload -- see Hooks::install.
-    ViewHook::get().set_weapon_amend(obj, {px, py, pz}, turn);
+    m_weapon_abs.store(absolute, std::memory_order_relaxed);
+    m_weapon_place[0].store(px, std::memory_order_relaxed);
+    m_weapon_place[1].store(py, std::memory_order_relaxed);
+    m_weapon_place[2].store(pz, std::memory_order_relaxed);
+    ViewHook::get().set_weapon_amend(obj, {px, py, pz}, turn, absolute);
     m_weapon_writes.store(ViewHook::get().weapon_amendments(), std::memory_order_relaxed);
 }
 

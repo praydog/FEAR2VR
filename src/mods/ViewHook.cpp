@@ -594,30 +594,41 @@ std::atomic<uintptr_t> g_weapon_obj{0};
 std::atomic<float> g_weapon_pos[3]{};
 std::atomic<float> g_weapon_rot[4]{0.0f, 0.0f, 0.0f, 1.0f};
 std::atomic<uint64_t> g_weapon_amended{0};
+std::atomic<bool> g_weapon_absolute{false};
 
 int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posrot) {
     g_spr_calls.fetch_add(1, std::memory_order_relaxed);
 
     // THE WEAPON. A pointer compare first: every object in the level that moves comes through here.
     if (posrot != nullptr && self == g_weapon_obj.load(std::memory_order_relaxed)) {
-        posrot[0] += g_weapon_pos[0].load(std::memory_order_relaxed);
-        posrot[1] += g_weapon_pos[1].load(std::memory_order_relaxed);
-        posrot[2] += g_weapon_pos[2].load(std::memory_order_relaxed);
+        if (g_weapon_absolute.load(std::memory_order_relaxed)) {
+            // WELDED. The engine's value is discarded entirely -- position, orientation, recoil,
+            // sway, the animation's idea of where the gun should be -- because a caller asking for
+            // "exactly where I put my controller" is asking for all of those to stop applying.
+            for (size_t i = 0; i < 3; ++i) {
+                posrot[i] = g_weapon_pos[i].load(std::memory_order_relaxed);
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                posrot[3 + i] = g_weapon_rot[i].load(std::memory_order_relaxed);
+            }
+        } else {
+            posrot[0] += g_weapon_pos[0].load(std::memory_order_relaxed);
+            posrot[1] += g_weapon_pos[1].load(std::memory_order_relaxed);
+            posrot[2] += g_weapon_pos[2].load(std::memory_order_relaxed);
 
-        const regenny::LTRotation base{posrot[3], posrot[4], posrot[5], posrot[6]};
-        const regenny::LTRotation turn{g_weapon_rot[0].load(std::memory_order_relaxed),
-                                       g_weapon_rot[1].load(std::memory_order_relaxed),
-                                       g_weapon_rot[2].load(std::memory_order_relaxed),
-                                       g_weapon_rot[3].load(std::memory_order_relaxed)};
-        // LEFT, NOT RIGHT. `base * turn` applies the controller's rotation in the WEAPON's own
-        // frame -- and the weapon's frame is the camera's, so the head becomes the axis reference
-        // and the gun rotates about a different axis depending on which way the wearer happens to
-        // be looking. `turn * base` applies it in the world frame the turn was converted into.
-        const auto composed = sdk::multiply_rotations(turn, base);
-        posrot[3] = composed.x;
-        posrot[4] = composed.y;
-        posrot[5] = composed.z;
-        posrot[6] = composed.w;
+            const regenny::LTRotation base{posrot[3], posrot[4], posrot[5], posrot[6]};
+            const regenny::LTRotation turn{g_weapon_rot[0].load(std::memory_order_relaxed),
+                                           g_weapon_rot[1].load(std::memory_order_relaxed),
+                                           g_weapon_rot[2].load(std::memory_order_relaxed),
+                                           g_weapon_rot[3].load(std::memory_order_relaxed)};
+            // LEFT, NOT RIGHT: `base * turn` would apply the turn in the weapon's own frame, which
+            // is the camera's, making the head the axis reference.
+            const auto composed = sdk::multiply_rotations(turn, base);
+            posrot[3] = composed.x;
+            posrot[4] = composed.y;
+            posrot[5] = composed.z;
+            posrot[6] = composed.w;
+        }
         g_weapon_amended.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -643,7 +654,8 @@ int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posr
 }  // namespace
 
 void ViewHook::set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
-                                const std::array<float, 4>& rot) {
+                                const std::array<float, 4>& rot, bool absolute) {
+    g_weapon_absolute.store(absolute, std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
         g_weapon_pos[i].store(pos[i], std::memory_order_relaxed);
     }

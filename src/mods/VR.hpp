@@ -199,6 +199,12 @@ public:
     bool weapon_override() const { return m_weapon_override.load(std::memory_order_acquire); }
     uintptr_t weapon_object() const { return m_weapon_obj.load(std::memory_order_relaxed); }
     uint64_t weapon_writes() const { return m_weapon_writes.load(std::memory_order_relaxed); }
+    bool weapon_absolute() const { return m_weapon_abs.load(std::memory_order_relaxed); }
+    std::array<float, 3> weapon_place() const {
+        return {m_weapon_place[0].load(std::memory_order_relaxed),
+                m_weapon_place[1].load(std::memory_order_relaxed),
+                m_weapon_place[2].load(std::memory_order_relaxed)};
+    }
 
     // A fixed offset in the engine's world axes, for proving the write lands before any controller
     // is involved. Zero once the controller drives it.
@@ -405,6 +411,8 @@ private:
     std::atomic<uintptr_t> m_weapon_obj{0};
     std::atomic<uint64_t> m_weapon_writes{0};
     std::atomic<float> m_weapon_probe[3]{};
+    std::atomic<bool> m_weapon_abs{false};
+    std::atomic<float> m_weapon_place[3]{};
     std::array<float, 3> m_weapon_rest{};
     std::array<float, 4> m_weapon_rest_rot{0.0f, 0.0f, 0.0f, 1.0f};
     bool m_have_weapon_rest{false};
