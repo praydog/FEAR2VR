@@ -1,5 +1,6 @@
 #include "VR.hpp"
 
+#include "CameraPassHook.hpp"
 #include "FramePublisher.hpp"
 
 #include <atomic>
@@ -144,6 +145,15 @@ void VR::set_use_host_pose(bool on) {
 
     m_use_host_pose.store(on, std::memory_order_release);
     LOGX("[vr] head pose source: %s", on ? "the OpenXR host" : "local/simulated");
+
+    // A POSE WITH NO CONSUMER LOOKS EXACTLY LIKE A BROKEN HEADSET. Selecting the host as the pose
+    // source does nothing visible unless the mod is also applying poses to the engine, and the
+    // symptom of forgetting -- "moving my head does nothing" -- points at tracking rather than at
+    // a switch. Say so plainly instead of leaving it to be rediscovered.
+    if (on && !enabled()) {
+        LOGX("[vr] NOTE: head pose is coming from the host, but this mod is NOT enabled -- nothing "
+             "will move until /xr/enable?on=1");
+    }
 }
 
 void VR::on_frame() {
@@ -179,6 +189,17 @@ void VR::on_frame() {
                 if (host->sequence == seq) {  // still unchanged: the read was clean
                     rt.set_head_pose(pose);
                     m_last_host_sequence = seq;
+                    m_last_host_seq_pub.store(seq, std::memory_order_release);
+
+                    // RENDER WITH THE HEADSET'S FIELD OF VIEW, or the projection layer is a lie.
+                    // The host publishes the smallest SYMMETRIC half-angles containing the
+                    // headset's asymmetric frustum; the engine wants FULL angles, hence the
+                    // doubling -- its own default reads 1.695 rad, which is 97 degrees across and
+                    // could only be a full angle.
+                    if (host->fov_x > 0.0f && host->fov_y > 0.0f) {
+                        CameraPassHook::get().set_fov_override(host->fov_x * 2.0f,
+                                                               host->fov_y * 2.0f);
+                    }
                     m_host_pose_updates.fetch_add(1, std::memory_order_relaxed);
                 }
             } else {

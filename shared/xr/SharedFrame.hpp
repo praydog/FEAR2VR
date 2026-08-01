@@ -57,7 +57,12 @@ struct alignas(64) SharedFrameHeader {
     uint32_t bgra;
     uint32_t writer_pid;
     uint32_t frames_written;
-    uint32_t reserved;
+
+    // WHICH HostState THE GAME RENDERED WITH. The host keeps a short history of the poses it
+    // published and submits this frame using the one the game actually used -- not the newest.
+    // Declaring the current pose for an image rendered from an older one is the difference between
+    // reprojection CORRECTING head motion and reprojection doing nothing while the image swims.
+    uint32_t host_sequence;
 };
 
 static_assert(sizeof(SharedFrameHeader) == 64,

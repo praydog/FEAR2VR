@@ -1013,6 +1013,36 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Projection: submitting with the pose the frame was actually drawn from
+
+Head tracking works ("I can aim with my head"), which is what finally makes a projection layer an
+honest claim rather than a lie, so the quads are now a fallback and projection is the path.
+
+**A projection layer is a CLAIM about how the image was produced, and the compositor acts on it.**
+Two halves of that claim, each of which fails differently:
+
+*The pose.* The game renders from a pose it read a frame or two earlier. Declaring the CURRENT pose
+would assert the image is newer than it is -- reprojection would then correct nothing and the world
+would swim with head motion. So the game echoes back the `host_sequence` it rendered with, the host
+keeps the last sixteen poses it published (about a quarter-second at 90 Hz, far more lag than the
+pipeline has), and each frame is submitted with the pose it was actually drawn from. Hits and misses
+are counted, because a miss means the claim silently degraded.
+
+*The field of view.* The game must RENDER at the headset's FOV or the world comes out the wrong size.
+The host publishes the smallest symmetric half-angles containing the headset's asymmetric frustum;
+the game applies them through `CameraPassHook::set_fov_override`, doubled, because the engine takes
+FULL angles -- its own default reads 1.695 rad, which is 97 degrees across and could not be a half
+angle. The same numbers are then declared to the compositor, so what is claimed is exactly what was
+drawn.
+
+**Symmetric cropping is the concession.** A headset frustum is asymmetric and this engine offers no
+asymmetric projection, so the game renders the smallest symmetric frustum that CONTAINS it and the
+compositor crops the corners. That spends pixels to keep the frustum truthful, which is the right
+trade while the projection matrices are not ours to write.
+
+**The quads stay.** They are the honest presentation when the game is NOT tracking -- and, as UEVR
+does, a flat cinema screen is a legitimate mode in its own right rather than only a stepping stone.
+
 ### The reverse channel: the host tells the game where the head is
 
 The same mapping now carries data BOTH ways -- `[SharedFrameHeader][HostState][pixels]`. The game

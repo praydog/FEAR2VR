@@ -59,6 +59,10 @@ public:
     // How many frames carried a fresh, tracked pose from the host, and how many found nothing new.
     uint64_t host_pose_updates() const { return m_host_pose_updates.load(std::memory_order_relaxed); }
     uint64_t host_pose_stale() const { return m_host_pose_stale.load(std::memory_order_relaxed); }
+
+    // The HostState sequence whose pose the engine is currently rendering with. Published alongside
+    // each frame so the host can submit that frame with the pose it was actually drawn from.
+    uint32_t last_host_sequence() const { return m_last_host_seq_pub.load(std::memory_order_acquire); }
     void on_shutdown() override;
 
     // ---- CONSUMER API ----------------------------------------------------------------------
@@ -156,6 +160,7 @@ private:
     std::atomic<uint64_t> m_host_pose_updates{0};
     std::atomic<uint64_t> m_host_pose_stale{0};
     uint32_t m_last_host_sequence{0};
+    std::atomic<uint32_t> m_last_host_seq_pub{0};
 
     VR() = default;
 

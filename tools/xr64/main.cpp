@@ -111,6 +111,7 @@ struct SharedReader {
 
     // True when a COMPLETE frame newer than the last one is available.
     uint32_t layout() const { return header == nullptr ? 0u : header->layout; }
+    uint32_t frame_host_sequence() const { return header == nullptr ? 0u : header->host_sequence; }
 
     bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
         if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
@@ -393,6 +394,24 @@ int main(int argc, char** argv) {
     uint32_t screen_layout = 0xFFFFFFFFu;
     bool screen_ready = false;   // an image has been released at least once
     uint64_t held = 0;           // frames where we re-showed the last picture
+    bool use_projection = true;  // quads only until the game is tracking the head
+
+    // ---- THE POSES WE PUBLISHED, KEPT ----------------------------------------------------------
+    //
+    // The game renders from a pose it read a frame or two ago and tells us which one. Submitting a
+    // projection layer with the CURRENT pose instead would claim the image is newer than it is:
+    // reprojection would then have nothing to correct and the world would swim with head motion.
+    // Sixteen entries is about a quarter of a second at 90 Hz -- far more lag than the pipeline has.
+    struct PosePair {
+        uint32_t sequence = 0xFFFFFFFFu;
+        XrPosef pose[2]{};
+        XrFovf fov{};
+    };
+
+    PosePair pose_history[16];
+    uint32_t published_sequence = 0;
+    uint64_t pose_hits = 0;
+    uint64_t pose_misses = 0;
 
     // BGRA to match a D3D9 back buffer byte for byte, so the upload is a copy and not a conversion.
     int64_t screen_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
@@ -599,6 +618,21 @@ int main(int argc, char** argv) {
 
                 MemoryBarrier();
                 hs->sequence = (hs->sequence + 1u) & ~1u;
+                published_sequence = hs->sequence;
+
+                // Keep what we just handed out, so the frame rendered from it can be submitted with
+                // it rather than with whatever is current by the time the pixels arrive.
+                PosePair& slot = pose_history[(published_sequence / 2u) % 16u];
+                slot.sequence = published_sequence;
+                slot.pose[0] = hv[0].pose;
+                slot.pose[1] = hv[1].pose;
+
+                // The SYMMETRIC frustum we asked the game for -- the same numbers, so what is
+                // declared to the compositor is exactly what was rendered.
+                slot.fov.angleLeft = -mx;
+                slot.fov.angleRight = mx;
+                slot.fov.angleUp = my;
+                slot.fov.angleDown = -my;
             }
         }
 
@@ -642,9 +676,54 @@ int main(int argc, char** argv) {
             screen_ready = true;
         }
 
-        if (fs.shouldRender != XR_FALSE && screen_ready) {
+        // ---- PROJECTION, ONCE THE GAME IS ACTUALLY TRACKING THE HEAD ---------------------------
+        //
+        // Submitted with the pose the game RENDERED FROM, looked up by the sequence it echoed back,
+        // and with the same symmetric FOV it was asked to use. Both halves of that matter: a
+        // projection layer is a claim about how the image was produced, and the compositor acts on
+        // the claim. Get the pose wrong and reprojection corrects the wrong amount; get the FOV
+        // wrong and the world is the wrong size.
+        //
+        // Falls back to the quads when the game is not tracking -- a flat screen is honest, a
+        // projection layer built on a stationary camera is not.
+        XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        XrCompositionLayerProjectionView proj_views[2] = {
+            {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+            {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+
+        const uint32_t rendered_seq = reader.frame_host_sequence();
+        const PosePair& slot = pose_history[(rendered_seq / 2u) % 16u];
+        const bool pose_known = use_projection && rendered_seq != 0 && slot.sequence == rendered_seq;
+
+        if (fs.shouldRender != XR_FALSE && screen_ready && pose_known) {
             if (!have_frame) {
                 ++held;
+            }
+
+            ++pose_hits;
+
+            for (int e = 0; e < 2; ++e) {
+                proj_views[e].pose = slot.pose[e];
+                proj_views[e].fov = slot.fov;
+                proj_views[e].subImage.swapchain = screen[e];
+                proj_views[e].subImage.imageRect.offset = {0, 0};
+                proj_views[e].subImage.imageRect.extent = {static_cast<int32_t>(screen_w),
+                                                           static_cast<int32_t>(screen_h)};
+            }
+
+            proj.space = space;
+            proj.viewCount = 2;
+            proj.views = proj_views;
+            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
+            layer_count = 1;
+            ++submitted;
+        } else if (fs.shouldRender != XR_FALSE && screen_ready) {
+            if (!have_frame) {
+                ++held;
+            }
+
+            if (use_projection && rendered_seq != 0) {
+                ++pose_misses;
             }
 
             // TWO QUADS, ONE PER EYE, and this is the honest choice until the game's camera follows
@@ -737,11 +816,13 @@ int main(int argc, char** argv) {
         const XrResult end = xrEndFrame(session, &fei);
 
         if (++frames % 90 == 0) {
-            std::printf("[host] %llu frames, %llu submitted, %llu held (no new game frame), "
-                        "state %s, last xrEndFrame %s\n",
+            std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
+                        "pose %llu), state %s, last xrEndFrame %s\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
-                        static_cast<unsigned long long>(held), state_name(state), rs(end));
+                        static_cast<unsigned long long>(held),
+                        static_cast<unsigned long long>(pose_hits),
+                        static_cast<unsigned long long>(pose_misses), state_name(state), rs(end));
         }
 
         if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {

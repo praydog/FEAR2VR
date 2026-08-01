@@ -34,7 +34,7 @@ public:
     // Returns false when the frame does not fit or the section is not open, and NEVER blocks: the
     // caller is the render thread and a reader must not be able to stall a game.
     bool publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
-                 uint32_t layout);
+                 uint32_t layout, uint32_t host_sequence);
 
     // ---- WHAT A CONSUMER WANTS TO KNOW ---------------------------------------------------------
     // WHAT THE HEADSET IS DOING, written by the host into the same mapping. Null until the section

@@ -8,6 +8,7 @@
 
 #include "Log.hpp"
 #include "CameraPassHook.hpp"
+#include "VR.hpp"
 #include "FramePublisher.hpp"
 #include "RenderHook.hpp"
 #include "sdk/Render.hpp"
@@ -513,7 +514,7 @@ void FrameCapture::service_continuous() {
                 const uint32_t layout = (cam.stereo && cam.split_viewport) ? xr::kLayoutSideBySide
                                                                            : xr::kLayoutMono;
                 FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
-                                              layout);
+                                              layout, VR::get().last_host_sequence());
             }
 
             static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();

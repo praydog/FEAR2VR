@@ -98,7 +98,7 @@ void FramePublisher::close() {
 }
 
 bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
-                             bool bgra, uint32_t layout) {
+                             bool bgra, uint32_t layout, uint32_t host_sequence) {
     if (m_base == nullptr || bits == nullptr || width == 0 || height == 0) {
         return false;
     }
@@ -126,6 +126,7 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     header->bytes = static_cast<uint32_t>(needed);
     header->bgra = bgra ? 1u : 0u;
     header->layout = layout;
+    header->host_sequence = host_sequence;
 
     // ONE memcpy, straight from the locked surface. Row-by-row would be tidier if the destination
     // were tightly packed, but the reader is told the pitch instead -- copying padding is cheaper
