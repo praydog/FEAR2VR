@@ -15,6 +15,10 @@
 #include "sdk/Memory.hpp"
 #include "sdk/Object.hpp"
 #include "BoneControl.hpp"
+#include "Hooks.hpp"
+#include "ViewHook.hpp"
+#include "sdk/CClientMgr.hpp"
+#include "sdk/Model.hpp"
 #include "SyntheticInput.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
@@ -486,6 +490,7 @@ void VR::on_frame() {
     update_trigger();
     update_locomotion();
     update_buttons();
+    update_weapon();
 
     const auto head = rt.head();
     g_head_valid.store(head.valid, std::memory_order_relaxed);
@@ -684,6 +689,150 @@ bool VR::snap_turn(float degrees) {
 
     m_stick_turns.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+void VR::set_weapon_override(bool on) {
+    if (!on) {
+        m_have_weapon_rest = false;
+        // Disarm by clearing the TARGET, so ViewHook's detour stops matching. Nothing is retired
+        // here: unhooking is the uninject path's job, not a toggle's.
+        ViewHook::get().set_weapon_amend(0, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f});
+    }
+    m_weapon_override.store(on, std::memory_order_release);
+    LOGX("[vr] weapon override %s", on ? "ON" : "off");
+}
+
+void VR::set_weapon_probe(float x, float y, float z) {
+    m_weapon_probe[0].store(x, std::memory_order_relaxed);
+    m_weapon_probe[1].store(y, std::memory_order_relaxed);
+    m_weapon_probe[2].store(z, std::memory_order_relaxed);
+}
+
+uintptr_t VR::find_weapon_object() {
+    // Re-resolved every frame rather than cached: the weapon object is destroyed and recreated on
+    // every weapon switch, and a cached pointer would be writing into freed memory the moment the
+    // player changes gun -- which is exactly the shape of the bug that corrupted the heap earlier
+    // in this project.
+    auto* mgr = sdk::CClientMgr::get();
+    const auto me = sdk::PlayerMgr::engine_objects(0);
+
+    if (mgr == nullptr || !me.has_value() || me->model == 0) {
+        return 0;
+    }
+
+    const auto anchor = sdk::object_info(reinterpret_cast<const regenny::LTObject*>(me->model));
+    if (!anchor.has_value()) {
+        return 0;
+    }
+
+    std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(512);
+    const auto got = mgr->snapshot_objects(static_cast<sdk::ObjectType>(1), snaps.data(), snaps.size());
+    if (!got.has_value()) {
+        return 0;
+    }
+
+    uintptr_t best = 0;
+    float best_d2 = 200.0f * 200.0f;
+
+    for (size_t i = 0; i < *got; ++i) {
+        const auto* o = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
+        const auto oi = sdk::object_info(o);
+
+        // CLIENT-ONLY, VISIBLE, and a weapon asset. The server-handled twin fails the handle test,
+        // the hidden player models fail the kVisible test, and world pickups fail the distance test.
+        if (!oi.has_value() || oi->handle != 0xFFFFu ||
+            (oi->flags & sdk::object_flags::kVisible) == 0u) {
+            continue;
+        }
+
+        const auto fn = sdk::model_filename(o);
+        if (!fn.has_value() || fn->rfind("weapons\\", 0) != 0) {
+            continue;
+        }
+
+        const float dx = oi->position.x - anchor->position.x;
+        const float dy = oi->position.y - anchor->position.y;
+        const float dz = oi->position.z - anchor->position.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = snaps[i].address;
+        }
+    }
+
+    return best;
+}
+
+void VR::update_weapon() {
+    if (!m_weapon_override.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const uintptr_t obj = find_weapon_object();
+    m_weapon_obj.store(obj, std::memory_order_relaxed);
+
+    if (obj == 0) {
+        return;
+    }
+
+    // OWN THE WRITER RATHER THAN THE FIELD. A direct write to LTObject.position was measured
+    // landing (91 writes) and changing nothing on screen: the engine rebuilds this object's
+    // transform from its attachment every frame, so the field is reclaimed before it is drawn.
+    // LTObject_SetPosRot is what does the rebuilding -- found by arming a hardware write watch on
+    // the object's position, which reported 115 hits from a single accessor at FEAR2.exe+0x202C7
+    // with ecx holding the weapon object.
+    // ---- THE CONTROLLER, AS A DELTA FROM ITS REST POSE -------------------------------------
+    //
+    // A delta rather than an absolute pose, for the same reason drive_hand takes one: the engine
+    // puts the gun where the weapon animation wants it, and what a wearer means by "the gun follows
+    // my hand" is that MOVING the hand moves the gun by the same amount -- not that the gun
+    // teleports to the controller's position in play space, which has no relationship to where the
+    // weapon belongs on screen.
+    //
+    // The rest pose is captured the first frame a valid aim exists, so it is whatever the wearer
+    // was holding when tracking came up.
+    float px = m_weapon_probe[0].load(std::memory_order_relaxed);
+    float py = m_weapon_probe[1].load(std::memory_order_relaxed);
+    float pz = m_weapon_probe[2].load(std::memory_order_relaxed);
+    std::array<float, 4> turn{0.0f, 0.0f, 0.0f, 1.0f};
+
+    const auto hand = vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT);
+
+    if (hand.active && hand.aim.valid) {
+        if (!m_have_weapon_rest) {
+            m_weapon_rest = hand.aim.position;
+            m_weapon_rest_rot = hand.aim.orientation;
+            m_have_weapon_rest = true;
+        }
+
+        const std::array<float, 3> moved{hand.aim.position[0] - m_weapon_rest[0],
+                                         hand.aim.position[1] - m_weapon_rest[1],
+                                         hand.aim.position[2] - m_weapon_rest[2]};
+        const auto engine_move = runtime_to_engine_position(moved);
+        px += engine_move[0];
+        py += engine_move[1];
+        pz += engine_move[2];
+
+        // CONVERT THE DELTA, never the two poses separately: the runtime-to-engine mapping is a
+        // mirror, not a rotation, so converting each pose and subtracting afterwards is a different
+        // operation and gets the handedness wrong on the off-axes.
+        const regenny::LTRotation rest_inv{-m_weapon_rest_rot[0], -m_weapon_rest_rot[1],
+                                           -m_weapon_rest_rot[2], m_weapon_rest_rot[3]};
+        const regenny::LTRotation now{hand.aim.orientation[0], hand.aim.orientation[1],
+                                      hand.aim.orientation[2], hand.aim.orientation[3]};
+        const auto turned = sdk::multiply_rotations(rest_inv, now);
+        turn = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
+    } else {
+        m_have_weapon_rest = false;
+    }
+
+
+    // ONE OWNER: ViewHook already hooks LTObject_SetPosRot, so the amendment is handed to it
+    // rather than hooked a second time. Installing a second inline hook on that address crashed
+    // the game on unload -- see Hooks::install.
+    ViewHook::get().set_weapon_amend(obj, {px, py, pz}, turn);
+    m_weapon_writes.store(ViewHook::get().weapon_amendments(), std::memory_order_relaxed);
 }
 
 void VR::update_buttons() {

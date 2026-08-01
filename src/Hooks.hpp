@@ -36,7 +36,13 @@ public:
 
     // Install and track a hook. Returns false if the safetyhook factory failed.
     // `name` is diagnostic-only (logs, /health).
+    // Installs an inline hook. REFUSES a target this registry already owns under another name --
+    // see the note in Hooks.cpp. Returns false and logs loudly rather than stacking.
     bool install(std::string name, void* target, void* destination);
+
+    // The name owning this target, or empty. Exposed so a caller can ask before installing instead
+    // of discovering the collision as a crash on unload.
+    std::string owner_of(void* target) const;
 
     // Install a MID-function hook: the detour receives the full register
     // context and the original code continues afterwards. Needed for targets
@@ -94,6 +100,7 @@ public:
 private:
     std::mutex m_mux;
     std::vector<std::pair<std::string, safetyhook::InlineHook>> m_hooks;
+    std::vector<std::pair<std::string, void*>> m_targets;
     std::vector<std::pair<std::string, safetyhook::MidHook>> m_mid_hooks;
     size_t m_retired{0};
     bool m_retire_started{false};

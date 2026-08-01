@@ -184,6 +184,26 @@ public:
     // Accumulates, so two requests inside one frame become a single move of their sum.
     void queue_body_nudge(float dx, float dz);
 
+    // ---- THE FIRST-PERSON WEAPON -----------------------------------------------------------------
+    //
+    // WHICH OBJECT, because four other candidates look right and are not. The rendered gun is a
+    // CLIENT-ONLY OT_MODEL (handle 0xFFFF) whose filename lives under `weapons\\`, sitting within a
+    // metre of the player, and -- the part that actually discriminates -- carrying kVisible. Its
+    // server-handled twin sits beside it with the bit clear, as do both copies of the player model.
+    // Everything this project previously aimed at the weapon aimed at one of those instead.
+    //
+    // AMENDED, NOT ASSIGNED. The engine rebuilds this object's transform every frame from the
+    // attachment socket, so an external write is reclaimed; the offset is re-applied per frame on the
+    // game thread, which is the same discipline HeadTracking and the HUD already use.
+    void set_weapon_override(bool on);
+    bool weapon_override() const { return m_weapon_override.load(std::memory_order_acquire); }
+    uintptr_t weapon_object() const { return m_weapon_obj.load(std::memory_order_relaxed); }
+    uint64_t weapon_writes() const { return m_weapon_writes.load(std::memory_order_relaxed); }
+
+    // A fixed offset in the engine's world axes, for proving the write lands before any controller
+    // is involved. Zero once the controller drives it.
+    void set_weapon_probe(float x, float y, float z);
+
     // ---- THE THUMBSTICKS -----------------------------------------------------------------------
     //
     // Left stick walks, right stick snap-turns. Both go through the engine's OWN input path --
@@ -381,6 +401,13 @@ private:
     std::atomic<float> m_nudge_x{0.0f};
     std::atomic<float> m_nudge_z{0.0f};
     std::atomic<uint64_t> m_hand_pose_updates{0};
+    std::atomic<bool> m_weapon_override{false};
+    std::atomic<uintptr_t> m_weapon_obj{0};
+    std::atomic<uint64_t> m_weapon_writes{0};
+    std::atomic<float> m_weapon_probe[3]{};
+    std::array<float, 3> m_weapon_rest{};
+    std::array<float, 4> m_weapon_rest_rot{0.0f, 0.0f, 0.0f, 1.0f};
+    bool m_have_weapon_rest{false};
     std::atomic<bool> m_locomotion{false};
     std::atomic<uint64_t> m_stick_turns{0};
     std::atomic<uint32_t> m_loco_keys{0};
@@ -433,6 +460,8 @@ private:
     void update_hands();
     void update_locomotion();
     void update_buttons();
+    void update_weapon();
+    uintptr_t find_weapon_object();
 
     // One hand. `slot` is the BoneControl slot it drives, and each hand keeps its own rest
     // pose -- sharing one would make every offset a delta from wherever the OTHER hand

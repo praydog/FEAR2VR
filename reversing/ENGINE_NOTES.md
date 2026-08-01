@@ -1069,6 +1069,53 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The first-person weapon: which object, and who writes it
+
+**The object.** A CLIENT-ONLY `OT_MODEL` (handle `0xFFFF`) whose filename is under `weapons\`,
+within a metre of the player, and -- the discriminator that actually matters -- carrying `kVisible`.
+Live, the four look-alikes sitting on top of each other are:
+
+```
+676586976  fl=0x20020  fp_playerm06 (client)  kVisible CLEAR   <- pmgr_model, the hidden body
+683997584  fl=0x00B8   fp_playerm06 (server)  kVisible CLEAR   <- shell_obj, what "flash" measured
+683998416  fl=0x0200   shotgun_new  (server)  kVisible CLEAR
+681061488  fl=0x0001   shotgun_new  (client)  kVisible SET     <- THE GUN ON SCREEN
+```
+
+**The writer is `LTObject_SetPosRot`**, found by arming a hardware write watch on the object's
+position: 115 hits, one accessor, `FEAR2.exe+0x202C7`, `ecx` holding the weapon object. A direct
+write to `LTObject.position` lands and changes NOTHING on screen -- 91 successful writes, zero pixels
+-- because the engine rebuilds the transform from the attachment every frame.
+
+**Amend the argument, never the object afterwards.** SetPosRot recomputes the world AABB and re-links
+the object into the world tree from the values it is handed, so a write applied after it returns
+leaves the drawn position and the spatial index disagreeing.
+
+**Measured:** a 40-unit offset changes 32,426 pixels in the gun's quadrant against 6,365 of baseline
+noise, and 300 units puts the gun visibly above the frame.
+
+### NEVER STACK TWO INLINE HOOKS ON ONE ADDRESS -- it crashes on UNLOAD, not on install
+
+`ViewHook` already owned `LTObject_SetPosRot`. A second hook was installed on the same address for
+the weapon, everything worked, and the game died on the next uninject:
+
+```
+Faulting module: fear2vr.dll_unloaded   offset 0x6da70   0xc0000005
+  -> set_pos_rot_detour+0x0, ViewHook.cpp:593
+```
+
+The second hook patches over the first one's `jmp` and saves THAT as its "original". On teardown the
+two restores put those bytes back in an order that can leave the function permanently jumping to a
+detour inside an image that is no longer mapped.
+
+**The quiescence check cannot catch this**, and understanding why matters: it proves no thread's EIP
+is INSIDE our image at the moment of unmap. It says nothing about a `jmp` that will send one there
+afterwards. Same blind spot as the node-control registration already documented for BoneControl --
+`Hooks::retire()` only knows about safetyhook.
+
+`Hooks::install` now REFUSES a target another hook already owns, names the owner, and says to extend
+that detour instead. The weapon amendment consequently lives in `ViewHook`, which owns the entry.
+
 ### RETRACTED: the weapon does NOT follow the RightHand bone
 
 This section previously claimed the opposite, on the strength of `attached_socket(player->object,

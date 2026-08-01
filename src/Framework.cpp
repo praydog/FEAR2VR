@@ -1628,6 +1628,58 @@ std::string build_models_json() {
     std::string out = "{\"ok\":true,\"models\":[";
     size_t emitted = 0, with_skeleton = 0, resolved_wanted = 0;
 
+    // EVERY object of EVERY type, near the player, addressable. OT_MODEL was the only bucket ever
+    // snapshotted here, and the first-person viewmodel is provably not in it -- hiding all 158 left
+    // the gun and arms drawn. So the search has to cover the other six.
+    std::string near_json = "[";
+    size_t near_emitted = 0;
+    {
+        const auto me = sdk::PlayerMgr::engine_objects(0);
+        const auto anchor = (me.has_value() && me->model != 0)
+                                ? sdk::object_info(reinterpret_cast<const regenny::LTObject*>(me->model))
+                                : std::nullopt;
+
+        if (anchor.has_value()) {
+            std::vector<sdk::CClientMgr::ObjectSnapshot> ns(4096);
+            for (uint8_t kind = 0; kind <= 6; ++kind) {
+                const auto got = mgr->snapshot_objects(static_cast<sdk::ObjectType>(kind), ns.data(),
+                                                       ns.size());
+                if (!got.has_value()) {
+                    continue;
+                }
+                for (size_t i = 0; i < *got && near_emitted < 200; ++i) {
+                    const auto* o = reinterpret_cast<const regenny::LTObject*>(ns[i].address);
+                    const auto oi = sdk::object_info(o);
+                    if (!oi.has_value()) {
+                        continue;
+                    }
+                    const float dx = oi->position.x - anchor->position.x;
+                    const float dy = oi->position.y - anchor->position.y;
+                    const float dz = oi->position.z - anchor->position.z;
+                    const float d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 > 250.0f * 250.0f) {
+                        continue;
+                    }
+                    const auto fn = sdk::model_filename(o);
+                    std::string esc;
+                    for (const char ch : fn.value_or(std::string{})) {
+                        esc += (ch == '\\') ? std::string("\\\\") : std::string(1, ch);
+                    }
+                    char nb[512];
+                    snprintf(nb, sizeof(nb),
+                             "%s{\"addr\":%llu,\"kind\":%u,\"handle\":%u,\"d\":%.1f,"
+                             "\"flags\":%u,\"file\":\"%s\"}",
+                             near_emitted == 0 ? "" : ",",
+                             static_cast<unsigned long long>(ns[i].address), kind, oi->handle,
+                             sqrtf(d2), oi->flags, esc.c_str());
+                    near_json += nb;
+                    ++near_emitted;
+                }
+            }
+        }
+    }
+    near_json += "]";
+
     // EVERY model object's filename, addressable. Added after a session spent driving the wrong
     // object entirely: the first-person weapon is not on the player's model, and there was no way
     // to ask "what models exist and which one is the gun" without one. The node analysis below is
@@ -2081,7 +2133,7 @@ std::string build_models_json() {
     if (!tail.empty() && tail.back() == '}') {
         tail.pop_back();
         out += tail;
-        out += ",\"all\":" + all_json + "}";
+        out += ",\"all\":" + all_json + ",\"near\":" + near_json + "}";
     } else {
         out += tail;
     }
@@ -10648,6 +10700,15 @@ bool Framework::initialize() {
             if (q.find("pin_eye") != q.end()) {
                 VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
             }
+            if (q.find("gun") != q.end()) {
+                VR::get().set_weapon_override(webapi_query_int(q, "gun", 0) != 0);
+            }
+            if (q.find("gun_x") != q.end() || q.find("gun_y") != q.end() || q.find("gun_z") != q.end()) {
+                VR::get().set_weapon_probe(
+                    static_cast<float>(webapi_query_double(q, "gun_x", 0.0)),
+                    static_cast<float>(webapi_query_double(q, "gun_y", 0.0)),
+                    static_cast<float>(webapi_query_double(q, "gun_z", 0.0)));
+            }
             if (q.find("hide_addr") != q.end()) {
                 // CLEAR kVisible ON ONE NAMED OBJECT. A debugging probe, and the only way to ask
                 // "is THIS the thing I can see" -- which this project needed after a whole session
@@ -11052,6 +11113,9 @@ bool Framework::initialize() {
               .b("fc_drop_ok", capture_drop_ok)
               .b("vr_nudge_ok", nudge_ok)
               .b("vr_hide_addr_ok", hide_addr_ok)
+              .b("vr_gun_override", VR::get().weapon_override())
+              .u("vr_gun_obj", static_cast<size_t>(VR::get().weapon_object()))
+              .u("vr_gun_writes", static_cast<size_t>(VR::get().weapon_writes()))
               .b("vr_snap_now_ok", snap_now_ok)
               .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
               .u("vr_hand_updates", static_cast<size_t>(VR::get().hand_pose_updates()))

@@ -590,8 +590,32 @@ int __fastcall set_rotation_detour(uintptr_t self, uintptr_t /*edx*/, float* qua
 // THE MOVE-AND-TURN PATH. Same ABI shape as the rotation setter -- __thiscall with one stack argument, single
 // exit `retn 4` -- but the argument is SEVEN floats: position at [0..2] and the quaternion at [3..6]. Only the
 // rotation is replaced; moving the camera's position would be a different feature and a worse bug.
+std::atomic<uintptr_t> g_weapon_obj{0};
+std::atomic<float> g_weapon_pos[3]{};
+std::atomic<float> g_weapon_rot[4]{0.0f, 0.0f, 0.0f, 1.0f};
+std::atomic<uint64_t> g_weapon_amended{0};
+
 int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posrot) {
     g_spr_calls.fetch_add(1, std::memory_order_relaxed);
+
+    // THE WEAPON. A pointer compare first: every object in the level that moves comes through here.
+    if (posrot != nullptr && self == g_weapon_obj.load(std::memory_order_relaxed)) {
+        posrot[0] += g_weapon_pos[0].load(std::memory_order_relaxed);
+        posrot[1] += g_weapon_pos[1].load(std::memory_order_relaxed);
+        posrot[2] += g_weapon_pos[2].load(std::memory_order_relaxed);
+
+        const regenny::LTRotation base{posrot[3], posrot[4], posrot[5], posrot[6]};
+        const regenny::LTRotation turn{g_weapon_rot[0].load(std::memory_order_relaxed),
+                                       g_weapon_rot[1].load(std::memory_order_relaxed),
+                                       g_weapon_rot[2].load(std::memory_order_relaxed),
+                                       g_weapon_rot[3].load(std::memory_order_relaxed)};
+        const auto composed = sdk::multiply_rotations(base, turn);
+        posrot[3] = composed.x;
+        posrot[4] = composed.y;
+        posrot[5] = composed.z;
+        posrot[6] = composed.w;
+        g_weapon_amended.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (posrot != nullptr && g_ov_frames.load(std::memory_order_relaxed) > 0) {
         const auto p = sdk::PlayerMgr::player(0);
@@ -613,6 +637,22 @@ int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posr
 }
 
 }  // namespace
+
+void ViewHook::set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
+                                const std::array<float, 4>& rot) {
+    for (size_t i = 0; i < 3; ++i) {
+        g_weapon_pos[i].store(pos[i], std::memory_order_relaxed);
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        g_weapon_rot[i].store(rot[i], std::memory_order_relaxed);
+    }
+    // The TARGET last, so the detour never matches an object against a half-written transform.
+    g_weapon_obj.store(obj, std::memory_order_relaxed);
+}
+
+uint64_t ViewHook::weapon_amendments() const {
+    return g_weapon_amended.load(std::memory_order_relaxed);
+}
 
 ViewHook& ViewHook::get() {
     static ViewHook s_instance;

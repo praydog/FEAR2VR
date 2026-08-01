@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -50,6 +52,19 @@ public:
     // Retiring is Hooks::get()'s job (it disables every hook under one lock during shutdown), so a mod must
     // NOT remove its own hook here -- see Mod.hpp and TESTING.MD's uninject contract.
     void on_shutdown() override {}
+
+    // ---- THE FIRST-PERSON WEAPON'S TRANSFORM -------------------------------------------------
+    //
+    // Amends the weapon object's move-and-turn inside the SetPosRot detour this class ALREADY
+    // owns. It lives here rather than in the VR mod because this class owns that engine entry, and
+    // a second inline hook on the same address is a crash on unload rather than a duplicated
+    // feature -- see Hooks::install, which now refuses one.
+    //
+    // `obj` 0 disarms. Position is ADDED and rotation is COMPOSED onto the engine's own value, so
+    // recoil, sway and the weapon's rest angle all survive.
+    void set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
+                          const std::array<float, 4>& rot);
+    uint64_t weapon_amendments() const;
 
     // ---- LEVELLING THE BODY, SO THE HEAD CAN TURN ----------------------------------------------
     //

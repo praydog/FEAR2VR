@@ -28,9 +28,35 @@ bool Hooks::sealed() const {
     return g_sealed.load(std::memory_order_acquire);
 }
 
+std::string Hooks::owner_of(void* target) const {
+    for (const auto& [name, addr] : m_targets) {
+        if (addr == target) {
+            return name;
+        }
+    }
+    return {};
+}
+
 bool Hooks::install(std::string name, void* target, void* destination) {
     if (g_sealed.load(std::memory_order_acquire)) {
         LOGX("[hooks] REFUSED install of '%s' -- registry is sealed (shutting down)", name.c_str());
+        return false;
+    }
+
+    // ---- ONE OWNER PER ENGINE ENTRY -----------------------------------------------------------
+    //
+    // Two inline hooks on the same address crash the process on UNLOAD, not on install, which is
+    // what makes it worth refusing here rather than leaving to discipline. The second hook patches
+    // over the first one's jmp and saves it as its "original"; on teardown the restores put those
+    // bytes back in an order that can leave the function permanently jumping to a detour inside an
+    // image that is no longer mapped. Measured: FEAR2.exe died with 0xC0000005 in
+    // `fear2vr.dll_unloaded` at the offset of ViewHook's set_pos_rot_detour, seconds after a clean
+    // unload that the quiescence check had passed -- because quiescence proves no thread is INSIDE
+    // the image, and says nothing about a jmp that will send one there later.
+    if (const auto owner = owner_of(target); !owner.empty()) {
+        LOGX("[hooks] REFUSED install of '%s' at %p -- already owned by '%s'. Extend that detour "
+             "instead of stacking a second one.",
+             name.c_str(), target, owner.c_str());
         return false;
     }
 
@@ -43,6 +69,10 @@ bool Hooks::install(std::string name, void* target, void* destination) {
         return false;
     }
     LOGX("[hooks] installed %s at %p -> %p", name.c_str(), target, destination);
+    {
+        std::scoped_lock _{m_mux};
+        m_targets.emplace_back(name, target);
+    }
     adopt(std::move(name), std::move(hook));
     return true;
 }
