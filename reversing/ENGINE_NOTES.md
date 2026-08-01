@@ -1013,6 +1013,41 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The neutral gate is PER AXIS, because the artefact is not the same shape on each
+
+Reported: at one particular spot, near a wall, looking up and down moved the camera again. The spot
+did not cause it -- it revealed it.
+
+Swept live at that spot, vertical eye offset across yaw x pitch:
+
+            yaw   -20      -10        0      +10      +20
+    pitch +20   81.96    81.96    81.96    81.96    81.96
+    pitch   0   74.78    74.78    74.78    74.78    74.78
+    pitch -20   63.68    63.68    63.68    63.68    63.68
+
+**The vertical artefact depends on PITCH ALONE** -- identical to the hundredth across the entire yaw
+range. It is also steep near centre: about 4 to 5 units per 10 degrees. The neutrality gate was a
+15 degree cone, and inside the cone the reference TRACKS, so up to 7 cm of vertical motion was
+uncorrected by design. Imperceptible in open space; against a nearby wall the parallax makes it
+obvious.
+
+Two changes follow from the measurement rather than from taste:
+
+**Four degrees of pitch, not fifteen**, which puts the residual under 2 units.
+
+**And the gate is split per axis.** The old test was `|w| >= cos(7.5 deg)` on the quaternion, which
+measures TOTAL rotation and therefore cannot distinguish a level head turned sideways from a centred
+head looking down -- two situations that must be treated differently. The angles are now unpacked:
+
+  * the VERTICAL reference refreshes whenever the head is level, at ANY heading, because the
+    vertical artefact does not depend on yaw. This is the axis stance actually moves, so refreshing
+    it often is what stops a crouch being mistaken for an error;
+  * the HORIZONTAL reference additionally requires the heading centred, because X and Z swing with
+    yaw as well as pitch.
+
+*The general point: a gate that collapses several degrees of freedom into one scalar cannot express
+a condition that differs between them. |w| was cheap and it was measuring the wrong thing.*
+
 ### RETRACTION: a captured reference bakes in the stance; it has to track
 
 The eye pin was reported as making the eye height LOWER. Measured at rest, with the trim at zero,

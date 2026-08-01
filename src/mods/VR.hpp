@@ -67,9 +67,26 @@ public:
     void update_camera_offset();
     void apply_body_visibility(bool visible);
 
-    // Is the wearer looking roughly straight ahead? The reference for the eye pin is only valid
-    // when taken with no neck orbit in it, which is to say while the head is neutral.
-    bool head_is_neutral() const;
+    // ---- WHEN THE EYE REFERENCE MAY BE SAMPLED -------------------------------------------------
+    //
+    // The pin cancels the neck orbit by holding the eye offset at the value it has with the head
+    // UNROTATED, so the reference may only be taken at moments when the orbit is known to be zero.
+    // A constant reference cannot work (a crouch legitimately moves the eye ~29 units and the pin
+    // would "correct" it back); a continuously tracking one cannot either (it would follow the
+    // orbit and cancel nothing). Gating the update on neutrality is what makes it work at all.
+    //
+    // PER AXIS, because the artefact is not the same shape on each. Swept live at the reported
+    // problem spot: the VERTICAL offset depends on pitch ALONE -- identical to the hundredth across
+    // every yaw from -20 to +20 degrees -- while X and Z depend on both. So the vertical reference
+    // may be refreshed at any heading provided the head is level, which lets it re-sync to stance
+    // far more often than a single all-axis test would allow.
+    struct Neutrality {
+        bool pitch_level{};  // may refresh the VERTICAL reference
+        bool fully{};        // may refresh the horizontal reference too
+    };
+
+    Neutrality head_neutrality() const;
+    bool head_is_neutral() const { return head_neutrality().fully; }
 
     // False while a recenter is still waiting for the wearer to look ahead. Published, because
     // "waiting" and "broken" are indistinguishable from inside a headset otherwise.

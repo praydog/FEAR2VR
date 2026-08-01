@@ -622,14 +622,28 @@ void VR::update_camera_offset() {
             // and any change in stance, height or animation is absorbed silently. The instant the
             // head turns, the last neutral value is held and the difference is exactly the neck
             // orbit -- which is the only thing this was ever meant to cancel.
-            if (head_is_neutral()) {
+            const Neutrality n = head_neutrality();
+
+            if (n.pitch_level) {
                 if (!m_have_eye_ref) {
                     LOGX("[vr] eye offset reference acquired: %.2f %.2f %.2f", (*off)[0], (*off)[1],
                          (*off)[2]);
+                    m_eye_ref_vec = *off;
+                    m_have_eye_ref = true;
                 }
 
-                m_eye_ref_vec = *off;
-                m_have_eye_ref = true;
+                // VERTICAL refreshes on a level head at ANY heading, because the vertical artefact
+                // is a function of pitch alone -- measured across the full yaw range. This is the
+                // axis stance actually moves, so refreshing it often is what keeps a crouch from
+                // being mistaken for an error.
+                m_eye_ref_vec[1] = (*off)[1];
+
+                if (n.fully) {
+                    // Horizontal needs the heading centred too: X and Z swing with yaw as well as
+                    // pitch, so a level head turned sideways is NOT a valid horizontal sample.
+                    m_eye_ref_vec[0] = (*off)[0];
+                    m_eye_ref_vec[2] = (*off)[2];
+                }
             }
 
             if (!m_have_eye_ref) {
@@ -696,18 +710,37 @@ void VR::update_camera_offset() {
     CameraPassHook::get().set_position_offset(dx, dy, dz);
 }
 
-bool VR::head_is_neutral() const {
+VR::Neutrality VR::head_neutrality() const {
     const auto* host = FramePublisher::get().host_state();
 
     if (host == nullptr || host->valid == 0u) {
-        return false;
+        return {};
     }
 
-    // The rotation angle of a unit quaternion is 2*acos(|w|), so |w| alone answers "how far from
-    // identity is this" without unpacking axes. cos(7.5 deg) for a 15 degree total cone: generous
-    // enough that a wearer looking roughly ahead qualifies, tight enough that the residual orbit is
-    // under a centimetre on an 8.4 cm lever arm.
-    constexpr float kNeutralCosHalf = 0.99144f;
+    const float x = host->orientation[0];
+    const float y = host->orientation[1];
+    const float z = host->orientation[2];
     const float w = host->orientation[3];
-    return (w < 0.0f ? -w : w) >= kNeutralCosHalf;
+
+    // Euler angles in the runtime's frame: Y is up, so yaw is about Y and pitch about X. Unpacked
+    // rather than judged from |w| alone, which was the previous test -- |w| measures TOTAL rotation
+    // and cannot tell a level head turned sideways from a centred head looking down, and those two
+    // have to be treated differently.
+    const float sin_pitch = 2.0f * (w * x - y * z);
+    const float pitch = asinf(sin_pitch < -1.0f ? -1.0f : (sin_pitch > 1.0f ? 1.0f : sin_pitch));
+    const float yaw = atan2f(2.0f * (w * y + x * z), 1.0f - 2.0f * (y * y + z * z));
+    const float roll = atan2f(2.0f * (w * z + x * y), 1.0f - 2.0f * (x * x + z * z));
+
+    // FOUR DEGREES OF PITCH, not fifteen. The vertical offset moves 4 to 5 units per 10 degrees of
+    // pitch near centre (74.78 level, 69.65 at -10, 78.93 at +10), so the old 15 degree cone left
+    // up to 7 cm of vertical motion uncorrected. Invisible in open space; against a nearby wall the
+    // parallax makes it obvious, which is exactly how it was found.
+    constexpr float kPitchLimit = 4.0f * 0.0174532925f;
+    constexpr float kRollLimit = 8.0f * 0.0174532925f;
+    constexpr float kYawLimit = 8.0f * 0.0174532925f;
+
+    Neutrality n{};
+    n.pitch_level = fabsf(pitch) <= kPitchLimit && fabsf(roll) <= kRollLimit;
+    n.fully = n.pitch_level && fabsf(yaw) <= kYawLimit;
+    return n;
 }
