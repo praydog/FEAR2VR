@@ -182,6 +182,88 @@ public:
     int32_t get_system(XrHandle& out_system, uint32_t form_factor = kHeadMountedDisplay);
     static constexpr uint32_t kHeadMountedDisplay = 1;  // XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY
 
+    // ---- A SESSION -----------------------------------------------------------------------------
+    //
+    // The first thing that genuinely requires hardware. It also requires a graphics binding, and
+    // the runtime -- not the caller -- chooses the adapter: xrGetD3D11GraphicsRequirementsKHR hands
+    // back a LUID, and a device created on any other adapter will be rejected or, worse, silently
+    // present to nothing. On a laptop or a machine with an iGPU that is not a formality.
+    //
+    // The D3D11 device is created on that adapter and PARKED IN THE PROXY, because the session
+    // holds a reference to it and both must outlive the mod. Its code lives in d3d11.dll, so it
+    // stays valid across a reload; this DLL must never release it.
+    bool graphics_requirements(uint64_t& adapter_luid, uint32_t& min_feature_level);
+    bool ensure_d3d11_device();
+    void* d3d11_device() const { return m_d3d11; }
+
+    // REFUSES ON THE 32-BIT OCULUS RUNTIME, and that refusal is protecting the game.
+    //
+    // Measured on this machine: xrCreateSession gets as far as initialising Oculus's D3D11
+    // compositor client and creating a texture swap chain, then jumps to a FIXED address in
+    // reserved memory on one of its own worker threads -- where no __try of ours can catch it, so
+    // the process simply dies. Identical through the real openxr_loader.dll and through direct
+    // negotiation, identical address every run.
+    //
+    // The same sequence in a 64-bit process on the same machine, same headset, same runtime version
+    // returns XR_SUCCESS (see tools/xr64). So this is Meta's 32-bit path, which they deprecated
+    // years ago, and no argument this side of the call changes it.
+    //
+    // Leaving it callable would mean one stray request takes FEAR2 down with no crash log worth
+    // reading. `force` exists so the finding can be re-tested deliberately when a runtime updates.
+    bool create_session(bool force = false);
+
+    // True when a session cannot be created here for a reason that is not going to change: the
+    // process is 32-bit and the active runtime is the one known to fault. A consumer should read
+    // this and route through a 64-bit host rather than trying and dying.
+    bool session_unsupported_here();
+
+    // WHO the runtime actually is, asked of the instance rather than inferred from a file path --
+    // which stopped working the moment calls started going through openxr_loader.dll, where the
+    // library on disk is the loader and says nothing about the runtime behind it.
+    bool instance_properties(std::string& runtime_name, uint64_t& runtime_version);
+    const std::string& runtime_name() const { return m_runtime_name; }
+
+    // The RUNTIME's own version (Oculus 86.x here), which is not the OpenXR API version and must
+    // not be confused with it -- an earlier version of this file stored one in the other's field.
+    uint64_t runtime_version() const { return m_runtime_version; }
+
+    // Attempt a session with NO graphics binding. Guaranteed to fail -- the spec requires one --
+    // but HOW it fails is diagnostic: a clean XR_ERROR_GRAPHICS_DEVICE_INVALID proves the call
+    // itself, the handles and the struct layout are all sound, and isolates a fault to the binding.
+    int32_t probe_session_without_graphics();
+    XrHandle session() const { return m_session; }
+    bool have_session() const { return m_session != 0; }
+    bool destroy_session();
+
+    // ---- SESSION LIFECYCLE -----------------------------------------------------------------
+    //
+    // A session does not become usable because it was created: the runtime walks it through IDLE ->
+    // READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED, and it only says so through the event queue. A
+    // consumer that skips this and starts submitting frames gets errors that look like bugs in its
+    // rendering.
+    enum class SessionState : uint32_t {
+        Unknown = 0,
+        Idle = 1,
+        Ready = 2,
+        Synchronized = 3,
+        Visible = 4,
+        Focused = 5,
+        Stopping = 6,
+        LossPending = 7,
+        Exiting = 8,
+    };
+
+    // Drains the event queue and updates the cached state. Cheap; call it every frame.
+    void poll_events();
+    SessionState session_state() const { return m_session_state; }
+    static const char* state_name(SessionState s);
+
+    // xrBeginSession, which is legal only from READY. Returns false (without calling) otherwise, so
+    // a caller can simply attempt it each frame until the runtime is ready.
+    bool begin_session();
+    bool session_running() const { return m_session_running; }
+    bool end_session();
+
     // The raw XrResult of the last instance or system call, for a caller that wants the code.
     int32_t last_xr_result() const { return m_last_result; }
 
@@ -203,6 +285,13 @@ private:
     std::vector<std::string> m_extensions;
     const void* m_proxy{nullptr};
     XrHandle m_instance{0};
+    XrHandle m_system{0};
+    std::string m_runtime_name;
+    uint64_t m_runtime_version{0};
+    XrHandle m_session{0};
+    void* m_d3d11{nullptr};
+    SessionState m_session_state{SessionState::Unknown};
+    bool m_session_running{false};
     int32_t m_last_result{0};
 };
 

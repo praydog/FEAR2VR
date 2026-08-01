@@ -65,11 +65,11 @@ set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 type = "static"
 sources = ["shared/sdk/**.cpp", "shared/xr/**.cpp"]
 headers = ["shared/sdk/**.hpp", "shared/xr/**.hpp", "shared/xr/**.h"]
-include-directories = ["shared"]
+include-directories = ["shared", "deps/openxr/include"]
 compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-link-libraries = ["kananlib"]
+link-libraries = ["d3d11", "dxgi", "kananlib"]
 
 [target.fear2-sdk.properties]
 POSITION_INDEPENDENT_CODE = "ON"
@@ -163,7 +163,7 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 [target.fear2xr]
 type = "shared"
 sources = ["src/xr/Proxy.cpp", "shared/xr/RuntimeLoader.cpp"]
-include-directories = ["shared"]
+include-directories = ["shared", "deps/openxr/include"]
 compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
 
@@ -176,7 +176,8 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 [target.xr-probe]
 type = "executable"
 sources = ["test/xr_probe.cpp", "shared/sdk/OpenXR.cpp", "shared/xr/RuntimeLoader.cpp"]
-include-directories = ["shared"]
+include-directories = ["shared", "deps/openxr/include"]
+link-libraries = ["d3d11", "dxgi"]
 compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
 cmake-after = """

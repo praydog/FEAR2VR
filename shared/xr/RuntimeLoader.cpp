@@ -241,9 +241,58 @@ bool RuntimeLoader::discover() {
     return true;
 }
 
+namespace {
+
+// Where this module lives -- the loader is shipped beside it, not on the game's working directory.
+std::string module_directory() {
+    HMODULE self = nullptr;
+
+    if (::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast<LPCSTR>(&module_directory), &self) == 0) {
+        return {};
+    }
+
+    char buf[MAX_PATH]{};
+
+    if (::GetModuleFileNameA(self, buf, sizeof(buf)) == 0) {
+        return {};
+    }
+
+    return directory_of(buf);
+}
+
+}  // namespace
+
 bool RuntimeLoader::load() {
     if (loaded()) {
         return true;
+    }
+
+    // ---- THE LOADER FIRST ----------------------------------------------------------------------
+    if (const std::string dir = module_directory(); !dir.empty()) {
+        const std::string loader_path = dir + "\\openxr_loader.dll";
+        HMODULE loader = nullptr;
+
+        if (guarded_load(loader_path.c_str(), &loader) == 0 && loader != nullptr) {
+            auto gpa = reinterpret_cast<PFN_GetInstanceProcAddr>(
+                ::GetProcAddress(loader, "xrGetInstanceProcAddr"));
+
+            if (gpa != nullptr) {
+                m_module = loader;
+                m_get_proc = gpa;
+                m_using_loader = true;
+                m_library = loader_path;
+                m_discovered = true;
+                m_interface_version = 1;
+                // The loader does not report a runtime API version at this point; a consumer that
+                // needs one reads it from xrGetInstanceProperties once an instance exists.
+                m_api_version = 0;
+                return true;
+            }
+
+            ::FreeLibrary(loader);
+        }
     }
 
     if (!m_discovered && !discover()) {
@@ -255,6 +304,31 @@ bool RuntimeLoader::load() {
 
     // LOAD_WITH_ALTERED_SEARCH_PATH so the runtime finds its own siblings: LibOVRRTImpl32_1.dll
     // pulls in further Oculus libraries from its directory, which is not on our search path.
+    // THE RUNTIME'S OWN LATER LoadLibrary CALLS need its directory too. LOAD_WITH_ALTERED_SEARCH_PATH
+    // below covers only the dependencies resolved for THIS load; when the runtime later pulls in
+    // RuntimeIPCServiceClient_32.dll by bare name -- which it does during session creation -- the
+    // ordinary process search path applies, and ours does not include the Oculus directory. Real
+    // Oculus titles never notice because the Oculus client launches them with it on PATH.
+    const std::string dir = directory_of(m_library);
+
+    if (!dir.empty()) {
+        std::string path_var;
+        const DWORD needed = ::GetEnvironmentVariableA("PATH", nullptr, 0);
+
+        if (needed != 0) {
+            path_var.resize(needed);
+            ::GetEnvironmentVariableA("PATH", path_var.data(), needed);
+            path_var.resize(needed - 1);
+        }
+
+        // PREPENDED, and PATH rather than SetDllDirectory: SetDllDirectory also disables the
+        // current-directory search process-wide, which is a change we have no business making to a
+        // host game.
+        if (path_var.find(dir) == std::string::npos) {
+            ::SetEnvironmentVariableA("PATH", (dir + ";" + path_var).c_str());
+        }
+    }
+
     HMODULE mod = nullptr;
 
     if (guarded_load(m_library.c_str(), &mod) != 0) {

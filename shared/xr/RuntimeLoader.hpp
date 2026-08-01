@@ -42,7 +42,16 @@ public:
     // LoadLibrary + xrNegotiateLoaderRuntimeInterface, both guarded: a third-party runtime can and
     // does fault (the Oculus one did, writing through a null `this`), and a game must degrade to
     // flatscreen rather than die on a machine its author never tested.
+    // PREFERS THE REAL LOADER. openxr_loader.dll does more than negotiate: it inserts API layers,
+    // owns the instance-level dispatch, and is the environment every runtime is actually tested
+    // against. Talking to the Oculus runtime directly got as far as its compositor client and a
+    // texture swap chain, then jumped into reserved memory inside its own RuntimeIPC init -- a path
+    // no shipped title exercises, because every shipped title goes through the loader.
+    //
+    // Direct negotiation remains as the fallback for a machine with no loader beside us; it is
+    // enough for discovery and enumeration, which is all it was ever asked for.
     bool load();
+    bool using_loader() const { return m_using_loader; }
     bool loaded() const { return m_get_proc != nullptr; }
     void unload();
     bool crashed() const { return m_crashed; }
@@ -64,6 +73,7 @@ private:
     uint32_t m_interface_version{0};
     uint64_t m_api_version{0};
     bool m_crashed{false};
+    bool m_using_loader{false};
 };
 
 }  // namespace xr

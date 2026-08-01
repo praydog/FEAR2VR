@@ -1013,6 +1013,64 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### THE 32-BIT OCULUS RUNTIME CANNOT CREATE A SESSION. The 64-bit one can.
+
+With a Quest Pro connected over Air Link, `xrGetSystem` returns a real system (0x16) and everything
+up to the session works in-process:
+
+    graphics requirements   XR_SUCCESS, adapter LUID 0x1ED34, feature level 0xB000 (11_0)
+    D3D11 device            created on exactly that adapter
+    xrCreateSession         *** process dies ***
+
+The runtime gets remarkably far before it goes -- its own log, captured through the
+`DBG_PRINTEXCEPTION_C` its debug output raises, shows real HMD state (IAD 69.5 mm),
+`CliD3D11CompositorClient initialized`, and `ovr_CreateTextureSwapChainDX_Impl: success`. Then,
+immediately after `RuntimeIPCSystem: Init called: Version: 86 ... Build Date: 1, Build Time: 1`, a
+worker thread executes at a FIXED address in reserved, uncommitted memory:
+
+    access: execute at 0xA1647C5D
+    region: state MEM_RESERVE, protect 0x00
+
+Not our thread, so no `__try` of ours can catch it -- the process simply ends. Identical address
+every run, identical through the real `openxr_loader.dll` and through direct negotiation, and
+unchanged by putting the Oculus directory on the DLL search path.
+
+**The control settles it.** `tools/xr64` performs the SAME sequence in a 64-bit process -- same
+machine, same headset, same runtime build, real headers, real loader -- and gets
+`xrCreateSession -> XR_SUCCESS`. So this is Meta's 32-bit path, which they deprecated years ago, and
+no argument on our side of the call changes it.
+
+**What that costs, and what it does not.** Everything already verified stands: the stereo pair, the
+GPU-resident submission surface, the instance, the system, the graphics requirements, the adapter
+selection. What cannot happen in FEAR2's own process is the SESSION. Submission therefore has to go
+through a 64-bit host, which is the shape `tools/xr64` already has.
+
+`sdk::OpenXR::create_session()` now REFUSES on a runtime named "Oculus" in a 32-bit process rather
+than calling and dying, because leaving it callable meant one stray request would take the game down
+with no crash log worth reading. The match is on the runtime's own name from
+`xrGetInstanceProperties`, not on the library path: through the loader every runtime's library on
+disk is `openxr_loader.dll`, and the first version of this check matched a path, silently answered
+"supported", and let the fatal call straight through.
+
+### The headers ended a run of guessing
+
+Every OpenXR constant this project hand-declared was eventually corrected by measurement:
+`XR_TYPE_EXTENSION_PROPERTIES` is 2 (guessed 3), `XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR` is
+...002 (guessed ...001), and each wrong guess produced a validation failure that looked exactly like
+a broken runtime. `XR_TYPE_INSTANCE_PROPERTIES` turns out to be **32**, which nothing about the
+surrounding values would have suggested and which would have been the next thing guessed wrong.
+
+The real headers are now used directly. Worth recording that the measurements were all CORRECT where
+they had been made -- the headers confirmed 2, ...002, -35 and -38 exactly -- so the method was
+sound; it was just far more expensive than reading the file.
+
+**And a self-inflicted one during the switch.** A blanket rename of `ExtensionProperties` ->
+`XrExtensionProperties` also rewrote the inside of a STRING LITERAL, turning
+`"xrEnumerateInstanceExtensionProperties"` into `"xrEnumerateInstanceXrExtensionProperties"`. The
+runtime dutifully refused to resolve it, extension enumeration returned nothing, `XR_KHR_D3D11_enable`
+was therefore never requested, and the failure surfaced three steps later as
+"xrGetD3D11GraphicsRequirementsKHR unavailable". Mechanical renames do not respect quotes.
+
 ### An OpenXR instance exists, and the runtime says the headset is merely ABSENT
 
 `xrCreateInstance` succeeds in this 32-bit process, through the resident proxy, with

@@ -22,7 +22,10 @@
 //   xr-probe            discovery only; this is what ctest runs
 //   xr-probe --load     also load, negotiate, and enumerate the ACTIVE runtime
 
+#include <windows.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -46,6 +49,69 @@ void check(bool ok, const char* what) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // UNBUFFERED, because this program talks to third-party runtimes that can and do take the
+    // process down. Block-buffered stdout loses exactly the lines that say where it died -- which
+    // it did, once, and the truncated output looked like a hang.
+    ::setvbuf(stdout, nullptr, _IONBF, 0);
+
+    // HOW the process dies is the question. xrCreateSession with a graphics binding took this
+    // program down with exit code 5 and no catchable exception, which leaves two possibilities: the
+    // runtime called exit(), or something killed us outright. atexit distinguishes them, and a
+    // vectored handler catches a fault our __except would otherwise swallow silently.
+    ::atexit([] { std::printf("[probe] *** exit() was called -- the runtime terminated us\n"); });
+    ::AddVectoredExceptionHandler(1, [](PEXCEPTION_POINTERS ex) -> LONG {
+        const auto code = static_cast<unsigned>(ex->ExceptionRecord->ExceptionCode);
+
+        // DBG_PRINTEXCEPTION_C carries the runtime's own OutputDebugString text, which is usually a
+        // far better explanation of a refusal than any XrResult.
+        if (code == 0x40010006u && ex->ExceptionRecord->NumberParameters >= 2) {
+            const auto* msg =
+                reinterpret_cast<const char*>(ex->ExceptionRecord->ExceptionInformation[1]);
+            if (msg != nullptr) {
+                std::printf("[probe] runtime says: %.*s",
+                            static_cast<int>(ex->ExceptionRecord->ExceptionInformation[0]), msg);
+            }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
+        char mod[MAX_PATH]{};
+        HMODULE h = nullptr;
+        ::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             static_cast<LPCSTR>(ex->ExceptionRecord->ExceptionAddress), &h);
+        if (h != nullptr) {
+            ::GetModuleFileNameA(h, mod, sizeof(mod));
+        }
+
+        // The address is not in any module, so name the REGION instead: VirtualQuery says whether
+        // it is private commit (a manual map or JIT), an image, or freed memory, which is the
+        // difference between "someone allocated and ran code here" and "this pointer is garbage".
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (::VirtualQuery(ex->ExceptionRecord->ExceptionAddress, &mbi, sizeof(mbi)) != 0) {
+            std::printf("[probe] region: base %p size 0x%zX state 0x%X type 0x%X protect 0x%X\n",
+                        mbi.BaseAddress, mbi.RegionSize, static_cast<unsigned>(mbi.State),
+                        static_cast<unsigned>(mbi.Type), static_cast<unsigned>(mbi.Protect));
+        }
+
+        if (ex->ExceptionRecord->NumberParameters >= 2) {
+            std::printf("[probe] access: %s at 0x%p\n",
+                        ex->ExceptionRecord->ExceptionInformation[0] == 0   ? "read"
+                        : ex->ExceptionRecord->ExceptionInformation[0] == 1 ? "write"
+                                                                            : "execute",
+                        reinterpret_cast<void*>(ex->ExceptionRecord->ExceptionInformation[1]));
+        }
+
+        std::printf("[probe] *** exception 0x%08X at %p on tid %lu  (%s+0x%X)\n", code,
+                    ex->ExceptionRecord->ExceptionAddress, ::GetCurrentThreadId(),
+                    mod[0] != 0 ? mod : "no module",
+                    h != nullptr ? static_cast<unsigned>(
+                                       reinterpret_cast<uintptr_t>(ex->ExceptionRecord->ExceptionAddress) -
+                                       reinterpret_cast<uintptr_t>(h))
+                                 : 0u);
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+
+    std::printf("[probe] main thread is %lu\n", ::GetCurrentThreadId());
     bool want_load = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -114,7 +180,11 @@ int main(int argc, char** argv) {
         std::printf("[probe] negotiated interface %u, OpenXR API %u.%u\n", xr.interface_version(),
                     xr.api_major(), xr.api_minor());
         check(xr.interface_version() >= 1, "the runtime agreed a loader interface version");
-        check(xr.api_major() == 1, "and reports an OpenXR 1.x API version");
+        // NOT an API-version check. Through openxr_loader.dll nothing reports one until an
+        // instance exists, and asserting it here failed for a reason that had nothing to do with
+        // the runtime being wrong -- the identity check below is the one that carries meaning.
+        check(xr.interface_version() >= 1 || xr.using_proxy(),
+              "and a usable entry point is established, by whichever route");
         check(xr.get_instance_proc_addr() != nullptr, "and handed over an entry point");
 
         // The functions a runtime must serve with a NULL instance -- and only these two. Resolving
@@ -183,6 +253,17 @@ int main(int argc, char** argv) {
             std::printf("[probe] %s\n", xr.last_error().c_str());
         }
 
+        if (made) {
+            std::printf("[probe] runtime identifies as '%s' version %llu.%llu.%llu\n",
+                        xr.runtime_name().c_str(),
+                        static_cast<unsigned long long>(xr.runtime_version() >> 48),
+                        static_cast<unsigned long long>((xr.runtime_version() >> 32) & 0xFFFF),
+                        static_cast<unsigned long long>(xr.runtime_version() & 0xFFFFFFFF));
+            check(!xr.runtime_name().empty(),
+                  "and the runtime says who it is -- which is how a fatal-runtime quirk is matched, "
+                  "since through the loader the library on disk is the same file for all of them");
+        }
+
         check(made && xr.instance() != 0,
               "an OpenXR instance is created, which is the first thing beyond enumeration and the "
               "point where a wrong struct layout would surface");
@@ -223,6 +304,112 @@ int main(int argc, char** argv) {
             check(sr != -1,
                   "and answers with a real runtime verdict rather than XR_ERROR_VALIDATION_FAILURE, "
                   "which is what a malformed XrSystemGetInfo would produce");
+
+            // ---- A SESSION, WHICH NEEDS THE HARDWARE ----------------------------------
+            if (sr == 0) {
+                uint64_t luid = 0;
+                uint32_t level = 0;
+
+                if (xr.graphics_requirements(luid, level)) {
+                    std::printf("[probe] graphics requirements: adapter LUID 0x%llX, min feature "
+                                "level 0x%X\n", static_cast<unsigned long long>(luid), level);
+                } else {
+                    std::printf("[probe] graphics requirements FAILED: %s\n",
+                                xr.last_error().c_str());
+                }
+
+                check(luid != 0,
+                      "the runtime names the adapter it wants -- a device on any other one is "
+                      "rejected or presents to nothing");
+
+                const bool have_device = xr.ensure_d3d11_device();
+                std::printf("[probe] d3d11 device: %s\n",
+                            have_device ? "created on the runtime's adapter"
+                                        : xr.last_error().c_str());
+                check(have_device, "and a D3D11 device is created on exactly that adapter");
+
+                // CONTROL FIRST: a session with no graphics binding must be REFUSED, not fatal.
+                // If this returns cleanly, the call, the handles and the struct layout are sound
+                // and anything that goes wrong next belongs to the binding.
+                const int32_t no_gfx = xr.probe_session_without_graphics();
+                std::printf("[probe] xrCreateSession without graphics -> XrResult %d %s\n", no_gfx,
+                            no_gfx == -2 ? "(FAULTED)" : "(refused cleanly, as it must be)");
+                check(no_gfx != -2 && no_gfx != 0,
+                      "a session with no graphics binding is refused rather than fatal, which is "
+                      "what makes the next result attributable to the binding");
+
+                // NOT forced. On this machine the 32-bit Oculus runtime dies inside its own
+                // session setup, so the SDK refuses -- and the refusal is the correct behaviour to
+                // assert here. tools/xr64 is the 64-bit control that proves the sequence itself is
+                // right: same machine, same headset, XR_SUCCESS.
+                const bool made_session = xr.create_session();
+
+                if (!made_session && xr.session_unsupported_here()) {
+                    std::printf("[probe] session refused (as designed): %s\n",
+                                xr.last_error().c_str());
+                    check(xr.session() == 0,
+                          "a runtime known to fault in xrCreateSession is refused rather than "
+                          "called, because the fault happens on ITS thread where no guard of ours "
+                          "can catch it");
+                }
+
+                std::printf("[probe] xrCreateSession -> %s (XrResult %d) handle 0x%llX\n",
+                            made_session ? "ok" : "FAILED", xr.last_xr_result(),
+                            static_cast<unsigned long long>(xr.session()));
+
+                if (!made_session) {
+                    std::printf("[probe] %s\n", xr.last_error().c_str());
+                }
+
+                check(made_session || xr.session_unsupported_here(),
+                      "a session is created, or refused for a measured reason -- never attempted "
+                      "against a runtime that would take the process down");
+
+                if (made_session) {
+                    // The runtime walks IDLE -> READY on its own schedule and only says so through
+                    // the event queue. Waiting for it is not politeness, it is the protocol:
+                    // xrBeginSession before READY returns XR_ERROR_SESSION_NOT_READY.
+                    auto state = sdk::OpenXR::SessionState::Unknown;
+
+                    for (int i = 0; i < 200; ++i) {
+                        xr.poll_events();
+                        state = xr.session_state();
+
+                        if (state == sdk::OpenXR::SessionState::Ready ||
+                            state == sdk::OpenXR::SessionState::Exiting ||
+                            state == sdk::OpenXR::SessionState::LossPending) {
+                            break;
+                        }
+
+                        ::Sleep(25);
+                    }
+
+                    std::printf("[probe] session state after wait: %s\n",
+                                sdk::OpenXR::state_name(state));
+                    check(state != sdk::OpenXR::SessionState::Unknown,
+                          "and the runtime reports a session state, so the event queue is being "
+                          "drained correctly");
+
+                    if (state == sdk::OpenXR::SessionState::Ready) {
+                        const bool began = xr.begin_session();
+                        std::printf("[probe] xrBeginSession -> %s (XrResult %d)\n",
+                                    began ? "RUNNING" : "failed", xr.last_xr_result());
+                        check(began, "and the session begins, so the headset is now ours to draw to");
+
+                        for (int i = 0; i < 40 && xr.session_state() != sdk::OpenXR::SessionState::Focused;
+                             ++i) {
+                            xr.poll_events();
+                            ::Sleep(25);
+                        }
+
+                        std::printf("[probe] session state while running: %s\n",
+                                    sdk::OpenXR::state_name(xr.session_state()));
+                        xr.end_session();
+                    }
+
+                    xr.destroy_session();
+                }
+            }
 
             check(xr.destroy_instance(), "and the instance is destroyed cleanly");
             check(xr.instance() == 0, "leaving no handle behind");
