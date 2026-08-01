@@ -39,6 +39,7 @@ constexpr std::array<uint32_t, 4> kLocoKeys{'W', 'S', 'A', 'D'};
 // animation gating all apply exactly as they do for a keyboard player.
 constexpr uint32_t kKeyJump = 0x20;    // VK_SPACE
 constexpr uint32_t kKeyReload = 0x52;  // 'R'
+constexpr uint32_t kKeyUse = 0x45;     // 'E'
 
 constexpr float kStickDeadZone = 0.30f;
 constexpr float kSnapFire = 0.70f;   // beyond this, a snap fires
@@ -956,9 +957,19 @@ void VR::update_buttons() {
         }
     }
 
+    // DUAL-BOUND: reload AND use, from one press. The engine gates each on its own conditions -- a
+    // reload with a full magazine is a no-op, and use with nothing in reach is a no-op -- so in any
+    // given moment at most one of them has an effect, and the wearer gets a single button that does
+    // the obvious thing whether they are standing at a door or holding an empty gun.
+    //
+    // Two taps in one frame is safe: SyntheticInput has 16 key slots and each claims its own, so
+    // neither overwrites the other's edge.
     if ((pressed & vr::VRRuntime::kButtonB) != 0u) {
         if (si.tap(kKeyReload)) {
             m_reloads.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (si.tap(kKeyUse)) {
+            m_uses.fetch_add(1, std::memory_order_relaxed);
         }
     }
 

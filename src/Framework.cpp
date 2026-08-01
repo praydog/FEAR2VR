@@ -11196,6 +11196,7 @@ bool Framework::initialize() {
               .u("vr_sprint_vk", static_cast<size_t>(VR::get().sprint_vk()))
               .u("vr_melee_vk", static_cast<size_t>(VR::get().melee_vk()))
               .u("vr_weapon_cycles", VR::get().weapon_cycles())
+              .u("vr_uses", VR::get().uses())
               .u("si_wheel_delivered", SyntheticInput::get().wheel_delivered())
               .f("vr_snap_deg", VR::get().snap_degrees(), 1)
               .b("hands_block", FramePublisher::get().hands_state() != nullptr)

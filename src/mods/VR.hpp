@@ -247,6 +247,10 @@ public:
     uint64_t jumps() const { return m_jumps.load(std::memory_order_relaxed); }
     uint64_t reloads() const { return m_reloads.load(std::memory_order_relaxed); }
 
+    // B is dual-bound: every press taps reload AND use, so these climb together and neither says
+    // which one the game actually acted on -- only that both edges were delivered.
+    uint64_t uses() const { return m_uses.load(std::memory_order_relaxed); }
+
     // ---- STICK CLICKS: SPRINT AND MELEE ----------------------------------------------------------
     //
     // Left stick in sprints, right stick in melees.
@@ -436,6 +440,7 @@ private:
     uint32_t m_last_buttons{0};
     uint32_t m_last_left_buttons{0};
     std::atomic<uint64_t> m_jumps{0};
+    std::atomic<uint64_t> m_uses{0};
     std::atomic<uint64_t> m_reloads{0};
     std::atomic<uint64_t> m_melees{0};
     std::atomic<uint64_t> m_weapon_cycles{0};
