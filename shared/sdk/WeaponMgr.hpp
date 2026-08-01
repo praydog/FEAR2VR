@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -249,6 +251,28 @@ public:
     //
     // 0 when there is no weapon, or when the field does not read as an object.
     static uintptr_t current_weapon_model(unsigned player_index = 0);
+
+    // ---- WHERE THE SHOT SHOULD COME FROM, AND GO -----------------------------------------------
+    //
+    // The muzzle of the FIRST-PERSON weapon: the "flash" socket on the object above, in world
+    // space, with the direction the barrel is actually pointing.
+    //
+    // WHY NOT `attached_socket(player->object, "flash")`, which already existed: that resolves the
+    // muzzle on the PLAYER model's weapon, whose body does not pitch -- the documented consequence
+    // being that FireRedirect's Weapon mode is yaw-only and its error tracks the aim's pitch
+    // exactly. It is the same wrong-object mistake that had the viewmodel "following the hand" for
+    // a whole session while nothing on screen moved.
+    //
+    // DIRECTION COMES FROM THE OBJECT'S ROTATION, not the socket's. FireRedirect's header records
+    // that the muzzle socket's rotation is unusable while its position is not, and the object's
+    // rotation is both usable and the thing a VR mod is driving.
+    struct Muzzle {
+        std::array<float, 3> position{};   // world, the "flash" socket
+        std::array<float, 3> forward{};    // world, unit, from the weapon object's rotation
+        bool stale{};                      // the socket transform was built on a stale bone
+    };
+
+    static std::optional<Muzzle> muzzle(unsigned player_index = 0);
 
     // ---- CHANGING IT ---------------------------------------------------------------------------
     //

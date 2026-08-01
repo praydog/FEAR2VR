@@ -11,6 +11,7 @@
 #include "sdk/Memory.hpp"
 #include "VR.hpp"
 #include "sdk/CClientShell.hpp"
+#include "sdk/WeaponMgr.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Modules.hpp"
 #include "sdk/Object.hpp"
@@ -208,7 +209,7 @@ void FireRedirect::set_mode(Mode mode) {
         m_armed.store(true, std::memory_order_release);
     }
     LOGX("[fire] redirect mode = %s (hotkey 0x%02X)",
-         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : (mode == Mode::Weapon ? "WEAPON" : (mode == Mode::Controller ? "CONTROLLER" : "absolute"))),
+         mode == Mode::Off ? "off" : (mode == Mode::Reverse ? "REVERSE" : (mode == Mode::Weapon ? "WEAPON" : (mode == Mode::Controller ? "CONTROLLER" : (mode == Mode::Muzzle ? "MUZZLE" : "absolute")))),
          m_hotkey.load(std::memory_order_relaxed));
 }
 
@@ -261,7 +262,7 @@ void FireRedirect::on_vectors_built(SafetyHookContext& ctx) {
 
     std::array<float, 3> dir{};
     const Mode mode = self.m_mode.load(std::memory_order_acquire);
-    if (mode == Mode::Weapon || mode == Mode::Controller) {
+    if (mode == Mode::Weapon || mode == Mode::Controller || mode == Mode::Muzzle) {
         if (!self.m_weapon_ok.load(std::memory_order_relaxed)) {
             return;
         }
@@ -453,6 +454,33 @@ void FireRedirect::on_frame() {
                 }
             }
         }
+        m_weapon_ok.store(ok, std::memory_order_relaxed);
+    } else if (m_mode.load(std::memory_order_relaxed) == Mode::Muzzle) {
+        // Sampled on the game thread, where the socket chain is legal to walk, and stored for the
+        // hook to consume. A stale socket is built on a stale bone, so it is refused rather than
+        // aimed with -- the same rule Weapon mode already applies.
+        bool ok = false;
+
+        if (const auto m = sdk::WeaponMgr::muzzle(0); m.has_value() && !m->stale) {
+            const float len = std::sqrt(m->forward[0] * m->forward[0] +
+                                        m->forward[1] * m->forward[1] +
+                                        m->forward[2] * m->forward[2]);
+
+            // A direction that is not unit-length means the rotation it came from was not a
+            // rotation, which is what a half-written or reclaimed transform looks like.
+            if (len > 0.9f && len < 1.1f && std::isfinite(m->position[0]) &&
+                std::isfinite(m->position[1]) && std::isfinite(m->position[2])) {
+                store3(m_weapon_fwd, m->forward[0], m->forward[1], m->forward[2]);
+                store3(m_weapon_origin, m->position[0], m->position[1], m->position[2]);
+                m_origin_ok.store(true, std::memory_order_relaxed);
+                ok = true;
+            }
+        }
+
+        if (!ok) {
+            m_origin_ok.store(false, std::memory_order_relaxed);
+        }
+
         m_weapon_ok.store(ok, std::memory_order_relaxed);
     } else if (m_mode.load(std::memory_order_relaxed) == Mode::Weapon) {
         bool ok = false;

@@ -10833,6 +10833,15 @@ bool Framework::initialize() {
             if (webapi_query_int(q, "reset", 0) != 0) {
                 ResourceWatch::get().reset_counts();
             }
+        } else if (route == "/xr/fire-muzzle") {
+            // THE ONE A VR MOD WANTS: the shot leaves the barrel of the weapon the player can see,
+            // along the direction that weapon is pointing. Origin and direction come from the same
+            // object, so they cannot disagree -- which the older split of "origin from the weapon,
+            // direction from somewhere else" could.
+            auto& fr = FireRedirect::get();
+            const bool on = webapi_query_int(q, "on", 1) != 0;
+            fr.set_mode(on ? FireRedirect::Mode::Muzzle : FireRedirect::Mode::Off);
+            fr.set_origin_from_weapon(on);
         } else if (route == "/xr/fire-origin") {
             // Start the ray at the weapon's muzzle instead of the player's eye.
             // Independent of the aim mode on purpose: it changes what the shot can
@@ -11147,6 +11156,10 @@ bool Framework::initialize() {
               .u("vr_gun_obj", static_cast<size_t>(VR::get().weapon_object()))
               .u("vr_gun_writes", static_cast<size_t>(VR::get().weapon_writes()))
               .b("vr_gun_abs", VR::get().weapon_absolute())
+              .b("fr_muzzle_ok", [] {
+                  const auto m = sdk::WeaponMgr::muzzle(0);
+                  return m.has_value() && !m->stale;
+              }())
               .f("vr_gun_px", VR::get().weapon_place()[0], 1)
               .f("vr_gun_py", VR::get().weapon_place()[1], 1)
               .f("vr_gun_pz", VR::get().weapon_place()[2], 1)
@@ -11261,6 +11274,9 @@ bool Framework::initialize() {
               .f("fr_wo_y", FireRedirect::get().weapon_origin()[1], 2)
               .f("fr_wo_z", FireRedirect::get().weapon_origin()[2], 2)
               .b("fr_weapon_valid", FireRedirect::get().weapon_forward_valid())
+              .f("fr_fwd_x", FireRedirect::get().weapon_forward()[0], 4)
+              .f("fr_fwd_y", FireRedirect::get().weapon_forward()[1], 4)
+              .f("fr_fwd_z", FireRedirect::get().weapon_forward()[2], 4)
               .f("fr_wq_x", FireRedirect::get().weapon_quat()[0], 6)
               .f("fr_wq_y", FireRedirect::get().weapon_quat()[1], 6)
               .f("fr_wq_z", FireRedirect::get().weapon_quat()[2], 6)

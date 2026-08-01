@@ -82,6 +82,17 @@ public:
         Reverse,    // negate whatever the client was about to send
         Weapon,     // aim along the WEAPON's own muzzle -- YAW ONLY, see the note below
         Controller, // aim along the VR controller, composed onto the body's heading
+
+        // THE FIRST-PERSON MUZZLE: origin at the "flash" socket of the object the player can
+        // actually see, direction along that object's own rotation. This is the mode a VR mod
+        // wants, and it only became possible once the viewmodel was correctly identified --
+        // Weapon mode below aims with the PLAYER model's weapon, whose body never pitches.
+        //
+        // It aims with WHATEVER IS DRAWN. When the weapon is welded to a controller that is the
+        // controller's direction, and when it is not, it is the engine's own -- either way the
+        // shot leaves the barrel the player is looking at, which is the only definition of
+        // correct a wearer can check.
+        Muzzle,
     };
 
     // REVERSE is not a novelty: it is the only redirection whose effect a HUMAN can

@@ -492,6 +492,43 @@ uintptr_t WeaponMgr::current_weapon_model(unsigned player_index) {
     return model;
 }
 
+std::optional<WeaponMgr::Muzzle> WeaponMgr::muzzle(unsigned player_index) {
+    const auto model = current_weapon_model(player_index);
+
+    if (model == 0) {
+        return std::nullopt;
+    }
+
+    const auto* obj = reinterpret_cast<const regenny::LTObject*>(model);
+    const auto skeleton = ModelSkeleton::from_object(obj);
+
+    if (!skeleton.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto index = skeleton->find_socket("flash");
+
+    if (!index.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto transform = skeleton->socket_world_transform(*index);
+    const auto info = object_info(obj);
+
+    if (!transform.has_value() || !info.has_value()) {
+        return std::nullopt;
+    }
+
+    Muzzle out{};
+    out.position = {transform->position.x, transform->position.y, transform->position.z};
+    out.stale = transform->stale;
+
+    const auto fwd = forward_of(info->rotation);
+    out.forward = {fwd.x, fwd.y, fwd.z};
+
+    return out;
+}
+
 bool WeaponMgr::muzzle_resolvable(unsigned player_index) {
     const auto player = CClientShell::local_player(player_index);
 

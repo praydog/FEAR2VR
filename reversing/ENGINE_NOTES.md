@@ -1069,6 +1069,37 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### Firing FROM the muzzle, ALONG the muzzle
+
+`FireRedirect::Mode::Muzzle` takes both the origin and the direction from the first-person weapon:
+the `flash` socket of `CClientWeapon::model_object` for the origin, and that object's own rotation
+for the direction. Both from ONE object, so they cannot disagree -- which the older split of
+"origin from the weapon, direction from somewhere else" could.
+
+**It aims with whatever is DRAWN.** When the weapon is welded to a controller that is the
+controller's direction; when it is not, it is the engine's own. Either way the shot leaves the
+barrel the player is looking at, which is the only definition of correct a wearer can check.
+
+**Why `Mode::Weapon` was not enough.** That mode resolves the muzzle through
+`attached_socket(player->object, "flash")` -- the PLAYER model's weapon, whose body does not pitch.
+Its own header records the consequence: yaw-only, with error tracking the aim's pitch exactly. Same
+wrong-object family as the viewmodel hunt.
+
+**Measured end to end**, direction unit-length and rotating with the body (bearing -60 -> 0 -> -60
+across two 60-degree turns, tracking `aim_yaw` with the constant offset the controller holds
+relative to the body):
+
+```
+fr_fwd      -0.7804  -0.4355  +0.4487   <- the muzzle
+fr_written  -0.7799  -0.4355  +0.4495   <- what the hook wrote
+fr_sent     -0.7799  -0.4355  +0.4495   <- what left in the message
+```
+
+**What this does NOT establish, per FireRedirect's own header:** that the SERVER honours it. Damage
+is server-authoritative while impact effects may be client-predicted, so a shot landing where the
+barrel points is not proof on its own. `Mode::Reverse` exists precisely to settle that by hand --
+point at something, fire, and see whether it still takes damage.
+
 ### The game already knows which object the gun is: `CClientWeapon::model_object`
 
 Ask the weapon, do not search the world. The field holds the LTObject the weapon renders as, and it
