@@ -609,7 +609,11 @@ int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posr
                                        g_weapon_rot[1].load(std::memory_order_relaxed),
                                        g_weapon_rot[2].load(std::memory_order_relaxed),
                                        g_weapon_rot[3].load(std::memory_order_relaxed)};
-        const auto composed = sdk::multiply_rotations(base, turn);
+        // LEFT, NOT RIGHT. `base * turn` applies the controller's rotation in the WEAPON's own
+        // frame -- and the weapon's frame is the camera's, so the head becomes the axis reference
+        // and the gun rotates about a different axis depending on which way the wearer happens to
+        // be looking. `turn * base` applies it in the world frame the turn was converted into.
+        const auto composed = sdk::multiply_rotations(turn, base);
         posrot[3] = composed.x;
         posrot[4] = composed.y;
         posrot[5] = composed.z;

@@ -809,10 +809,24 @@ void VR::update_weapon() {
         const std::array<float, 3> moved{hand.aim.position[0] - m_weapon_rest[0],
                                          hand.aim.position[1] - m_weapon_rest[1],
                                          hand.aim.position[2] - m_weapon_rest[2]};
+        // ---- INTO THE BODY'S FRAME ---------------------------------------------------------
+        //
+        // The controller delta is measured in PLAY space, which is bolted to the room. The value it
+        // amends is in WORLD space. Between them sits the player's heading, and leaving it out is
+        // what made the gun depend on where the headset was pointing: a fixed room-space offset
+        // points a fixed world direction, so it is only ever correct for one facing, and every
+        // other facing gets it rotated by however far the body has turned since.
+        //
+        // The BODY's heading, not the camera's. The gun hangs off the player, and using the view
+        // would make looking around re-aim the offset -- which is the symptom this fixes.
+        const auto yaw = sdk::PlayerMgr::aim_yaw(0);
+        const float cy = yaw.has_value() ? cosf(*yaw) : 1.0f;
+        const float sy = yaw.has_value() ? sinf(*yaw) : 0.0f;
+
         const auto engine_move = runtime_to_engine_position(moved);
-        px += engine_move[0];
+        px += engine_move[0] * cy + engine_move[2] * sy;
         py += engine_move[1];
-        pz += engine_move[2];
+        pz += -engine_move[0] * sy + engine_move[2] * cy;
 
         // CONVERT THE DELTA, never the two poses separately: the runtime-to-engine mapping is a
         // mirror, not a rotation, so converting each pose and subtracting afterwards is a different
@@ -822,7 +836,18 @@ void VR::update_weapon() {
         const regenny::LTRotation now{hand.aim.orientation[0], hand.aim.orientation[1],
                                       hand.aim.orientation[2], hand.aim.orientation[3]};
         const auto turned = sdk::multiply_rotations(rest_inv, now);
-        turn = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
+        const auto engine_turn = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
+
+        // THE SAME CHANGE OF FRAME, for the rotation: conjugate the play-space turn by the body's
+        // heading so it names an axis in the world rather than an axis in the room.
+        //   q_world = R(yaw) * q_play * conj(R(yaw))
+        const float half = yaw.value_or(0.0f) * 0.5f;
+        const regenny::LTRotation ry{0.0f, sinf(half), 0.0f, cosf(half)};
+        const regenny::LTRotation ry_inv{-ry.x, -ry.y, -ry.z, ry.w};
+        const regenny::LTRotation q_play{engine_turn[0], engine_turn[1], engine_turn[2],
+                                         engine_turn[3]};
+        const auto q_world = sdk::multiply_rotations(sdk::multiply_rotations(ry, q_play), ry_inv);
+        turn = {q_world.x, q_world.y, q_world.z, q_world.w};
     } else {
         m_have_weapon_rest = false;
     }

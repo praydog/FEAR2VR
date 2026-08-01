@@ -10917,6 +10917,14 @@ bool Framework::initialize() {
             aim.valid = true;
             aim.tracked = true;
             rt.set_hand_pose(which, aim, aim);
+
+            // ACTIVE TOO, on request. Consumers gate on `active` as well as `valid` -- a pose from
+            // a controller nobody is holding is not input -- so a test route that could only set
+            // `valid` could never exercise them, which is how a frame-conversion fix nearly shipped
+            // measured against noise.
+            if (q.find("active") != q.end()) {
+                rt.set_hand_active(which, webapi_query_int(q, "active", 1) != 0);
+            }
         } else if (route == "/xr/head") {
             // Yaw/pitch/roll in RUNTIME space, converted to a quaternion here so a caller never
             // has to build one by hand. Order is yaw * pitch * roll, which matches how a headset

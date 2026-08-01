@@ -1069,6 +1069,36 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### A controller delta is in PLAY space; the thing it amends is in WORLD space
+
+Both halves of the weapon override were initially applied in the wrong frame, and the symptom was
+the same for each: the gun behaved correctly for one headset facing and wrongly for every other.
+
+**Position.** `runtime_to_engine_position` only mirrors Z -- it does NOT rotate the play-space delta
+into the body's heading. A fixed room-space offset therefore names a fixed WORLD direction, which is
+right for exactly one facing. It needs the same yaw rotation roomscale already applies:
+`x*cos + z*sin`, `-x*sin + z*cos`.
+
+**Rotation.** `base * turn` applies the controller's rotation in the WEAPON's own frame -- and the
+weapon's frame is the camera's, so the head becomes the axis reference and the same wrist movement
+rotates the gun about a different axis depending on where the wearer is looking. Two changes: the
+turn is conjugated into world space by the heading, `R(yaw) * q * conj(R(yaw))`, and composed on the
+LEFT.
+
+**The BODY's heading, not the camera's.** The gun hangs off the player; using the view would make
+looking around re-aim the offset, which is the bug rather than the fix.
+
+**Measured, since "it looks right" is what the wrong version also did:** the same 30 cm controller
+offset applied at two facings 75 degrees apart moves the gun to the same place on screen -- motion
+centroid `(1019, 390)` versus `(1035, 330)` in a 1280x720 crop, a 17 px horizontal shift. The
+vertical residue is revealed background, which legitimately differs by facing.
+
+**A note on the instrument.** The first attempt at this measurement reported the offset doing
+nothing, because `/xr/hand` sets `valid` but never `active`, and consumers gate on both. A frame
+conversion was within one command of being declared fixed against noise. Test routes must be able to
+establish the FULL state a consumer checks, or they only exercise the paths that happen to be
+ungated.
+
 ### The first-person weapon: which object, and who writes it
 
 **The object.** A CLIENT-ONLY `OT_MODEL` (handle `0xFFFF`) whose filename is under `weapons\`,
