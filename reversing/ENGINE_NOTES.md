@@ -4046,35 +4046,32 @@ explicit `NoAddAlpha` variants). It does not matter. The surface is cleared to T
 only the UI draws into it, so RGB is already the premultiplied contribution and `max(r,g,b)` is the
 coverage. Measured: 3.90% of pixels non-zero, matching the 3.88% of non-black RGB exactly.
 
-**THE BACK BUFFER IS THE BRACKET'S TARGET, AND BORROWING IT COSTS THE PRESENTED FRAME.**
-`GetBackBuffer` returns the same pointer the bracket binds (0x15FFC160 on this run), and binding
-anything else in its place leaves the presented frame entirely black.
+**THE BRACKET IS THE FINAL COMPOSITE, AND ONLY ITS LATER PASSES ARE THE HUD.** `GetBackBuffer`
+returns the same pointer the bracket binds, and the back buffer is BLACK when the bracket opens --
+probed in phase, in the control as well as in the swap -- so the frame is not there yet. The ten 2D
+passes build it: the scene first, then the HUD over it.
 
-**The first explanation written here was WRONG and is corrected rather than deleted.** It said
-unbinding a `D3DSWAPEFFECT_DISCARD` back buffer discards its contents. Probing IN PHASE at both ends
-of the bracket refutes it -- the back buffer is BLACK when the bracket OPENS, in the control as well
-as in the swap:
+Sweeping the pass at which the target is borrowed says exactly which is which:
 
-| | back buffer at BEGIN | at END |
-|---|---|---|
-| rebind the SAME surface (control) | 0 per mille | 1000 per mille |
-| bind ours | 0 per mille | 0 per mille |
+| swap from pass | presented frame | captured layer | |
+|---|---|---|---|
+| 0 | **BLACK** | the HUD | pass 0 is the SCENE COMPOSITE |
+| 1 | intact | **the whole frame** | pass 1 is a full-screen effect |
+| 2 | intact | the HUD | correct |
+| 3 | intact | the HUD | |
+| 4+ | intact | empty | the HUD is passes 2-3 |
 
-So nothing is discarded: the frame is not in the back buffer yet. **The scene arrives DURING this
-bracket**, which makes it the final COMPOSITE bracket -- scene first, HUD over it -- not a HUD
-bracket that happens to share the target.
+So borrowing the WHOLE bracket steals the composite and the presented frame goes black; borrowing it
+from pass 2 leaves the composite alone and captures the HUD exactly. Both halves verified: the
+presented frame reads 1000 per mille and the desktop is untouched at 100%, while the layer holds the
+visor frame, health bar, armour, crosshair, ammo and grenade count and nothing else.
 
-What is still unexplained, and is stated as unexplained: the composite does not write into the BOUND
-render target either. Our surface receives the HUD and nothing else, with or without the clear
-(checked by looking at it both ways), yet swapping the target is what stops the back buffer being
-lit. So the composite follows neither the bound target nor the surface pointer alone. `StretchRect`
-onto the back buffer works (blitting our UI surface onto it puts the HUD there, 42 per mille), and
-copying the back buffer out at begin yields black -- consistent with it simply being empty then.
-
-[INFERENCE, not established] The likeliest remaining account is that the composite pass binds the
-back buffer itself from the target descriptor, and the swap leaves the engine's own cached
-target state inconsistent so the composite is skipped or misdirected. Settling it needs a per-PASS
-view -- which of the ten lights the back buffer -- rather than a per-bracket one.
+**Two earlier explanations here were wrong and are recorded because each looked convincing.** The
+first said an unbound `D3DSWAPEFFECT_DISCARD` back buffer loses its contents -- refuted by probing at
+bracket BEGIN, where it is already black. The second said the composite must therefore write to the
+bound target -- refuted by looking at the captured layer, which never contains the scene. The pass
+sweep settles it without needing either: the composite is a pass, it runs before the HUD, and it is
+enough to let it run.
 
 **The headset is unaffected**, because its frame is captured at the second eye, before this bracket
 -- which is also why the published frame never had a HUD in the first place. Only the desktop window

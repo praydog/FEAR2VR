@@ -6,6 +6,7 @@
 
 #include "Log.hpp"
 #include "RenderHook.hpp"
+#include "HudPassHook.hpp"
 #include "RenderTimeline.hpp"
 #include "sdk/Render.hpp"
 
@@ -13,6 +14,10 @@ namespace {
 
 void bracket_cb(bool begin, int32_t width, int32_t height, uint32_t index) {
     UICapture::get().on_bracket(begin, width, height, index);
+}
+
+void pass_cb(uint32_t ordinal) {
+    UICapture::get().on_pass(ordinal);
 }
 
 void present_cb() {
@@ -97,6 +102,9 @@ std::optional<std::string> UICapture::on_initialize() {
     if (!RenderTimeline::get().add_bracket_callback(&bracket_cb)) {
         return std::string{"could not register a render-target bracket callback"};
     }
+    if (!HudPassHook::get().add_pass_callback(&pass_cb)) {
+        return std::string{"could not register a 2D-pass callback"};
+    }
     if (!RenderHook::get().add_present_callback(&present_cb)) {
         return std::string{"could not register a present callback -- the surface would never be released"};
     }
@@ -132,6 +140,10 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
     if (dev == nullptr) {
         return;
     }
+
+    // In per-pass mode the bracket only CREATES the surface and performs the restore; the swap
+    // itself happens later, at the chosen pass.
+    const bool per_pass = m_swap_from_pass.load(std::memory_order_relaxed) >= 0;
 
     if (begin) {
         // Recreate on a size change as well as on absence: a resolution change leaves a surface
@@ -204,6 +216,11 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
                     m_failures.fetch_add(1, std::memory_order_relaxed);
                 }
             }
+        }
+
+        if (per_pass) {
+            current->Release();   // the surface exists now; the swap waits for its pass
+            return;
         }
 
         IDirect3DSurface9* bind_target = m_mode.load(std::memory_order_relaxed) == 4 ? current : surf;
@@ -389,4 +406,45 @@ void UICapture::on_present() {
 void UICapture::on_shutdown() {
     m_enabled.store(false, std::memory_order_release);
     free_device_resources();
+}
+
+void UICapture::on_pass(uint32_t ordinal) {
+    if (!m_enabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    // ---- SWAP LATE, NOT AT THE BRACKET ---------------------------------------------------
+    //
+    // The bracket's first passes composite the SCENE into the back buffer; only the later ones
+    // draw the HUD. Taking the whole bracket therefore costs the presented frame, so the target is
+    // borrowed from `swap_from_pass` onward and the composite is left to run where it belongs.
+    //
+    // Which pass that is, is a measurement, not a constant -- sweep it and watch two numbers: the
+    // back buffer must stay lit and our surface must still hold the whole HUD.
+    if (ordinal != static_cast<uint32_t>(m_swap_from_pass.load(std::memory_order_relaxed))) {
+        return;
+    }
+    auto* dev = sdk::Render::device();
+    if (dev == nullptr || m_saved.load(std::memory_order_relaxed) != nullptr) {
+        return;  // already swapped this frame
+    }
+    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+    if (surf == nullptr) {
+        return;
+    }
+    IDirect3DSurface9* current = nullptr;
+    if (FAILED(dev->GetRenderTarget(0, &current)) || current == nullptr) {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    D3DVIEWPORT9 vp{};
+    m_have_saved_viewport.store(SUCCEEDED(dev->GetViewport(&vp)), std::memory_order_relaxed);
+    m_saved_viewport = vp;
+    if (FAILED(dev->SetRenderTarget(0, surf))) {
+        current->Release();
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    m_saved.store(current, std::memory_order_release);
+    dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+    m_swaps.fetch_add(1, std::memory_order_relaxed);
 }

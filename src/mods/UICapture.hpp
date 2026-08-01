@@ -72,6 +72,18 @@ public:
     // is understood.
     void set_preserve(bool on) { m_preserve.store(on, std::memory_order_release); }
     bool preserve() const { return m_preserve.load(std::memory_order_relaxed); }
+
+    // Borrow the target from this 2D pass onward instead of for the whole bracket. -1 reverts to
+    // the whole-bracket swap, which costs the presented frame. DEFAULT 2, from a sweep:
+    //
+    //   from_pass   presented frame   captured layer
+    //     0            BLACK            the HUD          <- pass 0 is the scene composite
+    //     1            intact           THE WHOLE FRAME  <- pass 1 is a full-screen effect
+    //     2            intact           the HUD          <- correct
+    //     3            intact           the HUD
+    //     4+           intact           empty            <- the HUD is passes 2-3
+    void set_swap_from_pass(int p) { m_swap_from_pass.store(p, std::memory_order_release); }
+    int swap_from_pass() const { return m_swap_from_pass.load(std::memory_order_relaxed); }
     bool enabled() const { return m_enabled.load(std::memory_order_relaxed); }
 
     // Write the captured surface to a BMP. Serviced on the render thread at the next
@@ -113,6 +125,7 @@ public:
     // Called from the bracket callback and the frame boundary; public for the free functions
     // in the .cpp's anonymous namespace.
     void on_bracket(bool begin, int32_t width, int32_t height, uint32_t index);
+    void on_pass(uint32_t ordinal);
     void on_present();
     void free_device_resources();
 
@@ -122,6 +135,7 @@ private:
     std::atomic<bool> m_enabled{false};
     std::atomic<int> m_mode{3};
     std::atomic<bool> m_preserve{false};
+    std::atomic<int> m_swap_from_pass{2};   // measured; -1 reverts to whole-bracket
     std::atomic<void*> m_surface{nullptr};   // IDirect3DSurface9*, our colour target
     std::atomic<void*> m_saved{nullptr};     // the engine's surface, held only inside a bracket
     std::atomic<void*> m_scratch{nullptr};   // the borrowed target's contents, kept across the swap

@@ -9866,6 +9866,9 @@ std::string build_render_json(const std::string& request_target) {
         if (webapi_query_int(q, "probe", 0) != 0) {
             ui.request_probe();
         }
+        if (q.find("from_pass") != q.end()) {
+            ui.set_swap_from_pass(webapi_query_int(q, "from_pass", -1));
+        }
         if (q.find("preserve") != q.end()) {
             ui.set_preserve(webapi_query_int(q, "preserve", 1) != 0);
         }
@@ -9880,6 +9883,7 @@ std::string build_render_json(const std::string& request_target) {
               .b("enabled", ui.enabled())
               .i("mode", ui.mode())
               .b("preserve", ui.preserve())
+              .i("swap_from_pass", ui.swap_from_pass())
               .i("backbuffer_lit_at_begin", ui.probe_begin_lit())
               .i("backbuffer_lit_per_mille", ui.probe_lit())
               .b("have_surface", ui.have_surface())

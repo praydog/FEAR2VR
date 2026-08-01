@@ -20,6 +20,21 @@
 // work with: the record is the input, not the argument.
 class HudPassHook final : public Mod {
 public:
+    // ---- PER-PASS EXTENSION POINT ------------------------------------------------------------
+    //
+    // This mod owns the only inline hook allowed on slot 17, so anything needing to act on an
+    // INDIVIDUAL 2D pass registers here instead of hooking it again -- the same arrangement
+    // RenderHook has for the frame boundary and RenderTimeline for the target bracket.
+    //
+    // `ordinal` counts stored passes within the current frame, from 0. It exists because the ten
+    // passes are not equivalent: the frame's final composite shares the bracket with the HUD, and
+    // telling them apart is what lets one be redirected without the other.
+    //
+    // Fires BEFORE the engine's own setup, on the render thread. Must not block or allocate.
+    using PassCallback = void (*)(uint32_t ordinal);
+    static constexpr size_t kMaxPassCallbacks = 4;
+    bool add_pass_callback(PassCallback cb);
+
     static HudPassHook& get() {
         static HudPassHook inst;
         return inst;

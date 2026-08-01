@@ -29,6 +29,8 @@ std::atomic<bool> g_record_read{false};
 std::atomic<uintptr_t> g_stored_target{0};
 std::atomic<uint64_t> g_stored_passes{0};
 std::atomic<uint32_t> g_stored_this_frame{0};
+HudPassHook::PassCallback g_pass_cbs[HudPassHook::kMaxPassCallbacks]{};
+std::atomic<size_t> g_pass_cb_count{0};
 std::atomic<uint32_t> g_stored_last_frame{0};
 std::atomic<bool> g_stored_ortho{false};
 std::atomic<int32_t> g_stored_viewport[4]{{0}, {0}, {0}, {0}};
@@ -115,6 +117,17 @@ char __stdcall stored_detour(int a1) {
         if (sdk::SceneCamera::set_pass_offset(g_off_req[0].load(std::memory_order_relaxed),
                                               g_off_req[1].load(std::memory_order_relaxed))) {
             g_off_writes.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // Consumers see the pass BEFORE the engine sets it up, and are told which one it is within the
+    // frame -- see the header for why the ordinal matters.
+    {
+        const uint32_t ordinal = g_stored_this_frame.load(std::memory_order_relaxed);
+        const size_t n = g_pass_cb_count.load(std::memory_order_acquire);
+        for (size_t k = 0; k < n; ++k) {
+            if (auto cb = g_pass_cbs[k]; cb != nullptr) {
+                cb(ordinal);
+            }
         }
     }
     note_caller(reinterpret_cast<uintptr_t>(_ReturnAddress()));
@@ -233,4 +246,17 @@ HudPassHook::Observed HudPassHook::observed() const {
         out.offset_stored[i] = g_off_stored[i].load(std::memory_order_relaxed);
     }
     return out;
+}
+
+bool HudPassHook::add_pass_callback(PassCallback cb) {
+    if (cb == nullptr) {
+        return false;
+    }
+    const size_t n = g_pass_cb_count.load(std::memory_order_relaxed);
+    if (n >= kMaxPassCallbacks) {
+        return false;
+    }
+    g_pass_cbs[n] = cb;
+    g_pass_cb_count.store(n + 1, std::memory_order_release);
+    return true;
 }
