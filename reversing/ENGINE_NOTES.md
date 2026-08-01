@@ -4011,6 +4011,43 @@ two-second bursts; rockets fired with the pool steady at its 15 maximum. Zero ex
 rockets stop at 15 -- so a floor of 500 asked forever and got 27 grants in 20 seconds. A grant that
 does not raise the pool now teaches that type's ceiling, and the ceiling becomes the trigger.
 
+### The UI is Scaleform, and it has its own renderer and its own device wrapper
+
+`[UI]: Scaleform GFx v2.1.53`. The whole front end AND the in-game HUD are GFx, drawn by an
+LT-implemented `GRenderer` rather than by the scene renderer.
+
+| what | where | evidence |
+|---|---|---|
+| `CLTUI` (the ILTUI impl) | vtable `0x6781E8`, 20 slots | slot 10 returns the literal `"CLTUI"`; slot 11 `CLTUI_Init` prints the version banner |
+| `g_UIGFxRenderer` | object `0x72E2D8`, vtable `0x690568`, 36 slots | `UIGFxRenderer_Get` returns `&g_UIGFxRenderer` |
+| `g_UIRenderDevice` | object `0x730408`, vtable `0x691A90`, 20 slots | `UIRenderDevice_Get`; every UI draw and texture upload goes through it |
+| shader set | `g_LTUIGFxShaderNames`, 12 entries | `eLTUIGFxShader_SolidColor`, `_GFxGlyph`, `_GFxCxform*` |
+
+`UIGFxRenderer_DrawPrimitive` (0x60FED6) prepends a `GMatrix2D` and calls device slot +76 with a
+primitive count; `UIGFxRenderer_UpdateTexture` (0x60F27A) locks through device slot +28, memcpys,
+unlocks through +32. So the UI's pixels reach D3D through the 20-slot device at `g_UIRenderDevice`,
+NOT through CLTRenderer's pass system. `SceneRenderer_BeginFrame` calls the UI renderer's slot 3 once
+per frame, which is where its per-frame state resets.
+
+Only GFx KERNEL symbols survived the build (`GMatrix2D`, `GThread`, `GMutex`, `GColor` are all
+mangled-name exports); the renderer itself is unnamed, so the vtables above are the map.
+
+### The published VR frame contains no UI at all -- measured
+
+Capturing what actually reaches the headset (`/xr/capture?path=...`, 2560x1440) gives a clean
+side-by-side stereo pair with NO crosshair, NO ammo counter and NO health. Not a guess: the image was
+inspected.
+
+The cause is ordering, not breakage. `arm_vr` publishes at `stage=second_eye`, inside
+`CameraPassHook`'s draw detour; the HUD's ten 2D passes per frame run LATER. `/vr/hud` live:
+`passes_last_frame = 10`, `ortho = true`, 8 distinct callers (7 in gameclient.dll). The HUD is being
+drawn perfectly -- into a back buffer nobody reads any more.
+
+That makes "fix the UI" a COMPOSITION problem rather than a rendering one, and it is why capturing
+the UI separately is the right shape: the alternative, moving the publish to `Present` to pick the
+HUD up, re-imports the measured right-half corruption (right half 13.55 vs 3.48, quarters at 2.95 =
+tiled) recorded above.
+
 ### Weapon spread: perturb, and the one variable that scales it
 
 The client computes the spread cone and SENDS it; the server traces the ray with it.
