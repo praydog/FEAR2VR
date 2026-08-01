@@ -1013,6 +1013,31 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The remaining bad frames were TORN, not mis-posed
+
+After the pipeline off-by-one was fixed, roughly 70% of frames looked right and the rest still
+looked stale or mismatched. That residue was not a pose problem at all.
+
+**A sequence number protects the HEADER. It does not protect the pixels.** The host uploaded straight
+out of the shared section with `UpdateSubresource`, which takes ~2.5 ms for a 14 MB frame, while the
+game republished into that same memory every ~15 ms. Any overlap produced a TORN frame -- the top
+from one frame, the bottom from the next -- and since the two halves were rendered from different
+head poses, a torn frame looks exactly like a mis-posed one. The arithmetic even matches the report:
+2.5 in 15 is about one frame in six, and the reader is not the only thing that can slip.
+
+Uploading into a private staging texture first would have fixed the tear and added a full copy per
+frame. Publishing into a DIFFERENT BUFFER fixes it and costs nothing: the writer never touches the
+buffer whose index it last published.
+
+**Three buffers, not two.** Two is enough only while the reader always finishes inside one frame
+period, and the reader is a separate process that can be descheduled at any moment. The third costs
+14 MB and removes the assumption entirely. Measured after the change: publishing still 0.494 ms, so
+the buffers are free.
+
+The lesson generalises past this bug: *a lock-free protocol has to cover the payload, not just the
+metadata that describes it.* The header was rigorous and the fourteen megabytes beside it were
+completely unprotected.
+
 ### Judder: the pixels are a frame older than the pose stamped on them
 
 Three candidates were on the table -- the engine mangling the rotation on its way to the renderer,

@@ -28,6 +28,20 @@ constexpr uint32_t kSharedFrameVersion = 1u;
 // by measurement later rather than by reserving for it now.
 constexpr uint32_t kSharedFrameMaxBytes = 2560u * 1440u * 4u;
 
+// ---- WHY THERE IS MORE THAN ONE PIXEL BUFFER ----------------------------------------------------
+//
+// A sequence number protects the HEADER. It does not protect fourteen megabytes of pixels that the
+// reader is still uploading: the host's copy out of the section takes ~2.5 ms and the game
+// republishes every ~15 ms, so with a single buffer roughly one frame in six is caught mid-write
+// and uploaded TORN -- part of the previous frame, part of the next. Reported from the headset as
+// "70% of frames are correct" with the rest looking stale or mismatched, which is exactly what a
+// torn frame looks like when the two halves came from different head poses.
+//
+// Three buffers, not two: two is sufficient only while the reader always finishes inside one frame
+// period, and the reader is a separate process that can be descheduled. The third costs 14 MB and
+// removes the assumption.
+constexpr uint32_t kFrameSlots = 3u;
+
 // How the pixels should be read.
 constexpr uint32_t kLayoutMono = 0u;          // one image, shown to both eyes
 constexpr uint32_t kLayoutSideBySide = 1u;    // left half is the left eye, right half the right
@@ -58,6 +72,10 @@ struct alignas(64) SharedFrameHeader {
     uint32_t writer_pid;
     uint32_t frames_written;
 
+    // WHICH BUFFER holds the completed frame. The writer fills a different one, so a reader may
+    // take as long as it likes over this slot without the pixels moving underneath it.
+    uint32_t slot;
+
     // WHICH HostState THE GAME RENDERED WITH. The host keeps a short history of the poses it
     // published and submits this frame using the one the game actually used -- not the newest.
     // Declaring the current pose for an image rendered from an older one is the difference between
@@ -65,7 +83,9 @@ struct alignas(64) SharedFrameHeader {
     uint32_t host_sequence;
 };
 
-static_assert(sizeof(SharedFrameHeader) == 64,
+// 128 now that the slot index is carried: alignas(64) rounds up, and the exact size matters far
+// less than both bitnesses agreeing on it -- which is what the assert is really for.
+static_assert(sizeof(SharedFrameHeader) == 128,
               "the header must be byte-identical in both bitnesses");
 
 // ---- THE OTHER DIRECTION: WHAT THE HEADSET IS DOING ---------------------------------------------
@@ -104,6 +124,12 @@ static_assert(sizeof(HostState) == 64, "HostState must be byte-identical in both
 // Layout of the mapping: [SharedFrameHeader][HostState][pixels]
 constexpr uint32_t kPayloadOffset =
     static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState));
+
+// Where a given buffer starts. Slots are padded to the maximum so the offset never depends on the
+// resolution in flight -- a reader must be able to find a slot without knowing what is in it.
+constexpr uint32_t slot_offset(uint32_t slot) {
+    return kPayloadOffset + (slot % kFrameSlots) * kSharedFrameMaxBytes;
+}
 
 constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 

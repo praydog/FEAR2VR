@@ -43,7 +43,7 @@ bool FramePublisher::open() {
     m_error.clear();
 
     const uint32_t total =
-        xr::kPayloadOffset + xr::kSharedFrameMaxBytes;
+        xr::kPayloadOffset + xr::kFrameSlots * xr::kSharedFrameMaxBytes;
 
     HANDLE mapping = ::CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
                                           xr::kSharedFrameName);
@@ -111,7 +111,11 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     }
 
     auto* header = static_cast<xr::SharedFrameHeader*>(m_base);
-    auto* payload = static_cast<uint8_t*>(m_base) + xr::kPayloadOffset;
+
+    // WRITE INTO A BUFFER THE READER IS NOT USING. The published slot is the one it may be reading,
+    // so anything but that is safe; advancing by one cycles through all three.
+    const uint32_t write_slot = (header->slot + 1u) % xr::kFrameSlots;
+    auto* payload = static_cast<uint8_t*>(m_base) + xr::slot_offset(write_slot);
     const int64_t t0 = now_ticks();
 
     // ODD while the pixels are in flux. A reader that samples mid-copy sees an odd sequence and
@@ -127,6 +131,7 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     header->bgra = bgra ? 1u : 0u;
     header->layout = layout;
     header->host_sequence = host_sequence;
+    header->slot = write_slot;
 
     // ONE memcpy, straight from the locked surface. Row-by-row would be tidier if the destination
     // were tightly packed, but the reader is told the pitch instead -- copying padding is cheaper

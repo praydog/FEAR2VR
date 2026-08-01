@@ -80,7 +80,7 @@ struct SharedReader {
     HANDLE mapping = nullptr;
     const xr::SharedFrameHeader* header = nullptr;
     xr::HostState* host = nullptr;
-    const uint8_t* payload = nullptr;
+    const uint8_t* base_bytes = nullptr;
     uint32_t last_sequence = 0;
 
     bool open() {
@@ -105,7 +105,7 @@ struct SharedReader {
         header = static_cast<const xr::SharedFrameHeader*>(base);
         host = reinterpret_cast<xr::HostState*>(static_cast<uint8_t*>(base) +
                                                 sizeof(xr::SharedFrameHeader));
-        payload = static_cast<const uint8_t*>(base) + xr::kPayloadOffset;
+        base_bytes = static_cast<const uint8_t*>(base);
         return true;
     }
 
@@ -127,7 +127,11 @@ struct SharedReader {
         w = header->width;
         h = header->height;
         pitch = header->pitch;
-        bits = payload;
+
+        // FROM THE PUBLISHED SLOT, not a fixed offset. The writer is already filling a different
+        // one, which is what makes it safe to upload straight out of shared memory instead of
+        // copying it somewhere private first.
+        bits = base_bytes + xr::slot_offset(header->slot);
 
         if (w == 0 || h == 0 || pitch == 0) {
             return false;
