@@ -439,6 +439,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Created rather than opened: the host is normally up first, and CreateEvent returns the
+    // existing object if the game got there before us.
+    HANDLE tick_event = CreateEventA(nullptr, FALSE, FALSE, xr::kFrameTickEventName);
+
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool running = false;
     uint64_t frames = 0;
@@ -487,6 +491,13 @@ int main(int argc, char** argv) {
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         xrWaitFrame(session, &fwi, &fs);
+
+        // THE FRAME CLOCK, relayed. xrWaitFrame has just told us when the runtime wants the next
+        // frame; releasing the game here makes its update run on the compositor's cadence instead
+        // of free-running at whatever the hardware allows.
+        if (tick_event != nullptr) {
+            SetEvent(tick_event);
+        }
 
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         xrBeginFrame(session, &fbi);

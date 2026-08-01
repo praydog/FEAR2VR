@@ -95,6 +95,11 @@ void FramePublisher::close() {
         ::CloseHandle(static_cast<HANDLE>(m_mapping));
         m_mapping = nullptr;
     }
+
+    if (m_tick_event != nullptr) {
+        ::CloseHandle(static_cast<HANDLE>(m_tick_event));
+        m_tick_event = nullptr;
+    }
 }
 
 bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
@@ -159,6 +164,37 @@ const xr::HostState* FramePublisher::host_state() const {
 
     return reinterpret_cast<const xr::HostState*>(static_cast<uint8_t*>(m_base) +
                                                   sizeof(xr::SharedFrameHeader));
+}
+
+bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
+    if (m_tick_event == nullptr) {
+        // Auto-reset: each tick releases exactly one wait, so a game that falls behind does not
+        // bank up credits and then sprint through several frames without waiting.
+        m_tick_event = ::CreateEventA(nullptr, FALSE, FALSE, xr::kFrameTickEventName);
+
+        if (m_tick_event == nullptr) {
+            return false;
+        }
+    }
+
+    // GIVE UP AFTER A RUN OF SILENCE, and keep checking for free. Without this, a host that exits
+    // -- or a session that goes idle because the headset came off -- would cost the game a full
+    // timeout every frame, silently capping it at 1000/timeout fps for no benefit at all.
+    const DWORD wait = m_consecutive_timeouts >= kPacingGiveUp ? 0u : timeout_ms;
+    ++m_tick_waits;
+
+    if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), wait) == WAIT_OBJECT_0) {
+        m_consecutive_timeouts = 0;
+        return true;
+    }
+
+    ++m_tick_timeouts;
+
+    if (m_consecutive_timeouts < kPacingGiveUp) {
+        ++m_consecutive_timeouts;
+    }
+
+    return false;
 }
 
 uint32_t FramePublisher::frames() const {

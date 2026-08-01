@@ -1013,6 +1013,32 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### THE FIX FOR JUDDER IS TO LET THE RUNTIME PACE THE GAME
+
+The decisive observation came from the headset, and it inverts the usual assumption: **alt-tabbed at
+~72 fps the view looked perfect; focused at 140-150 fps it juddered.** A faster game producing a
+worse picture is the signature of TWO UNRELATED CLOCKS -- frames and poses generated on different
+cadences, with the beat between them visible as judder. Nothing downstream can fix that; it can only
+be approximated away. The clocks have to be the same clock.
+
+This is what `xrWaitFrame` is for. A native VR application does not choose its frame rate: the
+compositor tells it when to render, and the application blocks until then. The game cannot call
+`xrWaitFrame` here because the runtime lives in another process, so the host relays it -- one
+auto-reset event, signalled the moment `xrWaitFrame` returns.
+
+**The game waits inside `CClientShell::Update`.** `Mods::on_frame()` runs there, on the game thread,
+so blocking paces the ENTIRE loop -- logic and rendering together -- exactly as vsync would. Waiting
+only in the render path would pace the pictures while the simulation kept its own time.
+
+**A frame clock that can freeze the game is worse than no frame clock**, so the wait is bounded at
+about two compositor frames, and a run of thirty consecutive timeouts stops the waiting altogether
+until ticks resume (checked at zero cost thereafter). A host that exits, or a session that goes idle
+because the headset came off, then costs nothing rather than silently capping the game at
+1000/timeout fps. It re-engages by itself on the first tick that arrives.
+
+Auto-reset rather than manual: each tick releases exactly one wait, so a game that falls behind does
+not bank credits and then sprint through several frames without waiting for any of them.
+
 ### The remaining bad frames were TORN, not mis-posed
 
 After the pipeline off-by-one was fixed, roughly 70% of frames looked right and the rest still

@@ -156,11 +156,39 @@ void VR::set_use_host_pose(bool on) {
     }
 }
 
+void VR::set_paced(bool on) {
+    if (on) {
+        FramePublisher::get().open();
+    }
+
+    m_paced.store(on, std::memory_order_release);
+    LOGX("[vr] frame pacing %s -- the runtime's clock %s the game's", on ? "ON" : "off",
+         on ? "now drives" : "no longer drives");
+}
+
 void VR::on_frame() {
     auto& rt = vr::simulated_runtime();
 
     if (!rt.ready()) {
         return;
+    }
+
+    // ---- WAIT FOR THE RUNTIME'S FRAME CLOCK ----------------------------------------------------
+    //
+    // This runs inside CClientShell::Update, so blocking here paces the ENTIRE game loop -- exactly
+    // what xrWaitFrame does for a native VR application, relayed across the process boundary.
+    //
+    // Unpaced, the game ran at 140-150 fps into a 90 Hz compositor and juddered, while the same
+    // build alt-tabbed to ~72 fps looked perfect. A FASTER game producing a WORSE picture is the
+    // signature of two unrelated clocks: frames and poses were being generated on different
+    // cadences and the beat between them is what the wearer sees. Matching the clocks removes it at
+    // the source, where compensating downstream could only ever approximate it.
+    //
+    // The timeout is deliberately about two compositor frames: long enough to wait for a tick that
+    // is coming, short enough that a tick which is NOT coming costs little before the give-up
+    // counter takes over.
+    if (m_paced.load(std::memory_order_acquire)) {
+        FramePublisher::get().wait_for_host_tick(22);
     }
 
     // Advance the runtime every frame regardless of whether we are driving the engine. A frame

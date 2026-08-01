@@ -10575,6 +10575,9 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("paced") != q.end()) {
+                VR::get().set_paced(webapi_query_int(q, "paced", 0) != 0);
+            }
             if (q.find("host_pose") != q.end()) {
                 VR::get().set_use_host_pose(webapi_query_int(q, "host_pose", 0) != 0);
             }
@@ -10776,6 +10779,10 @@ bool Framework::initialize() {
               .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
               .b("fp_publishing", FrameCapture::get().publishing())
               .b("vr_host_pose", VR::get().using_host_pose())
+              .b("vr_paced", VR::get().paced())
+              .b("vr_pacing_live", FramePublisher::get().pacing_live())
+              .u("vr_tick_waits", static_cast<size_t>(FramePublisher::get().tick_waits()))
+              .u("vr_tick_timeouts", static_cast<size_t>(FramePublisher::get().tick_timeouts()))
               .u("vr_host_updates", static_cast<size_t>(VR::get().host_pose_updates()))
               .u("vr_host_stale", static_cast<size_t>(VR::get().host_pose_stale()))
               .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))

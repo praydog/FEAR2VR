@@ -43,6 +43,19 @@ public:
     // tolerate.
     const xr::HostState* host_state() const;
 
+    // ---- THE RUNTIME'S FRAME CLOCK -------------------------------------------------------------
+    //
+    // Blocks until the host's next xrWaitFrame tick, or the timeout, whichever comes first. Called
+    // from the game's own update so the whole loop is paced by the compositor.
+    //
+    // NEVER hangs: the timeout is short, and a run of timeouts stops the waiting entirely until
+    // ticks resume, so a host that dies or a session that goes idle costs nothing. A frame clock
+    // that can freeze the game is worse than no frame clock.
+    bool wait_for_host_tick(uint32_t timeout_ms);
+    uint64_t tick_waits() const { return m_tick_waits; }
+    uint64_t tick_timeouts() const { return m_tick_timeouts; }
+    bool pacing_live() const { return m_consecutive_timeouts < kPacingGiveUp; }
+
     uint32_t frames() const;
     double last_publish_ms() const;
     double worst_publish_ms() const;
@@ -53,7 +66,13 @@ public:
 private:
     FramePublisher() = default;
 
+    static constexpr uint32_t kPacingGiveUp = 30;  // ~0.6 s of silence at 90 Hz
+
     void* m_mapping{nullptr};
+    void* m_tick_event{nullptr};
+    uint64_t m_tick_waits{0};
+    uint64_t m_tick_timeouts{0};
+    uint32_t m_consecutive_timeouts{0};
     void* m_base{nullptr};
     std::string m_error;
     uint32_t m_last_w{0};

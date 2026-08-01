@@ -53,6 +53,11 @@ public:
     // the test harness already use: every piece of composition, clamping and restore behaviour
     // below it has been verified against synthetic poses, and swapping the SOURCE of the pose keeps
     // all of that rather than opening a second path that has to be re-proven.
+    // Let the OpenXR runtime drive the game's frame rate, the way xrWaitFrame does for a native VR
+    // title. Off by default: it changes the game's pacing, which is not something to do implicitly.
+    void set_paced(bool on);
+    bool paced() const { return m_paced.load(std::memory_order_acquire); }
+
     void set_use_host_pose(bool on);
     bool using_host_pose() const { return m_use_host_pose.load(std::memory_order_acquire); }
 
@@ -157,6 +162,7 @@ public:
 
 private:
     std::atomic<bool> m_use_host_pose{false};
+    std::atomic<bool> m_paced{false};
     std::atomic<uint64_t> m_host_pose_updates{0};
     std::atomic<uint64_t> m_host_pose_stale{0};
     uint32_t m_last_host_sequence{0};

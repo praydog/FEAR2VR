@@ -133,4 +133,17 @@ constexpr uint32_t slot_offset(uint32_t slot) {
 
 constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 
+// ---- LETTING THE RUNTIME PACE THE GAME ----------------------------------------------------------
+//
+// Signalled by the host once per xrWaitFrame, waited on by the game inside its own update. This is
+// how a normal VR title works -- xrWaitFrame IS the frame clock, and the application runs at
+// whatever cadence the compositor asks for -- and it is not available to the game directly here
+// because the runtime lives in another process.
+//
+// WHY IT MATTERS MORE THAN IT SOUNDS: unpaced, the game ran at 140-150 fps into a 90 Hz compositor
+// and juddered, while the SAME build alt-tabbed to ~72 fps looked perfect. A faster game made the
+// picture worse, because frames and poses were being produced on two unrelated clocks and the beat
+// between them is visible. Pacing removes the beat rather than compensating for it.
+constexpr const char* kFrameTickEventName = "Local\\fear2vr_frame_tick";
+
 }  // namespace xr
