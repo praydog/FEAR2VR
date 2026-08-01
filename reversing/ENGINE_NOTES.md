@@ -1069,6 +1069,25 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### A dead band must ACCUMULATE, not discard -- slow roomscale movement was being thrown away
+
+Walking sideways slowly moved the character not at all; the same distance covered briskly worked.
+Vertical was unaffected, which was the clue that named the mechanism straight away -- the camera
+keeps the vertical term and never passes through this gate.
+
+The band itself is wanted: the headset never reads exactly still, and a stream of sub-millimetre
+writes would fight the engine's own movement code for nothing visible. The bug was dropping the step
+while ADVANCING the reference, so the motion was gone rather than deferred. Slow movement is nothing
+BUT sub-threshold steps, so all of it was discarded.
+
+**Holding the reference back until a move commits is the entire fix.** The delta is then measured
+from the last position actually delivered, so it grows until it crosses the band. No accumulator is
+needed: the reference IS the accumulator.
+
+**The general form, which is worth carrying to the next one:** a threshold that gates an action must
+not also advance the state the action is measured from. Do that and the filter stops being a
+noise gate and becomes a minimum-speed requirement -- which is precisely how this presented.
+
 ### The weapon anchors on the PLAYER ROOT, all three axes -- confirmed in the headset
 
 The camera OBJECT carries the engine's own neck-bone orbit: vertically it swings 29-31 units across

@@ -1208,18 +1208,34 @@ void VR::update_camera_offset() {
                         const float pz = rz - m_last_room_xz[1];
                         const std::array<float, 3> step{px * c + pz * s, 0.0f, -px * s + pz * c};
 
-                        // A dead band, because the headset never reads exactly still and a stream
-                        // of sub-millimetre writes would fight the engine's own movement code for
-                        // no visible benefit.
+                        // A DEAD BAND THAT ACCUMULATES RATHER THAN DISCARDS. The band itself is
+                        // wanted: the headset never reads exactly still, and a stream of
+                        // sub-millimetre writes would fight the engine's own movement code for no
+                        // visible benefit.
+                        //
+                        // But dropping the step while ADVANCING the reference throws the motion
+                        // away, and slow movement is nothing but sub-threshold steps -- so walking
+                        // sideways slowly moved the character not at all, while the same distance
+                        // covered briskly worked. Vertical was unaffected because the camera keeps
+                        // that term and never went through this gate, which is exactly the "except
+                        // the Y axis" in the report.
+                        //
+                        // Holding the reference back until a move COMMITS is the whole fix: the
+                        // delta is then measured from the last position actually delivered, so it
+                        // grows until it crosses the band and nothing is ever lost. No accumulator
+                        // is needed -- the reference IS the accumulator.
                         if (step[0] * step[0] + step[2] * step[2] > 0.01f) {
                             if (sdk::PlayerMgr::displace_player(0, step)) {
                                 m_body_moves.fetch_add(1, std::memory_order_relaxed);
                             }
+                            m_last_room_xz[0] = rx;
+                            m_last_room_xz[1] = rz;
                         }
+                    } else {
+                        m_last_room_xz[0] = rx;
+                        m_last_room_xz[1] = rz;
                     }
 
-                    m_last_room_xz[0] = rx;
-                    m_last_room_xz[1] = rz;
                     m_have_last_room = true;
                 } else {
                     m_room_part = {wx, ry, wz};
