@@ -9093,6 +9093,7 @@ std::string build_weapons_json(const std::string& request_target) {
     json_append_raw(out, "chooser", std::to_string(static_cast<uint64_t>(chooser)).c_str());
     json_append_raw(out, "weapon_object",
                     std::to_string(static_cast<uint64_t>(sdk::WeaponMgr::current_weapon_object(0))).c_str());
+
     json_append_string(out, "current", current.c_str());
 
     // The QUICK-SWITCH slot, published beside `current` on purpose: an earlier pass reported this

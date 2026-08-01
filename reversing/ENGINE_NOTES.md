@@ -1042,6 +1042,46 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### The weapon DOES follow the RightHand bone -- measured
+
+Asked directly, with the muzzle position (`sdk::attached_socket(player->object, "flash")`, sampled in
+phase by FireRedirect and published as `fr_wo_*`):
+
+- Bone displaced 30 units in x -> **muzzle moved 30.00 units**.
+- Bone rotated 40 degrees of yaw -> **muzzle moved 59.85 units**, an arc about the wrist.
+
+So position AND rotation propagate from the hand bone to the gun, and `drive_hand` already writes
+both from the controller's AIM pose. Attaching the gun to the controller does not need a new
+mechanism; it needs the controller poses to arrive and the head's contribution removed
+(`ViewmodelDecouple`, now armed by `tools/arm_vr.py`).
+
+**`WeaponMgr::current_weapon_object` is a `CClientWeapon`, NOT an LTObject.** A first attempt at this
+measurement read LTObject offsets off it and published a `weapon_yaw` that was 0.000 forever -- the
+same category error as `Player::object`, caught this time because the number never moved. The
+weapon's world transform comes from the muzzle SOCKET, not from that pointer.
+
+**The muzzle's ROTATION is unusable while its position is not** -- see FireRedirect's header. Measure
+the gun's direction from muzzle POSITION across a known bone rotation, not from the socket's
+orientation.
+
+### With the headset off, three separate readings lie
+
+Recorded together because they were hit in one sitting and each looked like a defect:
+
+- `hands_seq` and `hands_frames` FREEZE. The runtime leaves FOCUSED when the headset is unworn, so
+  the host publishes nothing and correctly reports `active = 0` rather than stale poses. Everything
+  downstream then early-returns, and `hand_applied` sits at 0 as though the mod were broken.
+- `/xr/input` INJECTION STOPS WORKING once the headset goes back ON, because the host then owns hand
+  state and overwrites it every frame. So the synthetic route works exactly when the real one does
+  not, and vice versa.
+- `ViewmodelDecouple.matched` STOPS INCREMENTING, because the engine elides the rig's rotation setter
+  unless the view changes -- and with no head tracking the view is static. Read as "the weapon is not
+  head-driven", which flatly contradicted the owner's own observation. The owner was right.
+
+**The rule this keeps re-teaching:** before believing a measurement, establish that the system was in
+the state the measurement assumes. A frozen counter and a working-but-idle system are indistinguishable
+from the outside.
+
 ### Snap turn belongs on apply_look_delta, NOT on the closed loop
 
 The first version called `TurnController::turn_by`, and it felt awful: about half a second to
