@@ -1069,46 +1069,6 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
-### Reference the head position roomscale COMMITTED, not the live one
-
-With the weapon anchored to the player's root, the cancellation is arithmetic:
-
-    root + (C - head) = (R0 + T) + (C - T) = R0 + C
-
-and it holds only while the root really has absorbed every millimetre the head moved. **It has
-not.** `displace_player` carries a 1 mm dead band and goes through collision, so against a wall or
-below the dead band the body stops following while the live head keeps going, and the difference
-leaks into the gun. That is the small drift left when turning.
-
-Confirmed by measurement: the root tracks the head 1:1 in open space -- 45.37 cm of head gives 45.39
-units of root, 84.32 gives 84.43 -- so the mechanism works and only its FAILURE CASES leak.
-
-`m_last_room_xz` is the value roomscale last committed. Referencing the controller to that makes
-both sides leak identically: whatever the body failed to follow is missing from the reference too.
-
-### THREE VACUOUS MEASUREMENTS IN ONE SITTING, all of them mine
-
-Recorded in full because the pattern is more useful than the individual mistakes, and because
-pitfall 3 in MAPPING_WORKFLOW already warned about exactly this.
-
-1. **Residual computed with the code's own formula.** Reported `0.00` and could not have reported
-   anything else -- I subtracted the same head term the code adds.
-2. **Residual with the root subtracted.** Reported the head's motion exactly, 44.22 against 44.18,
-   and looked like a smoking gun. But subtracting the root removes the very term that CANCELS the
-   head, so it too could only ever report `-head`.
-3. **Gun minus rotated controller.** Swung 808 units on 1.7 cm of head movement, because
-   `head.position` is an ABSOLUTE play-space coordinate metres from the OpenXR origin, and rotating
-   it by a changing yaw swings hundreds of units by itself.
-
-**The tell each time:** the metric contained the thing being tested. A measurement that
-reconstructs the implementation cannot disagree with it.
-
-**And the honest limit reached here:** the clean observation -- controller still, body still, head
-turning -- was never obtained, because the controllers sleep when idle and grabbing them to wake
-them moves everything. Contamination was reported alongside every reading (`player root moved 429
-units, body yaw 330 degrees`) rather than averaged away, which is the only reason those samples were
-correctly discarded instead of believed.
-
 ### The camera OBJECT's height swings with pitch; the eye pin does not stabilise it
 
 Looking up and down moved the welded weapon vertically even with the controller resting on a desk.

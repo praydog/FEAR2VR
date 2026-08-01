@@ -821,28 +821,9 @@ void VR::update_weapon() {
         //
         // So height is measured against the ROOM ORIGIN -- the play-space reference the eye pin is
         // itself defined against -- which does not move when the wearer ducks.
-        // ---- REFERENCE THE HEAD POSITION ROOMSCALE ACTUALLY COMMITTED --------------------
-        //
-        // Not the LIVE head position. The cancellation `root + (C - head) = R0 + C` only holds
-        // while the root really has absorbed every millimetre the head moved -- and it has not.
-        // `displace_player` carries a 1 mm dead band and goes through collision, so against a wall,
-        // or below the dead band, the body stops following while the live head keeps going. The
-        // difference leaks straight into the gun, which is the small drift left when turning.
-        //
-        // Referencing the same value roomscale last COMMITTED makes both sides leak identically:
-        // whatever the body failed to follow is missing from the reference too, so it cancels
-        // regardless. `m_last_room_xz` is that value, in units relative to the room origin.
-        const bool committed = m_have_last_room && m_room_body.load(std::memory_order_acquire);
-        const float ref_x = committed
-                                ? m_room_origin[0] + m_last_room_xz[0] / kUnitsPerMetre
-                                : head.position[0];
-        const float ref_z = committed
-                                ? m_room_origin[2] + m_last_room_xz[1] / kUnitsPerMetre
-                                : head.position[2];
-
-        const std::array<float, 3> from_head{hand.aim.position[0] - ref_x,
+        const std::array<float, 3> from_head{hand.aim.position[0] - head.position[0],
                                              hand.aim.position[1] - m_room_origin[1],
-                                             hand.aim.position[2] - ref_z};
+                                             hand.aim.position[2] - head.position[2]};
         const auto e = runtime_to_engine_position(from_head);
 
         // Into the world, by the BODY's heading. Using the view here would put the head back into
@@ -870,28 +851,9 @@ void VR::update_weapon() {
                               : std::nullopt;
         const float base_y = root.has_value() ? root->position.y + eye : cam->position.y;
 
-        // ---- ALL THREE AXES ANCHOR ON THE ROOT, and the head then cancels EXACTLY ---------
-        //
-        // Write the play-space quantities out and the reason is arithmetic rather than taste. The
-        // headset sits at T + O (the wearer's room translation plus the neck orbit that rotating
-        // the head produces), the controller at C, and body roomscale moves the player's root by
-        // the head's own delta, so the root is R0 + T + O. Then:
-        //
-        //     root + (C - head) = (R0 + T + O) + (C - T - O) = R0 + C
-        //
-        // The head disappears completely and the gun is the controller's play position in the
-        // world, which is the whole requirement. Anchoring on the CAMERA object instead leaves its
-        // own neck-bone orbit in the sum -- a different quantity from O, so it cannot cancel --
-        // and that residual tracked the head's horizontal motion nearly 1:1: 43.6 cm of head gave
-        // 30.9 units of gun, 52.0 cm gave 46.4.
-        //
-        // Horizontally the root and the head share X/Z anyway, because the body is upright.
-        const float ax = root.has_value() ? root->position.x : cam->position.x;
-        const float az = root.has_value() ? root->position.z : cam->position.z;
-
-        px += ax + e[0] * cy + e[2] * sy;
+        px += cam->position.x + e[0] * cy + e[2] * sy;
         py += base_y + e[1];
-        pz += az + (-e[0] * sy + e[2] * cy);
+        pz += cam->position.z + (-e[0] * sy + e[2] * cy);
 
         // The controller's ABSOLUTE orientation, converted and then turned into the world by the
         // same heading. No rest pose and no delta: whatever the controller points at, the gun does.
