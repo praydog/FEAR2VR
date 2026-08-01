@@ -1013,6 +1013,36 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Eye height is a preference, and the body has to go
+
+Two things a correct camera cannot give you. Reported from the headset: "eye height is wedging me
+into the player's chest", and the body should not be visible in aim-with-the-head mode.
+
+**The trim is a number, not a switch.** The engine's camera sits where a flatscreen shooter wants
+it, and the model's eye socket is not the same thing as a comfortable viewpoint -- no amount of
+correctness elsewhere fixes that. `eye_trim` adds engine units (one is one centimetre) to the eye,
+live, so it can be dialled in from inside the headset.
+
+It went in inside the pin at first, which meant it did nothing whenever the pin was still waiting
+for a neutral head -- and worse, the pin's early return skipped the ROOMSCALE offset too. *A
+preference that silently ignores you is worse than one that does not exist.* Both now apply
+independently of whether the pin has its reference yet.
+
+**The body is a separate object from the weapon, which is what makes hiding it worth doing.** The
+player model is posed for a flatscreen camera, so an eye placed inside it sees the inside of a chest
+and a neck. The viewmodel -- weapon and hands -- is a different object entirely and survives
+untouched. Clearing `kVisible` on the model is enough: the engine's render gate is
+`(flags & 1) && !(flags2 & 0x700)`, evaluated when objects are collected for drawing, so there is no
+cache to invalidate.
+
+Reapplied every frame, because the model is recreated on respawn and level change and a one-shot
+would quietly come back. Idempotent, so the steady-state cost is a read and a comparison.
+
+**And restored on shutdown, which the view does not need.** HeadTracking can simply stop, because
+the engine rewrites the camera every frame anyway. A cleared visibility flag is different: it is a
+change to the game's own state that nothing else will undo, so unloading the mod would otherwise
+leave an invisible player model for the rest of the session with nothing to connect the two.
+
 ### Recenter has to WAIT for a neutral head, not take whatever it finds
 
 Reported: recentering left the wearer feet to the side of the player, consistently. Instrumented by

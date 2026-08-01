@@ -65,6 +65,7 @@ public:
     // ROOMSCALE: add the wearer's movement within their play space. Captured relative to wherever
     // they were when it was switched on, so enabling it never teleports anyone.
     void update_camera_offset();
+    void apply_body_visibility(bool visible);
 
     // Is the wearer looking roughly straight ahead? The reference for the eye pin is only valid
     // when taken with no neck orbit in it, which is to say while the head is neutral.
@@ -93,6 +94,29 @@ public:
     // so switching this off restores the game exactly.
     void set_neutral_camera_offset(bool on);
     bool neutral_camera_offset() const { return m_neutral_cam_off.load(std::memory_order_acquire); }
+
+    // ---- EYE HEIGHT TRIM -----------------------------------------------------------------------
+    //
+    // Added to the pinned eye position, in engine units (one unit is one centimetre). The engine's
+    // own camera sits where a flatscreen shooter wants it, which in a headset puts the wearer
+    // inside the character's chest -- the model's eye socket is not the same thing as a comfortable
+    // viewpoint, and no amount of correctness elsewhere fixes it. This is a preference, so it is a
+    // number rather than a switch.
+    void set_eye_height_trim(float units);
+    float eye_height_trim() const { return m_eye_trim.load(std::memory_order_acquire); }
+
+    // ---- THE PLAYER'S OWN BODY -----------------------------------------------------------------
+    //
+    // Hide the client-side player model. In "aim with the head" mode the body is a liability: it is
+    // posed for a flatscreen camera, so from an eye inside it the wearer sees the inside of a
+    // chest and a neck. The weapon and hands are a SEPARATE object -- the viewmodel -- so they
+    // survive this untouched, which is exactly the split that makes it worth doing at all.
+    //
+    // Reapplied every frame rather than once: the model is recreated on respawn and level change,
+    // and a one-shot would come back visible with nothing to say why.
+    void set_hide_body(bool on);
+    bool hide_body() const { return m_hide_body.load(std::memory_order_acquire); }
+    uint64_t body_hides() const { return m_body_hides.load(std::memory_order_relaxed); }
 
     void set_pin_eye_height(bool on);
     bool pin_eye_height() const { return m_pin_eye.load(std::memory_order_acquire); }
@@ -216,6 +240,11 @@ private:
     bool m_have_eye_ref{false};
     std::array<float, 3> m_pin_part{};
     std::array<float, 3> m_room_part{};
+    std::atomic<float> m_eye_trim{0.0f};
+    std::atomic<bool> m_hide_body{false};
+    std::atomic<uint64_t> m_body_hides{0};
+    uint32_t m_saved_body_flags{0};
+    bool m_have_body_flags{false};
     std::atomic<bool> m_neutral_cam_off{false};
     std::array<float, 3> m_saved_cam_off{};
     bool m_have_saved_cam_off{false};

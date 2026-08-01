@@ -33,12 +33,14 @@ ARM = [
     ("aim levelling", "/xr/capture?level_aim=1"),
     ("eye offset pinning", "/xr/capture?pin_eye=1"),
     ("roomscale", "/xr/capture?roomscale=1"),
+    ("player body hidden", "/xr/capture?hide_body=1"),
     ("head tracking applied", "/xr/enable?on=1"),
     ("recenter", "/xr/capture?recenter=1"),
 ]
 
 DISARM = [
     ("head tracking applied", "/xr/enable?on=0"),
+    ("player body hidden", "/xr/capture?hide_body=0"),
     ("roomscale", "/xr/capture?roomscale=0"),
     ("eye offset pinning", "/xr/capture?pin_eye=0"),
     ("aim levelling", "/xr/capture?level_aim=0"),
@@ -57,6 +59,7 @@ CHECKS = [
     ("vr_level_aim", "aim levelled"),
     ("vr_pin_eye", "eye offset pinned"),
     ("vr_roomscale", "roomscale"),
+    ("vr_hide_body", "player body hidden"),
 ]
 
 

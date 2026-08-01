@@ -8,6 +8,7 @@
 
 #include "sdk/PlayerMgr.hpp"
 #include "sdk/Input.hpp"
+#include "sdk/Memory.hpp"
 #include "sdk/Object.hpp"
 #include "BoneControl.hpp"
 #include "SyntheticInput.hpp"
@@ -68,6 +69,18 @@ std::optional<std::string> VR::on_initialize() {
 
 void VR::on_shutdown() {
     g_enabled.store(false, std::memory_order_relaxed);
+
+    // GIVE THE PLAYER THEIR BODY BACK. Unlike the view -- which the engine rewrites every frame, so
+    // simply stopping is enough -- a cleared visibility flag is a change to the game's own state
+    // that nothing else will undo. Leaving it would mean unloading the mod left an invisible player
+    // model for the rest of the session, with nothing to connect the two.
+    if (m_hide_body.load(std::memory_order_acquire)) {
+        m_hide_body.store(false, std::memory_order_release);
+        apply_body_visibility(true);
+    }
+
+    // Same reasoning for the camera offset: it is ours, and it must not outlive us.
+    CameraPassHook::get().set_position_offset(0.0f, 0.0f, 0.0f);
     // Release the view. HeadTracking composes rather than overrides, so clearing is enough -- the
     // engine's own identity write stands on the very next frame and there is nothing to restore.
     HeadTracking::get().clear();
@@ -176,6 +189,56 @@ void VR::set_neutral_camera_offset(bool on) {
 
     m_neutral_cam_off.store(on, std::memory_order_release);
     LOGX("[vr] camera attached offset %s", on ? "NEUTRALISED" : "restored");
+}
+
+void VR::set_eye_height_trim(float units) {
+    m_eye_trim.store(units, std::memory_order_release);
+    LOGX("[vr] eye height trim %+.1f units", units);
+}
+
+void VR::set_hide_body(bool on) {
+    m_hide_body.store(on, std::memory_order_release);
+
+    if (!on) {
+        apply_body_visibility(true);
+    }
+
+    LOGX("[vr] player body %s", on ? "HIDDEN" : "visible");
+}
+
+void VR::apply_body_visibility(bool visible) {
+    const auto p = sdk::PlayerMgr::player(0);
+
+    if (!p.has_value() || p->model_object == 0) {
+        return;
+    }
+
+    auto* obj = reinterpret_cast<regenny::LTObject*>(p->model_object);
+    uint32_t flags = 0;
+
+    if (!sdk::mem::copy(&flags, reinterpret_cast<uintptr_t>(&obj->flags), sizeof(flags))) {
+        return;
+    }
+
+    if (!visible && !m_have_body_flags) {
+        // Saved once, so "show" restores what the game had rather than a bit we invented.
+        m_saved_body_flags = flags;
+        m_have_body_flags = true;
+    }
+
+    const uint32_t wanted = visible
+                                ? (m_have_body_flags ? m_saved_body_flags : flags)
+                                : (flags & ~sdk::object_flags::kVisible);
+
+    if (wanted == flags) {
+        return;
+    }
+
+    // The engine's render gate is `(flags & 1) && !(flags2 & 0x700)`, evaluated when objects are
+    // collected for drawing -- so clearing the bit is enough and there is no cache to invalidate.
+    if (sdk::mem::write(reinterpret_cast<uintptr_t>(&obj->flags), wanted)) {
+        m_body_hides.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void VR::set_pin_eye_height(bool on) {
@@ -496,10 +559,15 @@ VR::State VR::state() const {
 }
 
 void VR::update_camera_offset() {
+    if (m_hide_body.load(std::memory_order_acquire)) {
+        apply_body_visibility(false);
+    }
+
     const bool pin = m_pin_eye.load(std::memory_order_acquire);
     const bool room = m_roomscale.load(std::memory_order_acquire);
+    const float trim = m_eye_trim.load(std::memory_order_acquire);
 
-    if (!pin && !room) {
+    if (!pin && !room && trim == 0.0f) {
         return;
     }
 
@@ -551,16 +619,18 @@ void VR::update_camera_offset() {
 
             if (!m_have_eye_ref) {
                 // Nothing to correct against yet. Applying a half-formed correction would be worse
-                // than applying none.
+                // than applying none -- but this must skip only the PIN, not the whole function.
+                // Returning here also skipped the eye trim and the roomscale offset, so a trim set
+                // while the reference was still pending read back as zero and looked ignored.
                 m_pin_part = {};
-                return;
-            }
+            } else {
 
-            m_pin_part = {m_eye_ref_vec[0] - (*off)[0], m_eye_ref_vec[1] - (*off)[1],
-                          m_eye_ref_vec[2] - (*off)[2]};
-            dx += m_pin_part[0];
-            dy += m_pin_part[1];
-            dz += m_pin_part[2];
+                m_pin_part = {m_eye_ref_vec[0] - (*off)[0], m_eye_ref_vec[1] - (*off)[1],
+                              m_eye_ref_vec[2] - (*off)[2]};
+                dx += m_pin_part[0];
+                dy += m_pin_part[1];
+                dz += m_pin_part[2];
+            }
         }
     }
 
@@ -602,6 +672,11 @@ void VR::update_camera_offset() {
             }
         }
     }
+
+    // THE TRIM IS INDEPENDENT of the pin, deliberately. It was applied inside the pin at first, and
+    // therefore did nothing whenever the pin was still waiting for a neutral head -- a preference
+    // that silently ignores you is worse than one that is not there.
+    dy += trim;
 
     CameraPassHook::get().set_position_offset(dx, dy, dz);
 }
