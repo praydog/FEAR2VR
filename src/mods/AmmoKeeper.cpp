@@ -1,6 +1,33 @@
 #include "AmmoKeeper.hpp"
 
+#include "Hooks.hpp"
 #include "Log.hpp"
+#include "sdk/WeaponMgr.hpp"
+
+namespace {
+
+constexpr const char* kServerDebitHook = "Weapon_HandleClientFireMessage::ammo_debit";
+
+std::atomic<bool> g_server_hold{false};
+std::atomic<uint64_t> g_blocked{0};
+
+// The intercepted instruction is `sub [ecx+eax*4], esi`, with esi holding the rounds the shot
+// consumed. Zeroing it before the instruction runs makes the debit a no-op.
+void ammo_debit_mid(safetyhook::Context& ctx) {
+    if (!g_server_hold.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    if (ctx.esi != 0) {
+        ctx.esi = 0;
+        g_blocked.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+}  // namespace
+
+
+
 #include "sdk/PlayerMgr.hpp"
 
 AmmoKeeper& AmmoKeeper::get() {
@@ -18,9 +45,32 @@ bool AmmoKeeper::set_floor(int32_t rounds) {
     }
     m_floor.store(rounds, std::memory_order_relaxed);
     m_countdown.store(0, std::memory_order_relaxed); // sweep on the next frame, not in 30
+    // INSTALL LAZILY. gameserver.dll only exists once a session does, so this cannot be resolved
+    // at framework init -- and a failure here is "no session yet", not "broken".
+    if (Hooks::get().find(kServerDebitHook) == nullptr) {
+        if (const uintptr_t site = sdk::WeaponMgr::server_ammo_debit_site(); site != 0) {
+            if (Hooks::get().install_mid(kServerDebitHook, reinterpret_cast<void*>(site),
+                                         &ammo_debit_mid)) {
+                LOGX("[ammo] holding the SERVER's pool at gameserver+0x%08zX",
+                     static_cast<size_t>(site));
+            }
+        } else {
+            LOGX("[ammo] server ammo debit site unresolved (no session yet?) -- client-side only");
+        }
+    }
+
+    g_server_hold.store(true, std::memory_order_relaxed);
     m_enabled.store(true, std::memory_order_release);
     LOGX("[ammo] keeping every carried type at >= %d rounds", rounds);
     return true;
+}
+
+bool AmmoKeeper::server_hold() const {
+    return g_server_hold.load(std::memory_order_relaxed);
+}
+
+uint64_t AmmoKeeper::server_debits_blocked() const {
+    return g_blocked.load(std::memory_order_relaxed);
 }
 
 void AmmoKeeper::disable() {
@@ -28,6 +78,7 @@ void AmmoKeeper::disable() {
     // wrong contract: the player has been firing, so "the value before" is not a
     // state the game was ever going to return to, and writing it back would take
     // away rounds they legitimately still hold.
+    g_server_hold.store(false, std::memory_order_relaxed);
     m_enabled.store(false, std::memory_order_release);
 }
 

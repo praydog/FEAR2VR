@@ -1069,6 +1069,35 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### THE CLIENT'S AMMO IS COSMETIC. The server keeps its own, and it is the one that decides
+
+`AmmoKeeper` held the client's reserve topped up and the symptom was still that damage stopped after
+a while -- and, unmistakably, that the rocket launcher played its firing animation while no rocket
+spawned. The client predicts the shot; the server refuses it.
+
+gameserver says so in its own words: `Weapon_HandleClientFireMessage` (0x1009B530) logs
+**"Client Ammo (%s) != Server Ammo (%s)"**. After calling `Weapon_FireServer` it measures what the
+shot consumed and debits its own pool:
+
+```
+1009B9F9  sub esi, eax             ; esi = before - after, the rounds consumed
+1009BA03  mov ecx, [edi+0ED8h]     ; edi = server player, +3800 = the ammo array
+1009BA09  sub [ecx+eax*4], esi     ; eax = ammo type index
+```
+
+**The debit is intercepted rather than the pool refilled.** A mid-hook on the `sub` zeroes `esi`, so
+the subtraction is a no-op and nothing else about the shot changes -- the server still validates,
+traces, spreads and applies damage. There is no value written, so there is nothing to restore and no
+state to get wrong on release.
+
+**Resolved by pattern and RETRYABLE, not latched.** gameserver.dll is mapped at session start, so a
+miss at the main menu is the normal case; latching it would leave the feature dead for the process
+lifetime, which is the trap AGENT.MD rule 6 names explicitly. Latched on success only.
+
+**Measured:** a three-second burst blocked 6 debits with the reserve unmoved. The magazine still
+empties (50 -> 8) and reloads from the reserve, which is correct -- the clip is weapon state, and
+forcing it would mean writing weapon state mid-fire where the engine is the only safe writer.
+
 ### The bore is the flash SOCKET's orientation, not the weapon object's
 
 The art places the flash socket on the barrel and orients it down the bore. That is precisely the

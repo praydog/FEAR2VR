@@ -280,6 +280,25 @@ public:
 
     static std::optional<Muzzle> muzzle(unsigned player_index = 0);
 
+    // ---- WHERE THE SERVER DEBITS AMMO ----------------------------------------------------------
+    //
+    // The client's reserve is NOT the ammo that decides anything. `Weapon_HandleClientFireMessage`
+    // (gameserver 0x1009B530) logs "Client Ammo (%s) != Server Ammo (%s)" when the two disagree,
+    // and it keeps its own pool: after calling Weapon_FireServer it measures how much was consumed
+    // and subtracts that from an int array on the server player.
+    //
+    //     mov ecx, [edi+0ED8h]     ; edi = server player, +3800 = the ammo array
+    //     sub [ecx+eax*4], esi     ; eax = ammo type index, esi = rounds consumed
+    //
+    // THE SYMPTOM THIS EXPLAINS, and it is the one that proves the client copy is cosmetic: with
+    // the client reserve held topped up, damage simply stops after a while, and the rocket launcher
+    // plays its firing animation while no rocket spawns. The client predicts the shot; the server
+    // refuses it.
+    //
+    // Returns the address of the `sub`, or 0. RETRYABLE, NOT LATCHED: gameserver.dll is mapped at
+    // session start, so a miss at the main menu is normal and must not be cached forever.
+    static uintptr_t server_ammo_debit_site();
+
     // ---- CHANGING IT ---------------------------------------------------------------------------
     //
     // Selection is NOT done by writing the field, and this class deliberately does not offer a

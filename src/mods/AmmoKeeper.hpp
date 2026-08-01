@@ -47,6 +47,20 @@ public:
     bool set_floor(int32_t rounds);
     void disable();
 
+    // ---- AND THE SERVER'S POOL, WHICH IS THE ONE THAT DECIDES ----------------------------------
+    //
+    // Topping up the client's reserve is cosmetic: the server keeps its own count and refuses the
+    // shot when it runs out, which shows up as damage quietly stopping and -- unmistakably -- as
+    // the rocket launcher playing its fire animation while no rocket spawns.
+    //
+    // So the debit itself is intercepted. A mid-hook on the `sub` inside
+    // Weapon_HandleClientFireMessage zeroes the register holding the amount consumed, which makes
+    // the subtraction a no-op and leaves everything else about the shot untouched -- the server
+    // still validates, still traces, still applies damage. Nothing is written into the pool, so
+    // there is no value to restore and no state to get wrong.
+    bool server_hold() const;
+    uint64_t server_debits_blocked() const;
+
     bool enabled() const { return m_enabled.load(std::memory_order_relaxed); }
     int32_t floor() const { return m_floor.load(std::memory_order_relaxed); }
 
