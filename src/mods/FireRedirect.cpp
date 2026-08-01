@@ -106,6 +106,8 @@ constexpr const char* kSendFirePattern =
 // esp+12 held a small vector. Writing a unit direction into esp+8 therefore moved
 // the ray's START to a point next to the world origin, which is exactly the sort
 // of confident wrong answer a plausible-looking argument list produces.
+// The perturb, passed by value ahead of both pointers -- see Accuracy.hpp for what sets it.
+constexpr uintptr_t kSendFirePerturbArg = 4;
 constexpr uintptr_t kSendFireOriginArg = 8;
 constexpr uintptr_t kSendFireDirArg = 12;
 
@@ -290,6 +292,14 @@ void FireRedirect::on_send_fire(SafetyHookContext& ctx) {
 
     if (const auto ret = sdk::mem::read<uintptr_t>(ctx.esp); ret.has_value() && *ret != 0) {
         self.m_send_caller.store(*ret, std::memory_order_relaxed);
+    }
+
+    // THE PERTURB THE SERVER WILL SPREAD BY. First stack argument, ahead of the origin and
+    // direction pointers: Weapon_SendClientFireMessage(this, perturb, origin, dir). Recorded, never
+    // written -- the Accuracy mod scales it at the source through SkillAimAccuracy, and this is how
+    // a caller confirms the dial reached the wire instead of trusting that it did.
+    if (const auto perturb = sdk::mem::read<float>(ctx.esp + kSendFirePerturbArg)) {
+        self.m_sent_perturb.store(*perturb, std::memory_order_relaxed);
     }
     const uintptr_t dir_ptr = sdk::mem::read<uintptr_t>(ctx.esp + kSendFireDirArg).value_or(0);
     const uintptr_t org_ptr = sdk::mem::read<uintptr_t>(ctx.esp + kSendFireOriginArg).value_or(0);

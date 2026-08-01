@@ -50,6 +50,7 @@ ARM = [
     ("stick locomotion + snap turn", "/xr/capture?locomotion=1"),
     ("trigger fires the weapon", "/xr/trigger?on=1"),
     ("shots leave the muzzle", "/xr/fire-muzzle?on=1"),
+    ("weapon spread tightened", "/xr/accuracy?scale=0.25"),
     ("player body hidden", "/xr/capture?hide_body=1"),
     ("head tracking applied", "/xr/enable?on=1"),
     ("recenter", "/xr/capture?recenter=1"),
@@ -58,6 +59,7 @@ ARM = [
 DISARM = [
     ("head tracking applied", "/xr/enable?on=0"),
     ("player body hidden", "/xr/capture?hide_body=0"),
+    ("weapon spread tightened", "/xr/accuracy?on=0"),
     ("shots leave the muzzle", "/xr/fire-muzzle?on=0"),
     ("trigger fires the weapon", "/xr/trigger?on=0"),
     ("stick locomotion + snap turn", "/xr/capture?locomotion=0"),
@@ -89,6 +91,7 @@ CHECKS = [
     ("vr_locomotion", "stick locomotion + snap turn"),
     ("trigger_armed", "trigger fires the weapon"),
     ("vr_gun_override", "gun anchored to the controller"),
+    ("acc_armed", "weapon spread tightened"),
 ]
 
 

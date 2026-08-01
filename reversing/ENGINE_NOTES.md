@@ -4011,6 +4011,43 @@ two-second bursts; rockets fired with the pool steady at its 15 maximum. Zero ex
 rockets stop at 15 -- so a floor of 500 asked forever and got 27 grants in 20 seconds. A grant that
 does not raise the pool now teaches that type's ceiling, and the ceiling becomes the trigger.
 
+### Weapon spread: perturb, and the one variable that scales it
+
+The client computes the spread cone and SENDS it; the server traces the ray with it.
+`Weapon_FireClient` (gameclient 0x1012DC80):
+
+```c
+perturb = PlayerStats_GetWeaponPerturb(stats) * Skill_GetMultiplier(0);  // SkillAimAccuracy
+perturb = clamp(perturb, 0, 255);
+Weapon_SendClientFireMessage(this, perturb, origin, dir);   // perturb is the FIRST stack arg
+```
+
+**`SkillAimAccuracy` is the whole dial, and its name is backwards.** It multiplies PERTURB, so
+lower is more accurate: 1.0 stock, 0.0 no spread. All three of its call sites sit immediately after
+the perturb accessor -- primary fire, alternate fire, grenades -- and nothing else in the client
+reads index 0, so scaling it cannot disturb another system. Measured at the wire via the send hook:
+sustained 53.8 at 1.0, 10.7 at 0.25, exactly 0.00 at 0.0.
+
+`PlayerStats_GetWeaponPerturb` interpolates the weapon record's `Perturb` MIN/MAX range by a
+normalised 0..1 accumulator, then clamps to 255. `PlayerStats_UpdatePerturb` drives that accumulator
+each frame toward the largest of three contributors, at `PerturbIncreaseRate`/`PerturbDecreaseRate`
+per second -- the M/F/T of its own debug string:
+
+| contributor | reads | note |
+|---|---|---|
+| `PerturbFromMovement` | a STANCE row of the weapon's `Accuracy` category | see below |
+| `PerturbFromFiring` | `Recoil`, scaled by current recoil | bloom while shooting |
+| `PerturbFromTurning` | `Turn`, scaled by the frame's rotation delta | **matters in VR** |
+
+**ADS accuracy is a different row, not a different formula.** The stance lookup picks one of
+`Stand`, `Walk`, `Crouch`, `Crouch_Walk`, `Run`, `Jump`, `Swim` -- or, when the aim state is not 3,
+`Aim`, `Aim_Walk`, `Aim_Crouch`, `Aim_Crouch_Walk`. So "always have ADS accuracy" is reachable by
+forcing that one state, but the multiplier is strictly more flexible and needs no hook.
+
+The turning contributor is worth calling out for a VR mod: a wearer turns their head constantly, and
+every frame of rotation feeds the cone. Part of why stock spread feels far worse in a headset than
+it does on a monitor.
+
 ### The mouse wheel: two input objects, and x/y are ignored
 
 `LTInput_OnMouseWheel` (FEAR2.exe 0x46CE2E) is the whole story:

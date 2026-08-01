@@ -233,6 +233,10 @@ public:
     uint64_t fire_entries() const { return m_fire_entries.load(std::memory_order_relaxed); }
     uint64_t messages() const { return m_messages.load(std::memory_order_relaxed); }
     uint64_t sends() const { return m_sends.load(std::memory_order_relaxed); }
+
+    // The perturb carried by the last fire message -- the cone the SERVER will spread the
+    // shot by. Zero means the shot goes exactly where the direction points.
+    float sent_perturb() const { return m_sent_perturb.load(std::memory_order_relaxed); }
     bool send_hooked() const { return m_send_hooked.load(std::memory_order_relaxed); }
     std::array<float, 3> last_sent_dir() const;
     std::array<float, 3> last_sent_origin() const;
@@ -289,6 +293,7 @@ private:
     std::atomic<uint64_t> m_fire_entries{0};
     std::atomic<uint64_t> m_messages{0};
     std::atomic<uint64_t> m_sends{0};
+    std::atomic<float> m_sent_perturb{0.0f};
     std::atomic<uintptr_t> m_send_caller{0};
     std::atomic<bool> m_send_hooked{false};
     std::atomic<float> m_sent_dir[3]{};

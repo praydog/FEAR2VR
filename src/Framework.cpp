@@ -35,6 +35,7 @@
 #include "mods/HudPassHook.hpp"
 #include "mods/BoneControl.hpp"
 #include "mods/WeaponWheel.hpp"
+#include "mods/Accuracy.hpp"
 #include "mods/AmmoKeeper.hpp"
 #include "mods/FrameCapture.hpp"
 #include "mods/FramePublisher.hpp"
@@ -10404,6 +10405,7 @@ bool Framework::initialize() {
     Mods::get().add(&BoneControl::get());
     Mods::get().add(&WeaponWheel::get());
     Mods::get().add(&AmmoKeeper::get());
+    Mods::get().add(&Accuracy::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
@@ -10596,6 +10598,7 @@ bool Framework::initialize() {
         // state document instead of an HTTP status.
         bool fire_aim_refused = false;
         bool ammo_floor_refused = false;
+        bool accuracy_refused = false;
         bool capture_armed = false;
         bool capture_drop_ok = false;
         bool nudge_ok = false;
@@ -10617,6 +10620,15 @@ bool Framework::initialize() {
                 ak.disable();
             } else {
                 ammo_floor_refused = !ak.set_floor(webapi_query_int(q, "floor", 500));
+            }
+        } else if (route == "/xr/accuracy") {
+            // Tighten weapon spread (see mods/Accuracy.hpp). `scale` multiplies the engine's
+            // perturb, so LOWER is more accurate -- 1.0 is stock, 0.0 is no spread at all.
+            auto& acc = Accuracy::get();
+            if (webapi_query_int(q, "on", 1) == 0) {
+                acc.release();
+            } else {
+                accuracy_refused = !acc.set_scale(static_cast<float>(webapi_query_double(q, "scale", 0.25)));
             }
         } else if (route == "/xr/runtime") {
             // Reach OpenXR from INSIDE the game, which is the only view that counts: the runtime a
@@ -11310,14 +11322,21 @@ bool Framework::initialize() {
               .f("fr_weapon_fz", FireRedirect::get().weapon_forward()[2], 4)
               .b("ak_enabled", AmmoKeeper::get().enabled())
               .b("ak_floor_refused", ammo_floor_refused)
+              .b("acc_refused", accuracy_refused)
               .i("ak_floor", AmmoKeeper::get().floor())
               .u("ak_sweeps", AmmoKeeper::get().sweeps())
               .u("ak_grants", AmmoKeeper::get().grants())
+              .b("acc_armed", Accuracy::get().armed())
+              .b("acc_resolved", Accuracy::get().resolved())
+              .f("acc_scale", Accuracy::get().scale(), 3)
+              .f("acc_original", Accuracy::get().original(), 3)
+              .u("acc_reasserts", Accuracy::get().reasserts())
               .u("fr_target", static_cast<unsigned long long>(fr.target()))
               .u("fr_desc", static_cast<unsigned long long>(fr.last_descriptor()))
               .u("fr_caller", static_cast<unsigned long long>(fr.fire_caller()))
               .u("fr_entries", fr.fire_entries())
               .u("fr_messages", fr.messages())
+              .f("fr_sent_perturb", fr.sent_perturb(), 3)
               .b("fr_send_hooked", fr.send_hooked())
               .u("fr_sends", fr.sends())
               .u("fr_send_caller", static_cast<unsigned long long>(fr.send_caller()))
