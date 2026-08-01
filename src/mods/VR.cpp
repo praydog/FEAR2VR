@@ -530,16 +530,37 @@ void VR::update_camera_offset() {
         // Not CameraAttachedOffset, which was the obvious suspect and is already 0,0,0 here --
         // zeroing it changed nothing, measured. The motion is in the socket itself.
         if (const auto off = sdk::PlayerMgr::eye_offset(0); off.has_value()) {
-            if (!m_have_eye_ref) {
+            // ONLY CAPTURE WHILE THE HEAD IS NEUTRAL, and wait as long as it takes.
+            //
+            // The reference has to be the eye offset with NO neck orbit in it, and the orbit is
+            // zero only when the head is level and facing forward. Capturing at an arbitrary
+            // moment bakes that moment's orbit into the reference and displaces the wearer
+            // permanently -- observed directly: a recenter taken while looking down moved the
+            // reference from (-6.89, 74.77, -4.73) to (-6.13, 53.88, -4.24), and the wearer then
+            // sat feet away from the player for the rest of the session.
+            //
+            // Deferring is better than clamping or averaging: the correct sample exists a moment
+            // later, as soon as the wearer looks ahead, and using a wrong one now cannot be undone
+            // without noticing it first.
+            if (!m_have_eye_ref && head_is_neutral()) {
                 m_eye_ref_vec = *off;
                 m_have_eye_ref = true;
-                LOGX("[vr] eye offset reference captured: %.2f %.2f %.2f", m_eye_ref_vec[0],
-                     m_eye_ref_vec[1], m_eye_ref_vec[2]);
+                LOGX("[vr] eye offset reference captured while neutral: %.2f %.2f %.2f",
+                     m_eye_ref_vec[0], m_eye_ref_vec[1], m_eye_ref_vec[2]);
             }
 
-            dx += m_eye_ref_vec[0] - (*off)[0];
-            dy += m_eye_ref_vec[1] - (*off)[1];
-            dz += m_eye_ref_vec[2] - (*off)[2];
+            if (!m_have_eye_ref) {
+                // Nothing to correct against yet. Applying a half-formed correction would be worse
+                // than applying none.
+                m_pin_part = {};
+                return;
+            }
+
+            m_pin_part = {m_eye_ref_vec[0] - (*off)[0], m_eye_ref_vec[1] - (*off)[1],
+                          m_eye_ref_vec[2] - (*off)[2]};
+            dx += m_pin_part[0];
+            dy += m_pin_part[1];
+            dz += m_pin_part[2];
         }
     }
 
@@ -574,12 +595,29 @@ void VR::update_camera_offset() {
                 const float c = yaw.has_value() ? cosf(*yaw) : 1.0f;
                 const float s = yaw.has_value() ? sinf(*yaw) : 0.0f;
 
-                dx += rx * c + rz * s;
-                dy += ry;
-                dz += -rx * s + rz * c;
+                m_room_part = {rx * c + rz * s, ry, -rx * s + rz * c};
+                dx += m_room_part[0];
+                dy += m_room_part[1];
+                dz += m_room_part[2];
             }
         }
     }
 
     CameraPassHook::get().set_position_offset(dx, dy, dz);
+}
+
+bool VR::head_is_neutral() const {
+    const auto* host = FramePublisher::get().host_state();
+
+    if (host == nullptr || host->valid == 0u) {
+        return false;
+    }
+
+    // The rotation angle of a unit quaternion is 2*acos(|w|), so |w| alone answers "how far from
+    // identity is this" without unpacking axes. cos(7.5 deg) for a 15 degree total cone: generous
+    // enough that a wearer looking roughly ahead qualifies, tight enough that the residual orbit is
+    // under a centimetre on an 8.4 cm lever arm.
+    constexpr float kNeutralCosHalf = 0.99144f;
+    const float w = host->orientation[3];
+    return (w < 0.0f ? -w : w) >= kNeutralCosHalf;
 }

@@ -1013,6 +1013,32 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Recenter has to WAIT for a neutral head, not take whatever it finds
+
+Reported: recentering left the wearer feet to the side of the player, consistently. Instrumented by
+publishing the pin and roomscale contributions separately, and the cause was immediate:
+
+    before recenter   eyeref (-6.89, +74.77, -4.73)     captured while level
+    after  recenter   eyeref (-6.13, +53.88, -4.24)     captured while looking down
+
+The eye-pin reference must be the eye offset with NO neck orbit in it, which is true only while the
+head is level and facing forward. Recenter recaptured it at whatever orientation happened to be
+current, so a recenter taken mid-glance baked that glance's orbit in permanently -- a fixed
+displacement for the rest of the session, in whatever direction the head happened to be pointing.
+
+**Deferring beats clamping or averaging.** The correct sample exists a moment later, as soon as the
+wearer looks ahead; a wrong one taken now cannot be undone without first noticing it, and the whole
+point is that it is not noticeable from inside a headset. So `recenter` now ARMS a capture and the
+capture happens on the first frame the head is within 15 degrees of neutral.
+
+Neutrality is read straight off the quaternion: the rotation angle of a unit quaternion is
+2*acos(|w|), so |w| alone answers it without unpacking any axes. The 15 degree cone leaves under a
+centimetre of residual orbit on an 8.4 cm lever arm.
+
+**And while it waits, it applies NOTHING** -- not a partial correction, not the last one. `pin` reads
+zero and `vr_eyeref_ready` is false, both published, because "waiting for you to look ahead" and
+"broken" are otherwise indistinguishable to someone wearing the thing.
+
 ### Re-arming from memory does not work; there is a script now
 
 The VR path is eight independent switches, and all of them are off after a fresh inject -- which is

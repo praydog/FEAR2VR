@@ -65,6 +65,20 @@ public:
     // ROOMSCALE: add the wearer's movement within their play space. Captured relative to wherever
     // they were when it was switched on, so enabling it never teleports anyone.
     void update_camera_offset();
+
+    // Is the wearer looking roughly straight ahead? The reference for the eye pin is only valid
+    // when taken with no neck orbit in it, which is to say while the head is neutral.
+    bool head_is_neutral() const;
+
+    // False while a recenter is still waiting for the wearer to look ahead. Published, because
+    // "waiting" and "broken" are indistinguishable from inside a headset otherwise.
+    bool eye_reference_captured() const { return m_have_eye_ref; }
+
+    // The two contributions, published separately. A combined number cannot say WHICH half is
+    // displacing the wearer, and the two have completely different causes.
+    std::array<float, 3> pin_contribution() const { return m_pin_part; }
+    std::array<float, 3> room_contribution() const { return m_room_part; }
+    std::array<float, 3> eye_reference() const { return m_eye_ref_vec; }
     // ---- THE ENGINE'S OWN CAMERA OFFSET, NEUTRALISED -------------------------------------------
     //
     // The engine builds the camera as `socket_pose.position + rotate(CameraAttachedOffset, camera
@@ -200,6 +214,8 @@ private:
     float m_room_origin[3]{};
     std::array<float, 3> m_eye_ref_vec{};
     bool m_have_eye_ref{false};
+    std::array<float, 3> m_pin_part{};
+    std::array<float, 3> m_room_part{};
     std::atomic<bool> m_neutral_cam_off{false};
     std::array<float, 3> m_saved_cam_off{};
     bool m_have_saved_cam_off{false};
