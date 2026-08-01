@@ -6,6 +6,7 @@
 
 #include "Log.hpp"
 #include "RenderHook.hpp"
+#include "FramePublisher.hpp"
 #include "HudPassHook.hpp"
 #include "RenderTimeline.hpp"
 #include "sdk/Render.hpp"
@@ -123,6 +124,12 @@ void UICapture::free_device_resources() {
     }
     if (auto* scratch = static_cast<IDirect3DSurface9*>(m_scratch.exchange(nullptr, std::memory_order_acq_rel))) {
         scratch->Release();
+    }
+    if (auto* s = static_cast<IDirect3DSurface9*>(m_scaled.exchange(nullptr, std::memory_order_acq_rel))) {
+        s->Release();
+    }
+    if (auto* g = static_cast<IDirect3DSurface9*>(m_stage.exchange(nullptr, std::memory_order_acq_rel))) {
+        g->Release();
     }
     m_width.store(0, std::memory_order_relaxed);
     m_height.store(0, std::memory_order_relaxed);
@@ -338,6 +345,8 @@ void UICapture::on_present() {
         return;
     }
 
+    publish_layer(dev);
+
     if (!m_shot_pending.load(std::memory_order_acquire)) {
         return;
     }
@@ -447,4 +456,76 @@ void UICapture::on_pass(uint32_t ordinal) {
     m_saved.store(current, std::memory_order_release);
     dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
     m_swaps.fetch_add(1, std::memory_order_relaxed);
+}
+
+void UICapture::publish_layer(IDirect3DDevice9* dev) {
+    auto& pub = FramePublisher::get();
+
+    // RETIRE ONCE, not every frame. A host left holding the last HUD forever is worse than one
+    // holding none -- a frozen ammo counter looks live -- but re-announcing "gone" 90 times a
+    // second would be pointless traffic through a sequence the host is polling.
+    if (!m_enabled.load(std::memory_order_acquire) ||
+        m_surface.load(std::memory_order_relaxed) == nullptr) {
+        if (m_published.exchange(false, std::memory_order_acq_rel)) {
+            pub.publish_ui(nullptr, 0, 0, 0, true, true, true);
+        }
+        return;
+    }
+
+    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+
+    // DOWNSCALED ON THE GPU FIRST. The captured surface is the back buffer's size (2560x1440 here),
+    // and a quad two metres away does not resolve that -- so the readback, which is the expensive
+    // part and lands on the render thread, is paid at the layer's size instead of the frame's.
+    const int32_t lw = m_layer_w.load(std::memory_order_relaxed);
+    const int32_t lh = m_layer_h.load(std::memory_order_relaxed);
+    if (lw <= 0 || lh <= 0) {
+        return;
+    }
+
+    auto* scaled = static_cast<IDirect3DSurface9*>(m_scaled.load(std::memory_order_relaxed));
+    auto* stage = static_cast<IDirect3DSurface9*>(m_stage.load(std::memory_order_relaxed));
+    if (scaled == nullptr || stage == nullptr) {
+        IDirect3DSurface9* s = nullptr;
+        IDirect3DSurface9* g = nullptr;
+        if (FAILED(dev->CreateRenderTarget(static_cast<UINT>(lw), static_cast<UINT>(lh),
+                                           D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &s,
+                                           nullptr)) ||
+            FAILED(dev->CreateOffscreenPlainSurface(static_cast<UINT>(lw), static_cast<UINT>(lh),
+                                                    D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &g,
+                                                    nullptr))) {
+            if (s != nullptr) { s->Release(); }
+            if (g != nullptr) { g->Release(); }
+            m_failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        m_scaled.store(s, std::memory_order_release);
+        m_stage.store(g, std::memory_order_release);
+        scaled = s;
+        stage = g;
+    }
+
+    if (FAILED(dev->StretchRect(surf, nullptr, scaled, nullptr, D3DTEXF_LINEAR)) ||
+        FAILED(dev->GetRenderTargetData(scaled, stage))) {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    D3DLOCKED_RECT lr{};
+    if (FAILED(stage->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Alpha is DERIVED BY THE HOST (see xr::UiFrameHeader::derive_alpha): it is already copying
+    // every pixel, and doing it here would put a megapixel pass inside the game's frame.
+    const bool ok = pub.publish_ui(lr.pBits, static_cast<uint32_t>(lr.Pitch),
+                                   static_cast<uint32_t>(lw), static_cast<uint32_t>(lh), true, true,
+                                   /*derive_alpha=*/true);
+    stage->UnlockRect();
+    if (ok) {
+        m_published.store(true, std::memory_order_release);
+        m_publishes.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+    }
 }

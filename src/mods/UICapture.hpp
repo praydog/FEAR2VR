@@ -129,8 +129,15 @@ public:
     void on_present();
     void free_device_resources();
 
+    // How many UI layers have reached the shared mapping.
+    uint64_t publishes() const { return m_publishes.load(std::memory_order_relaxed); }
+    int32_t layer_width() const { return m_layer_w.load(std::memory_order_relaxed); }
+    int32_t layer_height() const { return m_layer_h.load(std::memory_order_relaxed); }
+
 private:
     UICapture() = default;
+
+    void publish_layer(struct IDirect3DDevice9* dev);
 
     std::atomic<bool> m_enabled{false};
     std::atomic<int> m_mode{3};
@@ -139,6 +146,12 @@ private:
     std::atomic<void*> m_surface{nullptr};   // IDirect3DSurface9*, our colour target
     std::atomic<void*> m_saved{nullptr};     // the engine's surface, held only inside a bracket
     std::atomic<void*> m_scratch{nullptr};   // the borrowed target's contents, kept across the swap
+    std::atomic<void*> m_scaled{nullptr};    // the layer at publish size, GPU side
+    std::atomic<void*> m_stage{nullptr};     // SYSTEMMEM staging for the readback
+    std::atomic<int32_t> m_layer_w{1280};
+    std::atomic<int32_t> m_layer_h{720};
+    std::atomic<bool> m_published{false};
+    std::atomic<uint64_t> m_publishes{0};
     std::atomic<int32_t> m_width{0};
     std::atomic<int32_t> m_height{0};
     std::atomic<uint64_t> m_swaps{0};

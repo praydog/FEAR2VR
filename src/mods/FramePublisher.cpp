@@ -43,7 +43,7 @@ bool FramePublisher::open() {
     m_error.clear();
 
     const uint32_t total =
-        xr::kPayloadOffset + xr::kFrameSlots * xr::kSharedFrameMaxBytes;
+        xr::kSharedFrameTotalBytes;  // headers + frame slots + UI slots, named in the contract
 
     HANDLE mapping = ::CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
                                           xr::kSharedFrameName);
@@ -100,6 +100,57 @@ void FramePublisher::close() {
         ::CloseHandle(static_cast<HANDLE>(m_tick_event));
         m_tick_event = nullptr;
     }
+}
+
+bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
+                                bool bgra, bool premultiplied, bool derive_alpha) {
+    if (m_base == nullptr) {
+        return false;
+    }
+    auto* ui = reinterpret_cast<xr::UiFrameHeader*>(static_cast<uint8_t*>(m_base) + xr::kUiStateOffset);
+
+    // A NULL PAYLOAD RETIRES THE LAYER. The mod is armed and disarmed at runtime, and without this
+    // the host would keep showing the last HUD it was given forever -- a frozen ammo counter is a
+    // worse failure than no ammo counter, because it looks live.
+    if (bits == nullptr || width == 0 || height == 0) {
+        ui->sequence |= 1u;
+        ::MemoryBarrier();
+        ui->present = 0u;
+        ::MemoryBarrier();
+        ui->sequence = (ui->sequence + 1u) & ~1u;
+        return true;
+    }
+
+    const uint64_t needed = static_cast<uint64_t>(pitch) * height;
+    if (needed > xr::kUiMaxBytes) {
+        m_error = "UI layer does not fit its slot";
+        return false;
+    }
+
+    const uint32_t write_slot = (ui->slot + 1u) % xr::kUiSlots;
+    auto* payload = static_cast<uint8_t*>(m_base) + xr::ui_slot_offset(write_slot);
+
+    ui->sequence |= 1u;  // odd: the pixels are in flux
+    ::MemoryBarrier();
+
+    ui->width = width;
+    ui->height = height;
+    ui->pitch = pitch;
+    ui->bytes = static_cast<uint32_t>(needed);
+    ui->bgra = bgra ? 1u : 0u;
+    ui->premultiplied = premultiplied ? 1u : 0u;
+    ui->derive_alpha = derive_alpha ? 1u : 0u;
+    ui->slot = write_slot;
+
+    std::memcpy(payload, bits, static_cast<size_t>(needed));
+
+    ui->write_qpc = now_ticks();
+    ++ui->frames_written;
+    ui->present = 1u;
+
+    ::MemoryBarrier();
+    ui->sequence = (ui->sequence + 1u) & ~1u;  // even: a whole layer is present
+    return true;
 }
 
 bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,

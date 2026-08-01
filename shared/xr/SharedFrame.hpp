@@ -21,7 +21,9 @@
 namespace xr {
 
 constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
-constexpr uint32_t kSharedFrameVersion = 1u;
+// 2 adds the UI layer block. The host VALIDATES this: a mismatched pair would otherwise read the
+// pixels at the wrong offset and show garbage rather than refusing.
+constexpr uint32_t kSharedFrameVersion = 2u;
 
 // Sized for the game's own back buffer at 2560x1440 BGRA. Deliberately NOT sized for a supersampled
 // future: the section is committed memory in both processes, and the resolution question is settled
@@ -192,9 +194,72 @@ struct alignas(64) HandsState {
 
 static_assert(sizeof(HandsState) == 256, "HandsState must be byte-identical in both bitnesses");
 
-// Layout of the mapping: [SharedFrameHeader][HostState][HandsState][pixels]
-constexpr uint32_t kPayloadOffset =
+// ---- THE UI LAYER, WHICH IS A SECOND IMAGE ------------------------------------------------------
+//
+// The HUD is captured on its own transparent surface (src/mods/UICapture.hpp) and travels
+// separately from the world, so the host can put it on a QUAD in front of the wearer instead of
+// leaving it smeared across both eyes of a stereo image. Same discipline as the frame block: fixed
+// width, asserted size, odd/even sequence, and its own slots so a reader is never inside a buffer
+// the writer is filling.
+//
+// SMALLER THAN THE WORLD, on purpose. The UI is flat, sparse and read at a fixed apparent size on a
+// quad, so it does not need the back buffer's resolution -- and the cost here is a per-frame GPU
+// downscale plus a readback that is paid on the game's render thread.
+constexpr uint32_t kUiMaxBytes = 1920u * 1080u * 4u;
+
+// Two is enough where the frame needs three: the UI is a quarter of the bytes, so the host is never
+// inside one for anything like a frame period.
+constexpr uint32_t kUiSlots = 2u;
+
+struct alignas(64) UiFrameHeader {
+    int64_t write_qpc;
+
+    volatile uint32_t sequence;  // odd while the writer is inside the pixels
+    // Whether the game is publishing a UI layer AT ALL. Distinct from a stale sequence: the mod is
+    // off by default, and "nothing has been published" must not read as "the last frame, forever".
+    uint32_t present;
+
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bytes;
+
+    uint32_t bgra;
+    uint32_t slot;
+    uint32_t frames_written;
+
+    // THE COLOUR IS ALREADY MULTIPLIED BY THE ALPHA, because of how the layer is produced: the
+    // surface is cleared to transparent black and only the UI draws into it, so what lands there is
+    // the contribution, not the tint. The host must therefore NOT set
+    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT -- doing so double-darkens every edge.
+    uint32_t premultiplied;
+
+    // ALPHA IS NOT IN THE PIXELS -- the host must derive it as max(r, g, b) while it copies.
+    //
+    // The engine's UI shaders emit zero alpha and forcing the write mask does not change that (the
+    // mask was measured at 0xF for the whole bracket). It does not matter, because the surface is
+    // cleared to transparent black and only the UI draws into it: RGB is already the premultiplied
+    // contribution and its brightness IS its coverage.
+    //
+    // Derived on the HOST rather than by the game, purely for where the cost lands. It is one pass
+    // over ~1 megapixel; the host is already touching every pixel to upload it, while the game
+    // would be paying it on its render thread inside the frame.
+    uint32_t derive_alpha;
+
+    uint32_t reserved[3];
+};
+
+static_assert(sizeof(UiFrameHeader) == 64, "UiFrameHeader must be byte-identical in both bitnesses");
+
+// Layout of the mapping:
+//   [SharedFrameHeader][HostState][HandsState][UiFrameHeader][frame slots x3][ui slots x2]
+//
+// The UI header sits with the other headers rather than beside its pixels, so every fixed-size
+// block stays in one contiguous run and only the payloads are resolution-sized.
+constexpr uint32_t kUiStateOffset =
     static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState) + sizeof(HandsState));
+
+constexpr uint32_t kPayloadOffset = kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader));
 
 // Where each block sits, named rather than recomputed at every call site -- the head block's offset
 // was open-coded as sizeof(header) in three places before the hands existed.
@@ -207,6 +272,17 @@ constexpr uint32_t kHandsStateOffset =
 constexpr uint32_t slot_offset(uint32_t slot) {
     return kPayloadOffset + (slot % kFrameSlots) * kSharedFrameMaxBytes;
 }
+
+constexpr uint32_t kUiPayloadOffset = kPayloadOffset + kFrameSlots * kSharedFrameMaxBytes;
+
+constexpr uint32_t ui_slot_offset(uint32_t slot) {
+    return kUiPayloadOffset + (slot % kUiSlots) * kUiMaxBytes;
+}
+
+// THE WHOLE MAPPING. Named because both sides must agree on it: the writer creates the section this
+// big and the reader maps exactly this much, and a disagreement is an access violation in whichever
+// process guessed low.
+constexpr uint32_t kSharedFrameTotalBytes = kUiPayloadOffset + kUiSlots * kUiMaxBytes;
 
 constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 

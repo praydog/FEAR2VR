@@ -33,6 +33,19 @@ public:
     //
     // Returns false when the frame does not fit or the section is not open, and NEVER blocks: the
     // caller is the render thread and a reader must not be able to stall a game.
+    // THE UI LAYER -- a second, smaller image with alpha, travelling beside the world so the host can
+    // put it on a quad. Same sequence discipline and its own slots; see xr::UiFrameHeader.
+    //
+    // Passing a null `bits` RETIRES the layer rather than failing: the mod is armed and disarmed at
+    // runtime, and a host left showing the last HUD forever is worse than one showing none.
+    //
+    // `derive_alpha` tells the host to compute alpha as max(r, g, b) as it copies, because the
+    // engine's UI shaders emit none. Passing false with pixels that carry no alpha publishes an
+    // invisible layer -- which is exactly what the first version of this did, caught by reading the
+    // mapping back rather than by the build.
+    bool publish_ui(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
+                    bool premultiplied, bool derive_alpha);
+
     bool publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
                  uint32_t layout, uint32_t host_sequence);
 
