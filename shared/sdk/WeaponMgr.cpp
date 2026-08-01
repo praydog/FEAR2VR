@@ -1,5 +1,7 @@
 #include "WeaponMgr.hpp"
 
+#include "Object.hpp"
+
 #include "DatabaseMgr.hpp"
 #include "Memory.hpp"
 #include "CClientShell.hpp"
@@ -460,6 +462,27 @@ std::optional<size_t> WeaponMgr::weapon_index(const regenny::DatabaseMgrRecord* 
 
 std::optional<size_t> WeaponMgr::current_weapon_index(unsigned player_index) {
     return weapon_index(current_weapon(player_index));
+}
+
+uintptr_t WeaponMgr::current_weapon_model(unsigned player_index) {
+    const auto weapon = current_weapon_object(player_index);
+
+    if (weapon == 0) {
+        return 0;
+    }
+
+    uintptr_t model = 0;
+    if (!mem::copy(&model, weapon + kWeaponModelObject, sizeof(model)) || model == 0) {
+        return 0;
+    }
+
+    // Read as an object before handing it out. The field is only trusted so far: a weapon mid-swap
+    // can carry a pointer whose object has already gone, and the caller writes through this.
+    if (!object_info(reinterpret_cast<const regenny::LTObject*>(model)).has_value()) {
+        return 0;
+    }
+
+    return model;
 }
 
 bool WeaponMgr::muzzle_resolvable(unsigned player_index) {

@@ -9186,6 +9186,28 @@ std::string build_weapons_json(const std::string& request_target) {
     std::string out = "{";
     json_append_bool(out, "ok", chooser != 0);
     json_append_raw(out, "chooser", std::to_string(static_cast<uint64_t>(chooser)).c_str());
+    // DOES THE FIELD STILL NAME A REAL VIEWMODEL? Deliberately not "does it equal what the mod is
+    // driving" -- the mod reads this very field, so that check would confirm itself. Asked instead
+    // of the object: it must be a client-only (handle 0xFFFF) VISIBLE model whose asset lives under
+    // weapons\, which is what a first-person weapon is and what a stale or wrong pointer is not.
+    {
+        const auto model = sdk::WeaponMgr::current_weapon_model(0);
+        bool plausible = false;
+
+        if (model != 0) {
+            const auto* o = reinterpret_cast<const regenny::LTObject*>(model);
+            const auto oi = sdk::object_info(o);
+            const auto fn = sdk::model_filename(o);
+            plausible = oi.has_value() && oi->handle == 0xFFFFu &&
+                        (oi->flags & sdk::object_flags::kVisible) != 0u && fn.has_value() &&
+                        fn->rfind("weapons\\", 0) == 0;
+        }
+
+        json_append_bool(out, "weapon_model_plausible", plausible);
+        json_append_raw(out, "weapon_model",
+                        std::to_string(static_cast<uint64_t>(model)).c_str());
+    }
+
     json_append_raw(out, "weapon_object",
                     std::to_string(static_cast<uint64_t>(sdk::WeaponMgr::current_weapon_object(0))).c_str());
 

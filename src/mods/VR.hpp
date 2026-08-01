@@ -414,9 +414,6 @@ private:
     std::atomic<uint64_t> m_hand_pose_updates{0};
     std::atomic<bool> m_weapon_override{false};
     std::atomic<uintptr_t> m_weapon_obj{0};
-    // The weapon record last seen, as an opaque address: only ever compared, never
-    // dereferenced, so the header does not need the schema type.
-    const void* m_weapon_record{};
     std::atomic<uint64_t> m_weapon_writes{0};
     std::atomic<float> m_weapon_probe[3]{};
     std::atomic<bool> m_weapon_abs{false};

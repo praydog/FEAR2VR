@@ -1069,6 +1069,25 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The game already knows which object the gun is: `CClientWeapon + 0x38`
+
+Ask the weapon, do not search the world. The field holds the LTObject the weapon renders as, and it
+survived four weapons and three switches unchanged.
+
+**How it was found, because the method generalises.** The heuristic below produced a known-good
+pointer at runtime; scanning `CClientWeapon`'s OWN memory for that value reported exactly one
+offset. Matching a known value inside ONE object is not the same act as scanning a binary for an
+offset -- there is a single candidate and switching weapons falsifies it immediately -- which is why
+it is sound here where an offset scan would not be.
+
+**The heuristic is deleted, not kept beside it.** Two ways to find the same thing is how one of them
+goes stale.
+
+**The diagnostic had to change too.** "Does the field equal the object the mod is driving" is now
+self-confirming, since the mod reads that field. `weapon_model_plausible` asks the OBJECT instead:
+client-only, visible, asset under `weapons\`. A check that cannot fail is not a check -- a lesson
+this session paid for four separate times.
+
 ### Firing spawns decoys that a "nearest weapon model" selector locks onto
 
 The welded gun snapped back to its engine position for a frame when firing, and sometimes stuck

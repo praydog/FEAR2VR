@@ -225,6 +225,27 @@ public:
     // and a consumer wanting the second has to observe a shot (see the fixture's empirical gate).
     static bool muzzle_resolvable(unsigned player_index = 0);
 
+    // ---- THE FIRST-PERSON MODEL THE WEAPON DRAWS -----------------------------------------------
+    //
+    // `CClientWeapon + 0x38` holds the LTObject the weapon renders as -- the thing the player sees
+    // in front of them. This is the answer to "which object is the gun", and it comes from the game
+    // rather than from a search.
+    //
+    // HOW IT WAS FOUND, because the method generalises: the object was first identified the hard
+    // way (nearest client-only visible model under `weapons\`), which gave a known-good pointer at
+    // runtime. Scanning CClientWeapon's own memory for that value reported exactly one offset, and
+    // it survived four weapons and three switches. Matching a KNOWN value inside ONE object is a
+    // different thing from scanning the binary for an offset -- there is a single candidate and it
+    // is verifiable by switching weapons, which is why it is sound here.
+    //
+    // WHY IT MATTERS THAT THIS EXISTS: the heuristic it replaced retargeted onto shell casings the
+    // moment the player fired, because muzzle effects are also client-only weapon-asset models and
+    // spawn nearer than the gun. A pointer the game maintains cannot be fooled that way.
+    //
+    // 0 when there is no weapon, or when the field does not read as an object.
+    static uintptr_t current_weapon_model(unsigned player_index = 0);
+    static constexpr uintptr_t kWeaponModelObject = 0x38;
+
     // ---- CHANGING IT ---------------------------------------------------------------------------
     //
     // Selection is NOT done by writing the field, and this class deliberately does not offer a
