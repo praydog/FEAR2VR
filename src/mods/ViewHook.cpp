@@ -595,6 +595,7 @@ std::atomic<float> g_weapon_pos[3]{};
 std::atomic<float> g_weapon_rot[4]{0.0f, 0.0f, 0.0f, 1.0f};
 std::atomic<uint64_t> g_weapon_amended{0};
 std::atomic<bool> g_weapon_absolute{false};
+std::atomic<uintptr_t> g_weapon_anchor{0};
 
 int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posrot) {
     g_spr_calls.fetch_add(1, std::memory_order_relaxed);
@@ -605,8 +606,28 @@ int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posr
             // WELDED. The engine's value is discarded entirely -- position, orientation, recoil,
             // sway, the animation's idea of where the gun should be -- because a caller asking for
             // "exactly where I put my controller" is asking for all of those to stop applying.
-            for (size_t i = 0; i < 3; ++i) {
-                posrot[i] = g_weapon_pos[i].load(std::memory_order_relaxed);
+            //
+            // THE ANCHOR IS READ HERE, not on the game thread. Walking with the stick made the gun
+            // trail slightly, because a world position computed in on_frame is computed BEFORE the
+            // engine moves the player and applied AFTER -- one frame of walking speed, every frame.
+            // Reading the anchor at the moment the transform is written removes the lag entirely
+            // rather than compensating for it.
+            float ax = 0.0f, ay = 0.0f, az = 0.0f;
+            const uintptr_t anchor = g_weapon_anchor.load(std::memory_order_relaxed);
+
+            if (anchor != 0) {
+                const auto ai = sdk::object_info(reinterpret_cast<const regenny::LTObject*>(anchor));
+                if (ai.has_value()) {
+                    ax = ai->position.x;
+                    ay = ai->position.y;
+                    az = ai->position.z;
+                }
+            }
+
+            posrot[0] = ax + g_weapon_pos[0].load(std::memory_order_relaxed);
+            posrot[1] = ay + g_weapon_pos[1].load(std::memory_order_relaxed);
+            posrot[2] = az + g_weapon_pos[2].load(std::memory_order_relaxed);
+            {
             }
             for (size_t i = 0; i < 4; ++i) {
                 posrot[3 + i] = g_weapon_rot[i].load(std::memory_order_relaxed);
@@ -654,8 +675,9 @@ int __fastcall set_pos_rot_detour(uintptr_t self, uintptr_t /*edx*/, float* posr
 }  // namespace
 
 void ViewHook::set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
-                                const std::array<float, 4>& rot, bool absolute) {
+                                const std::array<float, 4>& rot, bool absolute, uintptr_t anchor) {
     g_weapon_absolute.store(absolute, std::memory_order_relaxed);
+    g_weapon_anchor.store(anchor, std::memory_order_relaxed);
     for (size_t i = 0; i < 3; ++i) {
         g_weapon_pos[i].store(pos[i], std::memory_order_relaxed);
     }

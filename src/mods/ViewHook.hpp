@@ -67,8 +67,15 @@ public:
     // sway and the weapon's rest angle -- which is the wrong answer when the caller wants the gun
     // welded to a controller, because every one of those is then still moving it. Replacing throws
     // all of it away deliberately: the gun goes exactly where it is put and nothing else touches it.
+    //
+    // `anchor` is the object the position is measured FROM, and passing it matters for more than
+    // tidiness. The alternative -- resolving the anchor on the game thread and handing over a
+    // finished world position -- is computed before the engine moves the player and drawn after,
+    // so the gun trails by one frame of walking speed. Resolved inside the detour it is read at
+    // the instant the transform is written. 0 means `pos` is already a world position.
     void set_weapon_amend(uintptr_t obj, const std::array<float, 3>& pos,
-                          const std::array<float, 4>& rot, bool absolute = false);
+                          const std::array<float, 4>& rot, bool absolute = false,
+                          uintptr_t anchor = 0);
     uint64_t weapon_amendments() const;
 
     // ---- LEVELLING THE BODY, SO THE HEAD CAN TURN ----------------------------------------------

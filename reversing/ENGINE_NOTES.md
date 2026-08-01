@@ -1069,6 +1069,40 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### Resolve the anchor INSIDE the detour, or the gun trails by a frame
+
+Walking with the stick made the welded gun lag slightly behind where it belonged. A world position
+computed in `on_frame` is computed BEFORE the engine moves the player and applied AFTER it -- one
+frame of walking speed, every frame. `ViewHook::set_weapon_amend` now takes the anchor OBJECT and
+reads its position at the instant it writes the transform, so there is nothing to lag.
+
+A diagnostic caught this and then lied about it: `vr_gun_px` became a root-RELATIVE offset with the
+same change, so a check that subtracted the player's position from it read a 74-unit swing that was
+pure bookkeeping. It publishes a resolved world position again.
+
+### THE UNLOAD RACE IS REAL, AND A STACK SCAN CANNOT FIX IT
+
+FEAR2.exe died with `0xC0000005` in `fear2vr.dll_unloaded` at the offset of
+`FireRedirect::on_fire_entry`, reached from `GameServer.dll`, right after a rebuild unloaded the DLL
+while the game was live and shooting. Windows named the module; our own crash handler could only say
+"no module", because by then there was no module.
+
+**The obvious fix does not work.** `prove_quiescent` checks EIP only, which answers "is a thread
+executing our code now" and not "will a thread RETURN into it". Extending it to scan thread stacks
+for addresses inside our image was implemented and **reverted**, for a reason that is structural
+rather than a bug:
+
+- Our own threads always hold our addresses. Excluding them by Win32 start address is easy enough.
+- **The game thread does too, permanently.** `frame_tick_detour` wraps the ENTIRE engine update, so
+  from inside `CClientShell::Update` our return address is on the stack essentially always. The scan
+  therefore never passes, every unload falls back to dormant, and hot iteration stops working.
+
+A check that can never pass is worse than the race it prevents. The EIP check stands.
+
+**What actually reduces the risk is behavioural:** do not rebuild while the game is live in a path
+that can call a mid-hook. The server fire hooks are the sharp edge -- they fire from GameServer on
+its own thread, unrelated to the frame tick that quiescence reasons about.
+
 ### The host dies quietly and everything else stays green
 
 Twice now the 64-bit host has stopped while every other signal looked healthy -- the mod keeps

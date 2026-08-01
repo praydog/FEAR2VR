@@ -798,6 +798,7 @@ void VR::update_weapon() {
     float pz = m_weapon_probe[2].load(std::memory_order_relaxed);
     std::array<float, 4> turn{0.0f, 0.0f, 0.0f, 1.0f};
     bool absolute = false;
+    uintptr_t anchor_obj = 0;
 
     auto& rt = vr::simulated_runtime();
     const auto hand = rt.hand(vr::VRRuntime::Hand::RIGHT);
@@ -864,12 +865,21 @@ void VR::update_weapon() {
         // committed, to cover displace_player's dead band and collision -- was reverted because the
         // owner reported it broken. The dead-band leak is real and is NOT worth chasing; it costs
         // less than the thing that fixes it.
-        const float ax = root.has_value() ? root->position.x : cam->position.x;
-        const float az = root.has_value() ? root->position.z : cam->position.z;
+        // AN OFFSET FROM THE ROOT, not a world position: the detour adds the root's position at
+        // the instant it writes the transform. Finishing the sum here computes it before the engine
+        // moves the player and applies it after, which is the slight trailing seen when walking.
+        anchor_obj = (root.has_value() && objs.has_value()) ? objs->model : 0;
 
-        px += ax + e[0] * cy + e[2] * sy;
-        py += base_y + e[1];
-        pz += az + (-e[0] * sy + e[2] * cy);
+        px += e[0] * cy + e[2] * sy;
+        py += eye + e[1];
+        pz += -e[0] * sy + e[2] * cy;
+
+        if (anchor_obj == 0) {
+            // No anchor to resolve later, so fall back to a finished world position.
+            px += cam->position.x;
+            py += base_y - eye;
+            pz += cam->position.z;
+        }
 
         // The controller's ABSOLUTE orientation, converted and then turned into the world by the
         // same heading. No rest pose and no delta: whatever the controller points at, the gun does.
@@ -892,10 +902,20 @@ void VR::update_weapon() {
                              std::memory_order_relaxed);
     m_weapon_anchor[2].store(cam.has_value() ? cam->position.z : 0.0f, std::memory_order_relaxed);
     m_weapon_abs.store(absolute, std::memory_order_relaxed);
-    m_weapon_place[0].store(px, std::memory_order_relaxed);
-    m_weapon_place[1].store(py, std::memory_order_relaxed);
-    m_weapon_place[2].store(pz, std::memory_order_relaxed);
-    ViewHook::get().set_weapon_amend(obj, {px, py, pz}, turn, absolute);
+    // PUBLISHED AS A WORLD POSITION even though an offset is what gets handed over, because a
+    // consumer comparing this against anything else in the world needs the same units it does. The
+    // offset alone read as a wild swing in a diagnostic that subtracted the player's position from
+    // it -- a measurement invalidated by the very change it was checking.
+    const auto pub_root =
+        anchor_obj != 0 ? sdk::object_info(reinterpret_cast<const regenny::LTObject*>(anchor_obj))
+                        : std::nullopt;
+    const float pub_x = pub_root.has_value() ? pub_root->position.x + px : px;
+    const float pub_y = pub_root.has_value() ? pub_root->position.y + py : py;
+    const float pub_z = pub_root.has_value() ? pub_root->position.z + pz : pz;
+    m_weapon_place[0].store(pub_x, std::memory_order_relaxed);
+    m_weapon_place[1].store(pub_y, std::memory_order_relaxed);
+    m_weapon_place[2].store(pub_z, std::memory_order_relaxed);
+    ViewHook::get().set_weapon_amend(obj, {px, py, pz}, turn, absolute, anchor_obj);
     m_weapon_writes.store(ViewHook::get().weapon_amendments(), std::memory_order_relaxed);
 }
 
