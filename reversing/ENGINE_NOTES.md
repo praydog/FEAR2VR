@@ -1013,6 +1013,74 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### RETRACTION: the readback stall is not a cost, it is a scheduling mistake
+
+The section below prices the bridge using the ONE-SHOT readback law (2.05 ms + 1.81 ms/Mpx) and
+concludes that even Quest Pro native is out of reach. That is wrong, and the instrument to prove it
+was already in this codebase.
+
+Measured, same session, same resolution -- one-shot against the PIPELINED path `set_continuous(1)`
+already ships:
+
+    resolution        one-shot lock    pipelined lock
+    2560x1440           3.570 ms         0.001 ms
+    1280x720            1.617 ms         0.000 ms
+    640x360             0.314 ms         0.000 ms
+
+Delivering live pixels the whole time: +141 captures in 2 s, mean luma 25.83, 3598 of 3600 sampled
+points non-black. So **the entire fixed cost was a synchronisation stall** -- waiting for a DMA the
+GPU had not started. Read a surface that is a frame or two old and the wait is gone; the transfer
+itself is done by the GPU's copy engine, asynchronously, off our thread.
+
+**What the CPU bridge actually costs the game per frame, corrected:**
+
+    StretchRect into our render target      0.0007 ms
+    GetRenderTargetData (queued)            0.002 ms
+    LockRect on an older surface            0.000 ms
+    memcpy into the shared section          0.58 ms at 2560x1440, 2.4 ms at 4K/eye
+
+So roughly 2.4 ms of an 11.1 ms budget at 4K per eye, not 37 ms. **Do not trust the section below
+without this correction.**
+
+Two caveats, both honest gaps rather than hedges. The memcpy figures come from `tools/ipcbench`,
+which copies from ordinary heap memory; reading from a LOCKED D3D staging surface can be slower if
+the driver hands back write-combined pages, and that has not been measured here. And the transfer is
+free of CPU time but not of PCIe: 66 MB out and 66 MB back per frame at 90 Hz is ~12 GB/s sustained,
+which contends with the compositor's own traffic.
+
+### Getting supersampling inside the budget
+
+The corrected numbers make the CPU bridge viable, but viable is the wrong target for a machine whose
+owner wants to supersample. The order of work, cheapest and most certain first:
+
+1. **Pipeline the readback.** Already built and measured above; it turns 3.6 ms into 0.001 ms and
+   costs one frame of age. Nothing else on this list is as cheap.
+
+2. **Capture PER EYE at the runtime's recommended size, not a full frame that is then split.** The
+   engine's split path already compounds a viewport rect (see the split-stereo sections), and a
+   per-eye target sidesteps it while letting each eye be exactly `recommendedImageRectWidth` times
+   whatever multiplier the user picks.
+
+3. **Stop copying: share the texture.** A D3D9Ex surface created with a shared handle opens directly
+   in D3D11, crosses processes and bitness, and costs NOTHING per frame at any resolution. This is
+   the only step that makes supersampling free rather than merely affordable.
+
+   The blocker is real but smaller than it looks. D3D9Ex refuses D3DPOOL_MANAGED and 99% of this
+   engine's allocations are MANAGED, so the device must be proxied and those translated to DEFAULT
+   with SYSTEMMEM staging behind any Lock. **That cost lands at LEVEL LOAD, not per frame** -- the
+   engine fills those textures once -- which is a completely different proposition from a per-frame
+   tax. D3D9Ex also removes device loss on focus change, which is the exact class of bug that
+   already cost this project a permanently-lost device.
+
+4. **Then draw straight into the swapchain image.** Once the device is Ex it can open the OpenXR
+   swapchain texture as a shared surface and the engine can render the eye INTO it. No capture, no
+   copy, no bridge -- the pixels never move. At that point the frame budget belongs entirely to the
+   engine's own rendering, which is where supersampling cost should live and be tuned.
+
+**What is then left is the engine's problem, not the plumbing's.** 4K per eye is 16.6 Mpx against the
+3.69 Mpx it draws today. Whether a 2009 renderer sustains 4.5x the pixels is a question no amount of
+transport work answers, and it is cheap to settle: set the resolution and read the frame time.
+
 ### A 64-bit host costs 0.2 MICROSECONDS. The bridge is what scales with resolution.
 
 Submission must move to a 64-bit process, so the boundary's cost was measured with the real
