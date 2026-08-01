@@ -99,12 +99,42 @@ def status():
 
     # A count that does not move means the switch is on and the path is still dead, which is a
     # completely different problem from a switch being off.
-    before = head.get("fp_frames") or 0
+    #
+    # BOTH DIRECTIONS ARE SAMPLED, because they fail independently and each looks like the other's
+    # problem from inside a headset. `fp_frames` is the game WRITING pixels to the host;
+    # `hands_frames` is the game READING controllers back from it. A session was spent on a gun that
+    # would not track while pixels flowed perfectly and the mod dutifully re-applied one stale pose
+    # forever -- every switch green, every counter that anybody looked at climbing.
+    before = get("/xr/head")
     time.sleep(1.0)
-    after = get("/xr/head").get("fp_frames") or 0
-    moving = after > before
-    print("  [%s] frames actually flowing (%d in 1s)" % ("x" if moving else " ", after - before))
-    return ok and moving
+    after = get("/xr/head")
+
+    def moved(key):
+        return (after.get(key) or 0) - (before.get(key) or 0)
+
+    pixels = moved("fp_frames")
+    hands = moved("hands_frames")
+    poses = moved("vr_hand_updates")
+
+    print("  [%s] frames actually flowing (%d in 1s)" % ("x" if pixels > 0 else " ", pixels))
+
+    # Only meaningful once the controllers are bound: with the headset off the runtime leaves
+    # FOCUSED and the host correctly publishes nothing, which is not a fault to report as one.
+    bound = bool(after.get("hands_profile_bound"))
+    live = hands > 0 and poses > 0
+
+    if bound:
+        print("  [%s] controller poses arriving (%d blocks, %d consumed in 1s)"
+              % ("x" if live else " ", hands, poses))
+        if not live:
+            print("      ^ the host is publishing switches but the game is not consuming new hand")
+            print("        blocks. Restart the host: it re-attaches to the game's mapping.")
+    else:
+        print("  [ ] controller poses arriving -- no interaction profile bound")
+        print("      ^ put the headset ON and wake the controllers; the runtime leaves FOCUSED")
+        print("        while it is unworn and the host then publishes nothing by design.")
+
+    return ok and pixels > 0 and (not bound or live)
 
 
 def main():

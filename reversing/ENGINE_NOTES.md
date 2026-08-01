@@ -1042,6 +1042,33 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### The two directions of the shared mapping FAIL INDEPENDENTLY
+
+The gun would not follow the controller while every switch was green. What was actually happening:
+
+```
+host log :  frame 60120, hands bound yes, R active/tracked (0.60,-0.56,1.13)   <- moving
+game     :  hands_frames 59101 FROZEN, rh_aim (0.224,-0.673,-0.182) FROZEN
+game     :  hand_applied 6972 -> 7264 CLIMBING
+```
+
+The host was publishing live poses, the game was reading a frozen block, and `drive_hand` was
+faithfully re-applying **one stale pose forever** -- so the counter that says "the hands are being
+driven" climbed the whole time. Pixels flowed perfectly in the other direction throughout.
+
+**Restarting the host fixed it. THE CAUSE IS NOT ESTABLISHED.** The obvious suspect -- the game
+re-creating the mapping on re-inject, leaving the host on an orphaned section -- was tested directly
+and DISPROVED: `hands_frames` kept advancing across a re-injection (+86 in 1s after). Recorded as
+unexplained rather than given a plausible story, because a wrong cause here would send the next
+person after the injector.
+
+**What is now defended:** `tools/arm_vr.py` samples BOTH directions and requires each to advance --
+`fp_frames` (game writing pixels) and `hands_frames` / `vr_hand_updates` (game reading controllers).
+It also distinguishes "no interaction profile bound", which is the correct and expected state with
+the headset off, from a bound profile whose blocks are not arriving, which is the fault above.
+
+A switch being ON, a counter climbing, and a path being LIVE are three different facts.
+
 ### The weapon DOES follow the RightHand bone -- measured
 
 Asked directly, with the muzzle position (`sdk::attached_socket(player->object, "flash")`, sampled in
