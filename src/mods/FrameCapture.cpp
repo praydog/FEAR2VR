@@ -491,6 +491,11 @@ void FrameCapture::service_continuous() {
     const uint32_t issue = m_issue;
     const uint32_t ready = issue ^ 1u;
     device->GetRenderTargetData(source, static_cast<IDirect3DSurface9*>(m_pipe[issue]));
+
+    // Recorded HERE, against the surface being issued, because this is the moment whose pixels it
+    // captures. Reading it later -- when the surface is finally locked -- would attribute a frame
+    // to whatever pose had arrived in the meantime.
+    m_pipe_seq[issue] = VR::get().last_host_sequence();
     back->Release();
 
     if (m_pipe_primed) {
@@ -514,7 +519,7 @@ void FrameCapture::service_continuous() {
                 const uint32_t layout = (cam.stereo && cam.split_viewport) ? xr::kLayoutSideBySide
                                                                            : xr::kLayoutMono;
                 FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
-                                              layout, VR::get().last_host_sequence());
+                                              layout, m_pipe_seq[ready]);
             }
 
             static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();

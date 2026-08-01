@@ -10726,18 +10726,33 @@ bool Framework::initialize() {
             const double cp = cos(pitch * 0.5), sp = sin(pitch * 0.5);
             const double cr = cos(roll * 0.5), sr = sin(roll * 0.5);
 
-            vr::Pose pose{};
-            pose.orientation = {
-                static_cast<float>(cy * sp * cr + sy * cp * sr),
-                static_cast<float>(sy * cp * cr - cy * sp * sr),
-                static_cast<float>(cy * cp * sr - sy * sp * cr),
-                static_cast<float>(cy * cp * cr + sy * sp * sr)};
-            pose.position = {static_cast<float>(webapi_query_double(q, "x", 0.0)),
-                             static_cast<float>(webapi_query_double(q, "y", 1.7)),
-                             static_cast<float>(webapi_query_double(q, "z", 0.0))};
-            pose.valid = true;
-            pose.tracked = true;
-            rt.set_head_pose(pose);
+            // A QUERY IS NOT A COMMAND. Every parameter here defaults, so a bare `/xr/head` -- the
+            // status read this project polls constantly -- built an IDENTITY pose and applied it,
+            // snapping the head back to centre on every poll. It cost a step-response test that
+            // appeared to show the engine ignoring poses outright, when what was really happening
+            // was the measurement resetting the thing it was measuring between samples.
+            //
+            // The hand route directly above already guards on a parameter being PRESENT; this one
+            // now does the same, and additionally refuses while the host owns the pose so a stray
+            // status read cannot fight a live headset.
+            const bool wants_pose = q.find("yaw") != q.end() || q.find("pitch") != q.end() ||
+                                    q.find("roll") != q.end() || q.find("x") != q.end() ||
+                                    q.find("y") != q.end() || q.find("z") != q.end();
+
+            if (wants_pose && !VR::get().using_host_pose()) {
+                vr::Pose pose{};
+                pose.orientation = {
+                    static_cast<float>(cy * sp * cr + sy * cp * sr),
+                    static_cast<float>(sy * cp * cr - cy * sp * sr),
+                    static_cast<float>(cy * cp * sr - sy * sp * cr),
+                    static_cast<float>(cy * cp * cr + sy * sp * sr)};
+                pose.position = {static_cast<float>(webapi_query_double(q, "x", 0.0)),
+                                 static_cast<float>(webapi_query_double(q, "y", 1.7)),
+                                 static_cast<float>(webapi_query_double(q, "z", 0.0))};
+                pose.valid = true;
+                pose.tracked = true;
+                rt.set_head_pose(pose);
+            }
         }
 
         const auto st = mod.state();

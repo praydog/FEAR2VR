@@ -272,6 +272,13 @@ private:
     std::atomic<uint32_t> m_device_lost{0};
     std::atomic<bool> m_drop_requested{false};
     std::atomic<bool> m_publishing{false};
+
+    // THE POSE EACH PIPELINED SURFACE WAS RENDERED WITH. The readback is one frame deep, so the
+    // pixels handed to the host are older than the pose that is current when they are handed over.
+    // Stamping them with the current pose tells the compositor the image is newer than it is, and
+    // its reprojection then corrects by a whole frame of head motion in the wrong direction --
+    // which is judder, and only while turning.
+    uint32_t m_pipe_seq[2]{};
     std::atomic<bool> m_pending{false};
     std::atomic<uint64_t> m_captures{0};
     std::atomic<uint64_t> m_failures{0};

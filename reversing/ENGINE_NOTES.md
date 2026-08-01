@@ -1013,6 +1013,41 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Judder: the pixels are a frame older than the pose stamped on them
+
+Three candidates were on the table -- the engine mangling the rotation on its way to the renderer,
+the runtime not being told which pose a frame used, or the wrong pose being supplied for a given
+submission. Measured, in order.
+
+**The engine adopts poses instantly and exactly.** A step from 0 to 40 degrees is taken up within one
+sample and lands on `sin(20 deg) = 0.3420` to four decimals, with no easing and no lag. The engine's
+quaternion is the runtime's with x and y negated, which is the handedness conversion, not an error.
+So the first candidate is out.
+
+**The association mechanism works: `missed pose 0` over ten thousand frames.** Every submitted frame
+found the pose it named. So the second candidate is out too.
+
+**The VALUE was wrong, and it is the third.** The readback is PIPELINED one frame deep -- that is why
+its lock costs 0.001 ms instead of 3.6 -- so the surface handed to the host holds pixels from the
+frame BEFORE the one currently rendering. It was being stamped with the pose current at publish
+time, which is one frame too new. The compositor then reprojected by a whole frame of head motion in
+the wrong direction, which is judder, and only while turning.
+
+Fixed by recording the pose id against each pipeline slot at the moment its readback is ISSUED,
+rather than reading it when the surface is finally locked. The two differ by exactly the pipeline
+depth, and the pipeline depth is the whole reason the readback is affordable.
+
+### A QUERY IS NOT A COMMAND, again
+
+`/xr/head` reads yaw, pitch, roll, x, y and z with defaults and applied them unconditionally, so a
+bare `/xr/head` -- the status read this project polls constantly -- built an identity pose and
+applied it. Polling reset the head to centre.
+
+It cost a step-response test that appeared to show the engine ignoring poses entirely: every sample
+zeroed the input between measurements, so the answer was always "nothing moved". The hand route
+directly above it had guarded on parameter PRESENCE all along. This one now does the same, and also
+refuses while the host owns the pose, so a stray status read cannot fight a live headset.
+
 ### Convergence by cropping: the off-axis frustum we cannot ask the engine for
 
 Reported from the headset: 1:1 head movement, but "the eyes are not converging, at all". That is
