@@ -11159,9 +11159,6 @@ bool Framework::initialize() {
               .u("vr_gun_obj", static_cast<size_t>(VR::get().weapon_object()))
               .u("vr_gun_writes", static_cast<size_t>(VR::get().weapon_writes()))
               .b("vr_gun_abs", VR::get().weapon_absolute())
-              .b("ammo_server_hold", AmmoKeeper::get().server_hold())
-              .u("ammo_debits_blocked",
-                 static_cast<size_t>(AmmoKeeper::get().server_debits_blocked()))
               .raw("muzzle_cmp", [] {
                   const auto m = sdk::WeaponMgr::muzzle(0);
                   if (!m.has_value()) {

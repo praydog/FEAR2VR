@@ -1069,15 +1069,11 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
-### THE CLIENT'S AMMO IS COSMETIC. The server keeps its own, and it is the one that decides
+### THE CLIENT'S AMMO IS COSMETIC -- and the server's debit site RESISTS being hooked
 
-`AmmoKeeper` held the client's reserve topped up and the symptom was still that damage stopped after
-a while -- and, unmistakably, that the rocket launcher played its firing animation while no rocket
-spawned. The client predicts the shot; the server refuses it.
-
-gameserver says so in its own words: `Weapon_HandleClientFireMessage` (0x1009B530) logs
-**"Client Ammo (%s) != Server Ammo (%s)"**. After calling `Weapon_FireServer` it measures what the
-shot consumed and debits its own pool:
+The client reserve decides nothing. gameserver says so itself: `Weapon_HandleClientFireMessage`
+(0x1009B530) logs **"Client Ammo (%s) != Server Ammo (%s)"**, and after calling `Weapon_FireServer`
+it debits its own pool:
 
 ```
 1009B9F9  sub esi, eax             ; esi = before - after, the rounds consumed
@@ -1085,25 +1081,32 @@ shot consumed and debits its own pool:
 1009BA09  sub [ecx+eax*4], esi     ; eax = ammo type index
 ```
 
-**LET THE DEBIT HAPPEN, THEN RESTORE THE SLOT.** A mid-hook runs on the instruction AFTER the
-`sub`, where `ecx` is still the array and `eax` still the index, and raises the slot back to the
-floor.
+**The symptom that proves the client copy is cosmetic:** with the client reserve held topped up,
+damage stops after a while and the rocket launcher plays its fire animation while no rocket spawns.
+The client predicts the shot; the server refuses it.
 
-**Suppressing the subtraction instead was tried first and is WRONG.** Zeroing `esi` so the debit did
-nothing drove the reserve NEGATIVE and made the game auto-switch weapons because it believed the
-pool was empty. Something else in the fire path reconciles against that subtraction, so removing it
-desynchronises the two halves. The engine's arithmetic is left intact and only its RESULT is
-amended -- the same shape as every other override in this project that survived contact.
+**THREE ATTEMPTS, ALL WITHDRAWN. Do not repeat them without reading this.**
 
-Only ever RAISES the slot, so a pickup that legitimately holds more than the floor is not clipped.
+1. **Zero `esi` so the subtraction does nothing.** The reserve went NEGATIVE and the game began
+   auto-switching weapons because it believed the pool was empty. Something else in the fire path
+   reconciles against that subtraction; suppressing it desynchronises the two.
+2. **Hook the instruction AFTER the `sub` and restore the slot.** Crashed the game with a wholly
+   corrupted stack. That instruction is a 3-byte `lea` in a branchy region, so a 5-byte detour has
+   to steal its neighbour.
+3. **Hook the `sub` itself, READ-ONLY, purely to learn the array's address.** Crashed identically --
+   same registers to the digit (`ESP 0019F9AC`, `ECX 0019FA60`). It modifies nothing, so it is
+   neither the payload nor the choice of instruction: **a safetyhook mid-hook in this function is
+   unstable, full stop.**
 
-**Resolved by pattern and RETRYABLE, not latched.** gameserver.dll is mapped at session start, so a
-miss at the main menu is the normal case; latching it would leave the feature dead for the process
-lifetime, which is the trap AGENT.MD rule 6 names explicitly. Latched on success only.
+Attempt 1 is the only one that ever ran cleanly, and it was the semantically wrong one -- which is
+exactly what made 2 and 3 look like refinements rather than a warning.
 
-**Measured:** a three-second burst blocked 6 debits with the reserve unmoved. The magazine still
-empties (50 -> 8) and reloads from the reserve, which is correct -- the clip is weapon state, and
-forcing it would mean writing weapon state mid-fire where the engine is the only safe writer.
+**The site is right even though hooking it is not.** What a working feature needs is the array's
+ADDRESS, and there is a route with no hook in it: `server_player + 0x3800`. Finding the server
+player object -- gameserver keeps its own player list, separate from anything the client SDK maps --
+is the work this actually requires, and it is the next thing to do rather than a fourth interception.
+
+**Left in place:** the client-side floor, documented as cosmetic.
 
 ### The bore is the flash SOCKET's orientation, not the weapon object's
 

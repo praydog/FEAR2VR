@@ -492,30 +492,6 @@ uintptr_t WeaponMgr::current_weapon_model(unsigned player_index) {
     return model;
 }
 
-uintptr_t WeaponMgr::server_ammo_debit_site() {
-    // NOT a function-local static: gameserver.dll is absent until a session exists, and latching a
-    // miss would leave this dead for the process lifetime -- the exact trap AGENT.MD rule 6 names.
-    // Latched only on SUCCESS.
-    static uintptr_t s_site = 0;
-
-    if (s_site != 0) {
-        return s_site;
-    }
-
-    // mov ecx, [edi+0ED8h] ; sub [ecx+eax*4], esi
-    s_site = Modules::get().scan_game_server("8B 8F D8 0E 00 00 29 34 81",
-                                             "Weapon_HandleClientFireMessage ammo debit");
-
-    // The pattern starts at the `mov` (6 bytes) and covers the `sub` (3). The interception point is
-    // the instruction AFTER the subtraction, so the slot can be restored rather than the debit
-    // suppressed -- see the header for why suppressing it is wrong.
-    if (s_site != 0) {
-        s_site += 9;
-    }
-
-    return s_site;
-}
-
 std::optional<WeaponMgr::Muzzle> WeaponMgr::muzzle(unsigned player_index) {
     const auto model = current_weapon_model(player_index);
 
