@@ -157,6 +157,14 @@ public:
     // submitting frames does not want a 10 ms stall attached.
     void set_gpu_mirror(bool enabled);
 
+    // ---- HANDING FRAMES TO THE 64-BIT HOST -----------------------------------------------------
+    //
+    // Publish every pipelined readback into the shared section FramePublisher owns, which is how
+    // the pixels reach the process that can actually submit them to a headset. Turning this on also
+    // turns on the continuous path, because a one-shot capture is not a video feed.
+    void set_publishing(bool enabled);
+    bool publishing() const { return m_publishing.load(std::memory_order_acquire); }
+
     // ---- DEVICE LOSS -------------------------------------------------------------------------
     //
     // How many times this mod has seen the device leave D3D_OK and dropped its resources for it.
@@ -263,6 +271,7 @@ private:
     std::atomic<bool> m_released{false};
     std::atomic<uint32_t> m_device_lost{0};
     std::atomic<bool> m_drop_requested{false};
+    std::atomic<bool> m_publishing{false};
     std::atomic<bool> m_pending{false};
     std::atomic<uint64_t> m_captures{0};
     std::atomic<uint64_t> m_failures{0};

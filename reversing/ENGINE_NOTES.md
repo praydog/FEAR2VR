@@ -1013,6 +1013,38 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### PIXELS ARE IN THE HEADSET. The game's own frame, at its own resolution.
+
+End to end, live: the 32-bit mod publishes its pipelined readback into a file mapping, the 64-bit
+host uploads that into an OpenXR swapchain image and submits it as a quad layer.
+
+    clear test pattern      confirmed by eye -- left eye pulsing red, right pulsing blue
+    screen swapchain        2560x1440, XR_SUCCESS
+    session                 reached FOCUSED
+    submitted               1477 frames, every xrEndFrame XR_SUCCESS
+    publish cost            0.493 ms typical at 2560x1440 (predicted 0.576 from ipcbench)
+    publish rate            ~68 frames/second
+
+**The colour clear came first on purpose.** No shaders, no geometry, no upload -- so that when
+nothing appeared the fault could only be the session, the swapchain or the submission. It appeared,
+which meant the entire chain was proven before a single game pixel was involved, and the frame path
+could then be added as the only new variable.
+
+**A quad layer, not a projection one, for the same reason.** A quad is a flat rectangle in space: it
+needs no per-eye FOV and no projection maths to look correct, so anything wrong with the picture is
+the picture's fault. Stereo projection is next and reuses everything above it.
+
+**Numbers worth keeping.** The typical publish is 0.493 ms, within 15% of what `ipcbench` predicted
+from a synthetic copy -- so the estimate transferred to a locked D3D staging surface, which was the
+open question. The WORST publish was 11.5 ms, once: first-touch commit of 14 MB of shared pages. It
+does not recur, but a consumer that cares about the first frame after injection should know it is
+there.
+
+**The session follows the wearer.** Taking the headset off walks it VISIBLE -> SYNCHRONIZED ->
+STOPPING -> IDLE and the host correctly ends the session and waits; putting it back on re-acquires.
+That is the runtime doing its job, not a fault, and the loop is written to survive it rather than
+treat it as an error.
+
 ### The 64-bit host runs a full frame loop; the headset must be AWAKE
 
 `tools/xr64` is now a real host rather than a control: instance, system, D3D11 device on the

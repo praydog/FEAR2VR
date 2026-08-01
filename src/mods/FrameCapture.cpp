@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "Log.hpp"
+#include "FramePublisher.hpp"
 #include "RenderHook.hpp"
 #include "sdk/Render.hpp"
 
@@ -356,6 +357,26 @@ double FrameCapture::continuous_lock_ms() const {
     return ticks_to_ms(m_cont_lock_ticks.load(std::memory_order_relaxed));
 }
 
+void FrameCapture::set_publishing(bool enabled) {
+    if (enabled) {
+        if (!FramePublisher::get().open()) {
+            LOGX("[capture] cannot publish: %s", FramePublisher::get().last_error().c_str());
+            return;
+        }
+
+        // A publisher with no feed is pointless, so this turns the pipelined readback on rather
+        // than quietly doing nothing until someone else does.
+        set_continuous(true);
+    }
+
+    m_publishing.store(enabled, std::memory_order_release);
+    LOGX("[capture] publishing to the 64-bit host %s", enabled ? "ON" : "off");
+
+    if (!enabled) {
+        FramePublisher::get().close();
+    }
+}
+
 void FrameCapture::set_continuous(bool enabled) {
     if (enabled && !m_registered.load(std::memory_order_relaxed)) {
         if (RenderHook::get().add_present_callback(&FrameCapture::on_present)) {
@@ -469,6 +490,17 @@ void FrameCapture::service_continuous() {
                                ->LockRect(&lr, nullptr, D3DLOCK_READONLY);
         m_cont_lock_ticks.store(now_ticks() - l0, std::memory_order_relaxed);
         if (SUCCEEDED(hr)) {
+            // The frame is in system memory and nothing else is going to touch it -- publish it
+            // BEFORE unlocking, because after UnlockRect the pointer is not ours to read.
+            //
+            // desc.Format is the back buffer's, and every D3D9 back buffer format this engine uses
+            // (X8R8G8B8 / A8R8G8B8) is BGRA in memory. Told to the reader rather than assumed by it,
+            // because a wrong guess swaps red and blue and looks like a grading bug.
+            if (m_publishing.load(std::memory_order_acquire)) {
+                FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
+                                              xr::kLayoutMono);
+            }
+
             static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();
             m_cont_frames.fetch_add(1, std::memory_order_relaxed);
             m_width.store(w, std::memory_order_relaxed);
@@ -735,6 +767,8 @@ void FrameCapture::free_device_resources() {
 void FrameCapture::release_surfaces() {
     // Shutdown: drop the intent as well, so nothing rebuilds behind us.
     m_mirror_on.store(false, std::memory_order_release);
+    m_publishing.store(false, std::memory_order_release);
+    FramePublisher::get().close();
     free_device_resources();
 }
 

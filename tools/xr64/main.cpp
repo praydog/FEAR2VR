@@ -31,6 +31,8 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include "xr/SharedFrame.hpp"
+
 namespace {
 
 volatile bool g_stop = false;
@@ -66,6 +68,72 @@ const char* state_name(XrSessionState s) {
     default: return "UNKNOWN";
     }
 }
+
+// ---- THE GAME'S FRAME ---------------------------------------------------------------------------
+//
+// A seqlock reader: take the sequence, read, take it again, and only believe the frame if it was
+// EVEN and unchanged. No locking, so a stalled or dead host can never hold up the game's render
+// thread -- which is the property that matters, since the writer is the render thread.
+struct SharedReader {
+    HANDLE mapping = nullptr;
+    const xr::SharedFrameHeader* header = nullptr;
+    const uint8_t* payload = nullptr;
+    uint32_t last_sequence = 0;
+
+    bool open() {
+        if (header != nullptr) {
+            return true;
+        }
+
+        mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, xr::kSharedFrameName);
+
+        if (mapping == nullptr) {
+            return false;
+        }
+
+        const void* base = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+
+        if (base == nullptr) {
+            CloseHandle(mapping);
+            mapping = nullptr;
+            return false;
+        }
+
+        header = static_cast<const xr::SharedFrameHeader*>(base);
+        payload = static_cast<const uint8_t*>(base) + sizeof(xr::SharedFrameHeader);
+        return true;
+    }
+
+    // True when a COMPLETE frame newer than the last one is available.
+    bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
+        if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
+            return false;
+        }
+
+        const uint32_t seq = header->sequence;
+
+        if ((seq & 1u) != 0u || seq == last_sequence) {
+            return false;  // mid-write, or nothing new
+        }
+
+        w = header->width;
+        h = header->height;
+        pitch = header->pitch;
+        bits = payload;
+
+        if (w == 0 || h == 0 || pitch == 0) {
+            return false;
+        }
+
+        // Re-read: if the writer moved on while we looked, the fields may not describe the pixels.
+        if (header->sequence != seq) {
+            return false;
+        }
+
+        last_sequence = seq;
+        return true;
+    }
+};
 
 struct Eye {
     XrSwapchain swapchain = XR_NULL_HANDLE;
@@ -301,6 +369,34 @@ int main(int argc, char** argv) {
     r = xrCreateReferenceSpace(session, &rsci, &space);
     std::printf("[host] reference space -> %s\n", rs(r));
 
+    // ---- THE GAME'S SCREEN ---------------------------------------------------------------------
+    //
+    // A QUAD LAYER, not a projection one, and deliberately so for this milestone. A quad is a flat
+    // rectangle placed in space: it needs no per-eye FOV, no projection maths and no pose
+    // correctness to look RIGHT, so if the game's pixels arrive wrong the fault is in the pixels.
+    // Stereo projection is the next step and reuses everything above.
+    SharedReader reader;
+    XrSwapchain screen = XR_NULL_HANDLE;
+    std::vector<ID3D11Texture2D*> screen_images;
+    uint32_t screen_w = 0;
+    uint32_t screen_h = 0;
+
+    // BGRA to match a D3D9 back buffer byte for byte, so the upload is a copy and not a conversion.
+    int64_t screen_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    {
+        bool have_bgra = false;
+
+        for (int64_t f : formats) {
+            have_bgra = have_bgra || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        }
+
+        if (!have_bgra) {
+            screen_format = chosen_format;
+            std::printf("[host] no BGRA_SRGB swapchain format; falling back to %lld (red and blue "
+                        "may swap)\n", static_cast<long long>(screen_format));
+        }
+    }
+
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool running = false;
     uint64_t frames = 0;
@@ -358,7 +454,94 @@ int main(int argc, char** argv) {
         const XrCompositionLayerBaseHeader* layers[1]{};
         uint32_t layer_count = 0;
 
-        if (fs.shouldRender != XR_FALSE) {
+        // Pull the newest complete frame the game has published, if any.
+        uint32_t fw = 0, fh = 0, fpitch = 0;
+        const uint8_t* fbits = nullptr;
+        bool have_frame = false;
+
+        if (reader.open()) {
+            have_frame = reader.poll(fw, fh, fpitch, fbits);
+        }
+
+        if (have_frame && (screen == XR_NULL_HANDLE || fw != screen_w || fh != screen_h)) {
+            // Sized to the GAME's frame, not the runtime's recommendation: at native size the
+            // upload is a straight copy with no resampling anywhere in the path.
+            for (auto* t : screen_images) {
+                (void)t;
+            }
+
+            screen_images.clear();
+
+            if (screen != XR_NULL_HANDLE) {
+                xrDestroySwapchain(screen);
+                screen = XR_NULL_HANDLE;
+            }
+
+            XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+            sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+            sc.format = screen_format;
+            sc.sampleCount = 1;
+            sc.width = fw;
+            sc.height = fh;
+            sc.faceCount = 1;
+            sc.arraySize = 1;
+            sc.mipCount = 1;
+
+            const XrResult screen_r = xrCreateSwapchain(session, &sc, &screen);
+            std::printf("[host] screen swapchain %ux%u -> %s\n", fw, fh, rs(screen_r));
+
+            if (XR_SUCCEEDED(screen_r)) {
+                screen_w = fw;
+                screen_h = fh;
+                uint32_t n = 0;
+                xrEnumerateSwapchainImages(screen, 0, &n, nullptr);
+                std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+                xrEnumerateSwapchainImages(screen, n, &n,
+                                           reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+
+                for (uint32_t k = 0; k < n; ++k) {
+                    screen_images.push_back(imgs[k].texture);
+                }
+            } else {
+                have_frame = false;
+            }
+        }
+
+        XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+
+        if (fs.shouldRender != XR_FALSE && have_frame && screen != XR_NULL_HANDLE) {
+            uint32_t index = 0;
+            XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            xrAcquireSwapchainImage(screen, &ai, &index);
+
+            XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            wi.timeout = XR_INFINITE_DURATION;
+            xrWaitSwapchainImage(screen, &wi);
+
+            // ONE copy, straight from the shared section into the compositor's texture. The row
+            // pitch comes from the writer: a locked D3D surface is padded, and assuming width*4
+            // shears the picture into diagonal stripes.
+            ctx->UpdateSubresource(screen_images[index], 0, nullptr, fbits, fpitch, 0);
+
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            xrReleaseSwapchainImage(screen, &ri);
+
+            // A 2 m wide screen, 1.6 m ahead, at eye level, aspect preserved from the source.
+            const float width_m = 2.0f;
+            quad.space = space;
+            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            quad.subImage.swapchain = screen;
+            quad.subImage.imageRect.offset = {0, 0};
+            quad.subImage.imageRect.extent = {static_cast<int32_t>(screen_w),
+                                              static_cast<int32_t>(screen_h)};
+            quad.pose.orientation.w = 1.0f;
+            quad.pose.position = {0.0f, 0.0f, -1.6f};
+            quad.size = {width_m, width_m * static_cast<float>(screen_h) /
+                                      static_cast<float>(screen_w)};
+            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+            layer_count = 1;
+            ++submitted;
+        } else if (fs.shouldRender != XR_FALSE) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             vli.displayTime = fs.predictedDisplayTime;

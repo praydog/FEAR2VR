@@ -37,6 +37,7 @@
 #include "mods/WeaponWheel.hpp"
 #include "mods/AmmoKeeper.hpp"
 #include "mods/FrameCapture.hpp"
+#include "mods/FramePublisher.hpp"
 #include "mods/ResourceWatch.hpp"
 #include "mods/FireRedirect.hpp"
 #include "mods/ViewmodelDecouple.hpp"
@@ -10574,6 +10575,9 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("publish") != q.end()) {
+                FrameCapture::get().set_publishing(webapi_query_int(q, "publish", 0) != 0);
+            }
             if (webapi_query_int(q, "drop", 0) != 0) {
                 // Force the device-loss path's resource drop, so the REBUILD half can be exercised
                 // without minimising the window.
@@ -10752,6 +10756,10 @@ bool Framework::initialize() {
               .b("xr_rt_discovered", sdk::OpenXR::get().discovered())
               .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
               .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
+              .b("fp_publishing", FrameCapture::get().publishing())
+              .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))
+              .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
+              .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())
               .u("xr_instance", static_cast<size_t>(sdk::OpenXR::get().instance()))
               .i("xr_last_result", static_cast<int64_t>(sdk::OpenXR::get().last_xr_result()))
