@@ -808,9 +808,21 @@ void VR::update_weapon() {
                          : std::nullopt;
 
     if (hand.active && hand.aim.valid && head.valid && cam.has_value()) {
-        // The physical headset-to-controller offset, in the engine's axes and units.
+        // ---- X/Z FROM THE HEAD, Y FROM THE ROOM ------------------------------------------
+        //
+        // The two references are different ON PURPOSE, because the camera they anchor to treats the
+        // axes differently. Horizontally the engine's camera FOLLOWS the head -- that is what
+        // roomscale does -- so a head-relative offset is consistent with it. Vertically it does
+        // NOT: the eye is PLACED at a fixed height above the player's root by stance, precisely so
+        // that ducking does not sink the character. Measuring the controller against the head's
+        // real Y therefore compares against a reference the anchor does not share, and the whole
+        // difference lands on the gun: crouch in the room with the controller resting on a desk and
+        // the weapon rises by exactly how far the wearer dropped.
+        //
+        // So height is measured against the ROOM ORIGIN -- the play-space reference the eye pin is
+        // itself defined against -- which does not move when the wearer ducks.
         const std::array<float, 3> from_head{hand.aim.position[0] - head.position[0],
-                                             hand.aim.position[1] - head.position[1],
+                                             hand.aim.position[1] - m_room_origin[1],
                                              hand.aim.position[2] - head.position[2]};
         const auto e = runtime_to_engine_position(from_head);
 

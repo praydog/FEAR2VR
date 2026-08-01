@@ -1069,6 +1069,26 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The weapon's HEIGHT needs a different reference from its X/Z
+
+Horizontally the controller is measured against the HEAD; vertically against the ROOM ORIGIN. That
+asymmetry is deliberate and it is forced by the anchor.
+
+The gun is placed relative to `camera_object.position`. Horizontally that camera FOLLOWS the head --
+roomscale is what makes it do so -- so a head-relative offset is consistent with it. **Vertically it
+does not.** The eye is PLACED at a fixed height above the player's root by stance, specifically so
+ducking cannot sink the character. Measuring the controller against the head's real Y therefore
+compares against a reference the anchor does not share, and the entire difference lands on the gun.
+
+**The symptom, exactly as reported:** put the controller down, crouch in the room, and the weapon
+RISES by however far the wearer dropped -- while X and Z behave perfectly.
+
+**Measured after the change:** a 70 cm head drop moves the placement 0.0 units, and the controller
+still drives height 1:1 -- +25 cm gives +25 units, +50 cm gives +50 units.
+
+**The second measurement is not optional.** "Height stopped responding to the head" and "height
+stopped responding to anything" produce identical readings on the first test alone.
+
 ### WELDING the weapon: replace the transform, do not amend it
 
 Amending was wrong for this feature and the owner's description said exactly why: "headset rotation
