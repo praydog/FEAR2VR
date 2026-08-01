@@ -50,6 +50,27 @@ std::optional<std::array<float, 3>> query_vector(Physics::Slot slot, uintptr_t o
 
 }  // namespace
 
+bool Physics::move_object(uintptr_t object, const std::array<float, 3>& position, uint32_t flags) {
+    const uintptr_t fn = slot_fn(Slot::MoveObject);
+    const uintptr_t self = Physics::instance();
+    if (fn == 0 || self == 0 || object == 0) {
+        return false;
+    }
+
+    // The engine takes the position BY POINTER (`lea` of a stack triple at every call site), so the
+    // vector has to outlive the call in our frame rather than being passed by value.
+    using Fn = int32_t(__thiscall*)(void*, uintptr_t, const float*, uint32_t);
+    const float pos[3]{position[0], position[1], position[2]};
+    bool called = false;
+    if (!sdk::mem::guarded([&] {
+            reinterpret_cast<Fn>(fn)(reinterpret_cast<void*>(self), object, pos, flags);
+            called = true;
+        })) {
+        return false;
+    }
+    return called;
+}
+
 uintptr_t Physics::instance() {
     auto& registry = interfaces::Registry::get();
     if (!registry.is_initialized() && !registry.initialize()) {

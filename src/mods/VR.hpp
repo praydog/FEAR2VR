@@ -176,6 +176,13 @@ public:
     // would fight every other thing that moves the player (walking, being pushed, scripted motion)
     // by dragging them back to wherever the headset says.
     void set_roomscale_body(bool on);
+
+    // A displacement asked for from OFF the game thread -- the diagnostic route that proves the move
+    // primitive works without a headset. It is QUEUED rather than applied, because
+    // sdk::Physics::move_object runs the engine's collision sweep and is game-thread-only; a route
+    // that called it directly would be testing the feature through a path the feature never uses.
+    // Accumulates, so two requests inside one frame become a single move of their sum.
+    void queue_body_nudge(float dx, float dz);
     bool roomscale_body() const { return m_room_body.load(std::memory_order_acquire); }
     uint64_t body_moves() const { return m_body_moves.load(std::memory_order_relaxed); }
     bool roomscale() const { return m_roomscale.load(std::memory_order_acquire); }
@@ -293,6 +300,8 @@ private:
     std::atomic<bool> m_roomscale{false};
     std::atomic<bool> m_room_body{false};
     std::atomic<uint64_t> m_body_moves{0};
+    std::atomic<float> m_nudge_x{0.0f};
+    std::atomic<float> m_nudge_z{0.0f};
     float m_last_room_xz[2]{};
     bool m_have_last_room{false};
     std::atomic<bool> m_recenter{true};

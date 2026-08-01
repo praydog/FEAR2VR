@@ -1042,6 +1042,47 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### Moving the player: ILTPhysics::MoveObject, on the MODEL object
+
+`ILTPhysics` slot 12 (`vtable+48`), signature `(this, LTObject*, const LTVector* pos, uint32 flags)`,
+flags 0 to sweep with collision. Verified against the engine's own idiom at gameclient
+`sub_100D2E70`, which reads the position through `ILTClient+72`, adds an offset and calls `+48` with
+flag 0 -- matching the string-anchored slot map in `sdk/Physics.hpp` exactly.
+
+**The FEAR 1 header predicts slot 15. It is wrong**, as the false-friend rule says it will be: four
+reference methods are absent from this build. `GetVelocity` sits at slot 8 rather than 9, which is
+what exposed the drift before anything was called.
+
+**THE MODEL OBJECT, NOT THE SHELL.** `EngineObjects::model` is documented as "the ILTPhysics target"
+and is what `CMoveMgr` passes via `PlayerPhysics_EngineObject`. Being unregistered rules it out of
+HANDLE lookups, not out of `ILTPhysics` -- these entries take the `LTObject*` and act on it directly.
+Targeting the shell object issued the call successfully and moved **nothing**: another instance of a
+call that "succeeds" while doing nothing at all.
+
+**Measured:** +100 requested -> 100.00 moved, Y unchanged, exactly reversible. 5000 requested ->
+160.83 moved, stopped by a wall, so collision is real.
+
+**`external_delta` (controller+352) is not optional**, and the DECOMPILER GETS IT WRONG. It shows the
+raw delta being divided; the disassembly shows otherwise:
+
+```
+1010DD01  fld  [esp+var_24]          ; delta = position - cached_position
+1010DD05  fsub dword ptr [esi+160h]  ; - external_delta
+1010DD0B  fstp [esp+var_C]
+1010DD2F  lea  ecx, [esp+var_C]      ; the SUBTRACTED triple is what gets divided
+1010DD33  call LTVector_DivideByScalar
+```
+
+Accumulated, never assigned -- the engine clears it each frame and the platform-carry path shares it.
+**Measured:** 600 units of displacement over one second read as **0.00 units/s**, against 336.60 for
+walking. The instrument was proved live in the same run rather than trusted to be.
+
+**The delta is taken in PLAY space and rotated, never the reverse.** The rotated offset differenced
+frame to frame makes a TURN look like a step: stand a metre off centre, turn 180 degrees without
+moving, and the two offsets differ by two metres.
+
+**No stance guard yet** -- ladders, cutscenes and scripted movement are unhandled by choice.
+
 ### Roomscale that moves the CHARACTER
 
 Camera-only roomscale walks the wearer's view out of their own body: the character stands still

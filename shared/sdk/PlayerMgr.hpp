@@ -1786,6 +1786,23 @@ public:
     // NO COLLISION. This writes the position outright, so a wearer who walks into a wall walks
     // through it. That is a deliberate first step -- the engine's own move-with-collision path is a
     // larger job, and this is enough to find out whether roomscale is worth having at all.
+    // ---- MOVING THE PLAYER, THROUGH THE ENGINE'S OWN PATH --------------------------------------
+    //
+    // Displaces the player by `delta` world units using ILTPhysics::MoveObject WITH COLLISION, which is
+    // the idiom the game itself uses to push the player around (gameclient sub_100D2E70: read the
+    // position, add an offset, call slot 12 with flag 0). Walking into a wall stops at the wall.
+    //
+    // GAME THREAD ONLY -- see sdk::Physics::move_object, which states why.
+    //
+    // It also accumulates `delta` into the movement controller's external-delta field so the engine does
+    // not read the displacement as running speed. Both halves matter; moving without the accounting fires
+    // footsteps and the run animation for a player who is standing still.
+    //
+    // HISTORY, because the failure was expensive and silent: this once wrote LTObject's position offset
+    // (0x14) directly into Player::object -- the GAME-SIDE class, not an LTObject. The store succeeded
+    // (the page was writable), nothing moved, and the heap corruption surfaced minutes later as an
+    // illegal instruction inside GameClient's Delegate_Notify. An offset is only valid against the type
+    // it was measured on.
     static bool displace_player(unsigned index, const std::array<float, 3>& delta);
 
     // Whether displace_player can do anything at all. A caller that hands the horizontal term to

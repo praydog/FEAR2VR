@@ -88,6 +88,32 @@ public:
     // mutators deliberately; nullopt when the instance is absent or the entry is not engine code.
     static std::optional<uintptr_t> slot_address(Slot slot);
 
+    // ---- THE MUTATOR ------------------------------------------------------------------
+    //
+    // THREAD AFFINITY: THE GAME THREAD, and this is not advisory. The call runs the engine's collision
+    // sweep and rewrites the object's position, its world AABB and its place in the world tree; from the
+    // IPC thread it races the renderer and the physics update against a half-updated object. Mod::on_frame
+    // runs inside CClientShell::Update, which is where a caller belongs.
+    //
+    // THE OBJECT MUST BE REGISTERED. This entry takes an HOBJECT, and PlayerMgr::engine_object is the MODEL
+    // object, which carries no engine handle -- right for SetVelocity, wrong here. Use
+    // PlayerMgr::EngineObjects::shell.
+    //
+    // `flags` 0 SWEEPS WITH COLLISION: the object stops at whatever it hits, which is the difference between
+    // roomscale and walking through a wall. kTeleport skips the sweep.
+    //
+    // Verified against the engine's own idiom at gameclient sub_100D2E70, which reads the position through
+    // ILTClient +72, adds an offset and calls this slot with flag 0:
+    //     (*(g_pILTPhysics + 48))(g_pILTPhysics, hObject, &newPos, 0)
+    // +48 is slot 12, matching the string-anchored map above.
+    //
+    // Returns whether the call was ISSUED (instance, slot and object resolved, and it did not fault). It
+    // deliberately does NOT report movement: being stopped dead by a wall is a correct outcome, so a caller
+    // wanting to know where the object ended up must read the position back.
+    static bool move_object(uintptr_t object, const std::array<float, 3>& position, uint32_t flags = 0);
+
+    static constexpr uint32_t kTeleport = 1;  // MOVEOBJECT_TELEPORT
+
     // ---- QUERIES THAT NEED NO OBJECT HANDLE -------------------------------------------
     //
     // These are the two the engine answers from its own state, so they can be called safely without

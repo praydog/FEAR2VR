@@ -281,6 +281,23 @@ void VR::recenter() {
     LOGX("[vr] roomscale origin will be recaptured");
 }
 
+namespace {
+
+// std::atomic<float> has no fetch_add before C++20's overload set covers it uniformly here, and a CAS
+// loop is the honest way to accumulate one from another thread.
+void atomic_add_float(std::atomic<float>& slot, float value) {
+    float current = slot.load(std::memory_order_relaxed);
+    while (!slot.compare_exchange_weak(current, current + value, std::memory_order_relaxed)) {
+    }
+}
+
+}  // namespace
+
+void VR::queue_body_nudge(float dx, float dz) {
+    atomic_add_float(m_nudge_x, dx);
+    atomic_add_float(m_nudge_z, dz);
+}
+
 void VR::set_roomscale_body(bool on) {
     if (on) {
         FramePublisher::get().open();
@@ -320,6 +337,17 @@ void VR::set_paced(bool on) {
 
 void VR::on_frame() {
     auto& rt = vr::simulated_runtime();
+
+    // DRAINED FIRST, and outside every other gate: this is the diagnostic path, and it has to work
+    // whether or not a runtime is ready, or it can only be exercised in the configuration it is meant
+    // to be proving.
+    {
+        const float nx = m_nudge_x.exchange(0.0f, std::memory_order_relaxed);
+        const float nz = m_nudge_z.exchange(0.0f, std::memory_order_relaxed);
+        if ((nx != 0.0f || nz != 0.0f) && sdk::PlayerMgr::displace_player(0, {nx, 0.0f, nz})) {
+            m_body_moves.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     if (!rt.ready()) {
         return;
@@ -707,8 +735,15 @@ void VR::update_camera_offset() {
                     m_room_part = {0.0f, ry, 0.0f};
 
                     if (m_have_last_room) {
-                        const std::array<float, 3> step{wx - m_last_room_xz[0], 0.0f,
-                                                        wz - m_last_room_xz[1]};
+                        // THE DELTA IS TAKEN IN PLAY SPACE AND ROTATED, never the other way round.
+                        // wx/wz are the accumulated offset already expressed in the body's heading,
+                        // so differencing THEM makes a turn look like a step: stand a metre off
+                        // centre, turn 180 degrees without moving a muscle, and the two offsets
+                        // differ by two metres. A play-space delta is zero whenever the wearer did
+                        // not actually move, whatever the body is facing.
+                        const float px = rx - m_last_room_xz[0];
+                        const float pz = rz - m_last_room_xz[1];
+                        const std::array<float, 3> step{px * c + pz * s, 0.0f, -px * s + pz * c};
 
                         // A dead band, because the headset never reads exactly still and a stream
                         // of sub-millimetre writes would fight the engine's own movement code for
@@ -720,8 +755,8 @@ void VR::update_camera_offset() {
                         }
                     }
 
-                    m_last_room_xz[0] = wx;
-                    m_last_room_xz[1] = wz;
+                    m_last_room_xz[0] = rx;
+                    m_last_room_xz[1] = rz;
                     m_have_last_room = true;
                 } else {
                     m_room_part = {wx, ry, wz};

@@ -10476,6 +10476,7 @@ bool Framework::initialize() {
         bool ammo_floor_refused = false;
         bool capture_armed = false;
         bool capture_drop_ok = false;
+        bool nudge_ok = false;
         int32_t xr_system_result = 1;  // 1 = not asked
         size_t xr_system_id = 0;
 
@@ -10596,6 +10597,14 @@ bool Framework::initialize() {
             }
             if (q.find("pin_eye") != q.end()) {
                 VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
+            }
+            if (q.find("nudge") != q.end()) {
+                // A deliberate displacement through the REAL path, so "does the player actually move"
+                // can be answered without a headset. It goes through displace_player, collision and
+                // all -- a test route that took a shortcut would prove nothing about the feature.
+                const auto n = static_cast<float>(webapi_query_double(q, "nudge", 0.0));
+                VR::get().queue_body_nudge(n, 0.0f);
+                nudge_ok = true;
             }
             if (q.find("roomscale_body") != q.end()) {
                 VR::get().set_roomscale_body(webapi_query_int(q, "roomscale_body", 0) != 0);
@@ -10945,6 +10954,14 @@ bool Framework::initialize() {
               .f("fr_bo_z", FireRedirect::get().built_origin()[2], 2)
               .b("fc_armed", capture_armed)
               .b("fc_drop_ok", capture_drop_ok)
+              .b("vr_nudge_ok", nudge_ok)
+              .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
+              .f("vr_shell_x", [] {
+                  const auto o = sdk::PlayerMgr::engine_objects(0);
+                  if (!o.has_value() || o->shell == 0) return 0.0f;
+                  const auto i = sdk::object_info(reinterpret_cast<const regenny::LTObject*>(o->shell));
+                  return i.has_value() ? i->position.x : 0.0f;
+              }(), 2)
               .b("fc_pending", FrameCapture::get().pending())
               .u("fc_captures", FrameCapture::get().captures())
               .u("fc_failures", FrameCapture::get().failures())

@@ -511,45 +511,81 @@ std::optional<float> PlayerMgr::eye_height(unsigned index) {
 }
 
 std::optional<std::array<float, 3>> PlayerMgr::object_position(unsigned index) {
-    const auto p = player(index);
-
-    if (!p.has_value() || p->object == 0) {
+    // THE MODEL OBJECT -- the one displace_player moves, so it is the position that answers "did the
+    // move land". The shell's position is published alongside it by the diagnostics precisely because
+    // the two can disagree.
+    const auto objects = engine_objects(index);
+    if (!objects.has_value() || objects->model == 0) {
         return std::nullopt;
     }
 
-    std::array<float, 3> pos{};
-
-    if (!mem::copy(pos.data(), p->object + kObjectPosition, sizeof(pos))) {
+    const auto info = object_info(reinterpret_cast<const regenny::LTObject*>(objects->model));
+    if (!info.has_value()) {
         return std::nullopt;
     }
 
-    return pos;
+    return std::array<float, 3>{info->position.x, info->position.y, info->position.z};
 }
 
-bool PlayerMgr::can_displace_player(unsigned /*index*/) {
-    return false;  // see displace_player
+bool PlayerMgr::can_displace_player(unsigned index) {
+    const auto objects = engine_objects(index);
+    if (!objects.has_value() || objects->model == 0) {
+        return false;
+    }
+    return Physics::instance() != 0 && Physics::slot_address(Physics::Slot::MoveObject).has_value();
 }
 
-bool PlayerMgr::displace_player(unsigned /*index*/, const std::array<float, 3>& /*delta*/) {
-    // ---- WITHDRAWN: THIS WROTE INTO THE WRONG STRUCTURE ----------------------------------------
+bool PlayerMgr::displace_player(unsigned index, const std::array<float, 3>& delta) {
+    // THE MODEL OBJECT -- which EngineObjects documents as "the ILTPhysics target", and which the
+    // engine's own CMoveMgr passes to this interface via PlayerPhysics_EngineObject. Being
+    // unregistered rules it out of HANDLE lookups, not out of ILTPhysics: these entries take the
+    // LTObject pointer and act on it directly. Targeting the shell object instead issued the call
+    // successfully and moved nothing, which is how this was found.
+    const auto objects = engine_objects(index);
+    if (!objects.has_value() || objects->model == 0) {
+        return false;
+    }
+
+    const auto* obj = reinterpret_cast<const regenny::LTObject*>(objects->model);
+    const auto info = object_info(obj);
+    if (!info.has_value()) {
+        return false;
+    }
+
+    const std::array<float, 3> target{info->position.x + delta[0], info->position.y + delta[1],
+                                      info->position.z + delta[2]};
+
+    if (!Physics::move_object(objects->model, target, 0)) {
+        return false;
+    }
+
+    // ---- AND TELL THE VELOCITY ACCOUNTING THIS WAS NOT RUNNING ---------------------------------
     //
-    // It applied `kObjectPosition` (0x14) to `Player::object`. That offset is correct for an
-    // LTObject -- it is how camera_object and model_object are read all over this file -- but
-    // `Player::object` is the GAME-SIDE player object, a different class entirely. The write
-    // therefore put three floats into whichever fields happen to live at 0x14 of that class.
+    // PlayerMovement_CommitPositionAndVelocity derives velocity from the position delta:
     //
-    // The symptom was not immediate, which is exactly why it is worth recording. The write
-    // "succeeded" (the store did not fault), the position never moved, and the game crashed later
-    // with STATUS_ILLEGAL_INSTRUCTION at an address in no module, reached through GameClient.dll --
-    // a corrupted pointer being called, some time after the corruption.
+    //     velocity = ((position - cached_position) - external_delta) / dt
     //
-    // The lesson: an offset is only meaningful against the TYPE it was measured on. This one was
-    // carried across to a different object because both were called "object", and a successful
-    // store proves only that the page was writable.
+    // The subtraction is real and was confirmed in the disassembly rather than the decompiler, which
+    // showed the raw delta being divided: gameclient +0x10DD05 `fsub dword ptr [esi+160h]` and then
+    // `lea ecx, [esp+3Ch+var_C]` -- the SUBTRACTED triple is what LTVector_DivideByScalar receives.
     //
-    // Moving the player needs the movement system, not a position poke. Left refusing rather than
-    // deleted, so the reasoning stays attached to the name.
-    return false;
+    // Without this, real walking reads as running: a step becomes speed, footsteps fire, the run
+    // animation plays and everything gated on speed believes the player is sprinting.
+    //
+    // ACCUMULATED, never assigned. The engine consumes and clears the field every frame, and it is
+    // shared with the platform-carry path -- assigning would silently drop the other writer's term.
+    const auto ctrl = movement_controller(index);
+    if (ctrl.has_value()) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const uintptr_t at = *ctrl + kExternalDeltaField + axis * sizeof(float);
+            const auto current = mem::read<float>(at);
+            if (current.has_value()) {
+                mem::write(at, *current + delta[axis]);
+            }
+        }
+    }
+
+    return true;
 }
 
 std::optional<PlayerMgr::MovementState> PlayerMgr::movement_state(unsigned index) {
