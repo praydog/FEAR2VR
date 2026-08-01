@@ -10481,6 +10481,7 @@ bool Framework::initialize() {
         bool capture_armed = false;
         bool capture_drop_ok = false;
         bool nudge_ok = false;
+        bool snap_now_ok = false;
         int32_t xr_system_result = 1;  // 1 = not asked
         size_t xr_system_id = 0;
 
@@ -10621,6 +10622,12 @@ bool Framework::initialize() {
             }
             if (q.find("melee_vk") != q.end()) {
                 VR::get().set_melee_vk(static_cast<uint32_t>(webapi_query_int(q, "melee_vk", 'V')));
+            }
+            if (q.find("snap_now") != q.end()) {
+                // Fires one snap through the SAME method the stick calls, so a measurement here is a
+                // measurement of the feature rather than of a shortcut taken for testing.
+                snap_now_ok = VR::get().snap_turn(
+                    static_cast<float>(webapi_query_double(q, "snap_now", 0.0)));
             }
             if (q.find("snap_deg") != q.end()) {
                 VR::get().set_snap_degrees(static_cast<float>(webapi_query_double(q, "snap_deg", 30.0)));
@@ -10982,6 +10989,7 @@ bool Framework::initialize() {
               .b("fc_armed", capture_armed)
               .b("fc_drop_ok", capture_drop_ok)
               .b("vr_nudge_ok", nudge_ok)
+              .b("vr_snap_now_ok", snap_now_ok)
               .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
               .u("vr_hand_updates", static_cast<size_t>(VR::get().hand_pose_updates()))
               .b("vr_locomotion", VR::get().locomotion())

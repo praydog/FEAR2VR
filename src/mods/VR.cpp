@@ -16,7 +16,6 @@
 #include "sdk/Object.hpp"
 #include "BoneControl.hpp"
 #include "SyntheticInput.hpp"
-#include "TurnController.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
 
@@ -652,14 +651,39 @@ void VR::update_locomotion() {
     const float rx = right.thumbstick[0];
 
     if (m_snap_armed && (rx > kSnapFire || rx < -kSnapFire)) {
-        const float degrees = rx > 0.0f ? snap : -snap;
-        if (TurnController::get().turn_by(degrees * 3.14159265f / 180.0f)) {
-            m_stick_turns.fetch_add(1, std::memory_order_relaxed);
-        }
+        snap_turn(rx > 0.0f ? snap : -snap);
         m_snap_armed = false;
     } else if (!m_snap_armed && rx < kSnapRearm && rx > -kSnapRearm) {
         m_snap_armed = true;
     }
+}
+
+bool VR::snap_turn(float degrees) {
+    // ---- ONE FRAME, NOT A CONVERGING LOOP --------------------------------------------------------
+    //
+    // This used TurnController::turn_by, which is a CLOSED LOOP: it issues a mouse-look delta, waits
+    // three frames for it to land, requires two consecutive in-tolerance readings and converges in
+    // four to six corrections. That is the right design for turn_to -- the mouse path's gain is not
+    // constant, so an open-loop delta cannot hit a heading -- and it is exactly wrong for a snap.
+    // Fifteen-odd frames of visible stepping is what "it moves at 20 fps and looks like it is
+    // fighting something" IS: each step is one correction, and the overshoot each one corrects for
+    // is the fight.
+    //
+    // apply_look_delta has NO SUCH PROBLEM and therefore needs no loop: the engine's own look entry
+    // has a gain of exactly 1 -- measured, +0.05 rad in gives 2.8648 degrees out, with no
+    // sensitivity curve and no acceleration -- and it persists, because the camera's own update does
+    // not re-derive the rotation afterwards. A caller asking for 30 degrees gets 30 degrees, once.
+    //
+    // YAW ONLY. Pitch is deliberately left at zero: this path applies no clamp, so driving pitch
+    // through it would push the view somewhere the engine itself would never allow.
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+
+    if (!sdk::PlayerMgr::apply_look_delta(0, 0.0f, degrees * kDegToRad)) {
+        return false;
+    }
+
+    m_stick_turns.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 void VR::update_buttons() {

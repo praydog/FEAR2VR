@@ -198,6 +198,10 @@ public:
     void set_locomotion(bool on);
     bool locomotion() const { return m_locomotion.load(std::memory_order_acquire); }
     uint64_t stick_turns() const { return m_stick_turns.load(std::memory_order_relaxed); }
+
+    // One instantaneous turn, in DEGREES, positive to the right. Shared by the right stick and the
+    // test route so the route exercises the path the stick actually uses.
+    bool snap_turn(float degrees);
     uint32_t locomotion_keys() const { return m_loco_keys.load(std::memory_order_relaxed); }
 
     // ---- FACE BUTTONS --------------------------------------------------------------------------

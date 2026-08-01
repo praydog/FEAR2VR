@@ -1042,6 +1042,33 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### Snap turn belongs on apply_look_delta, NOT on the closed loop
+
+The first version called `TurnController::turn_by`, and it felt awful: about half a second to
+arrive, visibly stepping at roughly 20 fps, and looking like it was fighting something.
+
+**It was fighting something -- itself.** `turn_by` is a CLOSED LOOP by design: issue a mouse-look
+delta, wait three frames for it to land, require two consecutive in-tolerance readings, converge in
+four to six corrections. That is fifteen-odd frames, each correction is one visible step, and the
+overshoot each correction exists to fix IS the fighting. Nothing was wrong with it; it was the wrong
+tool.
+
+The loop exists because the MOUSE path's gain is not constant -- `dx=200` turns ~28.5 degrees and
+`dx=400` turns less than twice that -- so an open-loop mouse delta cannot hit a heading.
+`apply_look_delta` has no such problem: **the gain is exactly 1**, measured, with no sensitivity
+curve and no acceleration, and it persists because the camera's own update does not re-derive the
+rotation afterwards.
+
+**Measured, one call each:** asked +30/-30/+90/-90 degrees, delivered +30.000/-30.000/+90.000/
+-90.000, error 0.000 on all four.
+
+**Yaw only.** This path applies NO CLAMP, so driving pitch through it would push the view somewhere
+the engine itself would never allow -- see `pitch_limits()`.
+
+Keep `turn_by` for `turn_to`, where a heading must be reached and the loop is what makes that
+possible. The general shape: a converging loop is for hitting a TARGET through an imprecise
+actuator, and reaching for it when a precise actuator exists just makes the imprecision visible.
+
 ### The controller map, and why each input has the SHAPE it does
 
 | input | action | shape | key |
