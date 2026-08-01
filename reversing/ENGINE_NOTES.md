@@ -3555,8 +3555,16 @@ The ray is built and traced in `gameserver.dll`.
 
 ### The fire descriptor
 
-`Weapon_FireServer(weapon, edi, desc)` receives a descriptor whose first two fields are what a VR
-mod needs. The layout is not guessed -- it falls out of the function's own arithmetic:
+`Weapon_FireServer(weapon, desc)` -- `bool __thiscall(this, FireDescriptor*)` -- receives a
+descriptor whose first two fields are what a VR mod needs.
+
+**The `edi` that used to appear in this signature was never an argument.** IDA typed the
+function `__userpurge@<al>(_DWORD*@<ecx>, int@<edi>, int)` and it is plain `__thiscall`: every
+exit is `retn 4` (one callee-cleaned stack argument) and `mov ebp, ecx` takes `this`. The `edi`
+is a DEFERRED CALLEE-SAVE -- `push edi` sits at 0x101062E4, after the early-out checks, so the
+bail path can skip it, and the epilogues show exactly that: the normal exits pop
+`edi/esi/ebp/ebx` while the early out at 0x10106B8A pops `esi/ebp/ebx` and no `edi`. See
+REVERSING_LESSONS for the general form. The layout is not guessed -- it falls out of the function's own arithmetic:
 
     v57       = FireOffset * (*(float*)(desc+0)) + *(float*)(desc+12);   // and y, z
     v81[0..2] = *(desc+12..20);        // segment START
@@ -3639,9 +3647,23 @@ to be wildcard-free, so nothing had exercised it before.
 
 ### Mid hooks
 
-`Hooks` now manages `safetyhook::MidHook` alongside `InlineHook`, retired by the same
-`retire()`/`retire_one()`. Mid hooks are required for `__userpurge` targets like these, where
-arguments arrive in registers no C++ signature can express.
+`Hooks` manages `safetyhook::MidHook` alongside `InlineHook`, retired by the same
+`retire()`/`retire_one()`.
+
+**THE ORIGINAL REASON GIVEN HERE WAS WRONG, and it is worth correcting rather than quietly
+deleting.** This said mid hooks were REQUIRED because these targets are `__userpurge`, with
+arguments in registers no C++ signature can express. They are not: `Weapon_FireServer` is
+`bool __thiscall(this, FireDescriptor*)` and `Weapon_HandleClientFireMessage` is
+`void __thiscall(this, message_reader)`. IDA's register parameters were deferred callee-saves.
+Both are expressible in C++ and could be inline-hooked with a real signature.
+
+**That matters more than a naming quibble**, because mid hooks carry two costs an inline hook
+at a function entry does not: safetyhook does not preserve x87 state, and a mid hook relocates
+whatever instructions it displaces -- an ESP-relative operand among them then reads the wrong
+memory. Both are recorded in REVERSING_LESSONS, and both cost this project a crashed session.
+
+So mid hooks remain the right tool for hooking a point INSIDE a function, where there is no
+signature to speak of. They are not required merely because IDA printed `__userpurge`.
 
 ### The shot is a CLIENT MESSAGE (id 133), and the server transcribes it
 

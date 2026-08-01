@@ -12,8 +12,13 @@ namespace {
 
 // COM methods on x86 are __stdcall with `this` as the FIRST STACK ARGUMENT, so each of these is
 // expressible as a plain function pointer and the trampoline can be called directly. That is why
-// these are inline hooks with real signatures rather than mid hooks: unlike the engine's own
-// __userpurge entries, nothing arrives in a register a C++ declaration cannot name.
+// these are inline hooks with real signatures rather than mid hooks: nothing arrives in a register
+// a C++ declaration cannot name.
+//
+// (This used to contrast them with "the engine's own __userpurge entries". That contrast was false:
+// the engine functions in question -- Weapon_FireServer and Weapon_HandleClientFireMessage -- are
+// ordinary __thiscall, and IDA's register parameters were deferred callee-saves. The COM case is
+// simply the same situation arrived at from a different direction.)
 using CreateTexture_t = HRESULT(__stdcall*)(void*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
                                             IDirect3DTexture9**, HANDLE*);
 using CreateVolume_t = HRESULT(__stdcall*)(void*, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,

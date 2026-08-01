@@ -44,12 +44,23 @@ public:
     // of discovering the collision as a crash on unload.
     std::string owner_of(void* target) const;
 
-    // Install a MID-function hook: the detour receives the full register
-    // context and the original code continues afterwards. Needed for targets
-    // whose arguments arrive in non-standard registers (`__userpurge`), where
-    // no C++ signature can express the call and an inline hook cannot forward
-    // it. Retired by the same retire()/retire_one() as inline hooks -- the
-    // graceful-uninject contract covers both kinds or it covers neither.
+    // Install a MID-function hook: the detour receives the full register context and the original
+    // code continues afterwards. For hooking a point INSIDE a function, where there is no signature
+    // to forward. Retired by the same retire()/retire_one() as inline hooks -- the graceful-uninject
+    // contract covers both kinds or it covers neither.
+    //
+    // NOT a substitute for an inline hook just because IDA printed `__userpurge`. That was the
+    // reason originally given here and it was wrong: IDA invents register parameters out of DEFERRED
+    // CALLEE-SAVES, and the two functions this API was added for turned out to be ordinary
+    // `__thiscall` with signatures C++ can express perfectly well.
+    //
+    // TWO COSTS AN INLINE HOOK AT AN ENTRY DOES NOT HAVE, both of which have crashed this game:
+    //   * safetyhook does NOT preserve x87 state -- Context32 is integer and XMM only, and there is
+    //     no fxsave in the library. This engine does its float maths on x87.
+    //   * the displaced instructions are RELOCATED, so a displaced ESP-relative operand addresses
+    //     the wrong memory once the stub's frame is in place. Read the five-plus bytes that will be
+    //     STOLEN, not just the instruction being aimed at.
+    // See reversing/REVERSING_LESSONS.md.
     bool install_mid(std::string name, void* target, safetyhook::MidHookFn destination);
 
     // Move an already-created hook under management.

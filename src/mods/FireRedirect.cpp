@@ -50,6 +50,11 @@ namespace {
 //   call sub_1011D810
 // Weapon_FireServer's own prologue -- hooked ONLY to read the return address, which
 // names which of its eight callers the player's shot comes through.
+//
+// It is `bool __thiscall(this, FireDescriptor*)`. IDA calls it __userpurge with an `edi`
+// parameter; that `edi` is a deferred callee-save, not an argument. Since the signature IS
+// expressible, these entry hooks could be inline hooks with real prototypes -- which would
+// also sidestep the fact that safetyhook mid hooks do not preserve x87 state.
 // Weapon_SendClientFireMessage, gameclient.dll -- THE CLIENT SIDE OF THE SHOT.
 //
 //   sub esp, 8 / push ebx,ebp,esi,edi / mov edi, ecx

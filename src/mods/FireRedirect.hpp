@@ -59,13 +59,24 @@
 // which is the mistake this project already catalogued once (see "THE FIELD IS
 // RECLAIMED"). The gun points where the hand points; the view stays the view.
 //
-// ---- MID HOOK, NOT INLINE -------------------------------------------------
+// ---- MID HOOK, AND THE REASON ORIGINALLY GIVEN WAS WRONG -------------------
 //
-// `Weapon_FireServer` is `__userpurge`: `this` in ecx, one argument in edi, the
-// descriptor on the stack. No C++ signature expresses that, so an inline hook
-// cannot forward the call. A mid hook at the entry instruction reads the
-// descriptor from `esp+4` (return address at `esp+0`) and lets the original
-// code run untouched.
+// This said `Weapon_FireServer` is `__userpurge` -- `this` in ecx, an argument in
+// edi, the descriptor on the stack -- and that no C++ signature could express it.
+// THAT IS NOT TRUE. It is `bool __thiscall(this, FireDescriptor*)`: every exit is
+// `retn 4`, so there is exactly ONE callee-cleaned stack argument, and `mov ebp,
+// ecx` takes `this`. The `edi` is a DEFERRED CALLEE-SAVE -- pushed at 0x101062E4,
+// after the early-out checks, which is why the bail path at 0x10106B8A pops
+// `esi/ebp/ebx` and no `edi`. IDA reads a register used before it is written in the
+// entry block and calls it a parameter.
+//
+// So an inline hook with a real prototype IS possible here, and would be better:
+// safetyhook mid hooks do not preserve x87 state, and this engine does its float
+// maths on x87. The mid hook stays because it works and is proven in this path, not
+// because it is required -- see reversing/REVERSING_LESSONS.md.
+//
+// What the mid hook does: at the entry instruction it reads the descriptor from
+// `esp+4` (return address at `esp+0`) and lets the original code run untouched.
 class FireRedirect final : public Mod {
 public:
     static FireRedirect& get();
