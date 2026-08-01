@@ -16,6 +16,7 @@
 #include "sdk/Object.hpp"
 #include "BoneControl.hpp"
 #include "SyntheticInput.hpp"
+#include "TurnController.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
 
@@ -25,6 +26,14 @@ std::atomic<bool> g_enabled{false};
 std::atomic<uint64_t> g_applied{0};
 std::atomic<bool> g_head_valid{false};
 std::atomic<bool> g_hands{false};
+
+// Forward, back, strafe left, strafe right -- the engine's own bindings, driven as keys so movement
+// stays aim-relative and animation-correct. Order matches the bit order in update_locomotion.
+constexpr std::array<uint32_t, 4> kLocoKeys{'W', 'S', 'A', 'D'};
+
+constexpr float kStickDeadZone = 0.30f;
+constexpr float kSnapFire = 0.70f;   // beyond this, a snap fires
+constexpr float kSnapRearm = 0.30f;  // and the stick must return inside this before the next one
 std::atomic<uint64_t> g_hand_applied{0};
 std::atomic<float> g_hand_off[2][3]{};
 std::atomic<bool> g_hand_attached[2]{};
@@ -418,8 +427,55 @@ void VR::on_frame() {
         }
     }
 
+    // ---- THE CONTROLLERS, FROM THE HOST --------------------------------------------------------
+    //
+    // Fed in the RUNTIME's convention, deliberately UNCONVERTED. drive_hand performs the
+    // mirror-along-Z itself and performs it on the DELTA from the rest pose, because that mirror is
+    // not a rotation: converting two poses and subtracting afterwards is a different operation and
+    // gets the handedness wrong in a way that only shows on the off-axes. Converting here as well
+    // would be precisely that bug, applied twice.
+    if (const auto* hands = FramePublisher::get().hands_state(); hands != nullptr) {
+        const uint32_t seq = hands->sequence;
+
+        // Same seqlock discipline as the head: odd means mid-write, and the sequence is re-read
+        // after the copy so a block that changed underneath us is discarded rather than believed.
+        if ((seq & 1u) == 0u && seq != m_last_hands_sequence) {
+            const xr::HandsState snapshot = *hands;
+
+            if (hands->sequence == seq) {
+                for (uint32_t i = 0; i < 2; ++i) {
+                    const auto which = (i == xr::kHandLeft) ? vr::VRRuntime::Hand::LEFT
+                                                            : vr::VRRuntime::Hand::RIGHT;
+                    const auto& src = snapshot.hand[i];
+
+                    const auto to_pose = [&src](const xr::HandPose& p) {
+                        vr::Pose out{};
+                        out.position = {p.position[0], p.position[1], p.position[2]};
+                        out.orientation = {p.orientation[0], p.orientation[1], p.orientation[2],
+                                           p.orientation[3]};
+                        out.valid = p.valid != 0u;
+                        // TRACKED IS PER HAND, NOT PER POSE: the runtime reports it for the
+                        // controller, and a consumer that wants to ignore an inferred pose is asking
+                        // about the device rather than about aim versus grip.
+                        out.tracked = src.tracked != 0u;
+                        return out;
+                    };
+
+                    rt.set_hand_pose(which, to_pose(src.aim), to_pose(src.grip));
+                    rt.set_hand_inputs(which, src.trigger, src.squeeze,
+                                       {src.stick[0], src.stick[1]}, src.buttons);
+                    rt.set_hand_active(which, src.active != 0u);
+                }
+
+                m_last_hands_sequence = seq;
+                m_hand_pose_updates.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
     update_hands();
     update_trigger();
+    update_locomotion();
 
     const auto head = rt.head();
     g_head_valid.store(head.valid, std::memory_order_relaxed);
@@ -505,6 +561,93 @@ void VR::update_trigger() {
 
     if (now) {
         g_pulls.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void VR::set_locomotion(bool on) {
+    if (!on) {
+        // RELEASE WHAT WE ARE HOLDING, or turning the feature off leaves the player walking into a
+        // wall forever with no key to let go of. The engine holds key state, not us.
+        auto& si = SyntheticInput::get();
+        for (const auto vk : kLocoKeys) {
+            si.hold(vk, false);
+        }
+        m_held_keys = 0;
+        m_loco_keys.store(0, std::memory_order_relaxed);
+    }
+
+    m_locomotion.store(on, std::memory_order_release);
+    LOGX("[vr] stick locomotion %s", on ? "ON" : "off");
+}
+
+void VR::update_locomotion() {
+    if (!m_locomotion.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    auto& rt = vr::simulated_runtime();
+    const auto left = rt.hand(vr::VRRuntime::Hand::LEFT);
+    const auto right = rt.hand(vr::VRRuntime::Hand::RIGHT);
+    auto& si = SyntheticInput::get();
+
+    // ---- WALKING -------------------------------------------------------------------------------
+    //
+    // A DEAD ZONE, because a thumbstick does not rest at exactly zero and a controller left on a
+    // desk would otherwise walk the player across the level. 0.30 is generous on purpose: this is a
+    // digital mapping, so anything above the threshold is full speed and precision buys nothing.
+    uint32_t wanted = 0;
+
+    if (left.active) {
+        const float x = left.thumbstick[0];
+        const float y = left.thumbstick[1];
+
+        if (y > kStickDeadZone) {
+            wanted |= 1u << 0;  // forward
+        } else if (y < -kStickDeadZone) {
+            wanted |= 1u << 1;  // back
+        }
+
+        if (x < -kStickDeadZone) {
+            wanted |= 1u << 2;  // strafe left
+        } else if (x > kStickDeadZone) {
+            wanted |= 1u << 3;  // strafe right
+        }
+    }
+
+    // EDGE-DRIVEN, not re-asserted: hold() is a level, and writing the same level every frame would
+    // fight the engine's own poll for no reason. Only transitions are sent.
+    if (wanted != m_held_keys) {
+        for (size_t i = 0; i < kLocoKeys.size(); ++i) {
+            const uint32_t bit = 1u << i;
+            if ((wanted & bit) != (m_held_keys & bit)) {
+                si.hold(kLocoKeys[i], (wanted & bit) != 0u);
+            }
+        }
+        m_held_keys = wanted;
+        m_loco_keys.store(wanted, std::memory_order_relaxed);
+    }
+
+    // ---- SNAP TURN -----------------------------------------------------------------------------
+    //
+    // A SCHMITT TRIGGER, not a threshold: the stick has to come back inside the re-arm band before
+    // another turn can fire. Without that, holding the stick over spins the player continuously at
+    // frame rate, which is both wrong and the most reliable way to make someone sick.
+    const float snap = m_snap_deg.load(std::memory_order_relaxed);
+
+    if (snap <= 0.0f || !right.active) {
+        return;
+    }
+
+    const float rx = right.thumbstick[0];
+
+    if (m_snap_armed && (rx > kSnapFire || rx < -kSnapFire)) {
+        const float degrees = rx > 0.0f ? snap : -snap;
+        if (TurnController::get().turn_by(degrees * 3.14159265f / 180.0f)) {
+            m_stick_turns.fetch_add(1, std::memory_order_relaxed);
+        }
+        m_snap_armed = false;
+    } else if (!m_snap_armed && rx < kSnapRearm && rx > -kSnapRearm) {
+        m_snap_armed = true;
     }
 }
 

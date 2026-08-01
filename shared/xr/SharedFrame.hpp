@@ -127,8 +127,79 @@ struct alignas(64) HostState {
 
 static_assert(sizeof(HostState) == 64, "HostState must be byte-identical in both bitnesses");
 
-// Layout of the mapping: [SharedFrameHeader][HostState][pixels]
+// ---- THE CONTROLLERS ----------------------------------------------------------------------------
+//
+// A THIRD BLOCK rather than more fields on HostState, because HostState is asserted byte-identical
+// at 64 bytes and verified in both bitnesses; growing it would move kPayloadOffset and re-open a
+// layout that is known good. This one carries its own sequence, so a torn hand read cannot be
+// mistaken for a torn head read either.
+//
+// AIM AND GRIP ARE BOTH CARRIED, and that is not redundancy. `aim` is the pointing ray a weapon
+// follows; `grip` is where the hand physically is. On a Touch controller they differ by roughly a
+// 45 degree pitch, so driving a gun from grip points it at the floor. Mirrors vr::HandState.
+//
+// Everything here is in the HOST's convention -- OpenXR LOCAL space, right-handed, -Z forward,
+// metres. The Z flip and the unit scale belong to the consumer, exactly as they do for the head.
+struct HandPose {
+    float orientation[4];  // x, y, z, w
+    float position[3];     // metres
+    uint32_t valid;        // orientation AND position both reported valid
+};
+
+static_assert(sizeof(HandPose) == 32, "HandPose must be byte-identical in both bitnesses");
+
+struct HandInput {
+    HandPose aim;
+    HandPose grip;
+
+    float trigger;  // [0,1]
+    float squeeze;  // [0,1]
+    float stick[2];  // [-1,1] per axis
+
+    uint32_t buttons;  // kHandButton* below, matching vr::VRRuntime's mask exactly
+    uint32_t active;   // the runtime is tracking this controller at all
+    uint32_t tracked;  // the pose is tracked rather than merely inferred
+    uint32_t reserved;
+};
+
+static_assert(sizeof(HandInput) == 96, "HandInput must be byte-identical in both bitnesses");
+
+// Same numbering as vr::VRRuntime::kButton*, so neither side translates.
+constexpr uint32_t kHandButtonA = 1u << 0;
+constexpr uint32_t kHandButtonB = 1u << 1;
+constexpr uint32_t kHandButtonX = 1u << 2;
+constexpr uint32_t kHandButtonY = 1u << 3;
+constexpr uint32_t kHandButtonThumbstick = 1u << 4;
+constexpr uint32_t kHandButtonMenu = 1u << 5;
+
+constexpr uint32_t kHandLeft = 0u;
+constexpr uint32_t kHandRight = 1u;
+
+struct alignas(64) HandsState {
+    int64_t write_qpc;
+
+    uint32_t sequence;  // odd while writing, same discipline as the other two blocks
+    uint32_t frames;
+
+    // Zero until the runtime has bound an interaction profile. Poses read as invalid before that,
+    // but the two are worth distinguishing: "no controller bound" is a setup problem and "bound but
+    // not tracked" is the wearer having put it down.
+    uint32_t profile_bound;
+    uint32_t reserved[3];
+
+    HandInput hand[2];  // kHandLeft, kHandRight
+};
+
+static_assert(sizeof(HandsState) == 256, "HandsState must be byte-identical in both bitnesses");
+
+// Layout of the mapping: [SharedFrameHeader][HostState][HandsState][pixels]
 constexpr uint32_t kPayloadOffset =
+    static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState) + sizeof(HandsState));
+
+// Where each block sits, named rather than recomputed at every call site -- the head block's offset
+// was open-coded as sizeof(header) in three places before the hands existed.
+constexpr uint32_t kHostStateOffset = static_cast<uint32_t>(sizeof(SharedFrameHeader));
+constexpr uint32_t kHandsStateOffset =
     static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState));
 
 // Where a given buffer starts. Slots are padded to the maximum so the offset never depends on the

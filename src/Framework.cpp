@@ -10606,6 +10606,12 @@ bool Framework::initialize() {
                 VR::get().queue_body_nudge(n, 0.0f);
                 nudge_ok = true;
             }
+            if (q.find("locomotion") != q.end()) {
+                VR::get().set_locomotion(webapi_query_int(q, "locomotion", 0) != 0);
+            }
+            if (q.find("snap_deg") != q.end()) {
+                VR::get().set_snap_degrees(static_cast<float>(webapi_query_double(q, "snap_deg", 30.0)));
+            }
             if (q.find("roomscale_body") != q.end()) {
                 VR::get().set_roomscale_body(webapi_query_int(q, "roomscale_body", 0) != 0);
             }
@@ -10956,6 +10962,42 @@ bool Framework::initialize() {
               .b("fc_drop_ok", capture_drop_ok)
               .b("vr_nudge_ok", nudge_ok)
               .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
+              .u("vr_hand_updates", static_cast<size_t>(VR::get().hand_pose_updates()))
+              .b("vr_locomotion", VR::get().locomotion())
+              .u("vr_loco_keys", static_cast<size_t>(VR::get().locomotion_keys()))
+              .u("vr_stick_turns", static_cast<size_t>(VR::get().stick_turns()))
+              .f("vr_snap_deg", VR::get().snap_degrees(), 1)
+              .b("hands_block", FramePublisher::get().hands_state() != nullptr)
+              .u("hands_seq", [] {
+                  const auto* h = FramePublisher::get().hands_state();
+                  return static_cast<size_t>(h != nullptr ? h->sequence : 0u);
+              }())
+              .u("hands_frames", [] {
+                  const auto* h = FramePublisher::get().hands_state();
+                  return static_cast<size_t>(h != nullptr ? h->frames : 0u);
+              }())
+              .b("hands_profile_bound", [] {
+                  const auto* h = FramePublisher::get().hands_state();
+                  return h != nullptr && h->profile_bound != 0u;
+              }())
+              .b("lh_active", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).active)
+              .b("lh_tracked", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).aim.tracked)
+              .f("lh_aim_x", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).aim.position[0], 3)
+              .f("lh_aim_y", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).aim.position[1], 3)
+              .f("lh_aim_z", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).aim.position[2], 3)
+              .f("lh_trigger", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).trigger, 2)
+              .f("lh_stick_x", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).thumbstick[0], 2)
+              .f("lh_stick_y", vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).thumbstick[1], 2)
+              .u("lh_buttons", static_cast<size_t>(vr::simulated_runtime().hand(vr::VRRuntime::Hand::LEFT).buttons))
+              .b("rh_active", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).active)
+              .b("rh_tracked", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).aim.tracked)
+              .f("rh_aim_x", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).aim.position[0], 3)
+              .f("rh_aim_y", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).aim.position[1], 3)
+              .f("rh_aim_z", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).aim.position[2], 3)
+              .f("rh_trigger", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).trigger, 2)
+              .f("rh_stick_x", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).thumbstick[0], 2)
+              .f("rh_stick_y", vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).thumbstick[1], 2)
+              .u("rh_buttons", static_cast<size_t>(vr::simulated_runtime().hand(vr::VRRuntime::Hand::RIGHT).buttons))
               .f("vr_shell_x", [] {
                   const auto o = sdk::PlayerMgr::engine_objects(0);
                   if (!o.has_value() || o->shell == 0) return 0.0f;

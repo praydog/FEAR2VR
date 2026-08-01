@@ -163,7 +163,16 @@ const xr::HostState* FramePublisher::host_state() const {
     }
 
     return reinterpret_cast<const xr::HostState*>(static_cast<uint8_t*>(m_base) +
-                                                  sizeof(xr::SharedFrameHeader));
+                                                  xr::kHostStateOffset);
+}
+
+const xr::HandsState* FramePublisher::hands_state() const {
+    if (m_base == nullptr) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<const xr::HandsState*>(static_cast<uint8_t*>(m_base) +
+                                                   xr::kHandsStateOffset);
 }
 
 bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {

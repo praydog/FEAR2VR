@@ -1042,6 +1042,39 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### Motion controllers: the host publishes, the mod already knew what to do with them
+
+The game side was almost entirely built already -- `drive_hand` drives the hand bones through
+`BoneControl`, `update_trigger` fires on a trigger edge, `TurnController` turns to a heading. What
+was missing was anything FEEDING `vr::VRRuntime`'s hand state from a real device; it had only ever
+been driven synthetically through `/xr/hand`.
+
+**A third shared block, `HandsState`, not more fields on `HostState`.** HostState is asserted
+byte-identical at 64 bytes and verified in both bitnesses; growing it moves `kPayloadOffset` and
+re-opens a layout that is known good. The hands carry their own sequence, so a torn hand read cannot
+be mistaken for a torn head read.
+
+**AIM AND GRIP ARE BOTH CARRIED.** `aim` is the pointing ray a weapon follows, `grip` is where the
+hand physically is; on a Touch controller they differ by ~45 degrees of pitch, so driving a gun from
+grip points it at the floor.
+
+**Fed to the runtime UNCONVERTED.** `drive_hand` performs the mirror-along-Z itself, on the DELTA
+from the rest pose, because that mirror is not a rotation -- converting two poses and subtracting
+afterwards is a different operation and gets the handedness wrong on the off-axes. Converting at the
+feed point too would be that bug applied twice.
+
+**Bindings, measured:** `/interaction_profiles/oculus/touch_controller` (17 paths) and
+`/interaction_profiles/khr/simple_controller` (8) both returned `XR_SUCCESS`, and the Meta runtime
+then mirrors them onto `touch_controller_plus` itself for the Quest Pro. A/B exist only on the RIGHT
+controller and X/Y and menu only on the LEFT -- suggesting a path a profile lacks fails the WHOLE
+call with `XR_ERROR_PATH_UNSUPPORTED`, which is the classic way to end up with no bindings at all.
+
+**The sticks go through the engine's own input path**, for the same reason `send_mouse_look` does
+rather than a write to the aim: keys for movement keep it aim-relative and animation-correct, and
+`TurnController`'s closed loop handles turning because the engine's look gain is not constant.
+Snap turn uses a SCHMITT TRIGGER -- fire above 0.70, re-arm below 0.30 -- since a bare threshold
+spins the player at frame rate for as long as the stick is held.
+
 ### Moving the player: ILTPhysics::MoveObject, on the MODEL object
 
 `ILTPhysics` slot 12 (`vtable+48`), signature `(this, LTObject*, const LTVector* pos, uint32 flags)`,

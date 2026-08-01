@@ -80,6 +80,7 @@ struct SharedReader {
     HANDLE mapping = nullptr;
     const xr::SharedFrameHeader* header = nullptr;
     xr::HostState* host = nullptr;
+    xr::HandsState* hands = nullptr;
     const uint8_t* base_bytes = nullptr;
     uint32_t last_sequence = 0;
 
@@ -104,8 +105,16 @@ struct SharedReader {
 
         header = static_cast<const xr::SharedFrameHeader*>(base);
         host = reinterpret_cast<xr::HostState*>(static_cast<uint8_t*>(base) +
-                                                sizeof(xr::SharedFrameHeader));
+                                                xr::kHostStateOffset);
+        hands = reinterpret_cast<xr::HandsState*>(static_cast<uint8_t*>(base) +
+                                                  xr::kHandsStateOffset);
         base_bytes = static_cast<const uint8_t*>(base);
+
+        // Fresh committed memory reads as zero already, but the mapping outlives a crashed host --
+        // a prior run could have left `sequence` odd (torn) or the hand data mid-write. Zeroing
+        // once here, before the game or the frame loop can observe it, guarantees a reader always
+        // finds an even sequence and all-invalid poses rather than whatever a dead process left.
+        std::memset(hands, 0, sizeof(xr::HandsState));
         return true;
     }
 
@@ -381,6 +390,172 @@ int main(int argc, char** argv) {
     r = xrCreateReferenceSpace(session, &rsci, &space);
     std::printf("[host] reference space -> %s\n", rs(r));
 
+    // ---- CONTROLLERS ------------------------------------------------------------------------
+    //
+    // One action set, created and attached once. Each action exists ONCE with both subaction
+    // paths bound to it rather than once per hand -- that is how OpenXR itself models "the same
+    // input, on either hand", and it halves the bookkeeping below since xrGetActionState* takes
+    // the hand as a parameter rather than needing a second action.
+    XrPath hand_path[2] = {XR_NULL_PATH, XR_NULL_PATH};  // xr::kHandLeft, xr::kHandRight
+    xrStringToPath(g_instance, "/user/hand/left", &hand_path[xr::kHandLeft]);
+    xrStringToPath(g_instance, "/user/hand/right", &hand_path[xr::kHandRight]);
+
+    XrActionSet action_set = XR_NULL_HANDLE;
+    {
+        XrActionSetCreateInfo asci{XR_TYPE_ACTION_SET_CREATE_INFO};
+        std::snprintf(asci.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "gameplay");
+        std::snprintf(asci.localizedActionSetName, XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE,
+                      "Gameplay");
+        r = xrCreateActionSet(g_instance, &asci, &action_set);
+        std::printf("[host] xrCreateActionSet -> %s\n", rs(r));
+    }
+
+    XrAction aim_pose_action = XR_NULL_HANDLE;
+    XrAction grip_pose_action = XR_NULL_HANDLE;
+    XrAction trigger_action = XR_NULL_HANDLE;
+    XrAction squeeze_action = XR_NULL_HANDLE;
+    XrAction stick_action = XR_NULL_HANDLE;
+    XrAction a_click_action = XR_NULL_HANDLE;
+    XrAction b_click_action = XR_NULL_HANDLE;
+    XrAction x_click_action = XR_NULL_HANDLE;
+    XrAction y_click_action = XR_NULL_HANDLE;
+    XrAction thumbstick_click_action = XR_NULL_HANDLE;
+    XrAction menu_click_action = XR_NULL_HANDLE;
+
+    auto create_action = [&](const char* name, const char* localized, XrActionType type,
+                             XrAction& out) {
+        XrActionCreateInfo aci{XR_TYPE_ACTION_CREATE_INFO};
+        std::snprintf(aci.actionName, XR_MAX_ACTION_NAME_SIZE, "%s", name);
+        std::snprintf(aci.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "%s", localized);
+        aci.actionType = type;
+        aci.countSubactionPaths = 2;
+        aci.subactionPaths = hand_path;
+        const XrResult ar = xrCreateAction(action_set, &aci, &out);
+        std::printf("[host] action '%s' -> %s\n", name, rs(ar));
+    };
+
+    create_action("aim_pose", "Aim Pose", XR_ACTION_TYPE_POSE_INPUT, aim_pose_action);
+    create_action("grip_pose", "Grip Pose", XR_ACTION_TYPE_POSE_INPUT, grip_pose_action);
+    create_action("trigger", "Trigger", XR_ACTION_TYPE_FLOAT_INPUT, trigger_action);
+    create_action("squeeze", "Squeeze", XR_ACTION_TYPE_FLOAT_INPUT, squeeze_action);
+    create_action("stick", "Stick", XR_ACTION_TYPE_VECTOR2F_INPUT, stick_action);
+    create_action("a_click", "A Click", XR_ACTION_TYPE_BOOLEAN_INPUT, a_click_action);
+    create_action("b_click", "B Click", XR_ACTION_TYPE_BOOLEAN_INPUT, b_click_action);
+    create_action("x_click", "X Click", XR_ACTION_TYPE_BOOLEAN_INPUT, x_click_action);
+    create_action("y_click", "Y Click", XR_ACTION_TYPE_BOOLEAN_INPUT, y_click_action);
+    create_action("thumbstick_click", "Thumbstick Click", XR_ACTION_TYPE_BOOLEAN_INPUT,
+                  thumbstick_click_action);
+    create_action("menu_click", "Menu Click", XR_ACTION_TYPE_BOOLEAN_INPUT, menu_click_action);
+
+    // Suggesting a path a profile does not expose fails the WHOLE call with
+    // XR_ERROR_PATH_UNSUPPORTED -- the classic way to end up with no bindings at all and no clue
+    // why. So every profile gets its own call, logged with its own result, and only the paths that
+    // profile actually has.
+    auto suggest_bindings =
+        [&](const char* profile_path_str,
+           const std::vector<std::pair<XrAction, const char*>>& bindings) {
+            XrPath profile_path = XR_NULL_PATH;
+            xrStringToPath(g_instance, profile_path_str, &profile_path);
+
+            std::vector<XrActionSuggestedBinding> suggestions;
+            suggestions.reserve(bindings.size());
+
+            for (const auto& b : bindings) {
+                XrPath p = XR_NULL_PATH;
+                xrStringToPath(g_instance, b.second, &p);
+                suggestions.push_back({b.first, p});
+            }
+
+            XrInteractionProfileSuggestedBinding ipsb{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            ipsb.interactionProfile = profile_path;
+            ipsb.countSuggestedBindings = static_cast<uint32_t>(suggestions.size());
+            ipsb.suggestedBindings = suggestions.data();
+
+            const XrResult sr = xrSuggestInteractionProfileBindings(g_instance, &ipsb);
+            std::printf("[host] suggest bindings '%s' (%zu path(s)) -> %s\n", profile_path_str,
+                        suggestions.size(), rs(sr));
+            return sr;
+        };
+
+    // THE ONE THAT MUST WORK: Quest Pro through the Oculus runtime. A/B exist only on the right
+    // Touch controller and X/Y/menu only on the left -- bound accordingly, per hand, rather than
+    // offered to both and left to fail.
+    suggest_bindings(
+        "/interaction_profiles/oculus/touch_controller",
+        {
+            {aim_pose_action, "/user/hand/left/input/aim/pose"},
+            {aim_pose_action, "/user/hand/right/input/aim/pose"},
+            {grip_pose_action, "/user/hand/left/input/grip/pose"},
+            {grip_pose_action, "/user/hand/right/input/grip/pose"},
+            {trigger_action, "/user/hand/left/input/trigger/value"},
+            {trigger_action, "/user/hand/right/input/trigger/value"},
+            {squeeze_action, "/user/hand/left/input/squeeze/value"},
+            {squeeze_action, "/user/hand/right/input/squeeze/value"},
+            {stick_action, "/user/hand/left/input/thumbstick"},
+            {stick_action, "/user/hand/right/input/thumbstick"},
+            {thumbstick_click_action, "/user/hand/left/input/thumbstick/click"},
+            {thumbstick_click_action, "/user/hand/right/input/thumbstick/click"},
+            {x_click_action, "/user/hand/left/input/x/click"},
+            {y_click_action, "/user/hand/left/input/y/click"},
+            {menu_click_action, "/user/hand/left/input/menu/click"},
+            {a_click_action, "/user/hand/right/input/a/click"},
+            {b_click_action, "/user/hand/right/input/b/click"},
+        });
+
+    // FALLBACK: whatever the runtime offers when it is not Touch. khr/simple_controller is the
+    // one profile every conformant runtime supports, so this guarantees poses even with nothing
+    // configured -- select doubles as trigger, and there is no squeeze, stick or face buttons.
+    suggest_bindings("/interaction_profiles/khr/simple_controller",
+                     {
+                         {aim_pose_action, "/user/hand/left/input/aim/pose"},
+                         {aim_pose_action, "/user/hand/right/input/aim/pose"},
+                         {grip_pose_action, "/user/hand/left/input/grip/pose"},
+                         {grip_pose_action, "/user/hand/right/input/grip/pose"},
+                         {trigger_action, "/user/hand/left/input/select/click"},
+                         {trigger_action, "/user/hand/right/input/select/click"},
+                         {menu_click_action, "/user/hand/left/input/menu/click"},
+                         {menu_click_action, "/user/hand/right/input/menu/click"},
+                     });
+
+    // Illegal to suggest bindings after this point, so every profile above must be suggested
+    // first.
+    {
+        XrSessionActionSetsAttachInfo saasi{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+        saasi.countActionSets = 1;
+        saasi.actionSets = &action_set;
+        r = xrAttachSessionActionSets(session, &saasi);
+        std::printf("[host] xrAttachSessionActionSets -> %s\n", rs(r));
+    }
+
+    // Two spaces per hand -- aim and grip genuinely differ in orientation on a Touch controller,
+    // by roughly 45 degrees of pitch, so one space cannot serve both.
+    XrSpace aim_space[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    XrSpace grip_space[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+
+    for (uint32_t h = 0; h < 2; ++h) {
+        XrActionSpaceCreateInfo aim_asci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        aim_asci.action = aim_pose_action;
+        aim_asci.subactionPath = hand_path[h];
+        aim_asci.poseInActionSpace.orientation.w = 1.0f;
+        const XrResult aim_r = xrCreateActionSpace(session, &aim_asci, &aim_space[h]);
+        std::printf("[host] aim action space, hand %u -> %s\n", h, rs(aim_r));
+
+        XrActionSpaceCreateInfo grip_asci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        grip_asci.action = grip_pose_action;
+        grip_asci.subactionPath = hand_path[h];
+        grip_asci.poseInActionSpace.orientation.w = 1.0f;
+        const XrResult grip_r = xrCreateActionSpace(session, &grip_asci, &grip_space[h]);
+        std::printf("[host] grip action space, hand %u -> %s\n", h, rs(grip_r));
+    }
+
+    // Snapshot of the last hand publish, for the periodic status line further down -- read back
+    // rather than recomputed, since we are the only writer and just wrote it.
+    bool hands_bound_log = false;
+    bool hand_active_log[2] = {false, false};
+    bool hand_tracked_log[2] = {false, false};
+    float hand_aim_pos_log[2][3] = {{0, 0, 0}, {0, 0, 0}};
+
     // ---- THE GAME'S SCREEN ---------------------------------------------------------------------
     //
     // A QUAD LAYER, not a projection one, and deliberately so for this milestone. A quad is a flat
@@ -487,6 +662,29 @@ int main(int argc, char** argv) {
                 } else if (state == XR_SESSION_STATE_EXITING ||
                            state == XR_SESSION_STATE_LOSS_PENDING) {
                     g_stop = true;
+                }
+            }
+
+            // THE MOST USEFUL LINE WHEN BINDINGS SILENTLY DO NOT APPLY: the runtime tells us it
+            // picked a different interaction profile for a hand (including none, at session
+            // start or when a controller is powered off), and we ask it which one rather than
+            // guessing from the suggestions we made.
+            if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+                for (uint32_t h = 0; h < 2; ++h) {
+                    XrInteractionProfileState ips{XR_TYPE_INTERACTION_PROFILE_STATE};
+                    const XrResult pr = xrGetCurrentInteractionProfile(session, hand_path[h], &ips);
+
+                    if (XR_SUCCEEDED(pr) && ips.interactionProfile != XR_NULL_PATH) {
+                        uint32_t len = 0;
+                        char path_buf[XR_MAX_PATH_LENGTH] = {};
+                        xrPathToString(g_instance, ips.interactionProfile, sizeof(path_buf), &len,
+                                       path_buf);
+                        std::printf("[host] interaction profile changed, hand %u -> %s\n", h,
+                                    path_buf);
+                    } else {
+                        std::printf("[host] interaction profile changed, hand %u -> none (%s)\n", h,
+                                    rs(pr));
+                    }
                 }
             }
 
@@ -678,6 +876,168 @@ int main(int argc, char** argv) {
                 slot.wanted[0] = hv[0].fov;
                 slot.wanted[1] = hv[1].fov;
             }
+        }
+
+        // ---- TELL THE GAME WHAT THE HANDS ARE DOING --------------------------------------------
+        //
+        // Synced and located at the SAME predictedDisplayTime and in the SAME reference `space` as
+        // the head above, so a weapon driven by aim_pose and a camera driven by the head pose
+        // describe one instant and one origin -- a mismatch here would not error, it would just
+        // make the hands lag or sit in the wrong place.
+        if (reader.hands != nullptr) {
+            // xrSyncActions is only meaningful once the session is FOCUSED -- XR_SESSION_NOT_FOCUSED
+            // is the documented result otherwise (e.g. while the system UI has input), and action
+            // state is not defined to still track live input after that. Treating "not focused" as
+            // "not active" here, rather than publishing whatever was last synced, is what keeps a
+            // menu overlay from leaving a weapon aimed at a frozen ray.
+            bool hands_active = (state == XR_SESSION_STATE_FOCUSED);
+
+            if (hands_active) {
+                XrActiveActionSet active_set{action_set, XR_NULL_PATH};
+                XrActionsSyncInfo asi{XR_TYPE_ACTIONS_SYNC_INFO};
+                asi.countActiveActionSets = 1;
+                asi.activeActionSets = &active_set;
+                hands_active = XR_SUCCEEDED(xrSyncActions(session, &asi));
+            }
+
+            // Polled rather than tracked off XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED: one
+            // call here is simpler than a persistent flag threaded through the event loop, and
+            // this runs every frame regardless, so there is no missed-event window. The event
+            // handler above still logs the transition, since a silent poll is a far worse
+            // debugging experience than one that names what changed and when.
+            XrInteractionProfileState ips{XR_TYPE_INTERACTION_PROFILE_STATE};
+            const XrResult prof_r =
+                xrGetCurrentInteractionProfile(session, hand_path[xr::kHandRight], &ips);
+            const bool profile_bound =
+                XR_SUCCEEDED(prof_r) && ips.interactionProfile != XR_NULL_PATH;
+
+            auto* hs = reader.hands;
+            hs->sequence |= 1u;
+            MemoryBarrier();
+
+            hs->profile_bound = profile_bound ? 1u : 0u;
+
+            for (uint32_t h = 0; h < 2; ++h) {
+                xr::HandInput& hi = hs->hand[h];
+
+                if (!hands_active) {
+                    hi.active = 0;
+                    hi.tracked = 0;
+                    hi.aim.valid = 0;
+                    hi.grip.valid = 0;
+                    hi.trigger = 0.0f;
+                    hi.squeeze = 0.0f;
+                    hi.stick[0] = 0.0f;
+                    hi.stick[1] = 0.0f;
+                    hi.buttons = 0;
+                    hand_active_log[h] = false;
+                    hand_tracked_log[h] = false;
+                    continue;
+                }
+
+                XrActionStateGetInfo pgi{XR_TYPE_ACTION_STATE_GET_INFO};
+                pgi.action = aim_pose_action;
+                pgi.subactionPath = hand_path[h];
+                XrActionStatePose pose_state{XR_TYPE_ACTION_STATE_POSE};
+                xrGetActionStatePose(session, &pgi, &pose_state);
+                hi.active = (pose_state.isActive != XR_FALSE) ? 1u : 0u;
+
+                XrSpaceLocation aim_loc{XR_TYPE_SPACE_LOCATION};
+                xrLocateSpace(aim_space[h], space, fs.predictedDisplayTime, &aim_loc);
+                const bool aim_valid =
+                    (aim_loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+                    (aim_loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
+                const bool aim_tracked =
+                    (aim_loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) &&
+                    (aim_loc.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT);
+                hi.aim.orientation[0] = aim_loc.pose.orientation.x;
+                hi.aim.orientation[1] = aim_loc.pose.orientation.y;
+                hi.aim.orientation[2] = aim_loc.pose.orientation.z;
+                hi.aim.orientation[3] = aim_loc.pose.orientation.w;
+                hi.aim.position[0] = aim_loc.pose.position.x;
+                hi.aim.position[1] = aim_loc.pose.position.y;
+                hi.aim.position[2] = aim_loc.pose.position.z;
+                hi.aim.valid = aim_valid ? 1u : 0u;
+
+                // TRACKED is carried once per hand, not once per pose, so it is read off the AIM
+                // location: aim is what a weapon follows, so whether gameplay sees a tracked pose
+                // or an inferred one should be about that ray, not the grip.
+                hi.tracked = aim_tracked ? 1u : 0u;
+
+                XrSpaceLocation grip_loc{XR_TYPE_SPACE_LOCATION};
+                xrLocateSpace(grip_space[h], space, fs.predictedDisplayTime, &grip_loc);
+                const bool grip_valid =
+                    (grip_loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+                    (grip_loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
+                hi.grip.orientation[0] = grip_loc.pose.orientation.x;
+                hi.grip.orientation[1] = grip_loc.pose.orientation.y;
+                hi.grip.orientation[2] = grip_loc.pose.orientation.z;
+                hi.grip.orientation[3] = grip_loc.pose.orientation.w;
+                hi.grip.position[0] = grip_loc.pose.position.x;
+                hi.grip.position[1] = grip_loc.pose.position.y;
+                hi.grip.position[2] = grip_loc.pose.position.z;
+                hi.grip.valid = grip_valid ? 1u : 0u;
+
+                // Float, vector2f and boolean action states: not logged per call, same as
+                // xrLocateViews and the swapchain acquire/wait/release calls above -- these run up
+                // to eight times a hand, every frame, and a log line per call would bury the ones
+                // that matter under noise. isActive false (no binding on this profile, or on this
+                // hand -- A/B and X/Y are single-hand on Touch) reads as the at-rest value rather
+                // than whatever was last synced.
+                XrActionStateGetInfo fgi{XR_TYPE_ACTION_STATE_GET_INFO};
+                fgi.subactionPath = hand_path[h];
+
+                fgi.action = trigger_action;
+                XrActionStateFloat trig{XR_TYPE_ACTION_STATE_FLOAT};
+                xrGetActionStateFloat(session, &fgi, &trig);
+                hi.trigger = (trig.isActive != XR_FALSE) ? trig.currentState : 0.0f;
+
+                fgi.action = squeeze_action;
+                XrActionStateFloat sq{XR_TYPE_ACTION_STATE_FLOAT};
+                xrGetActionStateFloat(session, &fgi, &sq);
+                hi.squeeze = (sq.isActive != XR_FALSE) ? sq.currentState : 0.0f;
+
+                XrActionStateGetInfo vgi{XR_TYPE_ACTION_STATE_GET_INFO};
+                vgi.action = stick_action;
+                vgi.subactionPath = hand_path[h];
+                XrActionStateVector2f v2{XR_TYPE_ACTION_STATE_VECTOR2F};
+                xrGetActionStateVector2f(session, &vgi, &v2);
+                hi.stick[0] = (v2.isActive != XR_FALSE) ? v2.currentState.x : 0.0f;
+                hi.stick[1] = (v2.isActive != XR_FALSE) ? v2.currentState.y : 0.0f;
+
+                XrActionStateGetInfo bgi{XR_TYPE_ACTION_STATE_GET_INFO};
+                bgi.subactionPath = hand_path[h];
+
+                auto get_bool = [&](XrAction action) {
+                    bgi.action = action;
+                    XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+                    xrGetActionStateBoolean(session, &bgi, &st);
+                    return st.isActive != XR_FALSE && st.currentState != XR_FALSE;
+                };
+
+                uint32_t buttons = 0;
+                buttons |= get_bool(a_click_action) ? xr::kHandButtonA : 0u;
+                buttons |= get_bool(b_click_action) ? xr::kHandButtonB : 0u;
+                buttons |= get_bool(x_click_action) ? xr::kHandButtonX : 0u;
+                buttons |= get_bool(y_click_action) ? xr::kHandButtonY : 0u;
+                buttons |= get_bool(thumbstick_click_action) ? xr::kHandButtonThumbstick : 0u;
+                buttons |= get_bool(menu_click_action) ? xr::kHandButtonMenu : 0u;
+                hi.buttons = buttons;
+
+                hand_active_log[h] = hi.active != 0;
+                hand_tracked_log[h] = hi.tracked != 0;
+                hand_aim_pos_log[h][0] = hi.aim.position[0];
+                hand_aim_pos_log[h][1] = hi.aim.position[1];
+                hand_aim_pos_log[h][2] = hi.aim.position[2];
+            }
+
+            hs->write_qpc = 0;
+            ++hs->frames;
+
+            MemoryBarrier();
+            hs->sequence = (hs->sequence + 1u) & ~1u;
+
+            hands_bound_log = profile_bound;
         }
 
         XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},
@@ -898,12 +1258,21 @@ int main(int argc, char** argv) {
 
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu), state %s, last xrEndFrame %s\n",
+                        "pose %llu), state %s, last xrEndFrame %s, hands bound %s, "
+                        "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
                         static_cast<unsigned long long>(held),
                         static_cast<unsigned long long>(pose_hits),
-                        static_cast<unsigned long long>(pose_misses), state_name(state), rs(end));
+                        static_cast<unsigned long long>(pose_misses), state_name(state), rs(end),
+                        hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
+                        hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
+                        hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],
+                        hand_aim_pos_log[xr::kHandLeft][2],
+                        hand_active_log[xr::kHandRight] ? "active" : "idle",
+                        hand_tracked_log[xr::kHandRight] ? "tracked" : "inferred",
+                        hand_aim_pos_log[xr::kHandRight][0], hand_aim_pos_log[xr::kHandRight][1],
+                        hand_aim_pos_log[xr::kHandRight][2]);
         }
 
         if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
@@ -939,6 +1308,21 @@ int main(int argc, char** argv) {
 
     if (space != XR_NULL_HANDLE) {
         xrDestroySpace(space);
+    }
+
+    // xrDestroyActionSet also destroys the actions it owns, per spec -- nothing to release there.
+    for (int h = 0; h < 2; ++h) {
+        if (aim_space[h] != XR_NULL_HANDLE) {
+            xrDestroySpace(aim_space[h]);
+        }
+
+        if (grip_space[h] != XR_NULL_HANDLE) {
+            xrDestroySpace(grip_space[h]);
+        }
+    }
+
+    if (action_set != XR_NULL_HANDLE) {
+        xrDestroyActionSet(action_set);
     }
 
     xrDestroySession(session);

@@ -43,6 +43,10 @@ public:
     // tolerate.
     const xr::HostState* host_state() const;
 
+    // The controller block, immediately after the head block in the same mapping. Null before the
+    // mapping is open; a caller must still check `sequence` for a torn read, exactly as with the head.
+    const xr::HandsState* hands_state() const;
+
     // ---- THE RUNTIME'S FRAME CLOCK -------------------------------------------------------------
     //
     // Blocks until the host's next xrWaitFrame tick, or the timeout, whichever comes first. Called

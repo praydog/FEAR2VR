@@ -34,6 +34,8 @@ ARM = [
     ("eye offset pinning", "/xr/capture?pin_eye=1"),
     ("roomscale", "/xr/capture?roomscale=1"),
     ("roomscale moves the body", "/xr/capture?roomscale_body=1"),
+    ("hands driven by controllers", "/xr/hands?on=1"),
+    ("stick locomotion + snap turn", "/xr/capture?locomotion=1"),
     ("player body hidden", "/xr/capture?hide_body=1"),
     ("head tracking applied", "/xr/enable?on=1"),
     ("recenter", "/xr/capture?recenter=1"),
@@ -42,6 +44,8 @@ ARM = [
 DISARM = [
     ("head tracking applied", "/xr/enable?on=0"),
     ("player body hidden", "/xr/capture?hide_body=0"),
+    ("stick locomotion + snap turn", "/xr/capture?locomotion=0"),
+    ("hands driven by controllers", "/xr/hands?on=0"),
     ("roomscale moves the body", "/xr/capture?roomscale_body=0"),
     ("roomscale moves the body", "/xr/capture?roomscale_body=0"),
     ("roomscale", "/xr/capture?roomscale=0"),
@@ -64,6 +68,8 @@ CHECKS = [
     ("vr_roomscale", "roomscale"),
     ("vr_hide_body", "player body hidden"),
     ("vr_room_body", "roomscale moves the body"),
+    ("hands", "hands driven by controllers"),
+    ("vr_locomotion", "stick locomotion + snap turn"),
 ]
 
 

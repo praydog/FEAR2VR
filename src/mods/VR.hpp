@@ -183,6 +183,31 @@ public:
     // that called it directly would be testing the feature through a path the feature never uses.
     // Accumulates, so two requests inside one frame become a single move of their sum.
     void queue_body_nudge(float dx, float dz);
+
+    // ---- THE THUMBSTICKS -----------------------------------------------------------------------
+    //
+    // Left stick walks, right stick snap-turns. Both go through the engine's OWN input path --
+    // SyntheticInput's key holds and TurnController's closed-loop turn -- for the same reason
+    // send_mouse_look exists rather than a write to the aim: sensitivity, acceleration, the pitch
+    // clamp, footstep timing, animation and every other downstream consumer then behave exactly as
+    // they do for a player on a keyboard. Driving the movement state directly bypasses all of it.
+    //
+    // SNAP RATHER THAN SMOOTH TURN by default, because smooth yaw is the single worst comfort
+    // offender in VR and the engine's look gain is not constant, so an open-loop smooth turn cannot
+    // even hold a rate. `/xr/capture?snap_deg=` sets the step; 0 disables turning.
+    void set_locomotion(bool on);
+    bool locomotion() const { return m_locomotion.load(std::memory_order_acquire); }
+    uint64_t stick_turns() const { return m_stick_turns.load(std::memory_order_relaxed); }
+    uint32_t locomotion_keys() const { return m_loco_keys.load(std::memory_order_relaxed); }
+
+    void set_snap_degrees(float deg) { m_snap_deg.store(deg, std::memory_order_relaxed); }
+    float snap_degrees() const { return m_snap_deg.load(std::memory_order_relaxed); }
+
+    // How many clean controller blocks have been taken from the host, and the last sequence taken.
+    // Published because "the hands do not move" has three distinct causes -- the host is not
+    // publishing, the block is being rejected as torn, or it arrives and nothing consumes it -- and
+    // only a counter separates them.
+    uint64_t hand_pose_updates() const { return m_hand_pose_updates.load(std::memory_order_relaxed); }
     bool roomscale_body() const { return m_room_body.load(std::memory_order_acquire); }
     uint64_t body_moves() const { return m_body_moves.load(std::memory_order_relaxed); }
     bool roomscale() const { return m_roomscale.load(std::memory_order_acquire); }
@@ -302,6 +327,14 @@ private:
     std::atomic<uint64_t> m_body_moves{0};
     std::atomic<float> m_nudge_x{0.0f};
     std::atomic<float> m_nudge_z{0.0f};
+    std::atomic<uint64_t> m_hand_pose_updates{0};
+    std::atomic<bool> m_locomotion{false};
+    std::atomic<uint64_t> m_stick_turns{0};
+    std::atomic<uint32_t> m_loco_keys{0};
+    std::atomic<float> m_snap_deg{30.0f};
+    bool m_snap_armed{true};
+    uint32_t m_held_keys{0};
+    uint32_t m_last_hands_sequence{0};
     float m_last_room_xz[2]{};
     bool m_have_last_room{false};
     std::atomic<bool> m_recenter{true};
@@ -331,6 +364,7 @@ private:
     VR() = default;
 
     void update_hands();
+    void update_locomotion();
 
     // One hand. `slot` is the BoneControl slot it drives, and each hand keeps its own rest
     // pose -- sharing one would make every offset a delta from wherever the OTHER hand
