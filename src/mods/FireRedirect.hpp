@@ -173,6 +173,19 @@ public:
     //
     // Unlike the muzzle's ROTATION, its POSITION is trustworthy: the pitch that is
     // missing from the socket transform is a rotation, and a point does not have one.
+    // ---- MUZZLE YAW TRIM -----------------------------------------------------------------------
+    //
+    // A model's local forward is not obliged to be its bore, and this one is not: the shot leaves
+    // the barrel visibly to the RIGHT of where the gun points. Measured, the flash socket's own
+    // forward disagrees with the object's by -15 degrees of yaw, so the two candidate sources
+    // bracket the error rather than settle it -- which is why this is a dial and not a constant
+    // picked by argument.
+    //
+    // POSITIVE IS RIGHT, matching the engine's yaw sense (atan2(x, z) grows clockwise from above).
+    // Applied about WORLD Y, after the direction is taken, so it does not disturb pitch.
+    void set_muzzle_yaw(float degrees) { m_muzzle_yaw.store(degrees, std::memory_order_relaxed); }
+    float muzzle_yaw() const { return m_muzzle_yaw.load(std::memory_order_relaxed); }
+
     void set_origin_from_weapon(bool enabled);
     bool origin_from_weapon() const { return m_origin_from_weapon.load(std::memory_order_relaxed); }
     bool origin_valid() const { return m_origin_ok.load(std::memory_order_relaxed); }
@@ -253,6 +266,7 @@ private:
     std::atomic<uint64_t> m_origin_writes{0};
     std::atomic<float> m_weapon_origin[3]{};
     std::atomic<float> m_weapon_fwd[3]{};
+    std::atomic<float> m_muzzle_yaw{-30.0f};
     std::atomic<float> m_weapon_quat[4]{};
     std::atomic<float> m_weapon_obj_quat[4]{};
     std::atomic<bool> m_hooked{false};

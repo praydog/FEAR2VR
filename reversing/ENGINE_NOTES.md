@@ -1069,6 +1069,26 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The weapon model's forward is NOT its bore -- there is a yaw trim, and it is a dial
+
+Shots leave the barrel visibly to the RIGHT of where the gun points, by roughly 30 degrees, purely
+in yaw. Two candidate sources disagree and neither is obviously the bore:
+
+```
+object rotation forward   bearing +160.87
+flash socket's forward    bearing +145.83     difference -15.04 deg
+```
+
+So the socket is closer but does not close the gap, and picking between them by argument would be
+guessing with extra steps. `/xr/fire-muzzle?yaw=` is a trim in degrees, POSITIVE IS RIGHT, applied
+about **world Y** after the direction is taken so it cannot disturb pitch -- rotating in the
+weapon's own frame would tilt the shot as the wrist rolls. It defaults to -30, the reported error.
+
+**This is a measured-by-eye constant and is labelled as one.** The only instrument that can settle
+it is a person watching where the rounds land, exactly as the eye-height and sprint-key values were
+settled. If a socket is ever found that points down the bore exactly, the trim should go to zero and
+the source should change -- a dial that has to be non-zero is a placeholder for a fact not yet found.
+
 ### Firing FROM the muzzle, ALONG the muzzle
 
 `FireRedirect::Mode::Muzzle` takes both the origin and the direction from the first-person weapon:

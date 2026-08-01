@@ -526,6 +526,15 @@ std::optional<WeaponMgr::Muzzle> WeaponMgr::muzzle(unsigned player_index) {
     const auto fwd = forward_of(info->rotation);
     out.forward = {fwd.x, fwd.y, fwd.z};
 
+    const auto& q = transform->rotation;
+    const float norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    out.socket_rotation_unit = norm > 0.99f && norm < 1.01f;
+
+    if (out.socket_rotation_unit) {
+        const auto sf = forward_of(transform->rotation);
+        out.socket_forward = {sf.x, sf.y, sf.z};
+    }
+
     return out;
 }
 

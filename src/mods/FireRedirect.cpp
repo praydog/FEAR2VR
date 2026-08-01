@@ -470,7 +470,16 @@ void FireRedirect::on_frame() {
             // rotation, which is what a half-written or reclaimed transform looks like.
             if (len > 0.9f && len < 1.1f && std::isfinite(m->position[0]) &&
                 std::isfinite(m->position[1]) && std::isfinite(m->position[2])) {
-                store3(m_weapon_fwd, m->forward[0], m->forward[1], m->forward[2]);
+                // Trimmed about WORLD Y so pitch is untouched -- the reported error is purely
+                // horizontal, and rotating in the weapon's own frame would tilt it as the wrist
+                // rolls.
+                const float t = m_muzzle_yaw.load(std::memory_order_relaxed) * 3.14159265f / 180.0f;
+                const float ct = std::cos(t);
+                const float st = std::sin(t);
+                const float tx = m->forward[0] * ct + m->forward[2] * st;
+                const float tz = -m->forward[0] * st + m->forward[2] * ct;
+
+                store3(m_weapon_fwd, tx, m->forward[1], tz);
                 store3(m_weapon_origin, m->position[0], m->position[1], m->position[2]);
                 m_origin_ok.store(true, std::memory_order_relaxed);
                 ok = true;

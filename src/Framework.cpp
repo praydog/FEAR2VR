@@ -10840,6 +10840,9 @@ bool Framework::initialize() {
             // direction from somewhere else" could.
             auto& fr = FireRedirect::get();
             const bool on = webapi_query_int(q, "on", 1) != 0;
+            if (q.find("yaw") != q.end()) {
+                fr.set_muzzle_yaw(static_cast<float>(webapi_query_double(q, "yaw", -30.0)));
+            }
             fr.set_mode(on ? FireRedirect::Mode::Muzzle : FireRedirect::Mode::Off);
             fr.set_origin_from_weapon(on);
         } else if (route == "/xr/fire-origin") {
@@ -11156,6 +11159,20 @@ bool Framework::initialize() {
               .u("vr_gun_obj", static_cast<size_t>(VR::get().weapon_object()))
               .u("vr_gun_writes", static_cast<size_t>(VR::get().weapon_writes()))
               .b("vr_gun_abs", VR::get().weapon_absolute())
+              .raw("muzzle_cmp", [] {
+                  const auto m = sdk::WeaponMgr::muzzle(0);
+                  if (!m.has_value()) {
+                      return std::string("null");
+                  }
+                  char b[256];
+                  snprintf(b, sizeof(b),
+                           "{\"obj\":[%.4f,%.4f,%.4f],\"sock\":[%.4f,%.4f,%.4f],\"unit\":%s}",
+                           m->forward[0], m->forward[1], m->forward[2], m->socket_forward[0],
+                           m->socket_forward[1], m->socket_forward[2],
+                           m->socket_rotation_unit ? "true" : "false");
+                  return std::string(b);
+              }())
+              .f("fr_muzzle_yaw", FireRedirect::get().muzzle_yaw(), 1)
               .b("fr_muzzle_ok", [] {
                   const auto m = sdk::WeaponMgr::muzzle(0);
                   return m.has_value() && !m->stale;

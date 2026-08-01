@@ -269,6 +269,12 @@ public:
     struct Muzzle {
         std::array<float, 3> position{};   // world, the "flash" socket
         std::array<float, 3> forward{};    // world, unit, from the weapon object's rotation
+
+        // The SOCKET's own forward. A model's local forward axis is not obliged to be its bore, so
+        // the object's rotation can be tens of degrees off what the barrel points at; the socket is
+        // placed by the art on the barrel itself and carries its own orientation.
+        std::array<float, 3> socket_forward{};
+        bool socket_rotation_unit{};  // false means the socket transform is not a rotation
         bool stale{};                      // the socket transform was built on a stale bone
     };
 
