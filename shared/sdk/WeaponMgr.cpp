@@ -506,9 +506,11 @@ uintptr_t WeaponMgr::server_ammo_debit_site() {
     s_site = Modules::get().scan_game_server("8B 8F D8 0E 00 00 29 34 81",
                                              "Weapon_HandleClientFireMessage ammo debit");
 
-    // The pattern starts at the `mov`; the instruction to intercept is the `sub` six bytes on.
+    // The pattern starts at the `mov` (6 bytes) and covers the `sub` (3). The interception point is
+    // the instruction AFTER the subtraction, so the slot can be restored rather than the debit
+    // suppressed -- see the header for why suppressing it is wrong.
     if (s_site != 0) {
-        s_site += 6;
+        s_site += 9;
     }
 
     return s_site;

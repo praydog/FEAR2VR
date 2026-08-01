@@ -295,8 +295,17 @@ public:
     // plays its firing animation while no rocket spawns. The client predicts the shot; the server
     // refuses it.
     //
-    // Returns the address of the `sub`, or 0. RETRYABLE, NOT LATCHED: gameserver.dll is mapped at
-    // session start, so a miss at the main menu is normal and must not be cached forever.
+    // Returns the address of the instruction AFTER the `sub` -- the point where the debit has
+    // happened and `ecx`/`eax` still address the slot it happened to.
+    //
+    // WHY AFTER, AND NOT INSTEAD OF. Zeroing the consumed amount to suppress the subtraction was
+    // tried and is WRONG: the reserve went NEGATIVE and the game began auto-switching weapons
+    // because it believed the pool was empty. Something else in the fire path reconciles against
+    // that subtraction, so removing it desynchronises the two. Letting the debit happen and then
+    // restoring the slot leaves every piece of the engine's own arithmetic intact.
+    //
+    // RETRYABLE, NOT LATCHED: gameserver.dll is mapped at session start, so a miss at the main menu
+    // is normal and must not be cached forever.
     static uintptr_t server_ammo_debit_site();
 
     // ---- CHANGING IT ---------------------------------------------------------------------------

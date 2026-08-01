@@ -1085,10 +1085,17 @@ shot consumed and debits its own pool:
 1009BA09  sub [ecx+eax*4], esi     ; eax = ammo type index
 ```
 
-**The debit is intercepted rather than the pool refilled.** A mid-hook on the `sub` zeroes `esi`, so
-the subtraction is a no-op and nothing else about the shot changes -- the server still validates,
-traces, spreads and applies damage. There is no value written, so there is nothing to restore and no
-state to get wrong on release.
+**LET THE DEBIT HAPPEN, THEN RESTORE THE SLOT.** A mid-hook runs on the instruction AFTER the
+`sub`, where `ecx` is still the array and `eax` still the index, and raises the slot back to the
+floor.
+
+**Suppressing the subtraction instead was tried first and is WRONG.** Zeroing `esi` so the debit did
+nothing drove the reserve NEGATIVE and made the game auto-switch weapons because it believed the
+pool was empty. Something else in the fire path reconciles against that subtraction, so removing it
+desynchronises the two halves. The engine's arithmetic is left intact and only its RESULT is
+amended -- the same shape as every other override in this project that survived contact.
+
+Only ever RAISES the slot, so a pickup that legitimately holds more than the floor is not clipped.
 
 **Resolved by pattern and RETRYABLE, not latched.** gameserver.dll is mapped at session start, so a
 miss at the main menu is the normal case; latching it would leave the feature dead for the process
