@@ -45,6 +45,20 @@ public:
 
     std::optional<std::string> on_initialize() override;
     void on_frame() override;
+
+    // ---- REAL HEAD POSE, FROM THE 64-BIT HOST --------------------------------------------------
+    //
+    // Feed the pose the OpenXR host publishes into the runtime, so the engine's camera follows the
+    // wearer's head. Deliberately routed through the SAME set_head_pose() the simulated runtime and
+    // the test harness already use: every piece of composition, clamping and restore behaviour
+    // below it has been verified against synthetic poses, and swapping the SOURCE of the pose keeps
+    // all of that rather than opening a second path that has to be re-proven.
+    void set_use_host_pose(bool on);
+    bool using_host_pose() const { return m_use_host_pose.load(std::memory_order_acquire); }
+
+    // How many frames carried a fresh, tracked pose from the host, and how many found nothing new.
+    uint64_t host_pose_updates() const { return m_host_pose_updates.load(std::memory_order_relaxed); }
+    uint64_t host_pose_stale() const { return m_host_pose_stale.load(std::memory_order_relaxed); }
     void on_shutdown() override;
 
     // ---- CONSUMER API ----------------------------------------------------------------------
@@ -138,6 +152,11 @@ public:
     State state() const;
 
 private:
+    std::atomic<bool> m_use_host_pose{false};
+    std::atomic<uint64_t> m_host_pose_updates{0};
+    std::atomic<uint64_t> m_host_pose_stale{0};
+    uint32_t m_last_host_sequence{0};
+
     VR() = default;
 
     void update_hands();

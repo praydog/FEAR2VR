@@ -43,7 +43,7 @@ bool FramePublisher::open() {
     m_error.clear();
 
     const uint32_t total =
-        static_cast<uint32_t>(sizeof(xr::SharedFrameHeader)) + xr::kSharedFrameMaxBytes;
+        xr::kPayloadOffset + xr::kSharedFrameMaxBytes;
 
     HANDLE mapping = ::CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, total,
                                           xr::kSharedFrameName);
@@ -111,7 +111,7 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     }
 
     auto* header = static_cast<xr::SharedFrameHeader*>(m_base);
-    auto* payload = static_cast<uint8_t*>(m_base) + sizeof(xr::SharedFrameHeader);
+    auto* payload = static_cast<uint8_t*>(m_base) + xr::kPayloadOffset;
     const int64_t t0 = now_ticks();
 
     // ODD while the pixels are in flux. A reader that samples mid-copy sees an odd sequence and
@@ -144,6 +144,15 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     m_last_w = width;
     m_last_h = height;
     return true;
+}
+
+const xr::HostState* FramePublisher::host_state() const {
+    if (m_base == nullptr) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<const xr::HostState*>(static_cast<uint8_t*>(m_base) +
+                                                  sizeof(xr::SharedFrameHeader));
 }
 
 uint32_t FramePublisher::frames() const {

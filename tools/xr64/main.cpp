@@ -25,6 +25,8 @@
 #include <dxgi1_2.h>
 
 #include <cstdio>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -77,6 +79,7 @@ const char* state_name(XrSessionState s) {
 struct SharedReader {
     HANDLE mapping = nullptr;
     const xr::SharedFrameHeader* header = nullptr;
+    xr::HostState* host = nullptr;
     const uint8_t* payload = nullptr;
     uint32_t last_sequence = 0;
 
@@ -85,13 +88,13 @@ struct SharedReader {
             return true;
         }
 
-        mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, xr::kSharedFrameName);
+        mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, xr::kSharedFrameName);
 
         if (mapping == nullptr) {
             return false;
         }
 
-        const void* base = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+        void* base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 
         if (base == nullptr) {
             CloseHandle(mapping);
@@ -100,7 +103,9 @@ struct SharedReader {
         }
 
         header = static_cast<const xr::SharedFrameHeader*>(base);
-        payload = static_cast<const uint8_t*>(base) + sizeof(xr::SharedFrameHeader);
+        host = reinterpret_cast<xr::HostState*>(static_cast<uint8_t*>(base) +
+                                                sizeof(xr::SharedFrameHeader));
+        payload = static_cast<const uint8_t*>(base) + xr::kPayloadOffset;
         return true;
     }
 
@@ -531,6 +536,69 @@ int main(int argc, char** argv) {
                 screen_ready = false;
             } else {
                 have_frame = false;
+            }
+        }
+
+        // ---- TELL THE GAME WHERE THE HEAD IS ---------------------------------------------------
+        //
+        // Published every frame, whether or not the game is listening: the pose is what makes a
+        // projection layer honest later, and a game that starts listening mid-session should find
+        // current data rather than wait a frame for it.
+        if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
+            XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
+            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            vli.displayTime = fs.predictedDisplayTime;
+            vli.space = space;
+
+            XrViewState vs{XR_TYPE_VIEW_STATE};
+            uint32_t located = 0;
+            std::vector<XrView> hv(view_count, {XR_TYPE_VIEW});
+
+            if (XR_SUCCEEDED(xrLocateViews(session, &vli, &vs, view_count, &located, hv.data())) &&
+                located >= 2) {
+                auto* hs = reader.host;
+                hs->sequence |= 1u;
+                MemoryBarrier();
+
+                // The HEAD is the midpoint of the two eyes -- the runtime reports eyes, not a head,
+                // and handing the game one eye's pose would offset the whole world by half an IPD.
+                for (int k = 0; k < 3; ++k) {
+                    const float a = (&hv[0].pose.position.x)[k];
+                    const float b = (&hv[1].pose.position.x)[k];
+                    (&hs->position[0])[k] = (a + b) * 0.5f;
+                }
+
+                hs->orientation[0] = hv[0].pose.orientation.x;
+                hs->orientation[1] = hv[0].pose.orientation.y;
+                hs->orientation[2] = hv[0].pose.orientation.z;
+                hs->orientation[3] = hv[0].pose.orientation.w;
+
+                const float dx = hv[1].pose.position.x - hv[0].pose.position.x;
+                const float dy = hv[1].pose.position.y - hv[0].pose.position.y;
+                const float dz = hv[1].pose.position.z - hv[0].pose.position.z;
+                hs->ipd_m = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                // The SMALLEST SYMMETRIC frustum containing the headset's asymmetric one. This
+                // engine offers no asymmetric projection, so the game over-renders the corners and
+                // the compositor crops -- pixels spent to keep the frustum truthful.
+                float mx = 0.0f;
+                float my = 0.0f;
+
+                for (uint32_t v = 0; v < 2; ++v) {
+                    mx = (std::max)(mx, (std::max)(fabsf(hv[v].fov.angleLeft),
+                                                   fabsf(hv[v].fov.angleRight)));
+                    my = (std::max)(my, (std::max)(fabsf(hv[v].fov.angleUp),
+                                                   fabsf(hv[v].fov.angleDown)));
+                }
+
+                hs->fov_x = mx;
+                hs->fov_y = my;
+                hs->valid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) ? 1u : 0u;
+                hs->write_qpc = 0;
+                ++hs->frames;
+
+                MemoryBarrier();
+                hs->sequence = (hs->sequence + 1u) & ~1u;
             }
         }
 

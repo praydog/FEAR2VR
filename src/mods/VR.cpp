@@ -1,5 +1,7 @@
 #include "VR.hpp"
 
+#include "FramePublisher.hpp"
+
 #include <atomic>
 #include <cmath>
 
@@ -135,6 +137,15 @@ vr::VRRuntime& VR::runtime() const {
     return vr::simulated_runtime();
 }
 
+void VR::set_use_host_pose(bool on) {
+    if (on) {
+        FramePublisher::get().open();
+    }
+
+    m_use_host_pose.store(on, std::memory_order_release);
+    LOGX("[vr] head pose source: %s", on ? "the OpenXR host" : "local/simulated");
+}
+
 void VR::on_frame() {
     auto& rt = vr::simulated_runtime();
 
@@ -148,6 +159,33 @@ void VR::on_frame() {
     rt.synchronize_frame();
     rt.update_poses();
     rt.update_input();
+
+    // The wearer's actual head, if the host is publishing it. Read before anything consumes poses
+    // this frame, so the engine sees where the head IS rather than where it was last frame.
+    if (m_use_host_pose.load(std::memory_order_acquire)) {
+        if (const auto* host = FramePublisher::get().host_state(); host != nullptr) {
+            // Seqlock: odd means the host is mid-write, and an unchanged sequence means no new
+            // pose. Either way the previous pose stands -- never a torn one, never a zeroed one.
+            const uint32_t seq = host->sequence;
+
+            if ((seq & 1u) == 0u && seq != m_last_host_sequence && host->valid != 0u) {
+                vr::Pose pose{};
+                pose.orientation = {host->orientation[0], host->orientation[1],
+                                    host->orientation[2], host->orientation[3]};
+                pose.position = {host->position[0], host->position[1], host->position[2]};
+                pose.valid = true;
+                pose.tracked = true;
+
+                if (host->sequence == seq) {  // still unchanged: the read was clean
+                    rt.set_head_pose(pose);
+                    m_last_host_sequence = seq;
+                    m_host_pose_updates.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                m_host_pose_stale.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
 
     update_hands();
     update_trigger();

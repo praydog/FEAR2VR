@@ -37,6 +37,12 @@ public:
                  uint32_t layout);
 
     // ---- WHAT A CONSUMER WANTS TO KNOW ---------------------------------------------------------
+    // WHAT THE HEADSET IS DOING, written by the host into the same mapping. Null until the section
+    // is open. A consumer must check `valid` and the sequence itself -- this hands back the raw
+    // block rather than a snapshot, because the caller is the one that knows what staleness it can
+    // tolerate.
+    const xr::HostState* host_state() const;
+
     uint32_t frames() const;
     double last_publish_ms() const;
     double worst_publish_ms() const;

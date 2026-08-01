@@ -1013,6 +1013,35 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The reverse channel: the host tells the game where the head is
+
+The same mapping now carries data BOTH ways -- `[SharedFrameHeader][HostState][pixels]`. The game
+writes pixels; the host writes the wearer's head pose, the measured IPD, and the symmetric FOV the
+game should render with. Same discipline in both directions: fixed-width fields, asserted layout, a
+sequence rather than a lock, so neither process can stall the other.
+
+**Routed through the pose path that already works.** The real pose is handed to
+`SimulatedRuntime::set_head_pose()` -- the same entry point the test harness and every synthetic
+pose have always used. Everything below it (composition with the engine's own aim, the clamps, the
+restore) has been verified against synthetic input for weeks, and changing only the SOURCE of the
+pose keeps all of that rather than opening a second path that would have to be re-proven.
+
+**Two details that would each have been a silent error:**
+
+*The head is the MIDPOINT of the eyes.* `xrLocateViews` reports eyes, not a head. Handing the game
+one eye's pose would offset the entire world by half an IPD -- a constant lateral shift that looks
+like a calibration problem rather than a wrong pose.
+
+*The FOV is the smallest SYMMETRIC frustum containing the headset's.* A headset's frustum is
+asymmetric and this engine offers no asymmetric projection, so the game renders symmetrically and
+the compositor crops the corners. That costs pixels; the alternative -- declaring a frustum the game
+did not render with -- costs correctness, and the error would appear as geometry that is subtly
+wrong toward the edges rather than as anything obviously broken.
+
+**Nothing flows until the headset is worn.** The host publishes only while `shouldRender` is true,
+so with the session IDLE the game reads zero updates and keeps its previous pose -- which is the
+correct behaviour, and is what the counters show: `host_pose=true, updates +0, stale +158`.
+
 ### Stereo to the headset: each eye its own half
 
 The published frame is now a side-by-side pair captured at the stage where the pair is INTACT, and

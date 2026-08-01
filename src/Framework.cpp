@@ -10575,6 +10575,9 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("host_pose") != q.end()) {
+                VR::get().set_use_host_pose(webapi_query_int(q, "host_pose", 0) != 0);
+            }
             if (q.find("publish") != q.end()) {
                 FrameCapture::get().set_publishing(webapi_query_int(q, "publish", 0) != 0);
             }
@@ -10757,6 +10760,9 @@ bool Framework::initialize() {
               .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
               .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
               .b("fp_publishing", FrameCapture::get().publishing())
+              .b("vr_host_pose", VR::get().using_host_pose())
+              .u("vr_host_updates", static_cast<size_t>(VR::get().host_pose_updates()))
+              .u("vr_host_stale", static_cast<size_t>(VR::get().host_pose_stale()))
               .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
               .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)

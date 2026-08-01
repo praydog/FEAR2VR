@@ -63,6 +63,43 @@ struct alignas(64) SharedFrameHeader {
 static_assert(sizeof(SharedFrameHeader) == 64,
               "the header must be byte-identical in both bitnesses");
 
+// ---- THE OTHER DIRECTION: WHAT THE HEADSET IS DOING ---------------------------------------------
+//
+// The host knows where the wearer's head is; the game needs it to point its camera. Same mapping,
+// written by the host and read by the game, and the same discipline -- fixed width, asserted, and a
+// sequence rather than a lock so neither side can stall the other.
+//
+// WHY THE GAME MUST HAVE THIS BEFORE ANY PROJECTION LAYER: a projection layer tells the compositor
+// "this image was rendered from the pose you gave me". Until the game's camera actually follows the
+// head that statement is false, and the compositor's reprojection turns the lie into a world that
+// swings when the wearer looks around.
+struct alignas(64) HostState {
+    int64_t write_qpc;
+
+    uint32_t sequence;  // odd while writing
+    uint32_t valid;     // the runtime reported an ORIENTATION_VALID pose
+
+    float orientation[4];  // x, y, z, w -- head pose in the host's LOCAL space
+    float position[3];     // metres
+    uint32_t frames;
+
+    // The SYMMETRIC half-angles the game should render with, in radians. A headset's own frustum is
+    // asymmetric and this engine offers no asymmetric projection, so the game renders the smallest
+    // symmetric frustum that CONTAINS the headset's, and the host declares exactly that to the
+    // compositor. The corners are then over-rendered and cropped, which costs pixels and nothing
+    // else -- the alternative is a wrong frustum, which costs correctness.
+    float fov_x;
+    float fov_y;
+    float ipd_m;  // full interpupillary distance the host measured, in metres
+    uint32_t reserved;
+};
+
+static_assert(sizeof(HostState) == 64, "HostState must be byte-identical in both bitnesses");
+
+// Layout of the mapping: [SharedFrameHeader][HostState][pixels]
+constexpr uint32_t kPayloadOffset =
+    static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState));
+
 constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 
 }  // namespace xr
