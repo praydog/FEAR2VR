@@ -3983,17 +3983,42 @@ attempt at it:
 projectile weapon legitimately never reaches it. A suite check that merged "the hook is installed"
 with "the hook saw the burst" went red on a run whose fire-ray block was working perfectly.
 
-### AmmoKeeper: holding the pool up so a session can keep firing
+### AmmoKeeper: ASKING the game for ammo, via the engine's own message channel
 
-`sdk::PlayerMgr::set_ammo_count()` and `replenish_ammo(floor)` are the write side of the ammo array,
-and `AmmoKeeper` maintains a floor every 30 frames. Measured: eight carried types held at 1500
-through two seconds of continuous fire, and 12250 -> 12250 across a burst inside the suite.
+`AmmoKeeper` keeps the type the player is firing at or above a floor by queueing one console line:
 
-It exists because firing is the only thing this project does that the level does not replace, and a
-drained pool makes the game auto-switch weapons -- which has produced reds in checks that have
-nothing to do with weapons four separate times. It tops the RESERVE the weapon reloads from, not the
-clip, because the clip is weapon state the engine is the only safe writer of. Types held at zero are
-deliberately left alone: sustaining a loadout and inventing one are different features.
+```
+MSG player "ACQUIREAMMO <ammo type>"
+```
+
+`MSG` is the engine's object-message command (`gameclient.dll` 0x1007A320, shared by `Cmd`/`OBJ`).
+It builds `<command> "arg" "arg" ...` and sends it to the server as message 236. The server's
+`PreCheckMsg` (`gameserver.dll` 0x10037DC0) resolves the target keyword -- `player`, `activeplayer`,
+`otherplayers`, `Team0`, `Team1`, `System`, all mapping to `CPlayerObj` -- then validates the ammo
+name against the database and grants an ordinary pickup. This is the path a level script uses.
+
+**The first version wrote the client's ammo array directly, and it was measurably wrong.** The
+client's reserve is COSMETIC: the server keeps its own counts and refuses to fire from an empty one.
+The symptom was a HUD reading 500 while the weapon dry-fired and auto-switched, and an RPG whose
+animation played with no rocket spawning -- client-predicted shot, server refusal. Three attempts to
+intercept the server's debit with a mid-hook crashed the game (REVERSING_LESSONS.md). Asking the
+server removes both the lie and the hook.
+
+Measured: reserve 333 -> 499 with the magazine topped 33 -> 49; SMG held at 500 through four
+two-second bursts; rockets fired with the pool steady at its 15 maximum. Zero exceptions.
+
+**THE FLOOR IS A TRIGGER, NOT A DEMAND.** Every type has a ceiling the game will not exceed --
+rockets stop at 15 -- so a floor of 500 asked forever and got 27 grants in 20 seconds. A grant that
+does not raise the pool now teaches that type's ceiling, and the ceiling becomes the trigger.
+
+### The console argv convention: handlers receive ARGUMENTS ONLY
+
+`ConsoleRunner` passed `argv[0]` as the command name, which shifted every argument by one. The
+engine does not: `Health` (`gameclient.dll` 0x10112DC0) is `if (argc >= 1) SetHealth(atoi(argv[0]))`
+-- the first vector entry is the VALUE. Under the old convention `Health 100` would have set health
+to `atoi("Health")`, which is 0. The runner also now honours double quotes, because `MSG` re-quotes
+each argument when building its wire string, so `ACQUIREAMMO SMG` must arrive as ONE argument or the
+server reads two targets.
 
 ## Player state, aim and zoom
 

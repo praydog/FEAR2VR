@@ -78,8 +78,10 @@ void ConsoleRunner::run_pending_on_game_thread() {
         line[kMaxCommandLength - 1] = '\0';
         e.used.store(false, std::memory_order_release);
 
-        // Split on spaces in place. argv[0] is the command name, which is how the engine's own dispatcher
-        // builds the vector.
+        // Split on spaces in place, honouring double quotes so one argument can contain spaces.
+        // This is not cosmetic: MSG/OBJ re-quote every argument when they build their wire string,
+        // so `MSG player "ACQUIREAMMO SMG"` split naively becomes `""ACQUIREAMMO" "SMG""` and the
+        // server rejects it. Quotes are stripped from the argument, as the engine's dispatcher does.
         char* argv[8]{};
         int argc = 0;
         char* p = line;
@@ -90,9 +92,17 @@ void ConsoleRunner::run_pending_on_game_thread() {
             if (*p == '\0') {
                 break;
             }
-            argv[argc++] = p;
-            while (*p != '\0' && *p != ' ') {
+
+            const char terminator = (*p == '"') ? '"' : ' ';
+            if (terminator == '"') {
                 ++p;
+            }
+            argv[argc++] = p;
+            while (*p != '\0' && *p != terminator) {
+                ++p;
+            }
+            if (*p != '\0') {
+                *p++ = '\0';
             }
         }
         if (argc == 0) {
@@ -124,8 +134,11 @@ void ConsoleRunner::run_pending_on_game_thread() {
             continue;
         }
 
-        LOGX("[console] running \"%s\" (%d arg(s), handler in %s)", argv[0], argc, cmd->module.c_str());
-        cmd->as_handler()(argc, argv);
+        // ARGUMENTS ONLY -- the command name is NOT argv[0]. Established from `Health`, whose handler is
+        // `if (argc >= 1) SetHealth(atoi(argv[0]))`: the first vector entry is the VALUE. Passing the name
+        // as well shifted every argument by one, so `Health 100` would have set health to atoi("Health") == 0.
+        LOGX("[console] running \"%s\" (%d arg(s), handler in %s)", argv[0], argc - 1, cmd->module.c_str());
+        cmd->as_handler()(argc - 1, argv + 1);
         g_executed.fetch_add(1, std::memory_order_relaxed);
         g_last.store(static_cast<uint8_t>(Outcome::Ran), std::memory_order_relaxed);
     }

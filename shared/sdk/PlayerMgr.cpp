@@ -2086,40 +2086,6 @@ bool PlayerMgr::set_ammo_count(unsigned index, const std::string& ammo_name, int
     return false;
 }
 
-size_t PlayerMgr::replenish_ammo(unsigned index, int32_t floor) {
-    const auto* cat = ammo_category();
-    const auto base = ammo_array(index);
-
-    if (cat == nullptr || !base.has_value() || floor <= 0) {
-        return 0;
-    }
-
-    const size_t n = DatabaseMgr::record_count(cat);
-    size_t raised = 0;
-
-    for (size_t i = 0; i < n; ++i) {
-        const auto addr = *base + i * sizeof(int32_t);
-        const auto count = mem::read<int32_t>(addr);
-
-        // Same rule as ammo_held: an unreadable slot ends the walk. Past the end of
-        // the allocation every later index is equally unreadable, and continuing
-        // would turn one bad offset into 52 writes into whatever follows.
-        if (!count.has_value()) {
-            break;
-        }
-
-        if (*count <= 0 || *count >= floor) {
-            continue;
-        }
-
-        if (mem::write<int32_t>(addr, floor)) {
-            ++raised;
-        }
-    }
-
-    return raised;
-}
-
 std::optional<int32_t> PlayerMgr::ammo_total(unsigned index) {
     const auto* cat = ammo_category();
     const auto base = ammo_array(index);
