@@ -510,39 +510,46 @@ std::optional<float> PlayerMgr::eye_height(unsigned index) {
     return (*off)[1];
 }
 
-bool PlayerMgr::displace_player(unsigned index, const std::array<float, 3>& delta) {
+std::optional<std::array<float, 3>> PlayerMgr::object_position(unsigned index) {
     const auto p = player(index);
 
     if (!p.has_value() || p->object == 0) {
-        return false;
+        return std::nullopt;
     }
 
     std::array<float, 3> pos{};
 
     if (!mem::copy(pos.data(), p->object + kObjectPosition, sizeof(pos))) {
-        return false;
+        return std::nullopt;
     }
 
-    const std::array<float, 3> moved{pos[0] + delta[0], pos[1] + delta[1], pos[2] + delta[2]};
+    return pos;
+}
 
-    if (!mem::store(p->object + kObjectPosition, moved.data(), sizeof(moved))) {
-        return false;
-    }
+bool PlayerMgr::can_displace_player(unsigned /*index*/) {
+    return false;  // see displace_player
+}
 
-    // Tell the velocity calculation this was not the player running. The field is consumed and
-    // cleared by the engine each frame, so it is accumulated rather than assigned -- two writers in
-    // one frame must not cancel each other.
-    if (p->holder != 0) {
-        std::array<float, 3> ext{};
-
-        if (mem::copy(ext.data(), p->holder + kExternalDeltaField, sizeof(ext))) {
-            const std::array<float, 3> summed{ext[0] + delta[0], ext[1] + delta[1],
-                                              ext[2] + delta[2]};
-            mem::store(p->holder + kExternalDeltaField, summed.data(), sizeof(summed));
-        }
-    }
-
-    return true;
+bool PlayerMgr::displace_player(unsigned /*index*/, const std::array<float, 3>& /*delta*/) {
+    // ---- WITHDRAWN: THIS WROTE INTO THE WRONG STRUCTURE ----------------------------------------
+    //
+    // It applied `kObjectPosition` (0x14) to `Player::object`. That offset is correct for an
+    // LTObject -- it is how camera_object and model_object are read all over this file -- but
+    // `Player::object` is the GAME-SIDE player object, a different class entirely. The write
+    // therefore put three floats into whichever fields happen to live at 0x14 of that class.
+    //
+    // The symptom was not immediate, which is exactly why it is worth recording. The write
+    // "succeeded" (the store did not fault), the position never moved, and the game crashed later
+    // with STATUS_ILLEGAL_INSTRUCTION at an address in no module, reached through GameClient.dll --
+    // a corrupted pointer being called, some time after the corruption.
+    //
+    // The lesson: an offset is only meaningful against the TYPE it was measured on. This one was
+    // carried across to a different object because both were called "object", and a successful
+    // store proves only that the page was writable.
+    //
+    // Moving the player needs the movement system, not a position poke. Left refusing rather than
+    // deleted, so the reasoning stays attached to the name.
+    return false;
 }
 
 std::optional<PlayerMgr::MovementState> PlayerMgr::movement_state(unsigned index) {

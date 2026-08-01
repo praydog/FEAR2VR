@@ -696,7 +696,11 @@ void VR::update_camera_offset() {
                 const float wx = rx * c + rz * s;
                 const float wz = -rx * s + rz * c;
 
-                if (m_room_body.load(std::memory_order_acquire)) {
+                // The body path only takes the horizontal term if it can actually deliver it.
+                // Otherwise the camera keeps it: trading a working offset for a refused write is
+                // how "roomscale on, nothing moves" happened.
+                if (m_room_body.load(std::memory_order_acquire) &&
+                    sdk::PlayerMgr::can_displace_player(0)) {
                     // THE CHARACTER MOVES, so the camera must not: applying both would double every
                     // step. Vertical stays on the camera, where it cannot sink anyone through a
                     // floor.

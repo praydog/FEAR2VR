@@ -1788,6 +1788,16 @@ public:
     // larger job, and this is enough to find out whether roomscale is worth having at all.
     static bool displace_player(unsigned index, const std::array<float, 3>& delta);
 
+    // Whether displace_player can do anything at all. A caller that hands the horizontal term to
+    // the body must know this BEFORE it stops applying it to the camera, or a refused write turns
+    // into motion that silently goes nowhere.
+    static bool can_displace_player(unsigned index);
+
+    // The player OBJECT's own position field, read raw. Distinct from movement_state's cached copy,
+    // which the engine refreshes from its own idea of where the player is -- comparing the two says
+    // whether a write to the object survived the frame or was simply overwritten.
+    static std::optional<std::array<float, 3>> object_position(unsigned index);
+
     // ---- STANCE, AND THE NUMBER ROOM-SCALE VR ACTUALLY NEEDS -----------------------------------
     //
     // A RETRACTED CLAIM, kept because the mistake is the instructive part.

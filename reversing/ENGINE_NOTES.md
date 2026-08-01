@@ -1013,6 +1013,35 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### AN OFFSET IS ONLY VALID AGAINST THE TYPE IT WAS MEASURED ON
+
+`displace_player` wrote `kObjectPosition` (0x14) into `Player::object` and corrupted the heap.
+0x14 is correct -- for an **LTObject**, which is how `camera_object` and `model_object` are read
+throughout PlayerMgr. `Player::object` is the **game-side** player class. Both were called
+"object", so the offset was carried across, and three floats went into whatever lives at 0x14 of a
+different type.
+
+**The store returning true proved only that the page was writable.** Nothing moved, because nothing
+there was a position -- and that "silent success" is what made it look like an ordinary
+does-not-work rather than damage.
+
+**How it presented:** a crash *later*, in `Delegate_Notify` (GameClient+0x7BFB0), which walks an
+intrusive list of subscribers and does `call [[ecx]+4]`. It called `0x42097A7A` -- no module -- and
+ran into the heap until it hit an illegal instruction (`0xC000001D`). The registers named the
+culprit outright: `ECX = 0x4315FFFC`, which as a float is **149.99994**, against a test nudge of
+**150**. The subscriber pointer *was* the number I had written.
+
+**Why alt-tab, every time:** the corruption is permanent for the session; alt-tab merely notifies
+the focus listeners, which is what *walks* the damaged list. The trigger was not the cause.
+
+**Method note.** The first diagnosis was "our DLL is in the stack, so it is ours" -- worthless,
+since the frame-tick hook puts us in nearly every stack. `tools/symbolize.py` resolved the frame to
+`poll_detour`, i.e. the input path and *not* the roomscale code, and the PDB timestamp (21:25:25)
+against the crash (21:26:13) proved the symbols matched the running build. Right conclusion, but it
+was reached by evidence only after being asserted without any.
+
+Moving the player needs the movement system, not a position poke.
+
 ### Roomscale that moves the CHARACTER
 
 Camera-only roomscale walks the wearer's view out of their own body: the character stands still
