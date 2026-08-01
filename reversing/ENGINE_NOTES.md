@@ -1013,6 +1013,28 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The test pattern flickering THROUGH the game was a rate mismatch
+
+Reported from the headset: the game visible on a flat plane, playable, real time -- with the red and
+blue test pattern intermittently showing through it.
+
+That was a defect in the host loop, and the arithmetic names it exactly. The compositor asks for a
+frame 90 times a second. The game presents at **67** -- measured three independent ways that agree:
+publishes 67.0/s, pipelined readbacks 67.0/s (same hook, so they must match, and they do), and the
+engine's own frame counter ~64/s. So on roughly a quarter of host frames there was no NEW picture,
+`poll()` correctly returned false, and the loop fell through to its colour-clear fallback on exactly
+those frames.
+
+**Holding the last picture is the fix, and it is also simply correct.** A swapchain image that has
+been released may be submitted again on later frames without re-acquiring; the runtime uses the last
+released image. So a frame with nothing new costs nothing and shows the previous one, which is what
+every compositor expects. The clear path is now unreachable once a single game frame has arrived --
+it exists only to prove the chain before there is anything to show.
+
+**The 67 Hz is the GAME's, not ours.** Publishing adds 0.5 ms to a 15 ms frame. Matching 90 would
+mean making the engine present at 90, which is a game-side question (its own cap, or vsync against
+this monitor) and not something the transport can fix.
+
 ### PIXELS ARE IN THE HEADSET. The game's own frame, at its own resolution.
 
 End to end, live: the 32-bit mod publishes its pipelined readback into a file mapping, the 64-bit

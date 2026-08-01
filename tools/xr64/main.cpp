@@ -380,6 +380,8 @@ int main(int argc, char** argv) {
     std::vector<ID3D11Texture2D*> screen_images;
     uint32_t screen_w = 0;
     uint32_t screen_h = 0;
+    bool screen_ready = false;   // an image has been released at least once
+    uint64_t held = 0;           // frames where we re-showed the last picture
 
     // BGRA to match a D3D9 back buffer byte for byte, so the upload is a copy and not a conversion.
     int64_t screen_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
@@ -509,6 +511,16 @@ int main(int argc, char** argv) {
 
         XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 
+        // ---- UPLOAD ONLY WHEN THERE IS SOMETHING NEW -------------------------------------------
+        //
+        // The compositor asks for a frame 90 times a second; the game publishes about 68. So on
+        // roughly a quarter of frames there is no new picture, and the first version of this loop
+        // fell through to the colour clear on exactly those -- which the wearer saw as the red/blue
+        // test pattern FLICKERING THROUGH the game.
+        //
+        // The right answer is to show the last picture again. A swapchain whose image has been
+        // released may be submitted on later frames without re-acquiring, and the runtime uses that
+        // last released image -- so holding a frame costs nothing and is what a compositor expects.
         if (fs.shouldRender != XR_FALSE && have_frame && screen != XR_NULL_HANDLE) {
             uint32_t index = 0;
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -525,6 +537,13 @@ int main(int argc, char** argv) {
 
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             xrReleaseSwapchainImage(screen, &ri);
+            screen_ready = true;
+        }
+
+        if (fs.shouldRender != XR_FALSE && screen_ready) {
+            if (!have_frame) {
+                ++held;
+            }
 
             // A 2 m wide screen, 1.6 m ahead, at eye level, aspect preserved from the source.
             const float width_m = 2.0f;
@@ -597,9 +616,11 @@ int main(int argc, char** argv) {
         const XrResult end = xrEndFrame(session, &fei);
 
         if (++frames % 90 == 0) {
-            std::printf("[host] %llu frames, %llu submitted, state %s, last xrEndFrame %s\n",
+            std::printf("[host] %llu frames, %llu submitted, %llu held (no new game frame), "
+                        "state %s, last xrEndFrame %s\n",
                         static_cast<unsigned long long>(frames),
-                        static_cast<unsigned long long>(submitted), state_name(state), rs(end));
+                        static_cast<unsigned long long>(submitted),
+                        static_cast<unsigned long long>(held), state_name(state), rs(end));
         }
 
         if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
