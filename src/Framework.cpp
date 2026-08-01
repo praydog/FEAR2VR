@@ -48,6 +48,7 @@
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
 #include "mods/Comfort.hpp"
 #include "mods/RenderHook.hpp"
+#include "mods/RenderTimeline.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
 #include "mods/ViewHook.hpp"
@@ -6356,6 +6357,20 @@ std::string build_shader_params_json(bool include_write_probes) {
             const auto bs = sdk::Render::begin_scene_fn();
             const auto es = sdk::Render::end_scene_fn();
             json_append_bool(out, "rnd_device_present", sdk::Render::device() != nullptr);
+            // The render-target trio, so a watchpoint can be armed on the bind without anybody
+            // computing a COM slot index by hand at the call site.
+            if (const auto srt = sdk::Render::set_render_target_fn()) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *srt);
+                json_append_string(out, "rnd_set_render_target_fn", tmp);
+            }
+            if (const auto grt = sdk::Render::get_render_target_fn()) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *grt);
+                json_append_string(out, "rnd_get_render_target_fn", tmp);
+            }
+            if (const auto sr = sdk::Render::stretch_rect_fn()) {
+                snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *sr);
+                json_append_string(out, "rnd_stretch_rect_fn", tmp);
+            }
             if (pres && rst && bs && es) {
                 snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, *pres);
                 json_append_string(out, "rnd_present_fn", tmp);
@@ -9830,6 +9845,60 @@ std::string build_api_db_record_json(const WebApiQuery& q) {
 // Safe on _Structures: has_attribute() is a per-record binary search over that record's OWN
 // (small) attribute list, and the loop stops as soon as `limit` matches are collected --
 // describe_record()/find_attribute() (the more expensive calls) only ever run on a MATCH.
+// ---- /render/* : WHAT WAS DRAWN, INTO WHICH TARGET ----------------------------------------------------
+//
+// Read-only. See mods/RenderTimeline.hpp for why the pass COUNTERS travel with each event: they are what
+// turn a list of bound targets into "this one took the scene, that one took the HUD".
+std::string build_render_json(const std::string& request_target) {
+    const WebApiQuery q = webapi_parse_query(request_target);
+    const size_t qpos = request_target.find('?');
+    const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
+
+    if (route != "/render/timeline") {
+        return "{\"ok\":false,\"error\":\"unknown /render route\"}";
+    }
+
+    auto& tl = RenderTimeline::get();
+    if (webapi_query_int(q, "arm", 0) != 0) {
+        tl.arm();
+    }
+    // The array first, then ONE JsonFields for the object: the builder writes both braces
+    // itself (constructor and destructor), so an outer '{' of our own produces `{,"ok"...`.
+    std::string arr = "[";
+    for (size_t i = 0; i < tl.count(); ++i) {
+        const auto e = tl.event(i);
+        if (i != 0) {
+            arr += ',';
+        }
+        char buf[224];
+        const char* kind = e.kind == RenderTimeline::Kind::BeginTarget  ? "begin"
+                           : e.kind == RenderTimeline::Kind::EndTarget  ? "end"
+                                                                        : "present";
+        snprintf(buf, sizeof(buf),
+                 "{\"kind\":\"%s\",\"target\":\"0x%08" PRIXPTR "\",\"w\":%d,\"h\":%d,"
+                 "\"cam_passes\":%llu,\"hud_passes\":%llu}",
+                 kind, e.target, e.size[0], e.size[1],
+                 static_cast<unsigned long long>(e.camera_passes),
+                 static_cast<unsigned long long>(e.hud_passes));
+        arr += buf;
+    }
+    arr += ']';
+
+    std::string out;
+    {
+        JsonFields jf(out);
+        jf.b("ok", true)
+          .b("hooked", tl.hooked())
+          .b("armed", tl.armed())
+          .u("begins", static_cast<size_t>(tl.begins()))
+          .u("ends", static_cast<size_t>(tl.ends()))
+          .u("overflow", tl.overflow())
+          .u("count", tl.count())
+          .raw("events", arr);
+    }
+    return out;
+}
+
 // ---- /watch/* : HARDWARE DATA BREAKPOINTS ------------------------------------------------------------
 //
 // The reply is deliberately verbose about semantics, because the two facts most likely to send a reader down a
@@ -10406,6 +10475,7 @@ bool Framework::initialize() {
     Mods::get().add(&WeaponWheel::get());
     Mods::get().add(&AmmoKeeper::get());
     Mods::get().add(&Accuracy::get());
+    Mods::get().add(&RenderTimeline::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
@@ -11851,6 +11921,7 @@ bool Framework::initialize() {
     };
 
     handlers.watch = build_watch_json;
+    handlers.render = build_render_json;
     handlers.focus_keep = [](const std::string& request_target) {
         const WebApiQuery q = webapi_parse_query(request_target);
         const bool on = webapi_query_int(q, "on", 1) != 0;

@@ -264,6 +264,14 @@ std::optional<uintptr_t> Render::reset_fn() { return device_method(16); }
 std::optional<uintptr_t> Render::begin_scene_fn() { return device_method(41); }
 std::optional<uintptr_t> Render::end_scene_fn() { return device_method(42); }
 
+// Slots 37/38. THE RENDER TARGET BIND, which is what a UI-isolation path has to find the engine's own
+// wrapper for: an EXECUTE watchpoint on slot 37 names the callers, the same way slot 17 named
+// LTRenderer_PresentAndSync. Slot 34 is the blit the engine uses to resolve one target into another,
+// and is on the same trail.
+std::optional<uintptr_t> Render::set_render_target_fn() { return device_method(37); }
+std::optional<uintptr_t> Render::get_render_target_fn() { return device_method(38); }
+std::optional<uintptr_t> Render::stretch_rect_fn() { return device_method(34); }
+
 std::optional<std::string> Render::present_impl_owner() {
     return interface_impl_owner(reinterpret_cast<IUnknown*>(device()), 17);
 }

@@ -196,6 +196,16 @@ public:
     // Slot 16. A stereo path provokes resets (resolution/mode changes), and a hook on the device must be
     // reinstated after one -- so a consumer needs to see this call too, not just Present.
     static std::optional<uintptr_t> reset_fn();
+
+    // Slots 37, 38 and 34. THE RENDER-TARGET SURFACE, which is what isolating the UI turns on: the HUD is
+    // drawn into whatever target is bound after the scene, so "which target, bound by whom" is the first
+    // question. Arm an EXECUTE watch on set_render_target_fn() and read the callers -- that is how
+    // LTRenderer_PresentAndSync was found from slot 17, and AGENT.MD rule 5 requires it over a scan.
+    static std::optional<uintptr_t> set_render_target_fn();
+    static std::optional<uintptr_t> get_render_target_fn();
+    // Slot 34, the target-to-target blit. On the same trail: a scene rendered offscreen reaches the back
+    // buffer through either this or a full-screen quad, and which one it is changes where the UI can be split.
+    static std::optional<uintptr_t> stretch_rect_fn();
     // ---- RESOURCE CREATION, WHICH IS THE D3D9Ex GATE --------------------------------
     //
     // D3D9Ex REFUSES D3DPOOL_MANAGED. Sharing a surface with an OpenXR swapchain needs Ex, so

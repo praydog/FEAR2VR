@@ -4032,6 +4032,36 @@ per frame, which is where its per-frame state resets.
 Only GFx KERNEL symbols survived the build (`GMatrix2D`, `GThread`, `GMutex`, `GColor` are all
 mangled-name exports); the renderer itself is unnamed, so the vtables above are the map.
 
+### The HUD has its own render-target bracket, and nothing else is in it
+
+Measured with `RenderTimeline` (`/render/timeline?arm=1`), which hooks CLTRenderer slots 11/12 and
+records one frame. Identical across every frame sampled:
+
+```
+begin  0x02A06B98   640x360     end -> 1 scene pass      (auxiliary view)
+begin  0x02A06B70  2560x1440    end -> 1 scene pass      (the main view)
+begin  0x02A06B70  2560x1440    end -> 10 2D passes      <-- THE HUD, exclusively
+present
+```
+
+**This is the finding that decides the UI design.** The ten 2D passes do not share a bracket with
+the scene: the engine closes the main view's target and opens a NEW bracket, on the same target, for
+the HUD. So isolating the UI needs no time-bracket heuristic and no guess about what else might be
+drawing -- there is a `BeginRenderTarget` call whose bracket contains the HUD and nothing else.
+
+The two scene targets are worth noting for a different reason: only ONE perspective pass reaches the
+main 2560x1440 target, not two, so the stereo split is not two pass setups (see CameraPassHook for
+what it actually does). And the 640x360 target is the auxiliary view `CameraPassHook.skipped_aux`
+already counts.
+
+How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRenderTarget` (slot 37,
+`sdk::Render::set_render_target_fn()`), per AGENT.MD rule 5. Its caller candidates named
+`SceneRenderer_BeginRenderTarget` -> `sub_620C55` -> `sub_6131C6` -> `call [ecx+0x94]`, where 0x94 is
+37*4 -- confirming the slot from the other end. The wrappers are
+`CLTRenderer_BeginRenderTarget` (`bool __stdcall(target, _, offsets, _)`) and
+`CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
+whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
+
 ### The published VR frame contains no UI at all -- measured
 
 Capturing what actually reaches the headset (`/xr/capture?path=...`, 2560x1440) gives a clean

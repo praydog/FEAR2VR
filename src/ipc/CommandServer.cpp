@@ -237,6 +237,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/render/", 0) == 0) {
+        if (!g_handlers.render) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no render handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.render(path));
+        return;
+    }
+
     if (path.rfind("/watch", 0) == 0) {
         if (!g_handlers.watch) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no watch handler registered\"}");

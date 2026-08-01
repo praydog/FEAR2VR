@@ -139,6 +139,10 @@ using FocusKeepFn = std::function<std::string(const std::string& request_target)
 // of every thread, which is why it lives behind an explicit route rather than in a read-only report.
 using WatchFn = std::function<std::string(const std::string& request_target)>;
 
+// RENDER DIAGNOSTICS -- /render/*. Read-only: it records which target the engine bound and how many
+// passes of each kind went into it, and reports that. It mutates nothing.
+using RenderFn = std::function<std::string(const std::string& request_target)>;
+
 // SYNTHETIC INPUT -- /input/tap, /input/hold, /input/release. MUTATES: it writes the engine's key state, which
 // is the only path that reaches this game (SendInput does not, and the window-message queue is not drained).
 using InputFn = std::function<std::string(const std::string& request_target)>;
@@ -207,6 +211,7 @@ struct Handlers {
     ViewOverrideFn view_override{};  // optional; /view-override 404s without it -- MUTATES the view, bounded
     FocusKeepFn focus_keep{};        // optional; /focus-keep 404s without it -- MUTATES the engine's focus gate
     WatchFn watch{};                 // optional; /watch/* 404s without it -- writes thread debug registers
+    RenderFn render{};               // optional; /render/* 404s without it -- read-only render timeline
     InputFn input{};                 // optional; /input/* 404s without it -- MUTATES engine key state
     ConsoleFn console{};             // optional; /console/* 404s without it -- MUTATES via command handlers
     StereoFn stereo{};               // optional; /stereo/* 404s without it -- MUTATES the rendered view
