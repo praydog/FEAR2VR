@@ -25,6 +25,7 @@
 #include <dxgi1_2.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -83,6 +84,9 @@ struct SharedReader {
     xr::HandsState* hands = nullptr;
     const uint8_t* base_bytes = nullptr;
     uint32_t last_sequence = 0;
+    const xr::UiFrameHeader* ui = nullptr;
+    uint32_t last_ui_sequence = 0;
+    bool logged_version_mismatch = false;
 
     bool open() {
         if (header != nullptr) {
@@ -95,7 +99,7 @@ struct SharedReader {
             return false;
         }
 
-        void* base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+        void* base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, xr::kSharedFrameTotalBytes);
 
         if (base == nullptr) {
             CloseHandle(mapping);
@@ -108,6 +112,8 @@ struct SharedReader {
                                                 xr::kHostStateOffset);
         hands = reinterpret_cast<xr::HandsState*>(static_cast<uint8_t*>(base) +
                                                   xr::kHandsStateOffset);
+        ui = reinterpret_cast<const xr::UiFrameHeader*>(static_cast<uint8_t*>(base) +
+                                                         xr::kUiStateOffset);
         base_bytes = static_cast<const uint8_t*>(base);
 
         // Fresh committed memory reads as zero already, but the mapping outlives a crashed host --
@@ -115,6 +121,32 @@ struct SharedReader {
         // once here, before the game or the frame loop can observe it, guarantees a reader always
         // finds an even sequence and all-invalid poses rather than whatever a dead process left.
         std::memset(hands, 0, sizeof(xr::HandsState));
+
+        // VERSION GATE, checked once here rather than on every poll(): the layout MOVED in
+        // version 2 (the UI block was inserted before the frame slots), so a mapping stamped by
+        // an old writer -- or a new writer read by an old host -- would have every offset below
+        // this point computed wrong. That reads as garbage pixels, not a crash, which is why this
+        // refuses the mapping outright instead of trusting it. Magic is a prerequisite: version is
+        // meaningless (and may still be zero) before the writer has stamped the header at all.
+        if (header->magic == xr::kSharedFrameMagic && header->version != xr::kSharedFrameVersion) {
+            if (!logged_version_mismatch) {
+                std::printf("[host] shared frame version mismatch: host wants %u, mapping has %u "
+                            "-- refusing to read it (rebuild the mod and the host together)\n",
+                            xr::kSharedFrameVersion, header->version);
+                logged_version_mismatch = true;
+            }
+
+            UnmapViewOfFile(base);
+            CloseHandle(mapping);
+            mapping = nullptr;
+            header = nullptr;
+            host = nullptr;
+            hands = nullptr;
+            ui = nullptr;
+            base_bytes = nullptr;
+            return false;
+        }
+
         return true;
     }
 
@@ -153,6 +185,58 @@ struct SharedReader {
 
         last_sequence = seq;
         return true;
+    }
+
+    // ---- THE UI LAYER, READ THE SAME WAY -------------------------------------------------------
+    //
+    // Same seqlock discipline as poll() above -- an odd sequence is a writer mid-update, and the
+    // fields are trusted only if the sequence did not move between the first and second read.
+    // `present` is checked here rather than treated as just another field: the mod is off by
+    // default, and a stale sequence must never be mistaken for a published layer.
+    bool poll_ui(uint32_t& w, uint32_t& h, uint32_t& pitch, uint32_t& derive_alpha,
+                const uint8_t*& bits) {
+        if (ui == nullptr || header == nullptr || header->magic != xr::kSharedFrameMagic) {
+            return false;
+        }
+
+        const uint32_t seq = ui->sequence;
+
+        if ((seq & 1u) != 0u || seq == last_ui_sequence) {
+            return false;  // mid-write, or nothing new
+        }
+
+        if (ui->present == 0) {
+            return false;
+        }
+
+        w = ui->width;
+        h = ui->height;
+        pitch = ui->pitch;
+        derive_alpha = ui->derive_alpha;
+        const uint32_t bytes = ui->bytes;
+        bits = base_bytes + xr::ui_slot_offset(ui->slot);
+
+        if (w == 0 || h == 0 || bytes == 0 || bytes > xr::kUiMaxBytes) {
+            return false;
+        }
+
+        // Re-read: if the writer moved on while we looked, the fields may not describe the pixels.
+        if (ui->sequence != seq) {
+            return false;
+        }
+
+        last_ui_sequence = seq;
+        return true;
+    }
+
+    // A live read of `present`, independent of the discipline above: used to notice the layer
+    // being turned off promptly rather than waiting on the next unrelated sequence bump, and to
+    // decide whether an already-uploaded image should still be shown this frame. A torn read here
+    // costs at most one frame of stale visibility -- the PIXELS are only ever trusted through
+    // poll_ui(), which does not have that luxury.
+    bool ui_present() const {
+        return ui != nullptr && header != nullptr && header->magic == xr::kSharedFrameMagic &&
+              ui->present != 0u;
     }
 };
 
@@ -216,12 +300,24 @@ int main(int argc, char** argv) {
 
     bool probe_only = false;
     int max_seconds = 0;
+    bool ui_enabled = true;
+    bool ui_world_fixed = false;         // --no-ui disables the UI quad layer entirely
+    float ui_distance_m = 1.8f;     // --ui-distance <metres>, along -Z from the reference space origin
+    float ui_width_m = 1.6f;        // --ui-width <metres>, height follows the UI image's aspect ratio
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--probe") == 0) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--no-ui") == 0) {
+            ui_enabled = false;
+        } else if (std::strcmp(argv[i], "--ui-distance") == 0 && i + 1 < argc) {
+            ui_distance_m = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--ui-width") == 0 && i + 1 < argc) {
+            ui_width_m = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--ui-world-fixed") == 0) {
+            ui_world_fixed = true;  // pin the HUD to the room instead of to the head
         }
     }
 
@@ -389,6 +485,22 @@ int main(int argc, char** argv) {
     XrSpace space = XR_NULL_HANDLE;
     r = xrCreateReferenceSpace(session, &rsci, &space);
     std::printf("[host] reference space -> %s\n", rs(r));
+
+    // ---- A HEAD-LOCKED SPACE, FOR THE UI QUAD ONLY ------------------------------------------
+    //
+    // VIEW space is defined as the viewer's own frame, so a layer posed in it follows the head
+    // with no per-frame relocation by this code. That is what a HUD has to do: the health bar and
+    // the ammo counter are instrument-panel furniture, and one pinned to a spot in the ROOM is
+    // behind the wearer the moment they turn around -- which is what posing the quad in LOCAL
+    // space gives you, however stable it looks while facing forward.
+    //
+    // Only the UI quad uses this. The world layers stay in LOCAL, where they belong.
+    XrReferenceSpaceCreateInfo vsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    vsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    vsci.poseInReferenceSpace.orientation.w = 1.0f;
+    XrSpace view_space = XR_NULL_HANDLE;
+    r = xrCreateReferenceSpace(session, &vsci, &view_space);
+    std::printf("[host] view (head-locked) space -> %s\n", rs(r));
 
     // ---- CONTROLLERS ------------------------------------------------------------------------
     //
@@ -575,6 +687,20 @@ int main(int argc, char** argv) {
     uint64_t held = 0;           // frames where we re-showed the last picture
     bool use_projection = true;  // quads only until the game is tracking the head
 
+    // ---- THE UI LAYER'S OWN SWAPCHAIN -----------------------------------------------------------
+    //
+    // A second swapchain, independent of the eyes above: the UI is not stereo, is not the game's
+    // resolution, and is created LAZILY -- only once a UI frame is actually published, because the
+    // mod is off by default and there is no reason to reserve a texture for a layer that may never
+    // appear.
+    XrSwapchain ui_swapchain = XR_NULL_HANDLE;
+    std::vector<ID3D11Texture2D*> ui_images;
+    uint32_t ui_w = 0;
+    uint32_t ui_h = 0;
+    bool ui_uploaded = false;    // an image has been released at least once at the current size
+    bool ui_shown = false;       // for the one-time appear/disappear log, not per-frame
+    std::vector<uint8_t> ui_staging;  // holds the alpha-derived copy when UiFrameHeader::derive_alpha is set
+
     // ---- THE POSES WE PUBLISHED, KEPT ----------------------------------------------------------
     //
     // The game renders from a pose it read a frame or two ago and tells us which one. Submitting a
@@ -718,7 +844,7 @@ int main(int argc, char** argv) {
 
         std::vector<XrCompositionLayerProjectionView> layer_views(view_count);
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        const XrCompositionLayerBaseHeader* layers[2]{};
+        const XrCompositionLayerBaseHeader* layers[3]{};
         uint32_t layer_count = 0;
 
         // Pull the newest complete frame the game has published, if any.
@@ -726,8 +852,22 @@ int main(int argc, char** argv) {
         const uint8_t* fbits = nullptr;
         bool have_frame = false;
 
+        // Same pull for the UI layer -- a second, independent publish that may or may not be
+        // active. `ui_present_now` is a live read (see SharedReader::ui_present) used even on
+        // frames where nothing NEW was published, so the layer disappears promptly when the mod
+        // turns it off instead of waiting on an unrelated sequence bump.
+        uint32_t uw = 0, uh = 0, upitch = 0, uderive_alpha = 0;
+        const uint8_t* ubits = nullptr;
+        bool have_ui_frame = false;
+        bool ui_present_now = false;
+
         if (reader.open()) {
             have_frame = reader.poll(fw, fh, fpitch, fbits);
+
+            if (ui_enabled) {
+                ui_present_now = reader.ui_present();
+                have_ui_frame = reader.poll_ui(uw, uh, upitch, uderive_alpha, ubits);
+            }
         }
 
         // A side-by-side frame is TWO pictures: each eye gets half the width.
@@ -790,6 +930,56 @@ int main(int argc, char** argv) {
                 screen_ready = false;
             } else {
                 have_frame = false;
+            }
+        }
+
+        // ---- THE UI LAYER'S SWAPCHAIN, CREATED LAZILY -----------------------------------------
+        //
+        // Only once a UI frame has actually arrived, and only at the UI header's own resolution --
+        // never the runtime's recommendation, since the payload defines the size here just as it
+        // does for the game's screen above. Same format family (BGRA, same sRGB-vs-fallback choice
+        // as `screen_format`) because the payload is BGRA either way.
+        if (ui_enabled && have_ui_frame &&
+            (ui_swapchain == XR_NULL_HANDLE || uw != ui_w || uh != ui_h)) {
+            ui_images.clear();
+
+            if (ui_swapchain != XR_NULL_HANDLE) {
+                xrDestroySwapchain(ui_swapchain);
+                ui_swapchain = XR_NULL_HANDLE;
+            }
+
+            XrSwapchainCreateInfo ui_sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+            ui_sc.usageFlags =
+                XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+            ui_sc.format = screen_format;
+            ui_sc.sampleCount = 1;
+            ui_sc.width = uw;
+            ui_sc.height = uh;
+            ui_sc.faceCount = 1;
+            ui_sc.arraySize = 1;
+            ui_sc.mipCount = 1;
+
+            const XrResult ui_r = xrCreateSwapchain(session, &ui_sc, &ui_swapchain);
+            std::printf("[host] ui swapchain %ux%u -> %s\n", uw, uh, rs(ui_r));
+
+            if (XR_SUCCEEDED(ui_r)) {
+                uint32_t n = 0;
+                xrEnumerateSwapchainImages(ui_swapchain, 0, &n, nullptr);
+                std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+                xrEnumerateSwapchainImages(
+                    ui_swapchain, n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+
+                for (uint32_t k = 0; k < n; ++k) {
+                    ui_images.push_back(imgs[k].texture);
+                }
+
+                ui_w = uw;
+                ui_h = uh;
+                ui_uploaded = false;
+            } else {
+                ui_w = 0;
+                ui_h = 0;
+                have_ui_frame = false;  // creation failed; nothing to upload this frame
             }
         }
 
@@ -1080,6 +1270,72 @@ int main(int argc, char** argv) {
             screen_ready = true;
         }
 
+        // ---- APPEAR / DISAPPEAR, LOGGED ONCE -----------------------------------------------
+        //
+        // Per-frame logging in this host is reserved for errors -- so these fire only on the
+        // transition, not on every frame the layer happens to be shown or hidden.
+        if (ui_enabled) {
+            if (have_ui_frame && !ui_shown) {
+                std::printf("[host] UI layer appeared, %ux%u\n", uw, uh);
+                ui_shown = true;
+            } else if (!ui_present_now && ui_shown) {
+                std::printf("[host] UI layer disappeared\n");
+                ui_shown = false;
+            }
+        }
+
+        // ---- UPLOAD THE UI LAYER ----------------------------------------------------------------
+        //
+        // Same held-image approach as the game's screen above: only re-upload when there is a NEW
+        // published frame, and let a swapchain whose image was already released keep showing it on
+        // the frames in between.
+        if (fs.shouldRender != XR_FALSE && have_ui_frame && ui_swapchain != XR_NULL_HANDLE) {
+            uint32_t ui_index = 0;
+            XrSwapchainImageAcquireInfo ui_ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            xrAcquireSwapchainImage(ui_swapchain, &ui_ai, &ui_index);
+
+            XrSwapchainImageWaitInfo ui_wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            ui_wi.timeout = XR_INFINITE_DURATION;
+            xrWaitSwapchainImage(ui_swapchain, &ui_wi);
+
+            if (uderive_alpha != 0) {
+                // ---- ALPHA IS NOT IN THE PIXELS ---------------------------------------------
+                //
+                // The engine's UI shaders emit zero alpha and forcing the colour-write mask does
+                // not change that (measured 0xF for the whole bracket). The surface is cleared to
+                // transparent black and only the UI draws into it, so RGB is already the
+                // premultiplied contribution and its brightness IS its coverage -- deriving
+                // A = max(R,G,B) here is exact, not an approximation. Paid on the host rather than
+                // the game's render thread, because the host is already touching every pixel to
+                // upload it and the game would pay it inside the frame instead.
+                ui_staging.resize(static_cast<size_t>(upitch) * uh);
+
+                for (uint32_t row = 0; row < uh; ++row) {
+                    const uint8_t* src = ubits + static_cast<size_t>(row) * upitch;
+                    uint8_t* dst = ui_staging.data() + static_cast<size_t>(row) * upitch;
+
+                    for (uint32_t x = 0; x < uw; ++x) {
+                        const uint8_t b = src[x * 4 + 0];
+                        const uint8_t g = src[x * 4 + 1];
+                        const uint8_t r = src[x * 4 + 2];
+                        dst[x * 4 + 0] = b;
+                        dst[x * 4 + 1] = g;
+                        dst[x * 4 + 2] = r;
+                        dst[x * 4 + 3] = (std::max)(b, (std::max)(g, r));
+                    }
+                }
+
+                ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ui_staging.data(), upitch, 0);
+            } else {
+                ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ubits, upitch, 0);
+            }
+
+            XrSwapchainImageReleaseInfo ui_ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            xrReleaseSwapchainImage(ui_swapchain, &ui_ri);
+
+            ui_uploaded = true;
+        }
+
         // ---- PROJECTION, ONCE THE GAME IS ACTUALLY TRACKING THE HEAD ---------------------------
         //
         // Submitted with the pose the game RENDERED FROM, looked up by the sequence it echoed back,
@@ -1249,6 +1505,47 @@ int main(int argc, char** argv) {
             ++submitted;
         }
 
+        // ---- THE UI LAYER, ON TOP OF WHATEVER WORLD LAYER WAS JUST CHOSEN -----------------------
+        //
+        // Submitted AFTER layers[0..layer_count) above regardless of which of the three world
+        // paths ran, so it composites in front of the projection layer, the two-quad fallback, or
+        // even the startup test pattern. Gated on `ui_present_now` rather than `have_ui_frame`: the
+        // mod being off, or the wearer having no HUD open, must hide the quad immediately rather
+        // than keep showing whatever was uploaded last.
+        XrCompositionLayerQuad ui_quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+
+        if (ui_enabled && fs.shouldRender != XR_FALSE && ui_present_now && ui_uploaded &&
+            ui_swapchain != XR_NULL_HANDLE) {
+            // PREMULTIPLIED, NOT UNPREMULTIPLIED: the colour (and the alpha this host just derived
+            // for it) is already multiplied by coverage -- see UiFrameHeader::premultiplied and the
+            // upload above. Setting XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT here would ask
+            // the compositor to multiply by alpha a SECOND time and double-darken every edge.
+            ui_quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            // HEAD-LOCKED, in VIEW space. A HUD is instrument-panel furniture: it has to be
+            // where the wearer is looking, not at a fixed point in the room. Posed in LOCAL space
+            // the quad looks perfectly stable while facing forward and is BEHIND YOU the moment you
+            // turn -- a health bar you cannot see is not a health bar. `--ui-world-fixed` keeps the
+            // LOCAL placement for anyone who wants the panel nailed to the room instead.
+            ui_quad.space = ui_world_fixed ? space : view_space;
+            ui_quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            ui_quad.subImage.swapchain = ui_swapchain;
+            ui_quad.subImage.imageRect.offset = {0, 0};
+            ui_quad.subImage.imageRect.extent = {static_cast<int32_t>(ui_w),
+                                                 static_cast<int32_t>(ui_h)};
+
+            // Straight ahead at the configured distance. In VIEW space that is literally "in front
+            // of the wearer"; in LOCAL it is in front of the recentred origin.
+            ui_quad.pose.orientation.w = 1.0f;
+            ui_quad.pose.position = {0.0f, 0.0f, -ui_distance_m};
+
+            // HEIGHT FROM ASPECT, never stretched: the published UI image can be any resolution,
+            // so only the width is a user-tunable constant and the height follows it.
+            ui_quad.size.width = ui_width_m;
+            ui_quad.size.height = ui_width_m * static_cast<float>(ui_h) / static_cast<float>(ui_w);
+
+            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ui_quad);
+        }
+
         XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
         fei.displayTime = fs.predictedDisplayTime;
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -1304,6 +1601,10 @@ int main(int argc, char** argv) {
         if (screen[e] != XR_NULL_HANDLE) {
             xrDestroySwapchain(screen[e]);
         }
+    }
+
+    if (ui_swapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(ui_swapchain);
     }
 
     if (space != XR_NULL_HANDLE) {
