@@ -18,6 +18,20 @@ namespace {
 
 // THE HOOK'S NAME IS THE REGISTRY KEY and the detour's way back to the trampoline, so it is defined once.
 constexpr const char* kHookName = "CPlayerCamera::ApplyLookDelta";
+
+std::atomic<bool> g_level_aim{false};
+std::atomic<uint64_t> g_level_writes{0};
+
+// RETRACTED: LEVELLING BY REWRITING THE QUATERNION.
+//
+// The first attempt stripped pitch out of the aim quaternion inside the look-delta detour. It made
+// things WORSE -- the reported aim pitch went from -66 degrees to exactly -80, which is the engine's
+// own clamp limit. The engine keeps pitch as a SCALAR and rebuilds the quaternion from it, so
+// rewriting the quaternion does not remove pitch; it just disagrees with the authority, once per
+// call, until the disagreement saturates against the clamp.
+//
+// The engine's own look-delta entry point is the authority, so levelling now goes through that
+// instead -- see ViewHook::on_frame().
 constexpr const char* kPoseHookName = "PlayerCamera::UpdateViewPose";
 constexpr const char* kSetRotHookName = "LTObject::SetRotation";
 constexpr const char* kSetPosRotHookName = "LTObject::SetPosRot";
@@ -739,4 +753,49 @@ void ViewHook::arm_override(float yaw_deg, uint32_t frames, unsigned mode) {
     g_ov_pending.store(false, std::memory_order_relaxed);
     g_ov_frames.store(bounded, std::memory_order_relaxed);
     LOGX("[viewhook] override armed: %.2f deg yaw for %u frames", yaw_deg, bounded);
+}
+
+void ViewHook::set_level_aim(bool on) {
+    g_level_aim.store(on, std::memory_order_relaxed);
+    LOGX("[view] aim levelling %s -- the body owns yaw, the headset owns pitch", on ? "ON" : "off");
+}
+
+bool ViewHook::level_aim() const {
+    return g_level_aim.load(std::memory_order_relaxed);
+}
+
+uint64_t ViewHook::level_aim_writes() const {
+    return g_level_writes.load(std::memory_order_relaxed);
+}
+
+void ViewHook::on_frame() {
+    if (!g_level_aim.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // NULL THE PITCH THROUGH THE ENGINE'S OWN PATH. apply_look_delta is the entry point the game
+    // itself uses, so the pitch scalar, the quaternion it derives, and everything downstream all
+    // move together -- which is exactly what rewriting the quaternion could not achieve.
+    //
+    // Once per frame, not once per call: the detour fires ~740 times a second and a correction that
+    // often would be fighting the same input several times before it had been applied once.
+    const auto pitch = sdk::PlayerMgr::aim_pitch(0);
+
+    if (!pitch.has_value()) {
+        return;
+    }
+
+    // A dead zone, because a delta of nearly nothing is still a write, and a write every frame
+    // against an aim that is already level is pure noise in the engine's input path.
+    constexpr float kLevelEpsilon = 0.0015f;  // ~0.09 degrees
+
+    if (*pitch > -kLevelEpsilon && *pitch < kLevelEpsilon) {
+        return;
+    }
+
+    // Positive is up in BOTH this reading and the delta, so nulling is simply the negation. No
+    // clamp needed: driving toward zero can never leave a range that contains zero.
+    if (sdk::PlayerMgr::apply_look_delta(0, -*pitch, 0.0f)) {
+        g_level_writes.fetch_add(1, std::memory_order_relaxed);
+    }
 }

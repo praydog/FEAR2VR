@@ -45,11 +45,29 @@ public:
 
     // NOTHING HERE. The hook does the work on the engine's own thread; a per-frame poll would only duplicate
     // it. Kept unimplemented deliberately rather than omitted, so the next reader does not add one.
-    void on_frame() override {}
+    void on_frame() override;
 
     // Retiring is Hooks::get()'s job (it disables every hook under one lock during shutdown), so a mod must
     // NOT remove its own hook here -- see Mod.hpp and TESTING.MD's uninject contract.
     void on_shutdown() override {}
+
+    // ---- LEVELLING THE BODY, SO THE HEAD CAN TURN ----------------------------------------------
+    //
+    // Strips PITCH and ROLL from the player's aim each time the engine applies a look delta,
+    // leaving yaw entirely under the player's control.
+    //
+    // WHY THIS IS GEOMETRY, NOT PREFERENCE. The engine builds the camera as `outer * aim`, and
+    // HeadTracking writes the headset orientation into `outer` -- so the head rotation is applied
+    // IN THE AIM'S FRAME. While the aim is level that is exactly right. Once the aim pitches, the
+    // head's yaw axis tilts with it and turning the head sweeps the view through an arc instead of
+    // around the horizon. Reported from the headset as "like gimbal lock as the game's pitch gets
+    // toward 90, but fine if I level it out with the mouse", which is precisely that.
+    //
+    // Locking the aim level makes the composition correct by construction: the body owns the
+    // heading, the headset owns pitch and roll, and neither is applied in the other's tilted frame.
+    void set_level_aim(bool on);
+    bool level_aim() const;
+    uint64_t level_aim_writes() const;
 
     // ---- DIAGNOSTICS, data only ---------------------------------------------------------------
     //

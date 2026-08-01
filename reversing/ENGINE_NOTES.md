@@ -1013,6 +1013,40 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Levelling the body so the head can turn, and a retraction on how
+
+Reported from the headset: turning the head while the GAME's pitch is far from level feels "like
+gimbal lock", and is fine as soon as the aim is levelled with the mouse.
+
+That is the composition, exactly. The engine builds the camera as `outer * aim` and HeadTracking
+writes the headset orientation into `outer`, so the head rotation is applied IN THE AIM'S FRAME.
+Level, that is right. Pitched, the head's yaw axis tilts with the aim and turning the head sweeps
+the view through an arc instead of around the horizon. Locking the aim level makes the composition
+correct by construction: the body owns heading, the headset owns pitch and roll, and neither is
+applied in the other's tilted frame.
+
+**RETRACTION: levelling by rewriting the quaternion made it worse.** The first attempt stripped pitch
+out of the aim quaternion inside the look-delta detour -- the same detour that successfully owns the
+rotation for the full-override feature. The reported aim pitch went from -66 degrees to exactly
+-80.000, which is the engine's own clamp limit.
+
+The engine keeps pitch as a SCALAR and rebuilds the quaternion from it. Rewriting the quaternion
+therefore does not remove pitch; it disagrees with the authority once per call, ~740 times a second,
+until the disagreement saturates against the clamp. That the same detour works for a full override
+is not a contradiction: overriding replaces the whole rotation, while levelling tries to edit ONE
+COMPONENT of a value the engine derives from somewhere else.
+
+**Through the engine's own entry point it is one write.** `apply_look_delta` is what the game itself
+uses, so the scalar, the quaternion derived from it, and everything downstream move together.
+Measured: pitch -1.39 degrees to +0.000, ONE write, and it stays there -- a dead zone of ~0.09
+degrees stops a level aim generating a write every frame. Once per frame rather than once per
+detour call, because a correction applied 740 times a second is fighting the same input several
+times before it has landed once.
+
+**What this leaves.** The engine's aim is now always horizontal, so anything that derives from the
+aim rather than from the view -- shooting in particular -- needs the head's pitch supplied
+separately. FireRedirect already exists for exactly that.
+
 ### THE FIX FOR JUDDER IS TO LET THE RUNTIME PACE THE GAME
 
 The decisive observation came from the headset, and it inverts the usual assumption: **alt-tabbed at

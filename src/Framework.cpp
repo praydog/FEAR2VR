@@ -10575,6 +10575,9 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("level_aim") != q.end()) {
+                ViewHook::get().set_level_aim(webapi_query_int(q, "level_aim", 0) != 0);
+            }
             if (q.find("paced") != q.end()) {
                 VR::get().set_paced(webapi_query_int(q, "paced", 0) != 0);
             }
@@ -10780,6 +10783,8 @@ bool Framework::initialize() {
               .b("fp_publishing", FrameCapture::get().publishing())
               .b("vr_host_pose", VR::get().using_host_pose())
               .b("vr_paced", VR::get().paced())
+              .b("vr_level_aim", ViewHook::get().level_aim())
+              .u("vr_level_writes", static_cast<size_t>(ViewHook::get().level_aim_writes()))
               .b("vr_pacing_live", FramePublisher::get().pacing_live())
               .u("vr_tick_waits", static_cast<size_t>(FramePublisher::get().tick_waits()))
               .u("vr_tick_timeouts", static_cast<size_t>(FramePublisher::get().tick_timeouts()))
