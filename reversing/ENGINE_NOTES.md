@@ -1069,6 +1069,34 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The weapon anchors on the PLAYER ROOT, all three axes -- confirmed in the headset
+
+The camera OBJECT carries the engine's own neck-bone orbit: vertically it swings 29-31 units across
+a look up and down, and horizontally it carries the same artefact. Anchoring the welded weapon to it
+put that orbit straight into the gun, which is what "looking around adds a small delta" was.
+
+The player's ROOT is the right anchor on every axis:
+- it does not move with head rotation at all -- measured swing **0.00** across a full sweep
+- body roomscale keeps it following the head's real travel **1:1** -- 45.37 cm of head gives 45.39
+  units of root, 84.32 gives 84.43
+
+So it is stable under rotation and correct under movement, which is exactly the pair of properties
+the anchor needs.
+
+**A LATER "IMPROVEMENT" TO THIS WAS REVERTED, and the reason matters more than the change.**
+`displace_player` has a 1 mm dead band and goes through collision, so the root cannot follow the head
+perfectly and a residual leak is real. Referencing the controller to the head position roomscale had
+COMMITTED closes that leak arithmetically. It was implemented, reasoned about at length -- and the
+owner reported it broken in the headset. **The leak costs less than the thing that fixes it.** Do not
+re-derive it; it has been tried.
+
+**Why this took so long, and the actual lesson.** The working version was shipped and then changed
+again in the same sitting, while the owner was playing, on the strength of three measurements that
+were each vacuous (see below). "Almost perfect" was read as a defect report when it was a working
+feature with a minor artefact. The headset is the oracle for this feature and the instrumentation is
+not: it could not obtain a single clean sample, because the controllers sleep when idle and waking
+them moves everything being measured.
+
 ### The camera OBJECT's height swings with pitch; the eye pin does not stabilise it
 
 Looking up and down moved the welded weapon vertically even with the controller resting on a desk.

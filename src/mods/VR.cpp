@@ -851,9 +851,25 @@ void VR::update_weapon() {
                               : std::nullopt;
         const float base_y = root.has_value() ? root->position.y + eye : cam->position.y;
 
-        px += cam->position.x + e[0] * cy + e[2] * sy;
+        // ---- ALL THREE AXES ANCHOR ON THE ROOT ------------------------------------------
+        //
+        // The camera OBJECT carries the engine's own neck-bone orbit -- vertically it swings 29-31
+        // units across a look up and down -- and anchoring to it put that orbit straight into the
+        // gun. The player's root does not move with head rotation at all (measured swing 0.00), and
+        // body roomscale keeps it following the head's real travel 1:1 (45.37 cm -> 45.39 units),
+        // so it is both stable under rotation and correct under movement.
+        //
+        // CONFIRMED IN THE HEADSET, which is the only reason this is written the way it is: an
+        // attempt to improve on it afterwards -- referencing the head position roomscale had
+        // committed, to cover displace_player's dead band and collision -- was reverted because the
+        // owner reported it broken. The dead-band leak is real and is NOT worth chasing; it costs
+        // less than the thing that fixes it.
+        const float ax = root.has_value() ? root->position.x : cam->position.x;
+        const float az = root.has_value() ? root->position.z : cam->position.z;
+
+        px += ax + e[0] * cy + e[2] * sy;
         py += base_y + e[1];
-        pz += cam->position.z + (-e[0] * sy + e[2] * cy);
+        pz += az + (-e[0] * sy + e[2] * cy);
 
         // The controller's ABSOLUTE orientation, converted and then turned into the world by the
         // same heading. No rest pose and no delta: whatever the controller points at, the gun does.
