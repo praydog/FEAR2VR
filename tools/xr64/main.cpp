@@ -1,17 +1,19 @@
-// ---- THE 64-BIT CONTROL ------------------------------------------------------------------------
+// ---- THE 64-BIT XR HOST ------------------------------------------------------------------------
 //
-// The 32-bit Oculus runtime crashes inside its own RuntimeIPC init during xrCreateSession -- it gets
-// as far as initialising its D3D11 compositor client and creating a texture swap chain, then jumps
-// to a fixed address in reserved memory on one of its own worker threads. Identical through the
-// real openxr_loader.dll and through direct negotiation, identical address every run.
+// FEAR2 is 32-bit and the 32-bit Oculus runtime dies inside its own RuntimeIPC init during
+// xrCreateSession -- measured, and proven against this program, which performs the identical
+// sequence in 64 bits on the same machine and same headset and succeeds. So submission lives here.
 //
-// That is either "Meta's 32-bit path has rotted" or "this program is doing something wrong". The
-// only way to tell them apart is to do the SAME SEQUENCE in a 64-bit process on the same machine,
-// the same headset, the same runtime version. This is that control, and nothing else -- it is not
-// part of the mod and it is not built by build.bat.
+// This is deliberately NOT built by build.bat: the mod is 32-bit because the game is.
 //
 //   cmake -B build64 -A x64 -S tools/xr64 && cmake --build build64 --config Release
-//   build64/Release/xr64.exe
+//   build64/Release/xr64.exe --probe     one-shot capability report, exits
+//   build64/Release/xr64.exe             run the frame loop and submit
+//
+// FIRST MILESTONE, WHICH IS WHAT THIS CURRENTLY DOES: put ANY image in front of the wearer. Each eye
+// is cleared to a different colour, pulsing, with no shaders, no vertex buffers and no texture
+// upload -- so that when nothing appears, the thing at fault is the session, the swapchain or the
+// submission, and not a triangle. The game's pixels come next and change nothing about this loop.
 
 #define XR_USE_GRAPHICS_API_D3D11
 #define WIN32_LEAN_AND_MEAN
@@ -23,6 +25,7 @@
 #include <dxgi1_2.h>
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include <openxr/openxr.h>
@@ -30,10 +33,19 @@
 
 namespace {
 
-const char* result_name(XrInstance instance, XrResult r) {
+volatile bool g_stop = false;
+
+BOOL WINAPI console_handler(DWORD) {
+    g_stop = true;
+    return TRUE;
+}
+
+XrInstance g_instance = XR_NULL_HANDLE;
+
+const char* rs(XrResult r) {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
 
-    if (instance != XR_NULL_HANDLE && XR_SUCCEEDED(xrResultToString(instance, r, buf))) {
+    if (g_instance != XR_NULL_HANDLE && XR_SUCCEEDED(xrResultToString(g_instance, r, buf))) {
         return buf;
     }
 
@@ -51,67 +63,29 @@ const char* state_name(XrSessionState s) {
     case XR_SESSION_STATE_STOPPING: return "STOPPING";
     case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
     case XR_SESSION_STATE_EXITING: return "EXITING";
-    default: return "unknown";
+    default: return "UNKNOWN";
     }
 }
 
-}  // namespace
+struct Eye {
+    XrSwapchain swapchain = XR_NULL_HANDLE;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<ID3D11RenderTargetView*> views;
+};
 
-int main() {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-
-    uint32_t ext_count = 0;
-    xrEnumerateInstanceExtensionProperties(nullptr, 0, &ext_count, nullptr);
-    std::vector<XrExtensionProperties> exts(ext_count, {XR_TYPE_EXTENSION_PROPERTIES});
-    xrEnumerateInstanceExtensionProperties(nullptr, ext_count, &ext_count, exts.data());
-    std::printf("[xr64] %u extension(s)\n", ext_count);
-
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
-
-    XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
-    std::snprintf(ici.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "FEAR2VR x64");
-    std::snprintf(ici.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, "control");
-    ici.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 34);
-    ici.enabledExtensionCount = 1;
-    ici.enabledExtensionNames = enabled;
-
-    XrInstance instance = XR_NULL_HANDLE;
-    XrResult r = xrCreateInstance(&ici, &instance);
-    std::printf("[xr64] xrCreateInstance -> %s\n", result_name(XR_NULL_HANDLE, r));
-
-    if (XR_FAILED(r)) {
-        return 1;
-    }
-
-    XrSystemGetInfo sgi{XR_TYPE_SYSTEM_GET_INFO};
-    sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-    XrSystemId system = XR_NULL_SYSTEM_ID;
-    r = xrGetSystem(instance, &sgi, &system);
-    std::printf("[xr64] xrGetSystem -> %s (system %llu)\n", result_name(instance, r),
-                static_cast<unsigned long long>(system));
-
-    if (XR_FAILED(r)) {
-        return 1;
-    }
-
-    PFN_xrGetD3D11GraphicsRequirementsKHR get_reqs = nullptr;
-    xrGetInstanceProcAddr(instance, "xrGetD3D11GraphicsRequirementsKHR",
-                          reinterpret_cast<PFN_xrVoidFunction*>(&get_reqs));
-
-    XrGraphicsRequirementsD3D11KHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
-    r = get_reqs(instance, system, &reqs);
-    std::printf("[xr64] graphics requirements -> %s, LUID 0x%llX, level 0x%X\n",
-                result_name(instance, r),
-                (static_cast<unsigned long long>(static_cast<uint32_t>(reqs.adapterLuid.HighPart))
-                 << 32) |
-                    static_cast<uint32_t>(reqs.adapterLuid.LowPart),
-                static_cast<unsigned>(reqs.minFeatureLevel));
-
+ID3D11Device* create_device_on(LUID luid, D3D_FEATURE_LEVEL min_level, ID3D11DeviceContext** ctx) {
     IDXGIFactory1* factory = nullptr;
-    CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+        return nullptr;
+    }
+
     IDXGIAdapter1* chosen = nullptr;
 
-    for (UINT i = 0; factory != nullptr; ++i) {
+    // THE RUNTIME PICKS THE ADAPTER. A device on any other one is rejected, or worse, presents to
+    // nothing -- and on a machine with an iGPU that is not hypothetical.
+    for (UINT i = 0;; ++i) {
         IDXGIAdapter1* a = nullptr;
 
         if (factory->EnumAdapters1(i, &a) != S_OK) {
@@ -121,8 +95,7 @@ int main() {
         DXGI_ADAPTER_DESC1 d{};
         a->GetDesc1(&d);
 
-        if (d.AdapterLuid.LowPart == reqs.adapterLuid.LowPart &&
-            d.AdapterLuid.HighPart == reqs.adapterLuid.HighPart) {
+        if (d.AdapterLuid.LowPart == luid.LowPart && d.AdapterLuid.HighPart == luid.HighPart) {
             chosen = a;
             break;
         }
@@ -130,22 +103,112 @@ int main() {
         a->Release();
     }
 
-    if (factory != nullptr) {
-        factory->Release();
+    factory->Release();
+
+    if (chosen == nullptr) {
+        return nullptr;
     }
 
     ID3D11Device* device = nullptr;
-    ID3D11DeviceContext* ctx = nullptr;
     D3D_FEATURE_LEVEL got{};
-    const D3D_FEATURE_LEVEL want = reqs.minFeatureLevel;
+    const D3D_FEATURE_LEVEL want = min_level;
     const HRESULT hr = D3D11CreateDevice(chosen, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, &want, 1,
-                                         D3D11_SDK_VERSION, &device, &got, &ctx);
-    std::printf("[xr64] D3D11CreateDevice -> 0x%08X, device %p\n", static_cast<unsigned>(hr),
-                static_cast<void*>(device));
+                                         D3D11_SDK_VERSION, &device, &got, ctx);
+    chosen->Release();
+    return SUCCEEDED(hr) ? device : nullptr;
+}
 
-    if (chosen != nullptr) {
-        chosen->Release();
+}  // namespace
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    SetConsoleCtrlHandler(console_handler, TRUE);
+
+    bool probe_only = false;
+    int max_seconds = 0;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--probe") == 0) {
+            probe_only = true;
+        } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
+            max_seconds = std::atoi(argv[++i]);
+        }
+    }
+
+    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+
+    XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
+    std::snprintf(ici.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "FEAR2VR");
+    std::snprintf(ici.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, "LithTech Jupiter EX");
+    ici.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 34);
+    ici.enabledExtensionCount = 1;
+    ici.enabledExtensionNames = enabled;
+
+    XrResult r = xrCreateInstance(&ici, &g_instance);
+    std::printf("[host] xrCreateInstance -> %s\n", rs(r));
+
+    if (XR_FAILED(r)) {
+        return 1;
+    }
+
+    XrInstanceProperties props{XR_TYPE_INSTANCE_PROPERTIES};
+    xrGetInstanceProperties(g_instance, &props);
+    std::printf("[host] runtime '%s' %llu.%llu.%llu\n", props.runtimeName,
+                static_cast<unsigned long long>(XR_VERSION_MAJOR(props.runtimeVersion)),
+                static_cast<unsigned long long>(XR_VERSION_MINOR(props.runtimeVersion)),
+                static_cast<unsigned long long>(XR_VERSION_PATCH(props.runtimeVersion)));
+
+    XrSystemGetInfo sgi{XR_TYPE_SYSTEM_GET_INFO};
+    sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId system = XR_NULL_SYSTEM_ID;
+    r = xrGetSystem(g_instance, &sgi, &system);
+    std::printf("[host] xrGetSystem -> %s\n", rs(r));
+
+    if (XR_FAILED(r)) {
+        std::printf("[host] no headset. Connect one and try again.\n");
+        return 1;
+    }
+
+    // What the runtime wants each eye rendered at. Reported rather than chosen: this is the number a
+    // supersampling multiplier would later scale.
+    uint32_t view_count = 0;
+    xrEnumerateViewConfigurationViews(g_instance, system,
+                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count,
+                                      nullptr);
+    std::vector<XrViewConfigurationView> config_views(view_count,
+                                                      {XR_TYPE_VIEW_CONFIGURATION_VIEW});
+    xrEnumerateViewConfigurationViews(g_instance, system,
+                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
+                                      &view_count, config_views.data());
+
+    for (uint32_t i = 0; i < view_count; ++i) {
+        std::printf("[host] view %u recommended %ux%u (max %ux%u), %u sample(s)\n", i,
+                    config_views[i].recommendedImageRectWidth,
+                    config_views[i].recommendedImageRectHeight,
+                    config_views[i].maxImageRectWidth, config_views[i].maxImageRectHeight,
+                    config_views[i].recommendedSwapchainSampleCount);
+    }
+
+    PFN_xrGetD3D11GraphicsRequirementsKHR get_reqs = nullptr;
+    xrGetInstanceProcAddr(g_instance, "xrGetD3D11GraphicsRequirementsKHR",
+                          reinterpret_cast<PFN_xrVoidFunction*>(&get_reqs));
+    XrGraphicsRequirementsD3D11KHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
+    r = get_reqs(g_instance, system, &reqs);
+    std::printf("[host] graphics requirements -> %s\n", rs(r));
+
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11Device* device = create_device_on(reqs.adapterLuid, reqs.minFeatureLevel, &ctx);
+    std::printf("[host] d3d11 device %p\n", static_cast<void*>(device));
+
+    if (device == nullptr) {
+        return 1;
+    }
+
+    if (probe_only) {
+        std::printf("[host] probe only -- not creating a session\n");
+        xrDestroyInstance(g_instance);
+        return 0;
     }
 
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
@@ -156,73 +219,242 @@ int main() {
     sci.systemId = system;
 
     XrSession session = XR_NULL_HANDLE;
-    r = xrCreateSession(instance, &sci, &session);
-    std::printf("[xr64] xrCreateSession -> %s (session %p)\n", result_name(instance, r),
-                reinterpret_cast<void*>(session));
+    r = xrCreateSession(g_instance, &sci, &session);
+    std::printf("[host] xrCreateSession -> %s\n", rs(r));
 
     if (XR_FAILED(r)) {
         return 1;
     }
 
-    // The runtime walks IDLE -> READY on its own schedule and says so only through the event queue.
-    XrSessionState state = XR_SESSION_STATE_UNKNOWN;
+    // Format negotiation: take the first of our preferences the runtime offers, rather than assuming
+    // one. A mismatch here is rejected at swapchain creation with an error that names nothing useful.
+    uint32_t format_count = 0;
+    xrEnumerateSwapchainFormats(session, 0, &format_count, nullptr);
+    std::vector<int64_t> formats(format_count);
+    xrEnumerateSwapchainFormats(session, format_count, &format_count, formats.data());
 
-    for (int i = 0; i < 200; ++i) {
+    const int64_t preferred[] = {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                                 DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
+    int64_t chosen_format = formats.empty() ? 0 : formats[0];
+
+    for (int64_t want : preferred) {
+        bool found = false;
+
+        for (int64_t have : formats) {
+            found = found || have == want;
+        }
+
+        if (found) {
+            chosen_format = want;
+            break;
+        }
+    }
+
+    std::printf("[host] %u swapchain format(s), using %lld\n", format_count,
+                static_cast<long long>(chosen_format));
+
+    std::vector<Eye> eyes(view_count);
+
+    for (uint32_t i = 0; i < view_count; ++i) {
+        XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        sc.format = chosen_format;
+        sc.sampleCount = 1;
+        sc.width = config_views[i].recommendedImageRectWidth;
+        sc.height = config_views[i].recommendedImageRectHeight;
+        sc.faceCount = 1;
+        sc.arraySize = 1;
+        sc.mipCount = 1;
+
+        r = xrCreateSwapchain(session, &sc, &eyes[i].swapchain);
+        eyes[i].width = sc.width;
+        eyes[i].height = sc.height;
+        std::printf("[host] eye %u swapchain %ux%u -> %s\n", i, sc.width, sc.height, rs(r));
+
+        if (XR_FAILED(r)) {
+            return 1;
+        }
+
+        uint32_t image_count = 0;
+        xrEnumerateSwapchainImages(eyes[i].swapchain, 0, &image_count, nullptr);
+        std::vector<XrSwapchainImageD3D11KHR> images(image_count,
+                                                     {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        xrEnumerateSwapchainImages(eyes[i].swapchain, image_count, &image_count,
+                                   reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+
+        for (uint32_t k = 0; k < image_count; ++k) {
+            ID3D11RenderTargetView* rtv = nullptr;
+            D3D11_RENDER_TARGET_VIEW_DESC rtvd{};
+            rtvd.Format = static_cast<DXGI_FORMAT>(chosen_format);
+            rtvd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            device->CreateRenderTargetView(images[k].texture, &rtvd, &rtv);
+            eyes[i].views.push_back(rtv);
+        }
+
+        std::printf("[host]   %u image(s)\n", image_count);
+    }
+
+    XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    rsci.poseInReferenceSpace.orientation.w = 1.0f;
+    XrSpace space = XR_NULL_HANDLE;
+    r = xrCreateReferenceSpace(session, &rsci, &space);
+    std::printf("[host] reference space -> %s\n", rs(r));
+
+    XrSessionState state = XR_SESSION_STATE_UNKNOWN;
+    bool running = false;
+    uint64_t frames = 0;
+    uint64_t submitted = 0;
+    const ULONGLONG started = GetTickCount64();
+
+    std::printf("[host] entering frame loop -- PUT THE HEADSET ON if nothing appears; the runtime\n"
+                "[host] keeps the session IDLE while it is unworn and will not accept frames.\n");
+
+    while (!g_stop) {
         XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
 
-        while (xrPollEvent(instance, &ev) == XR_SUCCESS) {
+        while (xrPollEvent(g_instance, &ev) == XR_SUCCESS) {
             if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                 state = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev)->state;
-                std::printf("[xr64] session state -> %s\n", state_name(state));
+                std::printf("[host] session -> %s\n", state_name(state));
+
+                if (state == XR_SESSION_STATE_READY) {
+                    XrSessionBeginInfo sbi{XR_TYPE_SESSION_BEGIN_INFO};
+                    sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                    std::printf("[host] xrBeginSession -> %s\n", rs(xrBeginSession(session, &sbi)));
+                    running = true;
+                } else if (state == XR_SESSION_STATE_STOPPING) {
+                    xrEndSession(session);
+                    running = false;
+                } else if (state == XR_SESSION_STATE_EXITING ||
+                           state == XR_SESSION_STATE_LOSS_PENDING) {
+                    g_stop = true;
+                }
             }
 
             ev = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
         }
 
-        if (state == XR_SESSION_STATE_READY) {
-            break;
-        }
+        if (!running) {
+            Sleep(20);
 
-        Sleep(25);
-    }
-
-    if (state == XR_SESSION_STATE_READY) {
-        XrSessionBeginInfo sbi{XR_TYPE_SESSION_BEGIN_INFO};
-        sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-        r = xrBeginSession(session, &sbi);
-        std::printf("[xr64] xrBeginSession -> %s\n", result_name(instance, r));
-
-        for (int i = 0; i < 80 && state != XR_SESSION_STATE_FOCUSED; ++i) {
-            XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
-
-            while (xrPollEvent(instance, &ev) == XR_SUCCESS) {
-                if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
-                    state = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev)->state;
-                    std::printf("[xr64] session state -> %s\n", state_name(state));
-                }
-
-                ev = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
+            if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
+                break;
             }
 
-            Sleep(25);
+            continue;
         }
 
+        // xrWaitFrame is the compositor's throttle -- it is what paces this loop, not a sleep.
+        XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+        XrFrameState fs{XR_TYPE_FRAME_STATE};
+        xrWaitFrame(session, &fwi, &fs);
+
+        XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
+        xrBeginFrame(session, &fbi);
+
+        std::vector<XrCompositionLayerProjectionView> layer_views(view_count);
+        XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        const XrCompositionLayerBaseHeader* layers[1]{};
+        uint32_t layer_count = 0;
+
+        if (fs.shouldRender != XR_FALSE) {
+            XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
+            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            vli.displayTime = fs.predictedDisplayTime;
+            vli.space = space;
+
+            XrViewState vs{XR_TYPE_VIEW_STATE};
+            uint32_t located = 0;
+            std::vector<XrView> views(view_count, {XR_TYPE_VIEW});
+            xrLocateViews(session, &vli, &vs, view_count, &located, views.data());
+
+            for (uint32_t i = 0; i < view_count; ++i) {
+                uint32_t index = 0;
+                XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                xrAcquireSwapchainImage(eyes[i].swapchain, &ai, &index);
+
+                XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                wi.timeout = XR_INFINITE_DURATION;
+                xrWaitSwapchainImage(eyes[i].swapchain, &wi);
+
+                // NO SHADERS ON PURPOSE. A clear is the smallest thing that can put light in front
+                // of someone, so if this does not appear the fault is in the session, the swapchain
+                // or the submission -- never in a triangle.
+                const float t = static_cast<float>((frames % 120)) / 120.0f;
+                const float colour[2][4] = {{0.15f + 0.35f * t, 0.05f, 0.05f, 1.0f},
+                                            {0.05f, 0.05f, 0.15f + 0.35f * t, 1.0f}};
+                ctx->ClearRenderTargetView(eyes[i].views[index], colour[i % 2]);
+
+                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(eyes[i].swapchain, &ri);
+
+                layer_views[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+                layer_views[i].pose = views[i].pose;
+                layer_views[i].fov = views[i].fov;
+                layer_views[i].subImage.swapchain = eyes[i].swapchain;
+                layer_views[i].subImage.imageRect.offset = {0, 0};
+                layer_views[i].subImage.imageRect.extent = {static_cast<int32_t>(eyes[i].width),
+                                                            static_cast<int32_t>(eyes[i].height)};
+            }
+
+            layer.space = space;
+            layer.viewCount = view_count;
+            layer.views = layer_views.data();
+            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
+            layer_count = 1;
+            ++submitted;
+        }
+
+        XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
+        fei.displayTime = fs.predictedDisplayTime;
+        fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        fei.layerCount = layer_count;
+        fei.layers = layer_count != 0 ? layers : nullptr;
+        const XrResult end = xrEndFrame(session, &fei);
+
+        if (++frames % 90 == 0) {
+            std::printf("[host] %llu frames, %llu submitted, state %s, last xrEndFrame %s\n",
+                        static_cast<unsigned long long>(frames),
+                        static_cast<unsigned long long>(submitted), state_name(state), rs(end));
+        }
+
+        if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
+            break;
+        }
+    }
+
+    std::printf("[host] stopping: %llu frames, %llu submitted, final state %s\n",
+                static_cast<unsigned long long>(frames),
+                static_cast<unsigned long long>(submitted), state_name(state));
+
+    if (running) {
         xrEndSession(session);
     }
 
-    std::printf("[xr64] final state %s\n", state_name(state));
+    for (auto& e : eyes) {
+        for (auto* v : e.views) {
+            if (v != nullptr) {
+                v->Release();
+            }
+        }
+
+        if (e.swapchain != XR_NULL_HANDLE) {
+            xrDestroySwapchain(e.swapchain);
+        }
+    }
+
+    if (space != XR_NULL_HANDLE) {
+        xrDestroySpace(space);
+    }
+
     xrDestroySession(session);
-    xrDestroyInstance(instance);
+    xrDestroyInstance(g_instance);
 
     if (ctx != nullptr) {
         ctx->Release();
     }
 
-    if (device != nullptr) {
-        device->Release();
-    }
-
-    std::printf("[xr64] DONE -- a 64-bit session %s\n",
-                state != XR_SESSION_STATE_UNKNOWN ? "WORKS on this machine" : "did not start");
+    device->Release();
     return 0;
 }

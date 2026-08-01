@@ -1013,6 +1013,28 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The 64-bit host runs a full frame loop; the headset must be AWAKE
+
+`tools/xr64` is now a real host rather than a control: instance, system, D3D11 device on the
+runtime's adapter, session, swapchains, reference space, and an `xrWaitFrame` / `xrBeginFrame` /
+`xrEndFrame` loop submitting a projection layer.
+
+    runtime            Oculus 1.205.0
+    view config        2160x2224 per eye recommended (max 4320x4448), 1 sample
+    swapchain formats  21 offered; using 29 = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+    session            XR_SUCCESS
+    reference space    LOCAL, XR_SUCCESS
+
+**The first milestone deliberately draws nothing but a clear.** Each eye is cleared to a different
+pulsing colour -- no shaders, no vertex buffers, no texture upload -- so that if the wearer sees
+nothing, the fault is in the session, the swapchain or the submission and cannot be in a triangle.
+The game's pixels change nothing about this loop.
+
+**And the blocker is now physical.** With the headset charging and unworn the session stays IDLE and
+never reaches READY, so `xrWaitFrame` is never legal and zero frames are submitted -- correctly. The
+runtime will not hand over the compositor to an application while nobody is wearing the device.
+Nothing above this line can be tested further without the headset awake.
+
 ### RETRACTION: the readback stall is not a cost, it is a scheduling mistake
 
 The section below prices the bridge using the ONE-SHOT readback law (2.05 ms + 1.81 ms/Mpx) and
