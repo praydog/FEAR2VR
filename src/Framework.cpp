@@ -10610,7 +10610,7 @@ bool Framework::initialize() {
                 VR::get().set_locomotion(webapi_query_int(q, "locomotion", 0) != 0);
             }
             if (q.find("sprint_vk") != q.end()) {
-                VR::get().set_sprint_vk(static_cast<uint32_t>(webapi_query_int(q, "sprint_vk", 0xA0)));
+                VR::get().set_sprint_vk(static_cast<uint32_t>(webapi_query_int(q, "sprint_vk", 0x10)));
             }
             if (q.find("melee_vk") != q.end()) {
                 VR::get().set_melee_vk(static_cast<uint32_t>(webapi_query_int(q, "melee_vk", 'V')));

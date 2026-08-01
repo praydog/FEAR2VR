@@ -1042,6 +1042,21 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### The keyboard device array is indexed by the UNSIDED virtual key
+
+Holding `VK_SHIFT` (0x10) while moving sets `MoveFlag::Sprinting` -- flags `0x40801`, matching what
+`MovementFlags` already recorded. `VK_LSHIFT` (0xA0) and `VK_RSHIFT` (0xA1) both leave it clear.
+
+So `sdk::Input::send_one`'s index is the generic virtual key, and a sided one lands on an array entry
+nothing reads. Sprint was defaulted to `0xA0` on the reasoning that it is "a real physical key" and
+did nothing whatsoever, while melee on `V` worked first time -- an unsided key hides the mistake.
+
+**The right instrument made this a three-line test.** Two earlier attempts measured SPEED while
+walking and produced contradictory numbers, because the player kept walking into geometry and a
+blocked player reads 0 no matter which key is held. `MoveFlag::Sprinting` is the state itself: no
+walking, no distance, no wall. When a measurement keeps disagreeing with itself, the instrument is
+usually aimed at a downstream EFFECT rather than at the thing being asked about.
+
 ### DEBT: controller actions go through SYNTHETIC KEYS, and should not forever
 
 Fire, jump, reload, sprint, melee and stick locomotion are all delivered by writing the engine's

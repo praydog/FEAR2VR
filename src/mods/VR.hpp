@@ -371,7 +371,11 @@ private:
     std::atomic<uint64_t> m_reloads{0};
     std::atomic<uint64_t> m_melees{0};
     std::atomic<bool> m_sprinting{false};
-    std::atomic<uint32_t> m_sprint_vk{0xA0};  // VK_LSHIFT
+    // VK_SHIFT, the GENERIC one, and this was measured rather than assumed. The engine's keyboard
+    // device array is indexed by the unsided virtual key: holding 0x10 while moving sets
+    // MoveFlag::Sprinting (flags 0x40801), while VK_LSHIFT 0xA0 and VK_RSHIFT 0xA1 both leave it
+    // clear. Defaulting to the sided key is why the first version of this did nothing at all.
+    std::atomic<uint32_t> m_sprint_vk{0x10};
     std::atomic<uint32_t> m_melee_vk{'V'};
     uint32_t m_last_hands_sequence{0};
     float m_last_room_xz[2]{};
