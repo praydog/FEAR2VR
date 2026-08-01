@@ -1042,6 +1042,24 @@ restoring 74.78; at +60 it is -7.04, restoring 74.78.
 *The general shape of this mistake is worth keeping: when a correction measures zero at every input,
 suspect the REFERENCE before the mechanism.*
 
+### Handedness: Z negates, X does not, and the quaternion already said so
+
+Roomscale went in with forward and back INVERTED while left and right were correct. That asymmetry
+is the whole diagnosis: a wrong yaw rotation would have spoiled both axes, so only one axis was
+being read in the wrong convention.
+
+OpenXR is right-handed with **-Z FORWARD**. This engine is left-handed with **+Z forward**. So a
+position converts as `(x, y, z) -> (x, y, -z)`: Z negates, X and Y pass through.
+
+**The orientation path had already told us this**, which is what makes it a corroboration rather
+than a second guess. The head quaternion arrives from the runtime as `(x, y, z, w)` and the engine
+holds `(-x, -y, z, w)` -- observed live, long before roomscale existed, and noted at the time as
+"the handedness conversion". Negating x and y while leaving z and w alone IS the quaternion form of
+flipping the Z axis. One convention, and both halves of a pose now apply it consistently.
+
+Worth stating plainly because it will come up again for controllers, velocities and any other
+vector crossing this boundary: **flip Z, and for quaternions flip x and y.**
+
 ### Roomscale, and why the offset is world-space
 
 The wearer's movement inside their play space, added to the camera as a world-space delta and scaled

@@ -528,7 +528,16 @@ void VR::update_camera_offset() {
                 constexpr float kMetresToUnits = 100.0f;
                 const float rx = (host->position[0] - m_room_origin[0]) * kMetresToUnits;
                 const float ry = (host->position[1] - m_room_origin[1]) * kMetresToUnits;
-                const float rz = (host->position[2] - m_room_origin[2]) * kMetresToUnits;
+
+                // HANDEDNESS: OpenXR is right-handed with -Z FORWARD; this engine is left-handed
+                // with +Z forward. So Z negates and X does not, which is why walking forward came
+                // out backwards while left and right were already correct.
+                //
+                // The orientation path agrees, and that is the corroboration rather than a second
+                // guess: the head quaternion arrives as (x, y, z, w) and the engine holds
+                // (-x, -y, z, w), which is precisely the quaternion form of flipping the Z axis.
+                // One convention, consistently applied to both halves of a pose.
+                const float rz = -(host->position[2] - m_room_origin[2]) * kMetresToUnits;
 
                 // Rotated into the BODY's heading, not the camera's: leaning left should move the
                 // eye left of where the player is facing, whatever the head is looking at.
