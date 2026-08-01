@@ -4145,3 +4145,37 @@ Measured: hooking `lea eax, [ecx+eax*4]` at gameserver `0x1009BA0C` displaces th
 `cmp [esp+0A8h+var_95], 0` -- and the game died instantly with a wholly corrupted stack. Choosing a
 hook site therefore means reading the FIVE-PLUS BYTES THAT WILL BE STOLEN, not just the instruction
 being aimed at.
+
+## `__userpurge` with register parameters usually means a DEFERRED CALLEE-SAVE, not a custom convention
+
+IDA typed `Weapon_FireServer` as `char __userpurge@<al>(_DWORD *@<ecx>, int@<edi>, int)` and
+`Weapon_HandleClientFireMessage` as `__userpurge(int@<ecx>, int@<ebx>, int@<ebp>, int@<esi>, int *)`.
+Both are ordinary `__thiscall`. The invented register parameters are registers the compiler saves
+LATE.
+
+**The tell is in the epilogues, and it is decisive.** MSVC hoists early-out checks above the register
+saves so the bail path does less work, which leaves a function whose exits do not all restore the
+same set:
+
+```
+10106428 / 10106B87   normal exits   pop edi ; pop esi ; pop ebp ; pop ebx
+10106B8A              early out              pop esi ; pop ebp ; pop ebx     <- no pop edi
+```
+
+`push edi` sits at 0x101062E4, after the three checks that jump to the early out. IDA sees a register
+read before any write in the function's entry block and calls it a parameter.
+
+**How to settle it, in order:**
+1. Count `retn N` -- N/4 is the number of callee-cleaned STACK arguments. All four exits here are
+   `retn 4`, so there is exactly one.
+2. Look for `mov <reg>, ecx` near the top -- that is `this`.
+3. Match each `push` in the prologue to a `pop` in every epilogue. A register pushed after a
+   conditional branch, and absent from the early-out's pops, is a SAVE and not an argument.
+4. Check the call sites actually load the register. Here the caller sets only `ecx` and pushes one
+   argument.
+
+**Why it is worth fixing rather than reading around.** A wrong prototype makes the pseudocode lie
+about the call itself: `Weapon_FireServer(v43, v5, (int)v56)` became `Weapon_FireServer(v38,
+fire_descriptor)` once corrected -- three arguments down to two. This project has already been
+burned once by trusting decompiler output over disassembly in this very function, when the
+`LTVector_DivideByScalar` argument turned out to be a different variable than the pseudocode showed.
