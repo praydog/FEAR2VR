@@ -1013,6 +1013,33 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### RETRACTION: a captured reference bakes in the stance; it has to track
+
+The eye pin was reported as making the eye height LOWER. Measured at rest, with the trim at zero,
+the pin was contributing **-25.14 units** -- pushing the camera a quarter-metre down all by itself.
+
+25 units is almost exactly the standing-to-crouching eye height difference this project measured long
+ago (74.98 standing, 45.5 crouching, a 29 unit drop). The reference had been captured in one stance
+and the player was now in another, so the pin was faithfully "correcting" a difference that was not
+an error at all.
+
+**A one-shot capture cannot work here**, and neither can a smarter moment to take it. Stance,
+animation and eye height all move legitimately during play; anything captured once is stale as soon
+as the player crouches. So the reference now UPDATES on every frame the head is neutral:
+
+  * looking ahead -> the reference IS the live value, the pin contributes exactly zero, and any
+    change in stance or height is absorbed silently;
+  * head turned -> the last neutral value is held, and the difference is precisely the neck orbit,
+    which is the only thing the pin was ever meant to cancel.
+
+The deferred-capture work from the previous session is not wasted -- the neutrality test is what
+makes tracking safe, since a reference updated at any orientation would simply follow the orbit and
+cancel nothing. What changed is that it now updates continuously instead of latching once.
+
+*Two sessions and three references were spent on this pin. The pattern across all of them: a
+correction is only as good as the independence of its reference, and "independent" has to include
+independent of the things that are ALLOWED to change.*
+
 ### Eye height is a preference, and the body has to go
 
 Two things a correct camera cannot give you. Reported from the headset: "eye height is wedging me

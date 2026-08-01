@@ -610,11 +610,26 @@ void VR::update_camera_offset() {
             // Deferring is better than clamping or averaging: the correct sample exists a moment
             // later, as soon as the wearer looks ahead, and using a wrong one now cannot be undone
             // without noticing it first.
-            if (!m_have_eye_ref && head_is_neutral()) {
+            // THE REFERENCE TRACKS, it is not captured once.
+            //
+            // A single capture bakes in the stance it was taken in. Crouching moves the eye about
+            // 29 units and standing back up moves it back, so a reference taken standing leaves the
+            // pin pushing the camera 25 units DOWN once the player crouches -- observed exactly
+            // that way, as an eye height that had quietly sunk into the chest and stayed there.
+            //
+            // Updating it on every frame the head is neutral fixes that by construction. While the
+            // wearer looks ahead the reference IS the live value, so the pin contributes nothing
+            // and any change in stance, height or animation is absorbed silently. The instant the
+            // head turns, the last neutral value is held and the difference is exactly the neck
+            // orbit -- which is the only thing this was ever meant to cancel.
+            if (head_is_neutral()) {
+                if (!m_have_eye_ref) {
+                    LOGX("[vr] eye offset reference acquired: %.2f %.2f %.2f", (*off)[0], (*off)[1],
+                         (*off)[2]);
+                }
+
                 m_eye_ref_vec = *off;
                 m_have_eye_ref = true;
-                LOGX("[vr] eye offset reference captured while neutral: %.2f %.2f %.2f",
-                     m_eye_ref_vec[0], m_eye_ref_vec[1], m_eye_ref_vec[2]);
             }
 
             if (!m_have_eye_ref) {
