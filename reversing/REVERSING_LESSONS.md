@@ -4106,3 +4106,42 @@ Two practical consequences:
   reported twice and any count derived from it varies with core count. Sort +
   unique. (Found by reading kananlib's implementation, which is the general
   lesson: read the primitive before depending on its result shape.)
+
+## safetyhook's MidHook does NOT preserve x87 state
+
+From the library's own header:
+
+```cpp
+struct Context32 {
+    Xmm xmm0 ... xmm7;
+    uintptr_t eflags, edi, esi, edx, ecx, ebx, eax, ebp, esp, trampoline_esp, eip;
+};
+/// @note The structure only provides access to integer registers.
+```
+
+There is no `fxsave`, `fnsave` or `fsave` anywhere in the source. XMM is saved; the x87 stack is not.
+
+**Why that matters here specifically.** FEAR 2 is a 2009 32-bit build and does its float maths on
+x87 -- `fld`/`fstp` pairs are everywhere, including inside `Weapon_HandleClientFireMessage` itself.
+A mid-hook placed where an x87 value is LIVE will corrupt it, and the symptom will not be local: the
+value is consumed later, so the crash lands somewhere unrelated with a stack that looks smashed.
+
+**The rule this implies.** A mid-hook in this game is safe at a function ENTRY, where the x87 stack
+is balanced by convention, and suspect anywhere in the middle of one. Every mid-hook this project
+currently relies on -- `weapon_trace_shot`, `weapon_fire_server_entry`, `weapon_fire_message`,
+`weapon_vectors_built`, `weapon_send_fire` -- is at an entry, which is why they have been stable.
+That was luck rather than design, and it is design now.
+
+**If a mid-function hook is ever genuinely required**, the detour has to bracket itself with
+`fnsave`/`frstor` (or `fxsave`/`fxrstor`) by hand, because the library will not.
+
+## A relocated instruction that is ESP-relative reads the WRONG memory
+
+A MidHook needs five bytes and relocates whatever instructions it displaces into a trampoline. The
+displaced code runs with the stub's stack frame in place, so any operand of the form `[esp+N]` now
+addresses something else entirely.
+
+Measured: hooking `lea eax, [ecx+eax*4]` at gameserver `0x1009BA0C` displaces the following
+`cmp [esp+0A8h+var_95], 0` -- and the game died instantly with a wholly corrupted stack. Choosing a
+hook site therefore means reading the FIVE-PLUS BYTES THAT WILL BE STOLEN, not just the instruction
+being aimed at.
