@@ -1069,6 +1069,24 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The host dies quietly and everything else stays green
+
+Twice now the 64-bit host has stopped while every other signal looked healthy -- the mod keeps
+publishing frames into a mapping nobody reads, and all eleven switches report on.
+
+- Once because it was killed for a rebuild and never restarted.
+- Once because it was launched with `--seconds 7200` and hit its own deadline exactly two hours in,
+  mid-session, exiting **0**. That read as a crash and was not one. `--seconds` defaults to 0, which
+  means no limit -- **do not pass it**.
+
+`tools/arm_vr.py` now checks for the process itself, alongside the two data directions.
+
+**And the hint it used to print was wrong.** "Restart the host: it re-attaches to the game's mapping"
+was advice built on a coincidence -- the mapping had never gone stale. Reading it from a THIRD
+process showed the game and an outsider advancing in lockstep, so the restart fixed nothing both
+times; the headset was simply unworn. The message now names the real causes in the order they have
+actually occurred, and says outright that the mapping has never been one of them.
+
 ### A dead band must ACCUMULATE, not discard -- slow roomscale movement was being thrown away
 
 Walking sideways slowly moved the character not at all; the same distance covered briskly worked.

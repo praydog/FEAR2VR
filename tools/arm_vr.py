@@ -18,6 +18,7 @@ list as "everything that has to be on".
 import argparse
 import json
 import sys
+import subprocess
 import time
 import urllib.request
 
@@ -118,6 +119,22 @@ def status():
 
     print("  [%s] frames actually flowing (%d in 1s)" % ("x" if pixels > 0 else " ", pixels))
 
+    # THE HOST'S OWN LIVENESS, because everything else can read perfectly while it is dead: the mod
+    # publishes into a mapping nobody consumes and every switch stays green. That exact state has
+    # happened twice, once because the host was killed for a rebuild and never restarted, and once
+    # because it was launched with `--seconds 7200` and quietly hit its own deadline mid-session.
+    # (`--seconds` defaults to 0, which means no limit. Do not pass it.)
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq xr64.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+        host_up = "xr64.exe" in out
+    except Exception:
+        host_up = None
+    if host_up is False:
+        print("  [ ] xr64.exe is NOT RUNNING -- nothing is reading the frames or publishing poses")
+    elif host_up:
+        print("  [x] xr64.exe alive")
+
     # Only meaningful once the controllers are bound: with the headset off the runtime leaves
     # FOCUSED and the host correctly publishes nothing, which is not a fault to report as one.
     bound = bool(after.get("hands_profile_bound"))
@@ -127,8 +144,16 @@ def status():
         print("  [%s] controller poses arriving (%d blocks, %d consumed in 1s)"
               % ("x" if live else " ", hands, poses))
         if not live:
-            print("      ^ the host is publishing switches but the game is not consuming new hand")
-            print("        blocks. Restart the host: it re-attaches to the game's mapping.")
+            # ORDERED BY WHAT IT ACTUALLY TURNED OUT TO BE, twice. "Restart the host" used to be the
+            # advice here and it was wrong: reading the shared mapping from a third process showed
+            # the game and an outsider advancing in lockstep, so the mapping was never stale and the
+            # restart fixed nothing. The headset was simply unworn both times.
+            print("      ^ no new controller blocks. In order of likelihood:")
+            print("        1. the headset is not being WORN -- the runtime leaves FOCUSED and the")
+            print("           host correctly publishes nothing. hands_profile_bound stays true from")
+            print("           the last session, so it is NOT a liveness signal.")
+            print("        2. xr64.exe is not running -- see the host line above.")
+            print("        (the mapping itself has never once been the cause)")
     else:
         print("  [ ] controller poses arriving -- no interaction profile bound")
         print("      ^ put the headset ON and wake the controllers; the runtime leaves FOCUSED")
