@@ -1,14 +1,19 @@
 """Put the mod into the full VR configuration, in one command.
 
-WHY THIS EXISTS. The VR path is now eight independent switches, and every one of them is off after a
-fresh inject -- which is correct, since none of them should turn themselves on in a flatscreen game.
-But it means that re-injecting during development silently disarms the mod, and the failure mode is
-confusing rather than obvious: the headset still tracks (the host is a separate process and never
-stopped), while the game's picture never arrives, so the wearer sees the host's colour test pattern
-and reasonably concludes the pixel path broke.
+WHY THIS EXISTS. The VR path is a list of independent switches -- seventeen at the time of writing --
+and every one of them is off after a fresh inject, which is correct, since none of them should turn
+themselves on in a flatscreen game. But it means that re-injecting during development silently
+disarms the mod, and the failure mode is confusing rather than obvious: the headset still tracks
+(the host is a separate process and never stopped), while the game's picture never arrives, so the
+wearer sees the host's colour test pattern and reasonably concludes the pixel path broke.
 
 That happened. Twice. Re-arming from memory is how, because "everything I changed" is not the same
 list as "everything that has to be on".
+
+AND THE LIST ROTS SILENTLY. `gun` -- the switch that anchors the weapon to the controller -- was
+armed by hand in every session for days and was never in this file, so `arm_vr.py` reported a fully
+green checklist while the gun ignored the controller. A switch that is not in ARM must also not be
+in CHECKS, or it reads as armed; anything added to one belongs in all three lists.
 
     python tools/arm_vr.py              arm everything
     python tools/arm_vr.py --status     report without changing anything
@@ -24,6 +29,10 @@ import urllib.request
 
 PORT = 8798
 
+# FireRedirect::Mode::Muzzle. The enum is Off, Absolute, Reverse, Weapon, Controller, Muzzle --
+# see src/mods/FireRedirect.hpp, which is the only place this ordering is defined.
+MODE_MUZZLE = 5
+
 # Ordered deliberately: stereo and publishing FIRST, because the host cannot show anything until
 # frames arrive, and everything below only shapes frames that already exist.
 ARM = [
@@ -36,7 +45,8 @@ ARM = [
     ("roomscale", "/xr/capture?roomscale=1"),
     ("roomscale moves the body", "/xr/capture?roomscale_body=1"),
     ("hands driven by controllers", "/xr/hands?on=1"),
-    ("gun follows the controller", "/vr/viewmodel?on=1"),
+    ("gun decoupled from head look", "/vr/viewmodel?on=1"),
+    ("gun anchored to the controller", "/xr/capture?gun=1"),
     ("stick locomotion + snap turn", "/xr/capture?locomotion=1"),
     ("trigger fires the weapon", "/xr/trigger?on=1"),
     ("shots leave the muzzle", "/xr/fire-muzzle?on=1"),
@@ -51,9 +61,9 @@ DISARM = [
     ("shots leave the muzzle", "/xr/fire-muzzle?on=0"),
     ("trigger fires the weapon", "/xr/trigger?on=0"),
     ("stick locomotion + snap turn", "/xr/capture?locomotion=0"),
-    ("gun follows the controller", "/vr/viewmodel?on=0"),
+    ("gun anchored to the controller", "/xr/capture?gun=0"),
+    ("gun decoupled from head look", "/vr/viewmodel?on=0"),
     ("hands driven by controllers", "/xr/hands?on=0"),
-    ("roomscale moves the body", "/xr/capture?roomscale_body=0"),
     ("roomscale moves the body", "/xr/capture?roomscale_body=0"),
     ("roomscale", "/xr/capture?roomscale=0"),
     ("eye offset pinning", "/xr/capture?pin_eye=0"),
@@ -78,6 +88,7 @@ CHECKS = [
     ("hands", "hands driven by controllers"),
     ("vr_locomotion", "stick locomotion + snap turn"),
     ("trigger_armed", "trigger fires the weapon"),
+    ("vr_gun_override", "gun anchored to the controller"),
 ]
 
 
@@ -99,6 +110,24 @@ def status():
     split = bool(stereo.get("stereo")) and bool(stereo.get("split_viewport"))
     ok = ok and split
     print("  [%s] stereo split rendering" % ("x" if split else " "))
+
+    # THE MODE, NOT JUST "ARMED". Every redirect mode is a non-zero int, so a truthy check passes
+    # for all of them -- and Mode::Weapon (3) aims along the PLAYER MODEL's gun, which reads
+    # identical in a checklist while shooting tens of degrees off target. Name the one that is
+    # wanted and print what was found, so a wrong mode is legible instead of green.
+    fire_ok = bool(head.get("fr_armed")) and int(head.get("fr_mode") or 0) == MODE_MUZZLE
+    ok = ok and fire_ok
+    print("  [%s] shots leave the muzzle (fr_mode=%s, want %d)"
+          % ("x" if fire_ok else " ", head.get("fr_mode"), MODE_MUZZLE))
+
+    # ARMED AND RESOLVED, because they fail separately: the hook can be enabled while it never
+    # finds the object it is meant to correct, which is the "every switch green, nothing moves"
+    # state this whole checklist exists to catch.
+    vm = get("/vr/viewmodel")
+    vm_ok = bool(vm.get("enabled")) and bool(vm.get("object_resolved"))
+    ok = ok and vm_ok
+    print("  [%s] gun decoupled from head look%s"
+          % ("x" if vm_ok else " ", "" if vm.get("object_resolved") else " -- OBJECT NOT RESOLVED"))
 
     # A count that does not move means the switch is on and the path is still dead, which is a
     # completely different problem from a switch being off.
