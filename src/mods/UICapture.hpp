@@ -66,8 +66,10 @@ public:
     void set_mode(int mode) { m_mode.store(mode, std::memory_order_release); }
     int mode() const { return m_mode.load(std::memory_order_relaxed); }
 
-    // Copy the borrowed target's contents out and back around the swap. On by default; off is for
-    // measuring what the swap costs and what it would break.
+    // Copy the borrowed target's contents out and back around the swap. OFF by default because it
+    // is measured NOT to help: the back buffer is already black when the bracket opens, so the copy
+    // preserves nothing. Kept because it is the mechanism a mirror fix would use once the composite
+    // is understood.
     void set_preserve(bool on) { m_preserve.store(on, std::memory_order_release); }
     bool preserve() const { return m_preserve.load(std::memory_order_relaxed); }
     bool enabled() const { return m_enabled.load(std::memory_order_relaxed); }
@@ -96,6 +98,15 @@ public:
     // Whether the surface we displace for the UI bracket IS the swap chain's back buffer.
     bool target_is_backbuffer() const { return m_target_is_backbuffer.load(std::memory_order_relaxed); }
     uint32_t last_tcl() const { return m_last_tcl.load(std::memory_order_relaxed); }
+
+    // Non-black fraction (per mille) of the back buffer sampled IN PHASE, immediately after the
+    // borrowed target is restored. -1 until probed.
+    void request_probe() {
+        m_probe_at_begin.store(true, std::memory_order_release);
+        m_probe_at_end.store(true, std::memory_order_release);
+    }
+    int32_t probe_begin_lit() const { return m_probe_begin_lit.load(std::memory_order_relaxed); }
+    int32_t probe_lit() const { return m_probe_lit.load(std::memory_order_relaxed); }
     uintptr_t backbuffer_ptr() const { return m_backbuffer_ptr.load(std::memory_order_relaxed); }
     uintptr_t displaced_ptr() const { return m_displaced_ptr.load(std::memory_order_relaxed); }
 
@@ -110,7 +121,7 @@ private:
 
     std::atomic<bool> m_enabled{false};
     std::atomic<int> m_mode{3};
-    std::atomic<bool> m_preserve{true};
+    std::atomic<bool> m_preserve{false};
     std::atomic<void*> m_surface{nullptr};   // IDirect3DSurface9*, our colour target
     std::atomic<void*> m_saved{nullptr};     // the engine's surface, held only inside a bracket
     std::atomic<void*> m_scratch{nullptr};   // the borrowed target's contents, kept across the swap
@@ -123,6 +134,10 @@ private:
     std::atomic<int32_t> m_alpha_coverage{-1};
     D3DVIEWPORT9 m_saved_viewport{};   // render thread only, guarded by the flag below
     std::atomic<bool> m_have_saved_viewport{false};
+    std::atomic<bool> m_probe_at_begin{false};
+    std::atomic<bool> m_probe_at_end{false};
+    std::atomic<int32_t> m_probe_begin_lit{-1};
+    std::atomic<int32_t> m_probe_lit{-1};
     std::atomic<uint32_t> m_last_tcl{0};
     std::atomic<bool> m_target_is_backbuffer{false};
     std::atomic<uintptr_t> m_backbuffer_ptr{0};

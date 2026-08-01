@@ -54,6 +54,38 @@ bool write_bmp32(const char* path, const uint8_t* pixels, uint32_t w, uint32_t h
     return true;
 }
 
+
+// Samples a surface's non-black fraction (per mille) through a tiny blit. Costs two temporary
+// surfaces and one lock, so it runs only when asked.
+int32_t sample_lit(IDirect3DDevice9* dev, IDirect3DSurface9* src) {
+    IDirect3DSurface9* tiny = nullptr;
+    IDirect3DSurface9* sys = nullptr;
+    int32_t out = -1;
+    if (SUCCEEDED(dev->CreateRenderTarget(64, 36, D3DFMT_X8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                          &tiny, nullptr)) &&
+        SUCCEEDED(dev->CreateOffscreenPlainSurface(64, 36, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys,
+                                                   nullptr)) &&
+        SUCCEEDED(dev->StretchRect(src, nullptr, tiny, nullptr, D3DTEXF_LINEAR)) &&
+        SUCCEEDED(dev->GetRenderTargetData(tiny, sys))) {
+        D3DLOCKED_RECT lr{};
+        if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+            uint32_t lit = 0;
+            for (int y = 0; y < 36; ++y) {
+                const auto* row = static_cast<const uint8_t*>(lr.pBits) + y * lr.Pitch;
+                for (int x = 0; x < 64; ++x) {
+                    if (row[x * 4] | row[x * 4 + 1] | row[x * 4 + 2]) {
+                        ++lit;
+                    }
+                }
+            }
+            out = static_cast<int32_t>(lit * 1000u / (64u * 36u));
+            sys->UnlockRect();
+        }
+    }
+    if (sys != nullptr) { sys->Release(); }
+    if (tiny != nullptr) { tiny->Release(); }
+    return out;
+}
 } // namespace
 
 UICapture& UICapture::get() {
@@ -190,6 +222,10 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
         }
         m_displaced_ptr.store(reinterpret_cast<uintptr_t>(current), std::memory_order_relaxed);
 
+        if (m_probe_at_begin.exchange(false, std::memory_order_acq_rel)) {
+            m_probe_begin_lit.store(sample_lit(dev, current), std::memory_order_relaxed);
+        }
+
         m_saved.store(current, std::memory_order_release);
 
         // ALPHA WRITES, WHICH THE ENGINE HAS NO REASON TO LEAVE ON. Drawing to a back buffer whose
@@ -237,12 +273,27 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
         }
         // And put the scene back into the target we borrowed.
         if (m_preserve.load(std::memory_order_relaxed)) {
-            if (auto* scratch = static_cast<IDirect3DSurface9*>(m_scratch.load(std::memory_order_relaxed))) {
-                if (FAILED(dev->StretchRect(scratch, nullptr, saved, nullptr, D3DTEXF_NONE))) {
+            // MODE 5 sources the blit from our UI surface instead of the scratch. It has KNOWN
+            // content, so if the back buffer stays black with it too, the destination is refusing
+            // the blit rather than the scratch being empty.
+            void* src = m_mode.load(std::memory_order_relaxed) == 5
+                            ? m_surface.load(std::memory_order_relaxed)
+                            : m_scratch.load(std::memory_order_relaxed);
+            if (auto* from = static_cast<IDirect3DSurface9*>(src)) {
+                if (FAILED(dev->StretchRect(from, nullptr, saved, nullptr, D3DTEXF_NONE))) {
                     m_failures.fetch_add(1, std::memory_order_relaxed);
                 }
             }
         }
+
+        // IN PHASE, AT BOTH ENDS. Which end the back buffer is black at is the whole question:
+        // black at BEGIN means the scene arrives during this bracket, black only at END means
+        // unbinding lost it. One probe answers what a dozen arguments could not.
+        if (m_probe_at_end.exchange(false, std::memory_order_acq_rel)) {
+            m_probe_lit.store(sample_lit(dev, saved), std::memory_order_relaxed);
+        }
+
+
     }
 }
 

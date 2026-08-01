@@ -4046,16 +4046,35 @@ explicit `NoAddAlpha` variants). It does not matter. The surface is cleared to T
 only the UI draws into it, so RGB is already the premultiplied contribution and `max(r,g,b)` is the
 coverage. Measured: 3.90% of pixels non-zero, matching the 3.88% of non-black RGB exactly.
 
-**THE BACK BUFFER IS THE BRACKET'S TARGET, AND UNBINDING IT DISCARDS THE FRAME.** `GetBackBuffer`
-returns the same pointer the bracket binds (0x15FFC160 on this run). Binding anything else in its
-place leaves the presented frame ENTIRELY BLACK. This is not our draws going astray -- our surface
-receives only the HUD either way -- the contents are simply gone, which a swap chain created
-`D3DSWAPEFFECT_DISCARD` is entitled to do.
+**THE BACK BUFFER IS THE BRACKET'S TARGET, AND BORROWING IT COSTS THE PRESENTED FRAME.**
+`GetBackBuffer` returns the same pointer the bracket binds (0x15FFC160 on this run), and binding
+anything else in its place leaves the presented frame entirely black.
 
-The control that establishes it: rebinding the SAME surface (a no-op the runtime elides) leaves the
-frame at 100% non-black, while binding ours gives 0%. Copying the contents out with `StretchRect`
-before the swap and back afterwards does NOT restore them -- both blits report success and the frame
-is still black, so the discard is not a simple content loss that a copy can undo.
+**The first explanation written here was WRONG and is corrected rather than deleted.** It said
+unbinding a `D3DSWAPEFFECT_DISCARD` back buffer discards its contents. Probing IN PHASE at both ends
+of the bracket refutes it -- the back buffer is BLACK when the bracket OPENS, in the control as well
+as in the swap:
+
+| | back buffer at BEGIN | at END |
+|---|---|---|
+| rebind the SAME surface (control) | 0 per mille | 1000 per mille |
+| bind ours | 0 per mille | 0 per mille |
+
+So nothing is discarded: the frame is not in the back buffer yet. **The scene arrives DURING this
+bracket**, which makes it the final COMPOSITE bracket -- scene first, HUD over it -- not a HUD
+bracket that happens to share the target.
+
+What is still unexplained, and is stated as unexplained: the composite does not write into the BOUND
+render target either. Our surface receives the HUD and nothing else, with or without the clear
+(checked by looking at it both ways), yet swapping the target is what stops the back buffer being
+lit. So the composite follows neither the bound target nor the surface pointer alone. `StretchRect`
+onto the back buffer works (blitting our UI surface onto it puts the HUD there, 42 per mille), and
+copying the back buffer out at begin yields black -- consistent with it simply being empty then.
+
+[INFERENCE, not established] The likeliest remaining account is that the composite pass binds the
+back buffer itself from the target descriptor, and the swap leaves the engine's own cached
+target state inconsistent so the composite is skipped or misdirected. Settling it needs a per-PASS
+view -- which of the ten lights the back buffer -- rather than a per-bracket one.
 
 **The headset is unaffected**, because its frame is captured at the second eye, before this bracket
 -- which is also why the published frame never had a HUD in the first place. Only the desktop window
