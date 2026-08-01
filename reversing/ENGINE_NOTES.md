@@ -1069,6 +1069,44 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### The camera OBJECT's height swings with pitch; the eye pin does not stabilise it
+
+Looking up and down moved the welded weapon vertically even with the controller resting on a desk.
+Measured over one sweep, controller still:
+
+```
+cam_object.y   swing 29-31 units      <- the anchor
+gun placement  swing 30.70            <- tracks it exactly
+eye_height     swing 31.05            <- same magnitude, same cause
+player_model.y swing  0.00            <- pitch-invariant
+```
+
+**The eye pin stabilises the RENDERED eye, not this object.** That distinction had never mattered
+before, because nothing else was anchored to the camera object.
+
+So the weapon's height anchors to the **player model's position plus the eye height the pin is
+placing the view at**, while X and Z stay on the camera -- which is correct there and already
+behaved, because the camera FOLLOWS the head horizontally and that is exactly what makes a
+head-relative X/Z offset consistent with it. Three different references now, one per axis pair, each
+chosen to match what its anchor actually does.
+
+**Verified by subtracting the controller's own motion** rather than by asking for a still hand: over
+a sweep with `eye_height` swinging 28.39 units, `gun_y - controller_y` varied by **0.10 units**. The
+first attempt at this measurement showed a 25.8-unit swing and looked like a failure -- until the
+controller's own 25.7 units of movement were accounted for. A test that depends on a human holding
+still is not a test.
+
+### `hands_profile_bound` is NOT a liveness signal
+
+It persists from the last session, so it reads `true` with the headset off while the host publishes
+nothing. A stall was diagnosed twice on that basis, "fixed" once by restarting the host, and the
+real cause both times was the headset being unworn. Confirmed by reading the mapping from a THIRD
+process: game and third-party views advanced in lockstep (`frames 59147 -> 59258` against
+`59150 -> 59259`), so the mapping was never stale and the earlier restart fixed nothing.
+
+Liveness is the frame counter advancing. `arm_vr.py` already tests it that way and was right both
+times.
+
 ### The weapon's HEIGHT needs a different reference from its X/Z
 
 Horizontally the controller is measured against the HEAD; vertically against the ROOM ORIGIN. That

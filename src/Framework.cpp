@@ -11128,6 +11128,7 @@ bool Framework::initialize() {
               .f("vr_gun_px", VR::get().weapon_place()[0], 1)
               .f("vr_gun_py", VR::get().weapon_place()[1], 1)
               .f("vr_gun_pz", VR::get().weapon_place()[2], 1)
+              .f("vr_gun_ay", VR::get().weapon_anchor()[1], 2)
               .b("vr_snap_now_ok", snap_now_ok)
               .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
               .u("vr_hand_updates", static_cast<size_t>(VR::get().hand_pose_updates()))

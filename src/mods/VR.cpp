@@ -832,8 +832,27 @@ void VR::update_weapon() {
         const float cy = yaw.has_value() ? cosf(*yaw) : 1.0f;
         const float sy = yaw.has_value() ? sinf(*yaw) : 0.0f;
 
+        // ---- THE VERTICAL ANCHOR IS THE PLAYER'S ROOT, NOT THE CAMERA -------------------
+        //
+        // The camera OBJECT's height swings with head pitch -- measured at 29-31 units across a
+        // look up and down, in lockstep with the engine's own eye_height. The eye PIN stabilises
+        // the RENDERED eye, not this object, so anchoring the gun here inherited the full swing:
+        // hold the controller still, look down, and the weapon rises by a third of a metre.
+        //
+        // The player model's position is pitch-invariant -- measured swing 0.00 over the same
+        // sweep -- so height is anchored there plus the eye height the pin is placing the view at.
+        // Horizontal stays on the camera, which is correct and already behaves: it FOLLOWS the head
+        // there, which is what makes a head-relative X/Z offset consistent with it.
+        const auto crouched = sdk::PlayerMgr::is_crouching(0);
+        const float eye = crouched.value_or(false) ? m_eye_crouch.load(std::memory_order_acquire)
+                                                   : m_eye_stand.load(std::memory_order_acquire);
+        const auto root = (objs.has_value() && objs->model != 0)
+                              ? sdk::object_info(reinterpret_cast<const regenny::LTObject*>(objs->model))
+                              : std::nullopt;
+        const float base_y = root.has_value() ? root->position.y + eye : cam->position.y;
+
         px += cam->position.x + e[0] * cy + e[2] * sy;
-        py += cam->position.y + e[1];
+        py += base_y + e[1];
         pz += cam->position.z + (-e[0] * sy + e[2] * cy);
 
         // The controller's ABSOLUTE orientation, converted and then turned into the world by the
@@ -849,6 +868,13 @@ void VR::update_weapon() {
     // ONE OWNER: ViewHook already hooks LTObject_SetPosRot, so the amendment is handed to it
     // rather than hooked a second time. Installing a second inline hook on that address crashed
     // the game on unload -- see Hooks::install.
+    // The ANCHOR, published separately from the placement: when the gun drifts, the question is
+    // always whether the offset moved or the thing it is measured from did, and one number cannot
+    // answer it.
+    m_weapon_anchor[0].store(cam.has_value() ? cam->position.x : 0.0f, std::memory_order_relaxed);
+    m_weapon_anchor[1].store(m_weapon_place[1].load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
+    m_weapon_anchor[2].store(cam.has_value() ? cam->position.z : 0.0f, std::memory_order_relaxed);
     m_weapon_abs.store(absolute, std::memory_order_relaxed);
     m_weapon_place[0].store(px, std::memory_order_relaxed);
     m_weapon_place[1].store(py, std::memory_order_relaxed);
