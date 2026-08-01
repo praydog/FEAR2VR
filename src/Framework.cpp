@@ -1628,6 +1628,13 @@ std::string build_models_json() {
     std::string out = "{\"ok\":true,\"models\":[";
     size_t emitted = 0, with_skeleton = 0, resolved_wanted = 0;
 
+    // EVERY model object's filename, addressable. Added after a session spent driving the wrong
+    // object entirely: the first-person weapon is not on the player's model, and there was no way
+    // to ask "what models exist and which one is the gun" without one. The node analysis below is
+    // capped at a dozen because it is expensive; this list is cheap and complete.
+    std::string all_json = "[";
+    size_t all_emitted = 0;
+
     // Snapshot first, then work from the copies -- the same discipline the object
     // report uses. Note what this does NOT buy: the addresses are still live
     // pointers, so an object destroyed between the snapshot and the read would be
@@ -1681,6 +1688,30 @@ std::string build_models_json() {
             }
         }
         nodes_json += "]";
+        if (all_emitted < 256) {
+            const auto any_file = sdk::model_filename(obj);
+            const auto info = sdk::object_info(obj);
+            char ab[512];
+            std::string esc;
+            for (const char ch : any_file.value_or(std::string{})) {
+                if (ch == '\\') {
+                    esc += "\\\\";
+                } else {
+                    esc += ch;
+                }
+            }
+            snprintf(ab, sizeof(ab),
+                     "%s{\"addr\":%llu,\"file\":\"%s\",\"handle\":%u,\"pos\":[%.1f,%.1f,%.1f]}",
+                     all_emitted == 0 ? "" : ",",
+                     static_cast<unsigned long long>(snaps[si].address), esc.c_str(),
+                     info.has_value() ? info->handle : 0xFFFFu,
+                     info.has_value() ? info->position.x : 0.0f,
+                     info.has_value() ? info->position.y : 0.0f,
+                     info.has_value() ? info->position.z : 0.0f);
+            all_json += ab;
+            ++all_emitted;
+        }
+
         if (!interesting || emitted >= 12) {
             continue;
         }
@@ -1996,6 +2027,8 @@ std::string build_models_json() {
     // terrible for a JSON consumer: the reply parses as an unterminated string and
     // the failure looks like a transport bug. It returns the length it WANTED, so a
     // buffer that grew past its literal is caught here instead of downstream.
+    all_json += "]";
+
     char sum[1536];
     const int want = snprintf(sum, sizeof(sum),
              "],\"model_objects\":%zu,\"with_skeleton\":%zu,\"wanted_resolved\":%zu,\"listed\":%zu,"
@@ -2041,7 +2074,17 @@ std::string build_models_json() {
         out += "],\"error\":\"summary truncated\"}";
         return out;
     }
-    out += sum;
+    // The summary literal closes the object, so the list has to go INSIDE it rather than after --
+    // appending past the brace produces a reply that parses as "extra data" and reads like a
+    // transport fault.
+    std::string tail(sum);
+    if (!tail.empty() && tail.back() == '}') {
+        tail.pop_back();
+        out += tail;
+        out += ",\"all\":" + all_json + "}";
+    } else {
+        out += tail;
+    }
     return out;
 }
 
@@ -10482,6 +10525,7 @@ bool Framework::initialize() {
         bool capture_armed = false;
         bool capture_drop_ok = false;
         bool nudge_ok = false;
+        bool hide_addr_ok = false;
         bool snap_now_ok = false;
         int32_t xr_system_result = 1;  // 1 = not asked
         size_t xr_system_id = 0;
@@ -10603,6 +10647,23 @@ bool Framework::initialize() {
             }
             if (q.find("pin_eye") != q.end()) {
                 VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
+            }
+            if (q.find("hide_addr") != q.end()) {
+                // CLEAR kVisible ON ONE NAMED OBJECT. A debugging probe, and the only way to ask
+                // "is THIS the thing I can see" -- which this project needed after a whole session
+                // of driving an object that turned out not to be rendered. Pair it with
+                // tools/grab_frame.py: hide, grab, look.
+                const auto addr = static_cast<uintptr_t>(webapi_query_int(q, "hide_addr", 0));
+                const bool on = webapi_query_int(q, "vis", 0) != 0;
+                if (addr != 0) {
+                    auto* o = reinterpret_cast<regenny::LTObject*>(addr);
+                    uint32_t fl = 0;
+                    if (sdk::mem::copy(&fl, reinterpret_cast<uintptr_t>(&o->flags), sizeof(fl))) {
+                        const uint32_t want = on ? (fl | sdk::object_flags::kVisible)
+                                                 : (fl & ~sdk::object_flags::kVisible);
+                        hide_addr_ok = sdk::mem::write(reinterpret_cast<uintptr_t>(&o->flags), want);
+                    }
+                }
             }
             if (q.find("nudge") != q.end()) {
                 // A deliberate displacement through the REAL path, so "does the player actually move"
@@ -10990,6 +11051,7 @@ bool Framework::initialize() {
               .b("fc_armed", capture_armed)
               .b("fc_drop_ok", capture_drop_ok)
               .b("vr_nudge_ok", nudge_ok)
+              .b("vr_hide_addr_ok", hide_addr_ok)
               .b("vr_snap_now_ok", snap_now_ok)
               .b("vr_can_displace", sdk::PlayerMgr::can_displace_player(0))
               .u("vr_hand_updates", static_cast<size_t>(VR::get().hand_pose_updates()))

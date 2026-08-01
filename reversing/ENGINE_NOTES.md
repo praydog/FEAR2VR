@@ -1069,27 +1069,36 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
-### The weapon DOES follow the RightHand bone -- measured
+### RETRACTED: the weapon does NOT follow the RightHand bone
 
-Asked directly, with the muzzle position (`sdk::attached_socket(player->object, "flash")`, sampled in
-phase by FireRedirect and published as `fr_wo_*`):
+This section previously claimed the opposite, on the strength of `attached_socket(player->object,
+"flash")` moving 30.00 units for a 30-unit bone displacement. **The claim was false and the
+measurement was real** -- they were measurements of different objects.
 
-- Bone displaced 30 units in x -> **muzzle moved 30.00 units**.
-- Bone rotated 40 degrees of yaw -> **muzzle moved 59.85 units**, an arc about the wrist.
+**Proved by looking at the rendered frame.** `tools/grab_frame.py` reads the finished image out of
+the shared mapping the VR host already consumes, which is the first pixel-level evidence this project
+has ever had. With the bone displaced 250 units (2.5 m):
 
-So position AND rotation propagate from the hand bone to the gun, and `drive_hand` already writes
-both from the controller's AIM pose. Attaching the gun to the controller does not need a new
-mechanism; it needs the controller poses to arrive and the head's contribution removed
-(`ViewmodelDecouple`, now armed by `tools/arm_vr.py`).
+- measured muzzle: `y = 161.92` -> `411.39`, exactly as asked
+- rendered gun: **did not move**, 0.7% of pixels changed, all of it head jitter
 
-**`WeaponMgr::current_weapon_object` is a `CClientWeapon`, NOT an LTObject.** A first attempt at this
-measurement read LTObject offsets off it and published a `weapon_yaw` that was 0.000 forever -- the
-same category error as `Player::object`, caught this time because the number never moved. The
-weapon's world transform comes from the muzzle SOCKET, not from that pointer.
+**Why the two disagreed.** `pmgr_model` is `0x2853E5E0` -- the CLIENT-ONLY `fp_playerm06.mdl`, which
+BoneControl drives. `CClientShell::local_player()->object` is `0x28C4F990` -- the SERVER-handled copy
+of the same model, which is what `attached_socket` measures. Two objects, same asset, one skeleton
+driven and a different one measured.
 
-**The muzzle's ROTATION is unusable while its position is not** -- see FireRedirect's header. Measure
-the gun's direction from muzzle POSITION across a known bone rotation, not from the socket's
-orientation.
+**And the viewmodel is not either of them.** Hiding every piece of the player model left the gun
+fully visible. Hiding all 158 OT_MODEL objects in `CClientMgr` left the gun AND the arms fully
+visible. So the first-person viewmodel is not an OT_MODEL in the client manager's list at all, and
+every mechanism this project has aimed at it has been aimed at something else.
+
+**The ~84-unit eye-to-muzzle distance that "corroborated" the first-person reading was a
+coincidence**: the body model's head sits at the camera, so its THIRD-person weapon is also about 80
+units away. Two independent-looking numbers agreed because they described the same wrong object.
+
+**What is still unknown:** which object draws the viewmodel. Candidates not yet excluded are a
+non-OT_MODEL object type (OT_MODEL was the only bucket snapshotted, and the client manager holds
+seven), or a render path that does not go through a client-manager object at all.
 
 ### With the headset off, three separate readings lie
 
