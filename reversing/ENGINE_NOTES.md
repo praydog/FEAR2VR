@@ -1013,6 +1013,49 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### A 64-bit host costs 0.2 MICROSECONDS. The bridge is what scales with resolution.
+
+Submission must move to a 64-bit process, so the boundary's cost was measured with the real
+transport -- one file mapping, both bitnesses on the same pages, a sequence number, no kernel
+transition in the steady state (`tools/ipcbench`, built for both bitnesses from ONE source, because
+cross-bitness layout is the thing under test and a mistake there would be silent):
+
+    per eye                      payload   32-bit write   notify mean   worst      64-bit read
+    1280x1440                   14.06 MB     0.576 ms      0.0002 ms   0.0007 ms    0.585 ms
+    2064x2208 (Quest Pro)       34.77 MB     1.364 ms      0.0002 ms   0.0008 ms    1.387 ms
+    3840x2160 (4K)              63.28 MB     2.415 ms      0.0034 ms   0.6459 ms    2.484 ms
+
+**Notification does not scale with resolution** -- 200 nanoseconds at 14 MB, 3.4 microseconds at
+63 MB, against an 11.1 ms frame at 90 Hz. Copies hold ~25 GB/s throughout. The PROCESS BOUNDARY is
+free at every size.
+
+**The CPU bridge is not, and it dies before the headset's own resolution.** Adding the measured
+readback law (2.05 ms + 1.81 ms/Mpx) to the measured copies:
+
+    per eye        Mpx total   readback*    copies    total     90 Hz budget = 11.1 ms
+    1280x1440         3.69      8.7 ms      1.16 ms   ~9.9 ms   marginal
+    2064x2208 (QP)    9.11     18.5 ms      2.75 ms  ~21.3 ms   NO
+    3840x2160        16.59     32.1 ms      4.90 ms  ~37.0 ms   NO -- 3.3x over
+
+    * extrapolated from a fit measured over 0.06-3.69 Mpx; 4K/eye is 4.5x beyond the data, so treat
+      the figure as an order rather than a number. The conclusion survives being wrong by half.
+
+So shared memory is a BRING-UP path, not a shipping one. It cannot reach even Quest Pro native.
+
+**Which makes GPU sharing the requirement, not an optimisation.** A shared NT handle works across
+processes and across bitness, and a texture referenced by handle is never copied -- the cost becomes
+the notification alone, at ANY resolution, 4K per eye included. The host stops being interesting the
+moment the pixels stop being copied.
+
+What blocks it is D3D9-without-Ex being unable to share a surface, and Ex refusing D3DPOOL_MANAGED,
+which is 99% of what this engine allocates. That is a property of the ENGINE, not of the
+architecture -- so the transport wants to be an interface with two implementations, and the
+shared-memory one should never be optimised, only replaced.
+
+**A separate question, not to be confused with this one:** whether the engine can RENDER 16.6 Mpx a
+frame at all. Today it draws 3.69 Mpx. Nothing above says anything about that, and it is cheap to
+find out by setting the resolution and reading the frame time.
+
 ### THE 32-BIT OCULUS RUNTIME CANNOT CREATE A SESSION. The 64-bit one can.
 
 With a Quest Pro connected over Air Link, `xrGetSystem` returns a real system (0x16) and everything
