@@ -1069,6 +1069,33 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
+### Firing spawns decoys that a "nearest weapon model" selector locks onto
+
+The welded gun snapped back to its engine position for a frame when firing, and sometimes stuck
+there. Measured during sustained fire, the selector returned **43 different objects in three
+seconds** and the amend rate fell from 139/s to 10/s.
+
+Every muzzle effect, shell casing and tracer proxy is ALSO a client-only visible model under
+`weapons\` -- `weapons\_global\1x1square\1x1square.mdl` is the obvious one -- and they spawn AT
+THE MUZZLE, which is nearer to the player than the gun. A nearest-match selector picks the casing.
+
+Two changes, and both are needed:
+- **Exclude `weapons\_global\`**, which is shared effect geometry rather than a weapon.
+- **LATCH the object and re-validate it**, instead of re-picking the nearest every frame. The latch
+  is only kept while it still passes the very predicate a fresh scan would apply, so a destroyed
+  object cannot be held -- that matters, because writing through a freed weapon pointer is the shape
+  of the bug that corrupted the heap earlier in this project.
+
+**Invalidate on the weapon RECORD changing.** The predicate cannot tell the current gun from one
+just holstered; both are client-only visible weapon models near the player. The record is the
+authority and comparing it is a pointer compare.
+
+**Live: the engine REUSES one viewmodel object and swaps its model.** Switching SMG -> Shotgun ->
+SMG leaves the address at `0x2acadce8` throughout. A constant address across a weapon switch is
+therefore correct and not a stale latch -- worth knowing before "fixing" it.
+
+**After: 2 distinct objects across three seconds of fire, from 43.**
+
 ### Resolve the anchor INSIDE the detour, or the gun trails by a frame
 
 Walking with the stick made the welded gun lag slightly behind where it belonged. A world position

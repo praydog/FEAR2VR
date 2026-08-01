@@ -19,6 +19,7 @@
 #include "ViewHook.hpp"
 #include "sdk/CClientMgr.hpp"
 #include "sdk/Model.hpp"
+#include "sdk/WeaponMgr.hpp"
 #include "SyntheticInput.hpp"
 #include "HeadTracking.hpp"
 #include "Log.hpp"
@@ -708,11 +709,60 @@ void VR::set_weapon_probe(float x, float y, float z) {
     m_weapon_probe[2].store(z, std::memory_order_relaxed);
 }
 
+namespace {
+
+// Is this object a plausible first-person weapon: client-only, visible, and a weapon asset that is
+// not shared effect geometry? Split out because the latch and the rescan must agree exactly -- two
+// copies of this predicate is how a latch ends up holding something the scan would never pick.
+bool weapon_candidate(const regenny::LTObject* o, const std::array<float, 3>& anchor, float* out_d2) {
+    const auto oi = sdk::object_info(o);
+
+    if (!oi.has_value() || oi->handle != 0xFFFFu ||
+        (oi->flags & sdk::object_flags::kVisible) == 0u) {
+        return false;
+    }
+
+    const auto fn = sdk::model_filename(o);
+    if (!fn.has_value() || fn->rfind("weapons\\", 0) != 0) {
+        return false;
+    }
+
+    // EXCLUDE weapons\_global\. That is shared effect geometry -- shell casings, the 1x1square
+    // impact/tracer proxy -- and firing spawns it AT THE MUZZLE, which is nearer to the player than
+    // the gun itself. A nearest-match selector therefore locks onto a shell casing the instant the
+    // trigger is pulled, which is exactly what "the weapon snaps back for a frame when I fire" was.
+    if (fn->rfind("weapons\\_global\\", 0) == 0) {
+        return false;
+    }
+
+    const float dx = oi->position.x - anchor[0];
+    const float dy = oi->position.y - anchor[1];
+    const float dz = oi->position.z - anchor[2];
+    const float d2 = dx * dx + dy * dy + dz * dz;
+
+    if (d2 > 200.0f * 200.0f) {
+        return false;
+    }
+
+    if (out_d2 != nullptr) {
+        *out_d2 = d2;
+    }
+    return true;
+}
+
+}  // namespace
+
 uintptr_t VR::find_weapon_object() {
-    // Re-resolved every frame rather than cached: the weapon object is destroyed and recreated on
-    // every weapon switch, and a cached pointer would be writing into freed memory the moment the
-    // player changes gun -- which is exactly the shape of the bug that corrupted the heap earlier
-    // in this project.
+    // LATCHED, then re-validated -- not re-picked every frame. Re-picking made the selection
+    // flap across 43 different objects in three seconds of sustained fire, because every muzzle
+    // effect and shell casing is also a client-only weapon-asset model and spawns closer to the
+    // player than the gun. The amend rate collapsed from 139/s to 10/s and the gun visibly
+    // reverted to its engine position.
+    //
+    // Re-validated rather than trusted, because the weapon object IS destroyed and recreated on a
+    // weapon switch, and holding a stale pointer would write into freed memory -- the shape of the
+    // bug that corrupted the heap earlier in this project. The latch is only kept while the object
+    // still passes the same predicate a fresh scan would apply to it.
     auto* mgr = sdk::CClientMgr::get();
     const auto me = sdk::PlayerMgr::engine_objects(0);
 
@@ -723,6 +773,25 @@ uintptr_t VR::find_weapon_object() {
     const auto anchor = sdk::object_info(reinterpret_cast<const regenny::LTObject*>(me->model));
     if (!anchor.has_value()) {
         return 0;
+    }
+
+    const std::array<float, 3> at{anchor->position.x, anchor->position.y, anchor->position.z};
+
+    // INVALIDATE ON A WEAPON CHANGE. The predicate alone cannot tell the current gun from the one
+    // just holstered -- both are client-only visible weapon models near the player -- so switching
+    // back and forth left the latch on a lingering model that still qualified. The weapon RECORD is
+    // the authority on what is held, and comparing it is a pointer compare.
+    const auto* record = static_cast<const void*>(sdk::WeaponMgr::current_weapon(0));
+    if (record != m_weapon_record) {
+        m_weapon_record = record;
+        m_weapon_obj.store(0, std::memory_order_relaxed);
+    }
+
+    // The latch first. A held object that still qualifies wins outright, whatever is nearer.
+    const uintptr_t held = m_weapon_obj.load(std::memory_order_relaxed);
+    if (held != 0 &&
+        weapon_candidate(reinterpret_cast<const regenny::LTObject*>(held), at, nullptr)) {
+        return held;
     }
 
     std::vector<sdk::CClientMgr::ObjectSnapshot> snaps(512);
@@ -736,26 +805,9 @@ uintptr_t VR::find_weapon_object() {
 
     for (size_t i = 0; i < *got; ++i) {
         const auto* o = reinterpret_cast<const regenny::LTObject*>(snaps[i].address);
-        const auto oi = sdk::object_info(o);
+        float d2 = 0.0f;
 
-        // CLIENT-ONLY, VISIBLE, and a weapon asset. The server-handled twin fails the handle test,
-        // the hidden player models fail the kVisible test, and world pickups fail the distance test.
-        if (!oi.has_value() || oi->handle != 0xFFFFu ||
-            (oi->flags & sdk::object_flags::kVisible) == 0u) {
-            continue;
-        }
-
-        const auto fn = sdk::model_filename(o);
-        if (!fn.has_value() || fn->rfind("weapons\\", 0) != 0) {
-            continue;
-        }
-
-        const float dx = oi->position.x - anchor->position.x;
-        const float dy = oi->position.y - anchor->position.y;
-        const float dz = oi->position.z - anchor->position.z;
-        const float d2 = dx * dx + dy * dy + dz * dz;
-
-        if (d2 < best_d2) {
+        if (weapon_candidate(o, at, &d2) && d2 < best_d2) {
             best_d2 = d2;
             best = snaps[i].address;
         }
