@@ -6408,6 +6408,40 @@ class CPlayerStats 0x158 {
     DatabaseMgrRecord** weapon_slots_end    @0x154
 }
 
+// ---- CClientWeapon, AND THE OBJECT THE PLAYER ACTUALLY SEES -------------------------------------
+//
+// The live CClientWeapon is what WeaponMgr::current_weapon_object returns. Its +0x38 holds the
+// LTObject the weapon RENDERS AS -- the first-person model in front of the player -- which is the
+// answer to "which object is the gun" and comes from the game rather than from a search.
+//
+// WHY THIS FIELD WAS WORTH FINDING. The mod first located the viewmodel heuristically, as the
+// nearest client-only visible model whose asset lives under `weapons\`. That works until the
+// trigger is pulled: muzzle effects, shell casings and the `weapons\_global\1x1square` tracer proxy
+// are ALSO client-only weapon-asset models, and they spawn AT THE MUZZLE -- nearer to the player
+// than the gun. Measured during sustained fire, the heuristic flapped across 43 different objects
+// in three seconds and the weapon visibly snapped back to its engine position. A pointer the game
+// maintains cannot be fooled that way, and after the change it is one object.
+//
+// HOW THE OFFSET WAS FOUND, because the method is narrower than it sounds and generalises: the
+// heuristic produced a KNOWN-GOOD pointer at runtime, and CClientWeapon's own memory was scanned
+// for that value. Exactly one offset matched. That is not the offset-scan the workflow forbids --
+// there is a single candidate, inside a single object, and switching weapons falsifies it
+// immediately.
+//
+// SIZE IS A LOWER BOUND, not an extent: nothing has established where this class ends, and 0x40 is
+// simply past the one mapped field. Safe because no consumer allocates one -- a raw engine pointer
+// is cast onto it and only mapped fields are read.
+class CClientWeapon 0x40 {
+    // CONFIRMED live through ReGenny against the running game: CClientWeapon 0x17D05D78 + 0x38
+    // reads 0x2A6E2098, which is the same object /sdk/weapons reports as the viewmodel. Held across
+    // four weapons and three switches (Submachinegun, Missile Launcher, Shotgun_Clip, and back),
+    // and the address is STABLE across those switches -- the engine reuses one viewmodel object and
+    // swaps its model rather than creating a new one, so a constant value here is correct.
+    LTObject* model_object @0x38
+}
+
+
+
 }
 
 // ---- CMoveMgr, 79 CONSOLE REGISTRATIONS, AND FIVE COMMANDS THAT DO NOTHING ----------------------

@@ -1,6 +1,7 @@
 #include "WeaponMgr.hpp"
 
 #include "Object.hpp"
+#include "regenny/regenny/CClientWeapon.hpp"
 
 #include "DatabaseMgr.hpp"
 #include "Memory.hpp"
@@ -471,8 +472,14 @@ uintptr_t WeaponMgr::current_weapon_model(unsigned player_index) {
         return 0;
     }
 
+    // Through the schema, so the offset is derived by the compiler rather than restated here. The
+    // read is still guarded: `weapon` is an engine pointer and the class is only a lower bound on
+    // the real layout.
+    const auto* w = reinterpret_cast<const regenny::CClientWeapon*>(weapon);
     uintptr_t model = 0;
-    if (!mem::copy(&model, weapon + kWeaponModelObject, sizeof(model)) || model == 0) {
+
+    if (!mem::copy(&model, reinterpret_cast<uintptr_t>(&w->model_object), sizeof(model)) ||
+        model == 0) {
         return 0;
     }
 

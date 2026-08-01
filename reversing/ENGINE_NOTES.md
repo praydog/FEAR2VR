@@ -1069,10 +1069,16 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
-### The game already knows which object the gun is: `CClientWeapon + 0x38`
+### The game already knows which object the gun is: `CClientWeapon::model_object`
 
 Ask the weapon, do not search the world. The field holds the LTObject the weapon renders as, and it
 survived four weapons and three switches unchanged.
+
+**The offset lives in `fear2.genny`, not in C++.** It was first written as a
+`static constexpr uintptr_t kWeaponModelObject = 0x38` in `sdk/WeaponMgr.hpp`, which AGENT.MD rule
+9b forbids for exactly the reason the rule exists: a layout restated in C++ is a second source of
+truth that rots silently the moment the schema changes. It is now
+`regenny::CClientWeapon::model_object`, generated, and the compiler derives the offset.
 
 **How it was found, because the method generalises.** The heuristic below produced a known-good
 pointer at runtime; scanning `CClientWeapon`'s OWN memory for that value reported exactly one
