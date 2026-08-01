@@ -116,7 +116,13 @@ struct alignas(64) HostState {
     float fov_x;
     float fov_y;
     float ipd_m;  // full interpupillary distance the host measured, in metres
-    uint32_t reserved;
+
+    // Bumped whenever the RUNTIME recentres -- OpenXR reports this as
+    // XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING. Without it, a recentre performed in the
+    // headset silently moves the origin of every position we publish, and the game keeps measuring
+    // roomscale against an origin that no longer means anything: the wearer ends up standing
+    // beside their character with nothing to explain it.
+    uint32_t recenter_serial;
 };
 
 static_assert(sizeof(HostState) == 64, "HostState must be byte-identical in both bitnesses");

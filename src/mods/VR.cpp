@@ -200,6 +200,12 @@ void VR::set_eye_smoothing_ms(float ms) {
     LOGX("[vr] eye reference smoothing %.0f ms", ms);
 }
 
+void VR::set_eye_heights(float standing, float crouched) {
+    m_eye_stand.store(standing, std::memory_order_release);
+    m_eye_crouch.store(crouched, std::memory_order_release);
+    LOGX("[vr] eye heights: %.2f standing, %.2f crouched", standing, crouched);
+}
+
 void VR::set_eye_height_trim(float units) {
     m_eye_trim.store(units, std::memory_order_release);
     LOGX("[vr] eye height trim %+.1f units", units);
@@ -605,106 +611,48 @@ void VR::update_camera_offset() {
     float dz = 0.0f;
 
     if (pin) {
-        // WHERE THE EYE SHOULD BE: the body's own origin plus its eye height. Both are published by
-        // PlayerMgr and were cross-checked against the live camera earlier -- eye_height + body_y
-        // equals cam_y to within 0.003 units when the view is level, which is what makes the
-        // difference below a measurement of the pitch artefact rather than a guess at it.
-        // PIN THE WHOLE EYE OFFSET, not just its height.
+        // ---- PLACE THE EYE, DO NOT MEASURE IT --------------------------------------------------
         //
-        // `eye_offset` is the camera object's position MINUS the body model's -- the eye's position
-        // relative to the body, which is exactly the quantity that should not change when only the
-        // head turns. Measured with the body stationary and the head rotated:
+        // Everything before this tried to CORRECT the engine's camera against a reference, and
+        // every version of that failed in a different way: a captured reference baked in the
+        // stance, a tracking one followed the artefact, a gated one left a dead zone, and a
+        // smoothed one still drifted. The whole approach was wrong. The engine's eye position is
+        // not a quantity worth preserving in VR -- it is posed for a flatscreen camera on a body
+        // whose head bone swings on an 8.4 cm lever.
         //
-        //     yaw  +90 deg   dx  +0.10  dy   0.00  dz -11.82
-        //     pitch +80 deg  dx +25.41  dy  -0.32  dz -14.76
-        //     pitch -80 deg  dx +11.47  dy -53.88  dz  -6.66
-        //
-        // The yaw figures trace a chord of 2r*sin(theta/2) with r about 8.4 units -- a NECK. FEAR
-        // carries a full body model, the "Camera" socket sits on its head bone, and the injected
-        // head rotation swings that bone. For a flatscreen shooter that lever arm is free realism;
-        // in a headset it is a second neck fighting the wearer's real one.
-        //
-        // Not CameraAttachedOffset, which was the obvious suspect and is already 0,0,0 here --
-        // zeroing it changed nothing, measured. The motion is in the socket itself.
+        // So the eye is PLACED instead: a fixed offset from the player's ROOT, chosen by stance.
+        // `eye_offset` is the camera relative to the body model, so subtracting it lands the eye
+        // exactly on the root and the wanted height puts it back up. Nothing to reference, nothing
+        // to track, nothing to drift, and the neck lever disappears because the engine's camera
+        // position stops being an input at all.
         if (const auto off = sdk::PlayerMgr::eye_offset(0); off.has_value()) {
-            // ONLY CAPTURE WHILE THE HEAD IS NEUTRAL, and wait as long as it takes.
-            //
-            // The reference has to be the eye offset with NO neck orbit in it, and the orbit is
-            // zero only when the head is level and facing forward. Capturing at an arbitrary
-            // moment bakes that moment's orbit into the reference and displaces the wearer
-            // permanently -- observed directly: a recenter taken while looking down moved the
-            // reference from (-6.89, 74.77, -4.73) to (-6.13, 53.88, -4.24), and the wearer then
-            // sat feet away from the player for the rest of the session.
-            //
-            // Deferring is better than clamping or averaging: the correct sample exists a moment
-            // later, as soon as the wearer looks ahead, and using a wrong one now cannot be undone
-            // without noticing it first.
-            // THE REFERENCE TRACKS, it is not captured once.
-            //
-            // A single capture bakes in the stance it was taken in. Crouching moves the eye about
-            // 29 units and standing back up moves it back, so a reference taken standing leaves the
-            // pin pushing the camera 25 units DOWN once the player crouches -- observed exactly
-            // that way, as an eye height that had quietly sunk into the chest and stayed there.
-            //
-            // Updating it on every frame the head is neutral fixes that by construction. While the
-            // wearer looks ahead the reference IS the live value, so the pin contributes nothing
-            // and any change in stance, height or animation is absorbed silently. The instant the
-            // head turns, the last neutral value is held and the difference is exactly the neck
-            // orbit -- which is the only thing this was ever meant to cancel.
-            const Neutrality n = head_neutrality();
+            const bool crouched = sdk::PlayerMgr::is_crouching(0).value_or(false);
+            const float wanted = crouched ? m_eye_crouch.load(std::memory_order_acquire)
+                                          : m_eye_stand.load(std::memory_order_acquire);
 
-            if (n.pitch_level) {
-                if (!m_have_eye_ref) {
-                    // The first sample has nothing to ease from, so it is taken outright.
-                    LOGX("[vr] eye offset reference acquired: %.2f %.2f %.2f", (*off)[0], (*off)[1],
-                         (*off)[2]);
-                    m_eye_ref_vec = *off;
-                    m_have_eye_ref = true;
-                } else {
-                    // EASED, NOT ASSIGNED. Assigning made the eye height visibly restless: the
-                    // engine's own bob and footstep motion arrived unfiltered, and the wearer felt
-                    // the correction working instead of its result. Reported exactly that way --
-                    // "it's constantly adjusting the eye height, that's what makes it feel weird".
-                    //
-                    // Frame-rate independent, because this runs at whatever the compositor is
-                    // pacing the game to and a per-frame fraction would change character with it.
-                    const float tau = m_eye_tau_ms.load(std::memory_order_acquire) * 0.001f;
-                    const float a = tau <= 0.0f ? 1.0f : 1.0f - expf(-dt / tau);
-
-                    // VERTICAL follows on a level head at ANY heading: the vertical artefact is a
-                    // function of pitch alone, measured across the full yaw range, and this is the
-                    // axis stance actually moves.
-                    m_eye_ref_vec[1] += ((*off)[1] - m_eye_ref_vec[1]) * a;
-
-                    if (n.fully) {
-                        // Horizontal needs the heading centred too, since X and Z swing with yaw
-                        // as well as pitch.
-                        m_eye_ref_vec[0] += ((*off)[0] - m_eye_ref_vec[0]) * a;
-                        m_eye_ref_vec[2] += ((*off)[2] - m_eye_ref_vec[2]) * a;
-                    }
-                }
-            }
-
-            if (!m_have_eye_ref) {
-                // Nothing to correct against yet. Applying a half-formed correction would be worse
-                // than applying none -- but this must skip only the PIN, not the whole function.
-                // Returning here also skipped the eye trim and the roomscale offset, so a trim set
-                // while the reference was still pending read back as zero and looked ignored.
-                m_pin_part = {};
-            } else {
-
-                m_pin_part = {m_eye_ref_vec[0] - (*off)[0], m_eye_ref_vec[1] - (*off)[1],
-                              m_eye_ref_vec[2] - (*off)[2]};
-                dx += m_pin_part[0];
-                dy += m_pin_part[1];
-                dz += m_pin_part[2];
-            }
+            // Horizontal goes to zero -- the eye sits directly above the root, which is the one
+            // horizontal position that cannot swing with the head.
+            m_pin_part = {-(*off)[0], wanted - (*off)[1], -(*off)[2]};
+            dx += m_pin_part[0];
+            dy += m_pin_part[1];
+            dz += m_pin_part[2];
+            m_have_eye_ref = true;
         }
     }
 
     if (room) {
         if (const auto* host = FramePublisher::get().host_state(); host != nullptr) {
             if (host->valid != 0u) {
+                // THE RUNTIME RECENTRED. Its LOCAL space origin moved, so every position we have
+                // been differencing against is meaningless -- recapture rather than carry the
+                // error. This is the event that was missing when the camera ended up offset to one
+                // side after a recentre in the headset.
+                if (host->recenter_serial != m_last_recenter_serial) {
+                    m_last_recenter_serial = host->recenter_serial;
+                    m_recenter.store(true, std::memory_order_release);
+                    LOGX("[vr] runtime recentred -- recapturing the roomscale origin");
+                }
+
                 if (m_recenter.exchange(false, std::memory_order_acq_rel)) {
                     m_room_origin[0] = host->position[0];
                     m_room_origin[1] = host->position[1];

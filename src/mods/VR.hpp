@@ -132,6 +132,16 @@ public:
     // inside the character's chest -- the model's eye socket is not the same thing as a comfortable
     // viewpoint, and no amount of correctness elsewhere fixes it. This is a preference, so it is a
     // number rather than a switch.
+    // ---- WHERE THE EYE GOES, PER STANCE --------------------------------------------------------
+    //
+    // A fixed height above the player's ROOT, one value standing and one crouched. Not derived from
+    // the engine's camera, which is posed for a flatscreen view on a body whose head bone swings on
+    // a lever -- placing the eye outright is what makes the neck orbit vanish rather than be
+    // cancelled. Defaults are the measured live values: 74.98 standing, 45.50 crouched.
+    void set_eye_heights(float standing, float crouched);
+    float eye_standing() const { return m_eye_stand.load(std::memory_order_acquire); }
+    float eye_crouched() const { return m_eye_crouch.load(std::memory_order_acquire); }
+
     void set_eye_height_trim(float units);
     float eye_height_trim() const { return m_eye_trim.load(std::memory_order_acquire); }
 
@@ -268,6 +278,9 @@ private:
     float m_room_origin[3]{};
     std::array<float, 3> m_eye_ref_vec{};
     bool m_have_eye_ref{false};
+    std::atomic<float> m_eye_stand{74.98f};
+    std::atomic<float> m_eye_crouch{45.50f};
+    uint32_t m_last_recenter_serial{0};
     std::atomic<float> m_eye_tau_ms{350.0f};
     int64_t m_last_offset_tick{0};
     std::array<float, 3> m_pin_part{};

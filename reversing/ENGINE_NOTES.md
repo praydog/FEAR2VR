@@ -1013,6 +1013,43 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### THE WHOLE REFERENCE APPROACH WAS WRONG. Place the eye, do not measure it.
+
+Four versions of the eye pin, each fixing the last one's failure and each failing differently:
+
+  1. captured once -- baked in the stance it was captured in (-25 units after a crouch);
+  2. tracking continuously -- followed the artefact and cancelled nothing;
+  3. gated on neutrality -- left a dead zone the size of the gate, visible against a nearby wall;
+  4. eased -- still drifted, and the wearer ended up offset to one side.
+
+The pattern across all four is the tell. Every one of them tried to CORRECT the engine's camera
+against some reference, and the engine's camera position simply is not a quantity worth preserving
+in VR: it is posed for a flatscreen view, on a body whose head bone swings the eye on an 8.4 cm
+lever, and it moves for reasons that have nothing to do with where a wearer's head is.
+
+**So the eye is PLACED, not corrected.** A fixed height above the player's ROOT, chosen by stance:
+74.98 standing, 45.50 crouched, both measured live. `eye_offset` is the camera relative to the body
+model, so subtracting it lands the eye exactly on the root and the wanted height puts it back up.
+
+    offset = (-eye_offset.x,  wanted_height - eye_offset.y,  -eye_offset.z)
+
+Nothing to reference, nothing to track, nothing to drift, no gate and no dead zone. The neck lever
+does not need cancelling because the engine's camera position is no longer an input.
+
+*The lesson is not about cameras. Four increasingly elaborate corrections were built on an
+assumption nobody had examined -- that the engine's value was worth keeping. The right move was to
+stop consuming it.*
+
+### The runtime's own recentre was never delivered
+
+Recentring inside the headset moves the origin of LOCAL space, so every position the host publishes
+is suddenly measured from somewhere else. The game had no way to know: it kept differencing against
+a stale origin, which put the wearer beside their character with nothing to explain it.
+
+OpenXR reports this as `XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING`, and the host was
+draining the event queue without looking for it. It now bumps a serial in the shared block and the
+game recaptures its roomscale origin when the serial changes.
+
 ### The reference must EASE, not snap -- the correction was being felt
 
 Reported, and correctly diagnosed from inside the headset: "it's measuring something when I look

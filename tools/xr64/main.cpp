@@ -456,6 +456,22 @@ int main(int argc, char** argv) {
         XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
 
         while (xrPollEvent(g_instance, &ev) == XR_SUCCESS) {
+            // THE RUNTIME RECENTRED. Whatever the wearer just did in the headset moved the
+            // origin of LOCAL space, so every position published from here on is measured from
+            // somewhere new. The game cannot know that on its own -- it would keep differencing
+            // against a stale origin and quietly place the wearer beside their character, which
+            // is exactly what was reported. Telling it costs one counter.
+            if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+                const auto* rc = reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&ev);
+
+                if (rc->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL &&
+                    reader.host != nullptr) {
+                    ++reader.host->recenter_serial;
+                    std::printf("[host] runtime recentred LOCAL space (serial %u)\n",
+                                reader.host->recenter_serial);
+                }
+            }
+
             if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                 state = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev)->state;
                 std::printf("[host] session -> %s\n", state_name(state));

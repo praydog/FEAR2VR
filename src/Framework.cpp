@@ -10575,6 +10575,11 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("eye_stand") != q.end() || q.find("eye_crouch") != q.end()) {
+                VR::get().set_eye_heights(
+                    static_cast<float>(webapi_query_double(q, "eye_stand", VR::get().eye_standing())),
+                    static_cast<float>(webapi_query_double(q, "eye_crouch", VR::get().eye_crouched())));
+            }
             if (q.find("eye_smooth") != q.end()) {
                 VR::get().set_eye_smoothing_ms(
                     static_cast<float>(webapi_query_double(q, "eye_smooth", 350.0)));
@@ -10810,6 +10815,9 @@ bool Framework::initialize() {
               .b("vr_pin_eye", VR::get().pin_eye_height())
               .b("vr_neutral_cam", VR::get().neutral_camera_offset())
               .f("vr_eye_trim", VR::get().eye_height_trim(), 1)
+              .f("vr_eye_stand", VR::get().eye_standing(), 2)
+              .f("vr_eye_crouch", VR::get().eye_crouched(), 2)
+              .b("vr_crouched", sdk::PlayerMgr::is_crouching(0).value_or(false))
               .f("vr_eye_smooth_ms", VR::get().eye_smoothing_ms(), 0)
               .b("vr_hide_body", VR::get().hide_body())
               .u("vr_body_hides", static_cast<size_t>(VR::get().body_hides()))
