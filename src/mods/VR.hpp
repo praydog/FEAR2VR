@@ -232,6 +232,23 @@ public:
     bool sprinting() const { return m_sprinting.load(std::memory_order_relaxed); }
     uint64_t melees() const { return m_melees.load(std::memory_order_relaxed); }
 
+    // ---- REFLEX TIME, ON THE LEFT TRIGGER --------------------------------------------------------
+    //
+    // The game's reflex time is a TOGGLE: one key press turns it on, the next turns it off. So the
+    // left trigger sends ONE tap per pull, on the rising edge -- treating it as a level would toggle
+    // the state every frame the trigger was held and leave it wherever the frame count happened to
+    // land.
+    //
+    // Hysteresis on an analogue axis for the same reason the fire trigger has it: a trigger resting
+    // near the threshold would otherwise chatter, and here each chatter is a state flip rather than
+    // a stray shot.
+    //
+    // GENERIC VK_CONTROL, not VK_LCONTROL -- the engine's keyboard array is indexed by the unsided
+    // virtual key, which is what the sprint measurement established.
+    void set_reflex_vk(uint32_t vk) { m_reflex_vk.store(vk, std::memory_order_relaxed); }
+    uint32_t reflex_vk() const { return m_reflex_vk.load(std::memory_order_relaxed); }
+    uint64_t reflex_toggles() const { return m_reflex_toggles.load(std::memory_order_relaxed); }
+
     void set_snap_degrees(float deg) { m_snap_deg.store(deg, std::memory_order_relaxed); }
     float snap_degrees() const { return m_snap_deg.load(std::memory_order_relaxed); }
 
@@ -377,6 +394,9 @@ private:
     // clear. Defaulting to the sided key is why the first version of this did nothing at all.
     std::atomic<uint32_t> m_sprint_vk{0x10};
     std::atomic<uint32_t> m_melee_vk{'V'};
+    std::atomic<uint32_t> m_reflex_vk{0x11};  // VK_CONTROL, unsided
+    std::atomic<uint64_t> m_reflex_toggles{0};
+    bool m_left_trigger_down{false};
     uint32_t m_last_hands_sequence{0};
     float m_last_room_xz[2]{};
     bool m_have_last_room{false};

@@ -6450,6 +6450,10 @@ std::string build_shader_params_json(bool include_write_probes) {
         }
         if (const auto cs = sdk::Engine::clock_state()) {
             json_append_bool(out, "eng_clock_paused", cs->paused);
+            // THE TIME SCALE, published because it is the only direct read on reflex time: slow-mo
+            // is a scale change on the engine's own clock, so it can be observed without inferring
+            // anything from how fast things look.
+            json_append_double(out, "eng_time_scale", cs->scale(), 4);
             json_append_bool(out, "eng_clock_advancing", cs->advancing());
             json_append_double(out, "eng_clock_scale", cs->scale(), 4);
             json_append_double(out, "eng_clock_min_step_ms", static_cast<double>(cs->min_step_ms), 0);
@@ -10612,6 +10616,9 @@ bool Framework::initialize() {
             if (q.find("sprint_vk") != q.end()) {
                 VR::get().set_sprint_vk(static_cast<uint32_t>(webapi_query_int(q, "sprint_vk", 0x10)));
             }
+            if (q.find("reflex_vk") != q.end()) {
+                VR::get().set_reflex_vk(static_cast<uint32_t>(webapi_query_int(q, "reflex_vk", 0x11)));
+            }
             if (q.find("melee_vk") != q.end()) {
                 VR::get().set_melee_vk(static_cast<uint32_t>(webapi_query_int(q, "melee_vk", 'V')));
             }
@@ -10983,6 +10990,8 @@ bool Framework::initialize() {
               .u("vr_jumps", static_cast<size_t>(VR::get().jumps()))
               .u("vr_reloads", static_cast<size_t>(VR::get().reloads()))
               .u("vr_melees", static_cast<size_t>(VR::get().melees()))
+              .u("vr_reflex_toggles", static_cast<size_t>(VR::get().reflex_toggles()))
+              .u("vr_reflex_vk", static_cast<size_t>(VR::get().reflex_vk()))
               .b("vr_sprinting", VR::get().sprinting())
               .u("vr_sprint_vk", static_cast<size_t>(VR::get().sprint_vk()))
               .u("vr_melee_vk", static_cast<size_t>(VR::get().melee_vk()))

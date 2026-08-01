@@ -1042,6 +1042,31 @@ was reached by evidence only after being asserted without any.
 
 Moving the player needs the movement system, not a position poke.
 
+### The controller map, and why each input has the SHAPE it does
+
+| input | action | shape | key |
+|---|---|---|---|
+| left stick | walk | level, 4 digital keys | W/A/S/D |
+| right stick | snap turn | Schmitt trigger, 0.70 fire / 0.30 re-arm | TurnController |
+| left stick click | sprint | level, held | `VK_SHIFT` 0x10 |
+| right stick click | melee | rising edge | `V` |
+| left trigger | reflex time | rising edge, hysteresis 0.50/0.35 | `VK_CONTROL` 0x11 |
+| right trigger | fire | level with hysteresis 0.50/0.35 | mouse button 0 |
+| right A / B | jump / reload | rising edge | Space / `R` |
+
+**The shape is not a detail.** Three distinct cases here and picking the wrong one fails in a way
+that looks like the binding is wrong:
+- **Sprint is a LEVEL** -- the engine wants the key down for as long as the gait lasts.
+- **Melee, jump and reload are EDGES** -- the engine consumes a press transition, and re-asserting
+  the key every frame overwrites the very transition it is waiting for.
+- **Reflex is an edge driving a TOGGLE.** The game flips reflex on each press, so a level would flip
+  it once per frame for as long as the trigger was held and leave it wherever the frame count landed.
+  This is the case that most looks like a broken binding: the key is arriving perfectly and the state
+  ends up random.
+
+Every key is a SETTING (`/xr/capture?sprint_vk=&melee_vk=&reflex_vk=`), because the game lets the
+player rebind and a constant is only correct for one profile.
+
 ### The keyboard device array is indexed by the UNSIDED virtual key
 
 Holding `VK_SHIFT` (0x10) while moving sets `MoveFlag::Sprinting` -- flags `0x40801`, matching what

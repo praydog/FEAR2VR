@@ -685,6 +685,23 @@ void VR::update_buttons() {
         m_sprinting.store(want_sprint, std::memory_order_relaxed);
     }
 
+    // ---- REFLEX TIME: ONE TAP PER PULL ---------------------------------------------------------
+    //
+    // Rising edge only, with the same hysteresis band the fire trigger uses. Because the game's
+    // reflex is a toggle, a level would flip it once per frame for as long as the trigger was held.
+    if (left.active) {
+        const bool down = m_left_trigger_down ? (left.trigger > kTriggerRelease)
+                                              : (left.trigger > kTriggerPress);
+
+        if (down && !m_left_trigger_down) {
+            if (si.tap(m_reflex_vk.load(std::memory_order_relaxed))) {
+                m_reflex_toggles.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        m_left_trigger_down = down;
+    }
+
     if (!right.active) {
         // Do not clear the remembered mask here. A controller that sleeps mid-press would otherwise
         // come back looking like a fresh press of every button that was down when it went away.
