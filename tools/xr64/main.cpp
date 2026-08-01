@@ -405,7 +405,13 @@ int main(int argc, char** argv) {
     struct PosePair {
         uint32_t sequence = 0xFFFFFFFFu;
         XrPosef pose[2]{};
-        XrFovf fov{};
+
+        // What the game was ASKED to render: one symmetric frustum, the same for both eyes.
+        XrFovf rendered{};
+
+        // What the headset actually WANTS, per eye, asymmetric. The difference between these two is
+        // recovered by cropping -- see the crop maths at submission.
+        XrFovf wanted[2]{};
     };
 
     PosePair pose_history[16];
@@ -627,12 +633,19 @@ int main(int argc, char** argv) {
                 slot.pose[0] = hv[0].pose;
                 slot.pose[1] = hv[1].pose;
 
-                // The SYMMETRIC frustum we asked the game for -- the same numbers, so what is
-                // declared to the compositor is exactly what was rendered.
-                slot.fov.angleLeft = -mx;
-                slot.fov.angleRight = mx;
-                slot.fov.angleUp = my;
-                slot.fov.angleDown = -my;
+                // The SYMMETRIC frustum we asked the game for...
+                slot.rendered.angleLeft = -mx;
+                slot.rendered.angleRight = mx;
+                slot.rendered.angleUp = my;
+                slot.rendered.angleDown = -my;
+
+                // ...and the ASYMMETRIC one each eye actually needs. A headset's frustums are
+                // sheared toward the nose, and that shear IS the convergence: two parallel
+                // symmetric frustums put infinity at a non-zero disparity, so nothing ever
+                // converges and the eyes are asked to diverge. Reported as "the eyes are not
+                // converging, at all", which is exactly what parallel cameras look like.
+                slot.wanted[0] = hv[0].fov;
+                slot.wanted[1] = hv[1].fov;
             }
         }
 
@@ -702,13 +715,50 @@ int main(int argc, char** argv) {
 
             ++pose_hits;
 
+            // ---- CROPPING IS THE OFF-AXIS PROJECTION -------------------------------------------
+            //
+            // Cutting an off-centre rectangle out of a symmetric render is mathematically identical
+            // to having rendered an asymmetric frustum, provided the symmetric one CONTAINS it --
+            // which it does by construction, since its half-angles are the max over both eyes.
+            //
+            // The mapping is through TANGENTS, not angles: a perspective image is linear in
+            // tan(angle), so an angle a inside a symmetric frustum of half-angle m lands at
+            //     x = W * (tan a + tan m) / (2 tan m)
+            // Interpolating in angle instead would be subtly wrong everywhere and grossly wrong at
+            // the edges -- and it would look like a lens problem rather than an arithmetic one.
+            const float tx = tanf(slot.rendered.angleRight);
+            const float ty = tanf(slot.rendered.angleUp);
+
             for (int e = 0; e < 2; ++e) {
+                const XrFovf& want = slot.wanted[e];
+
+                const float x0 = (tanf(want.angleLeft) + tx) / (2.0f * tx);
+                const float x1 = (tanf(want.angleRight) + tx) / (2.0f * tx);
+
+                // Y IS FLIPPED: angleUp is positive upward, image rows run downward, so the TOP of
+                // the rectangle comes from angleUp.
+                const float y0 = (ty - tanf(want.angleUp)) / (2.0f * ty);
+                const float y1 = (ty - tanf(want.angleDown)) / (2.0f * ty);
+
+                auto to_px = [](float f, uint32_t extent) {
+                    const int32_t v = static_cast<int32_t>(lroundf(f * static_cast<float>(extent)));
+                    return v < 0 ? 0 : (v > static_cast<int32_t>(extent) ? static_cast<int32_t>(extent) : v);
+                };
+
+                const int32_t px0 = to_px(x0, screen_w);
+                const int32_t px1 = to_px(x1, screen_w);
+                const int32_t py0 = to_px(y0, screen_h);
+                const int32_t py1 = to_px(y1, screen_h);
+
                 proj_views[e].pose = slot.pose[e];
-                proj_views[e].fov = slot.fov;
+
+                // Declare what the CROP represents, not what was rendered: the rectangle now is the
+                // headset's own asymmetric frustum.
+                proj_views[e].fov = want;
                 proj_views[e].subImage.swapchain = screen[e];
-                proj_views[e].subImage.imageRect.offset = {0, 0};
-                proj_views[e].subImage.imageRect.extent = {static_cast<int32_t>(screen_w),
-                                                           static_cast<int32_t>(screen_h)};
+                proj_views[e].subImage.imageRect.offset = {px0, py0};
+                proj_views[e].subImage.imageRect.extent = {(std::max)(1, px1 - px0),
+                                                           (std::max)(1, py1 - py0)};
             }
 
             proj.space = space;

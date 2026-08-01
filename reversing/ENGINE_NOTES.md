@@ -1013,6 +1013,40 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Convergence by cropping: the off-axis frustum we cannot ask the engine for
+
+Reported from the headset: 1:1 head movement, but "the eyes are not converging, at all". That is
+precisely what PARALLEL SYMMETRIC frustums look like. A headset's frustums are sheared toward the
+nose, and that shear IS the convergence; two symmetric frustums placed side by side put infinity at
+a non-zero disparity, so nothing ever converges and the eyes are asked to diverge.
+
+**Cropping an off-centre rectangle out of a symmetric render is mathematically identical to having
+rendered an asymmetric frustum**, provided the symmetric one CONTAINS the asymmetric one -- which it
+does by construction here, since its half-angles are the maximum over both eyes and both sides. So
+the fix is entirely host-side and needs nothing from the engine's projection matrices.
+
+**The mapping is through TANGENTS, not angles.** A perspective image is linear in tan(angle), so an
+angle `a` inside a symmetric frustum of half-angle `m` lands at
+
+    x = W * (tan a + tan m) / (2 tan m)
+
+Interpolating in angle instead would be subtly wrong everywhere and grossly wrong at the edges, and
+it would look like a lens defect rather than an arithmetic one. The vertical axis is flipped:
+`angleUp` is positive upward while image rows run downward, so the TOP of the rectangle comes from
+`angleUp`.
+
+For this headset the windows come out as:
+
+    left eye    x   0.0% ..  87.7%     right eye   x  12.3% .. 100.0%
+                y   5.0% .. 100.0%                 y   5.0% .. 100.0%
+
+-- each eye cut toward the nose, which is the shear. `subImage.imageRect` carries the crop and the
+declared `fov` becomes the headset's own asymmetric angles, so what is claimed to the compositor is
+exactly what the rectangle represents.
+
+**The cost is the corners**: 1123x1368 of a 1280x1440 half survives. That is the price of symmetric
+rendering, and it is paid in pixels rather than in correctness.
+
 ### Projection: submitting with the pose the frame was actually drawn from
 
 Head tracking works ("I can aim with my head"), which is what finally makes a projection layer an
