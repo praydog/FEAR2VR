@@ -1013,6 +1013,28 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The reference must EASE, not snap -- the correction was being felt
+
+Reported, and correctly diagnosed from inside the headset: "it's measuring something when I look
+straight ahead and it's constantly adjusting the eye height -- that's what makes it feel weird".
+
+Exactly right. The reference was ASSIGNED from the live value on every frame the head was level, so
+everything the engine legitimately does to eye height -- bob, footsteps, breathing, animation --
+arrived unfiltered and instantly. The wearer was feeling the correction operate instead of seeing
+its result, which is the difference between a stabiliser and a nuisance.
+
+It is now eased toward the live value with a time constant (350 ms by default, `eye_smooth`),
+frame-rate independent so it behaves the same whatever the compositor is pacing the game to, and
+with the delta clamped so a hitch cannot translate into a jump.
+
+**Nothing about the correction's speed is lost.** The pin's response to head rotation is unchanged
+and immediate: the gate closes the moment the head leaves level, the reference simply holds, and the
+full orbit is cancelled. Only the SLOW following of the body -- which is the part that must never be
+noticed -- is slowed further.
+
+*The general shape: a term that exists to track something slow should be rate-limited to the speed
+of the thing it tracks. Making it as fast as possible made it as visible as possible.*
+
 ### The neutral gate is PER AXIS, because the artefact is not the same shape on each
 
 Reported: at one particular spot, near a wall, looking up and down moved the camera again. The spot

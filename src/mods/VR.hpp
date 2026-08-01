@@ -86,6 +86,19 @@ public:
     };
 
     Neutrality head_neutrality() const;
+
+    // ---- HOW FAST THE REFERENCE IS ALLOWED TO MOVE ---------------------------------------------
+    //
+    // The reference must follow the body -- stance, crouch, whatever the engine legitimately does
+    // to eye height -- but it must NOT be seen doing it. Snapping it to the live value on every
+    // level frame made the eye height visibly restless: the engine's own bob and footstep motion
+    // came straight through, and the wearer felt the correction working rather than the result.
+    //
+    // So the reference is eased toward the live value with a time constant instead of assigned.
+    // Fast head rotation still gets cancelled in full, because the gate closes the moment the head
+    // leaves level and the reference simply holds; only the SLOW following is slowed further.
+    void set_eye_smoothing_ms(float ms);
+    float eye_smoothing_ms() const { return m_eye_tau_ms.load(std::memory_order_acquire); }
     bool head_is_neutral() const { return head_neutrality().fully; }
 
     // False while a recenter is still waiting for the wearer to look ahead. Published, because
@@ -255,6 +268,8 @@ private:
     float m_room_origin[3]{};
     std::array<float, 3> m_eye_ref_vec{};
     bool m_have_eye_ref{false};
+    std::atomic<float> m_eye_tau_ms{350.0f};
+    int64_t m_last_offset_tick{0};
     std::array<float, 3> m_pin_part{};
     std::array<float, 3> m_room_part{};
     std::atomic<float> m_eye_trim{0.0f};

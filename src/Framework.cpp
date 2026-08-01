@@ -10575,6 +10575,10 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("eye_smooth") != q.end()) {
+                VR::get().set_eye_smoothing_ms(
+                    static_cast<float>(webapi_query_double(q, "eye_smooth", 350.0)));
+            }
             if (q.find("eye_trim") != q.end()) {
                 VR::get().set_eye_height_trim(
                     static_cast<float>(webapi_query_double(q, "eye_trim", 0.0)));
@@ -10806,6 +10810,7 @@ bool Framework::initialize() {
               .b("vr_pin_eye", VR::get().pin_eye_height())
               .b("vr_neutral_cam", VR::get().neutral_camera_offset())
               .f("vr_eye_trim", VR::get().eye_height_trim(), 1)
+              .f("vr_eye_smooth_ms", VR::get().eye_smoothing_ms(), 0)
               .b("vr_hide_body", VR::get().hide_body())
               .u("vr_body_hides", static_cast<size_t>(VR::get().body_hides()))
               .f("vr_cam_off_x", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[0], 3)

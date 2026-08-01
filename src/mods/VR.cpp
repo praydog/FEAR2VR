@@ -1,5 +1,9 @@
 #include "VR.hpp"
 
+#include <windows.h>
+
+#include <cmath>
+
 #include "CameraPassHook.hpp"
 #include "FramePublisher.hpp"
 
@@ -189,6 +193,11 @@ void VR::set_neutral_camera_offset(bool on) {
 
     m_neutral_cam_off.store(on, std::memory_order_release);
     LOGX("[vr] camera attached offset %s", on ? "NEUTRALISED" : "restored");
+}
+
+void VR::set_eye_smoothing_ms(float ms) {
+    m_eye_tau_ms.store(ms < 0.0f ? 0.0f : ms, std::memory_order_release);
+    LOGX("[vr] eye reference smoothing %.0f ms", ms);
 }
 
 void VR::set_eye_height_trim(float units) {
@@ -571,6 +580,26 @@ void VR::update_camera_offset() {
         return;
     }
 
+    // Real elapsed time, so the easing below behaves the same at 60 fps and at 144.
+    LARGE_INTEGER now{};
+    ::QueryPerformanceCounter(&now);
+    static const int64_t freq = [] {
+        LARGE_INTEGER f{};
+        ::QueryPerformanceFrequency(&f);
+        return f.QuadPart;
+    }();
+
+    float dt = 0.0f;
+
+    if (m_last_offset_tick != 0 && freq != 0) {
+        dt = static_cast<float>(static_cast<double>(now.QuadPart - m_last_offset_tick) /
+                                static_cast<double>(freq));
+        // A hitch must not translate into a jump: clamped to a frame or two of easing.
+        dt = dt < 0.0f ? 0.0f : (dt > 0.1f ? 0.1f : dt);
+    }
+
+    m_last_offset_tick = now.QuadPart;
+
     float dx = 0.0f;
     float dy = 0.0f;
     float dz = 0.0f;
@@ -626,23 +655,33 @@ void VR::update_camera_offset() {
 
             if (n.pitch_level) {
                 if (!m_have_eye_ref) {
+                    // The first sample has nothing to ease from, so it is taken outright.
                     LOGX("[vr] eye offset reference acquired: %.2f %.2f %.2f", (*off)[0], (*off)[1],
                          (*off)[2]);
                     m_eye_ref_vec = *off;
                     m_have_eye_ref = true;
-                }
+                } else {
+                    // EASED, NOT ASSIGNED. Assigning made the eye height visibly restless: the
+                    // engine's own bob and footstep motion arrived unfiltered, and the wearer felt
+                    // the correction working instead of its result. Reported exactly that way --
+                    // "it's constantly adjusting the eye height, that's what makes it feel weird".
+                    //
+                    // Frame-rate independent, because this runs at whatever the compositor is
+                    // pacing the game to and a per-frame fraction would change character with it.
+                    const float tau = m_eye_tau_ms.load(std::memory_order_acquire) * 0.001f;
+                    const float a = tau <= 0.0f ? 1.0f : 1.0f - expf(-dt / tau);
 
-                // VERTICAL refreshes on a level head at ANY heading, because the vertical artefact
-                // is a function of pitch alone -- measured across the full yaw range. This is the
-                // axis stance actually moves, so refreshing it often is what keeps a crouch from
-                // being mistaken for an error.
-                m_eye_ref_vec[1] = (*off)[1];
+                    // VERTICAL follows on a level head at ANY heading: the vertical artefact is a
+                    // function of pitch alone, measured across the full yaw range, and this is the
+                    // axis stance actually moves.
+                    m_eye_ref_vec[1] += ((*off)[1] - m_eye_ref_vec[1]) * a;
 
-                if (n.fully) {
-                    // Horizontal needs the heading centred too: X and Z swing with yaw as well as
-                    // pitch, so a level head turned sideways is NOT a valid horizontal sample.
-                    m_eye_ref_vec[0] = (*off)[0];
-                    m_eye_ref_vec[2] = (*off)[2];
+                    if (n.fully) {
+                        // Horizontal needs the heading centred too, since X and Z swing with yaw
+                        // as well as pitch.
+                        m_eye_ref_vec[0] += ((*off)[0] - m_eye_ref_vec[0]) * a;
+                        m_eye_ref_vec[2] += ((*off)[2] - m_eye_ref_vec[2]) * a;
+                    }
                 }
             }
 
