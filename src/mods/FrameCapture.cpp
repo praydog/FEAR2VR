@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "Log.hpp"
+#include "CameraPassHook.hpp"
 #include "FramePublisher.hpp"
 #include "RenderHook.hpp"
 #include "sdk/Render.hpp"
@@ -106,15 +107,23 @@ void FrameCapture::on_present() {
         FrameCapture::get().free_device_resources();
     }
 
-    FrameCapture::get().service_continuous();
     // A capture aimed at an earlier stage is serviced there instead; servicing here too would read
-    // the finished frame and quietly answer a different question than the one that was asked.
+    // the finished frame and quietly answer a different question than the one that was asked. That
+    // now includes the PIPELINED path, which feeds the headset.
     if (FrameCapture::get().stage() == FrameCapture::Stage::Present) {
+        FrameCapture::get().service_continuous();
         FrameCapture::get().service();
     }
 }
 
 void FrameCapture::service_now() {
+    // THE PIPELINE RUNS AT WHATEVER STAGE CALLS THIS, which for stereo is the only correct place.
+    // The published frame used to come from the present hook, and present DESTROYS the right half
+    // of a split-stereo frame -- measured: the right eye is correct immediately after it draws and
+    // is tiled garbage by the time it presents. A mono screen never noticed; a stereo pair would
+    // have shown one good eye and one wrong one, which reads as a stereo bug rather than a staging
+    // one.
+    service_continuous();
     service_mirror();
     service();
 }
@@ -497,8 +506,14 @@ void FrameCapture::service_continuous() {
             // (X8R8G8B8 / A8R8G8B8) is BGRA in memory. Told to the reader rather than assumed by it,
             // because a wrong guess swaps red and blue and looks like a grading bug.
             if (m_publishing.load(std::memory_order_acquire)) {
+                // Tell the reader what it is looking at rather than letting it guess. Split stereo
+                // puts both eyes in one frame side by side; anything else is a single image for
+                // both eyes.
+                const auto cam = CameraPassHook::get().observed();
+                const uint32_t layout = (cam.stereo && cam.split_viewport) ? xr::kLayoutSideBySide
+                                                                           : xr::kLayoutMono;
                 FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
-                                              xr::kLayoutMono);
+                                              layout);
             }
 
             static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();

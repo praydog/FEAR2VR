@@ -105,6 +105,8 @@ struct SharedReader {
     }
 
     // True when a COMPLETE frame newer than the last one is available.
+    uint32_t layout() const { return header == nullptr ? 0u : header->layout; }
+
     bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
         if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
             return false;
@@ -376,10 +378,14 @@ int main(int argc, char** argv) {
     // correctness to look RIGHT, so if the game's pixels arrive wrong the fault is in the pixels.
     // Stereo projection is the next step and reuses everything above.
     SharedReader reader;
-    XrSwapchain screen = XR_NULL_HANDLE;
-    std::vector<ID3D11Texture2D*> screen_images;
-    uint32_t screen_w = 0;
+
+    // ONE SWAPCHAIN PER EYE, always -- mono simply puts the same picture in both. Keeping a single
+    // code path means the mono case is not a special case that rots while stereo is developed.
+    XrSwapchain screen[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    std::vector<ID3D11Texture2D*> screen_images[2];
+    uint32_t screen_w = 0;       // the size of ONE eye's picture, not of the published frame
     uint32_t screen_h = 0;
+    uint32_t screen_layout = 0xFFFFFFFFu;
     bool screen_ready = false;   // an image has been released at least once
     uint64_t held = 0;           // frames where we re-showed the last picture
 
@@ -453,7 +459,7 @@ int main(int argc, char** argv) {
 
         std::vector<XrCompositionLayerProjectionView> layer_views(view_count);
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        const XrCompositionLayerBaseHeader* layers[1]{};
+        const XrCompositionLayerBaseHeader* layers[2]{};
         uint32_t layer_count = 0;
 
         // Pull the newest complete frame the game has published, if any.
@@ -465,51 +471,71 @@ int main(int argc, char** argv) {
             have_frame = reader.poll(fw, fh, fpitch, fbits);
         }
 
-        if (have_frame && (screen == XR_NULL_HANDLE || fw != screen_w || fh != screen_h)) {
+        // A side-by-side frame is TWO pictures: each eye gets half the width.
+        const uint32_t layout = reader.layout();
+        const uint32_t eye_w = (layout == xr::kLayoutSideBySide) ? fw / 2u : fw;
+        const uint32_t eye_h = fh;
+
+        if (have_frame &&
+            (screen[0] == XR_NULL_HANDLE || eye_w != screen_w || eye_h != screen_h ||
+             layout != screen_layout)) {
             // Sized to the GAME's frame, not the runtime's recommendation: at native size the
             // upload is a straight copy with no resampling anywhere in the path.
-            for (auto* t : screen_images) {
-                (void)t;
-            }
+            bool ok = true;
 
-            screen_images.clear();
+            for (int e = 0; e < 2; ++e) {
+                screen_images[e].clear();
 
-            if (screen != XR_NULL_HANDLE) {
-                xrDestroySwapchain(screen);
-                screen = XR_NULL_HANDLE;
-            }
+                if (screen[e] != XR_NULL_HANDLE) {
+                    xrDestroySwapchain(screen[e]);
+                    screen[e] = XR_NULL_HANDLE;
+                }
 
-            XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-            sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-            sc.format = screen_format;
-            sc.sampleCount = 1;
-            sc.width = fw;
-            sc.height = fh;
-            sc.faceCount = 1;
-            sc.arraySize = 1;
-            sc.mipCount = 1;
+                XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+                sc.usageFlags =
+                    XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+                sc.format = screen_format;
+                sc.sampleCount = 1;
+                // Sized to the EYE's picture, so the upload stays a straight copy with no
+                // resampling anywhere between the game's back buffer and the compositor.
+                sc.width = eye_w;
+                sc.height = eye_h;
+                sc.faceCount = 1;
+                sc.arraySize = 1;
+                sc.mipCount = 1;
 
-            const XrResult screen_r = xrCreateSwapchain(session, &sc, &screen);
-            std::printf("[host] screen swapchain %ux%u -> %s\n", fw, fh, rs(screen_r));
+                const XrResult screen_r = xrCreateSwapchain(session, &sc, &screen[e]);
+                std::printf("[host] eye %d screen swapchain %ux%u (%s) -> %s\n", e, eye_w, eye_h,
+                            layout == xr::kLayoutSideBySide ? "side-by-side" : "mono", rs(screen_r));
 
-            if (XR_SUCCEEDED(screen_r)) {
-                screen_w = fw;
-                screen_h = fh;
+                if (XR_FAILED(screen_r)) {
+                    ok = false;
+                    break;
+                }
+
                 uint32_t n = 0;
-                xrEnumerateSwapchainImages(screen, 0, &n, nullptr);
+                xrEnumerateSwapchainImages(screen[e], 0, &n, nullptr);
                 std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-                xrEnumerateSwapchainImages(screen, n, &n,
-                                           reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+                xrEnumerateSwapchainImages(
+                    screen[e], n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
 
                 for (uint32_t k = 0; k < n; ++k) {
-                    screen_images.push_back(imgs[k].texture);
+                    screen_images[e].push_back(imgs[k].texture);
                 }
+            }
+
+            if (ok) {
+                screen_w = eye_w;
+                screen_h = eye_h;
+                screen_layout = layout;
+                screen_ready = false;
             } else {
                 have_frame = false;
             }
         }
 
-        XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+        XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},
+                                          {XR_TYPE_COMPOSITION_LAYER_QUAD}};
 
         // ---- UPLOAD ONLY WHEN THERE IS SOMETHING NEW -------------------------------------------
         //
@@ -521,22 +547,30 @@ int main(int argc, char** argv) {
         // The right answer is to show the last picture again. A swapchain whose image has been
         // released may be submitted on later frames without re-acquiring, and the runtime uses that
         // last released image -- so holding a frame costs nothing and is what a compositor expects.
-        if (fs.shouldRender != XR_FALSE && have_frame && screen != XR_NULL_HANDLE) {
-            uint32_t index = 0;
-            XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            xrAcquireSwapchainImage(screen, &ai, &index);
+        if (fs.shouldRender != XR_FALSE && have_frame && screen[0] != XR_NULL_HANDLE) {
+            for (int e = 0; e < 2; ++e) {
+                uint32_t index = 0;
+                XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                xrAcquireSwapchainImage(screen[e], &ai, &index);
 
-            XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-            wi.timeout = XR_INFINITE_DURATION;
-            xrWaitSwapchainImage(screen, &wi);
+                XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                wi.timeout = XR_INFINITE_DURATION;
+                xrWaitSwapchainImage(screen[e], &wi);
 
-            // ONE copy, straight from the shared section into the compositor's texture. The row
-            // pitch comes from the writer: a locked D3D surface is padded, and assuming width*4
-            // shears the picture into diagonal stripes.
-            ctx->UpdateSubresource(screen_images[index], 0, nullptr, fbits, fpitch, 0);
+                // SLICING WITHOUT A SHADER. UpdateSubresource walks the source using the stride it
+                // is given, so starting the right eye half a row in and keeping the FULL pitch
+                // lifts the right half out in one copy. A wrong pitch here does not tint anything,
+                // it shears the picture diagonally.
+                const uint8_t* eye_bits = (screen_layout == xr::kLayoutSideBySide && e == 1)
+                                              ? fbits + static_cast<size_t>(screen_w) * 4u
+                                              : fbits;
 
-            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-            xrReleaseSwapchainImage(screen, &ri);
+                ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, eye_bits, fpitch, 0);
+
+                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(screen[e], &ri);
+            }
+
             screen_ready = true;
         }
 
@@ -545,20 +579,39 @@ int main(int argc, char** argv) {
                 ++held;
             }
 
-            // A 2 m wide screen, 1.6 m ahead, at eye level, aspect preserved from the source.
+            // TWO QUADS, ONE PER EYE, and this is the honest choice until the game's camera follows
+            // the head. A projection layer asserts "this image was rendered from the pose you just
+            // gave me", and the compositor would then reproject it against head motion the game did
+            // not apply -- a world that swings when you look around, which is both wrong and
+            // sickening. A quad claims nothing: a flat rectangle at a fixed place, with each eye
+            // given its own half, which is genuine stereo depth on it.
             const float width_m = 2.0f;
-            quad.space = space;
-            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            quad.subImage.swapchain = screen;
-            quad.subImage.imageRect.offset = {0, 0};
-            quad.subImage.imageRect.extent = {static_cast<int32_t>(screen_w),
-                                              static_cast<int32_t>(screen_h)};
-            quad.pose.orientation.w = 1.0f;
-            quad.pose.position = {0.0f, 0.0f, -1.6f};
-            quad.size = {width_m, width_m * static_cast<float>(screen_h) /
-                                      static_cast<float>(screen_w)};
-            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
-            layer_count = 1;
+
+            for (int e = 0; e < 2; ++e) {
+                quad[e].space = space;
+                quad[e].eyeVisibility = (e == 0) ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+                quad[e].subImage.swapchain = screen[e];
+                quad[e].subImage.imageRect.offset = {0, 0};
+                quad[e].subImage.imageRect.extent = {static_cast<int32_t>(screen_w),
+                                                     static_cast<int32_t>(screen_h)};
+                quad[e].pose.orientation.w = 1.0f;
+                quad[e].pose.position = {0.0f, 0.0f, -1.6f};
+
+                // STRETCHED BACK, because a split half is not a narrower VIEW -- it is the whole
+                // view squeezed. Measured earlier in this project: "the left half IS the whole
+                // scene at half width", i.e. the engine keeps its horizontal FOV and renders it
+                // into half the pixels. Displaying such a half at its own 1280x1440 pixel aspect
+                // would show a correct picture of the wrong shape: everything tall and thin.
+                //
+                // So the quad takes the FULL frame's aspect and each eye's half fills it.
+                const float content_w =
+                    static_cast<float>(screen_w) * (screen_layout == xr::kLayoutSideBySide ? 2.0f
+                                                                                           : 1.0f);
+                quad[e].size = {width_m, width_m * static_cast<float>(screen_h) / content_w};
+                layers[e] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad[e]);
+            }
+
+            layer_count = 2;
             ++submitted;
         } else if (fs.shouldRender != XR_FALSE) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
@@ -645,6 +698,12 @@ int main(int argc, char** argv) {
 
         if (e.swapchain != XR_NULL_HANDLE) {
             xrDestroySwapchain(e.swapchain);
+        }
+    }
+
+    for (int e = 0; e < 2; ++e) {
+        if (screen[e] != XR_NULL_HANDLE) {
+            xrDestroySwapchain(screen[e]);
         }
     }
 

@@ -1013,6 +1013,39 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Stereo to the headset: each eye its own half
+
+The published frame is now a side-by-side pair captured at the stage where the pair is INTACT, and
+the host gives each eye its own half.
+
+**The staging matters more than anything else here, and it was nearly a silent bug.** The pipelined
+readback ran on the PRESENT hook, and present destroys the right half of a split frame -- measured
+long before any headset existed: the right eye is correct immediately after it draws and is tiled
+garbage by the time it presents. Mono never noticed, because mono only ever used the left. A stereo
+pair fed from present would have shown one good eye and one wrong one, which reads as a stereo bug
+rather than a staging one and would have been chased in the wrong place. `service_now()` now drives
+the pipelined path too, so it runs at whatever stage the caller selected -- `AfterSecondEye` here --
+and the present hook services only a capture that actually asked for the finished frame.
+
+**The layout is published, not inferred.** `FrameCapture` reads `CameraPassHook::observed()` and
+stamps `kLayoutSideBySide` or `kLayoutMono` into the shared header. The host sizes ONE swapchain PER
+EYE at the half width and lifts each half out with a single `UpdateSubresource`: the right eye's
+source pointer starts half a row in and keeps the FULL pitch, so the slice costs nothing and needs
+no shader. A wrong pitch there does not tint anything -- it shears the picture diagonally.
+
+**The halves are STRETCHED BACK, and that is not a fudge.** An earlier measurement in this project
+settled that "the left half IS the whole scene at half width": the engine keeps its horizontal FOV
+and renders it into half the pixels. Showing such a half at its own 1280x1440 pixel aspect would be
+a correct picture of the wrong shape -- everything tall and thin -- so the quad takes the FULL
+frame's aspect. The cost is horizontal softness, which per-eye render targets would remove later.
+
+**Still quads, still deliberately.** A projection layer asserts that the image was rendered from the
+pose the runtime just handed out, and the compositor reprojects on that basis. The game's camera
+does not follow the head yet, so that claim would be false and the world would swing when the wearer
+looked around -- wrong, and sickening. A quad claims nothing: a rectangle at a fixed place, with
+each eye given its own half, which is genuine stereo depth on it. Projection is the step AFTER head
+tracking, not before, and it reuses the per-eye swapchains already built here.
+
 ### The test pattern flickering THROUGH the game was a rate mismatch
 
 Reported from the headset: the game visible on a flat plane, playable, real time -- with the red and
