@@ -87,6 +87,14 @@ public:
     };
     LookStats look_stats() const;
 
+    // ONE NOTCH UP IS +1, one notch down is -1. Same thread rule and same accumulation as
+    // queue_look: two notches queued before the next poll arrive as two, because the engine
+    // recovers the count from the delta rather than treating it as a flag.
+    //
+    // For VR this is weapon cycling, which the game binds to the wheel.
+    void queue_wheel(int32_t detents);
+    uint64_t wheel_delivered() const;
+
     struct State {
         uint32_t active_taps{};   // taps still counting down
         uint32_t held_keys{};     // keys held indefinitely

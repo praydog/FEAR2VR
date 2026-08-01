@@ -295,6 +295,27 @@ bool Input::send_mouse_look(int32_t dx, int32_t dy) {
     return true;
 }
 
+bool Input::send_mouse_wheel(int32_t detents) {
+    const auto eps = entry_points();
+    const uintptr_t array = device_array_address();
+    void* const hwnd = Engine::main_hwnd();
+    if (eps.mouse_on_wheel == 0 || array == 0 || hwnd == nullptr || detents == 0) {
+        return false;
+    }
+
+    // WHEEL_DELTA. The handler reads the delta as an int16 and divides by 120 to recover the notch
+    // count, so anything smaller than 120 truncates to zero and does nothing at all.
+    constexpr int32_t kWheelDelta = 120;
+    const int32_t delta = detents * kWheelDelta;
+
+    // x and y are passed for signature fidelity and are genuinely unused -- the handler reads only
+    // the delta. mouse_on_wheel(deviceArray, hwnd, int x, int y, int delta, uint keys), __thiscall,
+    // so ecx carries the ARRAY (not the mouse device -- see the note on entry_points).
+    using Fn = void(__fastcall*)(uintptr_t, uintptr_t, void*, int, int, int, unsigned);
+    reinterpret_cast<Fn>(eps.mouse_on_wheel)(array, 0, hwnd, 0, 0, delta, 0u);
+    return true;
+}
+
 uintptr_t Input::poll_fn() {
     auto* iface = interfaces::ILTInput::get();
     if (iface == nullptr) {

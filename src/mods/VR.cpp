@@ -917,6 +917,26 @@ void VR::update_buttons() {
         m_left_trigger_down = down;
     }
 
+    // ---- LEFT Y: CYCLE WEAPON, VIA THE WHEEL ---------------------------------------------------
+    //
+    // The literal Y button on the left controller, which the host publishes as its own bit from
+    // /user/hand/left/input/y/click -- not the left hand's B-equivalent, and scoped by subaction
+    // path so it cannot be confused with the right controller's.
+    //
+    // Sent as a real wheel notch rather than a key, because that is what the game binds weapon
+    // cycling to. Rising edge only: the wheel is an impulse, and a held button would spin the
+    // whole arsenal past the player at frame rate.
+    if (left.active) {
+        const uint32_t left_now = left.buttons;
+        const uint32_t left_pressed = left_now & ~m_last_left_buttons;
+        m_last_left_buttons = left_now;
+
+        if ((left_pressed & vr::VRRuntime::kButtonY) != 0u) {
+            si.queue_wheel(1);
+            m_weapon_cycles.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     if (!right.active) {
         // Do not clear the remembered mask here. A controller that sleeps mid-press would otherwise
         // come back looking like a fresh press of every button that was down when it went away.

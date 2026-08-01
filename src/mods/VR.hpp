@@ -267,6 +267,9 @@ public:
     bool sprinting() const { return m_sprinting.load(std::memory_order_relaxed); }
     uint64_t melees() const { return m_melees.load(std::memory_order_relaxed); }
 
+    // Left Y presses that turned into a wheel notch.
+    uint64_t weapon_cycles() const { return m_weapon_cycles.load(std::memory_order_relaxed); }
+
     // ---- REFLEX TIME, ON THE LEFT TRIGGER --------------------------------------------------------
     //
     // The game's reflex time is a TOGGLE: one key press turns it on, the next turns it off. So the
@@ -428,10 +431,14 @@ private:
     std::atomic<float> m_snap_deg{30.0f};
     bool m_snap_armed{true};
     uint32_t m_held_keys{0};
+    // Per hand, because the edge detector is per hand: one shared mask would make a press on either
+    // controller look like a release on the other, and the buttons that matter now live on both.
     uint32_t m_last_buttons{0};
+    uint32_t m_last_left_buttons{0};
     std::atomic<uint64_t> m_jumps{0};
     std::atomic<uint64_t> m_reloads{0};
     std::atomic<uint64_t> m_melees{0};
+    std::atomic<uint64_t> m_weapon_cycles{0};
     std::atomic<bool> m_sprinting{false};
     // VK_SHIFT, the GENERIC one, and this was measured rather than assumed. The engine's keyboard
     // device array is indexed by the unsided virtual key: holding 0x10 while moving sets

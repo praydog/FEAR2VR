@@ -11195,6 +11195,8 @@ bool Framework::initialize() {
               .b("vr_sprinting", VR::get().sprinting())
               .u("vr_sprint_vk", static_cast<size_t>(VR::get().sprint_vk()))
               .u("vr_melee_vk", static_cast<size_t>(VR::get().melee_vk()))
+              .u("vr_weapon_cycles", VR::get().weapon_cycles())
+              .u("si_wheel_delivered", SyntheticInput::get().wheel_delivered())
               .f("vr_snap_deg", VR::get().snap_degrees(), 1)
               .b("hands_block", FramePublisher::get().hands_state() != nullptr)
               .u("hands_seq", [] {
@@ -11784,6 +11786,15 @@ bool Framework::initialize() {
         } else if (route == "/input/hold") {
             const auto vk = static_cast<uint32_t>(webapi_query_int(q, "vk", 0));
             si.hold(vk, webapi_query_int(q, "down", 1) != 0);
+        } else if (route == "/input/wheel") {
+            // NOTCHES, signed: +1 is one click up (the weapon-cycle direction the left Y button
+            // sends), -1 one click down. Queued for the same reason /input/look is.
+            const auto d = static_cast<int32_t>(webapi_query_int(q, "d", 1));
+            if (d == 0) {
+                err = "d must be a non-zero notch count";
+            } else {
+                si.queue_wheel(d);
+            }
         } else if (route == "/input/release") {
             si.release_all();
             // BOTH BANKS, in that order. release_all() only touches slots it still owns, so a button latched

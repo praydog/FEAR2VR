@@ -620,6 +620,24 @@ public:
     // false when the entry point, the device array, the window or its geometry did not resolve.
     static bool send_mouse_look(int32_t dx, int32_t dy);
 
+    // THE WHEEL, IN DETENTS. One notch up is +1, one notch down is -1; the SDK scales by the
+    // WHEEL_DELTA of 120 the engine divides back out.
+    //
+    // Read from the handler at 0x46CE2E rather than assumed: it ignores x and y entirely, takes the
+    // delta as an int16, divides by 120, and dispatches to mouse object 5 for up and 6 for down --
+    // which are `object_value()`'s 1005 and 1006, so a caller can confirm the notch landed instead
+    // of trusting that it did. It is gated on the same two enable fields the rest of the device
+    // array is, so a notch sent while input is disabled is correctly dropped.
+    //
+    // FOR VR this is weapon cycling: the game binds next/previous weapon to the wheel, and driving
+    // the engine's own handler means the binding, the HUD and the animation all follow as they do
+    // for a real mouse.
+    //
+    // THREAD AFFINITY: the game's thread, like the rest of this block.
+    //
+    // false when the entry point, the device array or the window did not resolve.
+    static bool send_mouse_wheel(int32_t detents);
+
     // WRITES THE CURRENT BUTTON BANK DIRECTLY, bypassing the incoming/shift pipeline.
     //
     // send_mouse_button() is the right call for producing input. This one exists for the opposite job:

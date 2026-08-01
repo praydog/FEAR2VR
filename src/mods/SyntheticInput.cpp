@@ -51,6 +51,12 @@ std::atomic<uint64_t> g_look_delivered{0};
 std::atomic<int32_t> g_look_last_dx{0};
 std::atomic<int32_t> g_look_last_dy{0};
 
+// Pending wheel notches, same discipline. Accumulated rather than latched so two clicks in one
+// frame both arrive: the engine turns the delta back into a notch count, so a caller that spins
+// the wheel faster than the frame rate still gets every detent it asked for.
+std::atomic<int32_t> g_wheel{0};
+std::atomic<uint64_t> g_wheel_delivered{0};
+
 // Applies every pending key state. Called from the poll detour AFTER the original has run, which is the only
 // instant in the frame where a write survives to be read -- see SyntheticInput.hpp.
 void apply_pending();
@@ -84,6 +90,13 @@ void __fastcall poll_detour(void* self, void* /*edx*/) {
         g_look_last_dx.store(dx, std::memory_order_relaxed);
         g_look_last_dy.store(dy, std::memory_order_relaxed);
         g_look_delivered.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // The wheel is an IMPULSE, not a level: the engine converts it straight into an object value
+    // rather than a held state, so it is sent once and cleared rather than re-asserted per frame.
+    const int32_t notches = g_wheel.exchange(0, std::memory_order_relaxed);
+    if (notches != 0 && sdk::Input::send_mouse_wheel(notches)) {
+        g_wheel_delivered.fetch_add(1, std::memory_order_relaxed);
     }
 
     auto* hook = Hooks::get().find(kPollHook);
@@ -191,6 +204,14 @@ void SyntheticInput::hold(uint32_t vk, bool down) {
 void SyntheticInput::queue_look(int32_t dx, int32_t dy) {
     g_look_dx.fetch_add(dx, std::memory_order_relaxed);
     g_look_dy.fetch_add(dy, std::memory_order_relaxed);
+}
+
+void SyntheticInput::queue_wheel(int32_t detents) {
+    g_wheel.fetch_add(detents, std::memory_order_relaxed);
+}
+
+uint64_t SyntheticInput::wheel_delivered() const {
+    return g_wheel_delivered.load(std::memory_order_relaxed);
 }
 
 SyntheticInput::LookStats SyntheticInput::look_stats() const {

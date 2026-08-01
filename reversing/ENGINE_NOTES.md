@@ -4011,6 +4011,32 @@ two-second bursts; rockets fired with the pool steady at its 15 maximum. Zero ex
 rockets stop at 15 -- so a floor of 500 asked forever and got 27 grants in 20 seconds. A grant that
 does not raise the pool now teaches that type's ceiling, and the ceiling becomes the trigger.
 
+### The mouse wheel: two input objects, and x/y are ignored
+
+`LTInput_OnMouseWheel` (FEAR2.exe 0x46CE2E) is the whole story:
+
+```c
+void __thiscall LTInput_OnMouseWheel(_DWORD *this, int hwnd, int x, int y, __int16 delta, int keys)
+{
+    if (this[18] && this[1]) {              // the same two enable gates the device array has
+        int detents = delta / 120;          // WHEEL_DELTA
+        if (delta <= 0) TriggerObject(6, -(double)detents);   // wheel DOWN
+        else            TriggerObject(5,  (float)detents);    // wheel UP
+    }
+}
+```
+
+Three things worth having written down. **`x` and `y` are never read** -- a caller does not need a
+cursor position and should not invent one. **The delta is an int16 divided by 120**, so anything
+under a full notch truncates to nothing. And **the wheel is two input objects, 5 and 6**, which are
+`sdk::Input::object_value()`'s 1005 and 1006 -- so a synthetic notch can be confirmed by reading the
+object back rather than assumed to have landed.
+
+`this` is the device ARRAY, not the mouse device, matching `mouse_on_move` and unlike the button and
+key writers. Driving it is how the left controller's Y button cycles weapons: the game binds weapon
+cycling to the wheel, so going through this handler makes the binding, the HUD and the animation all
+behave exactly as they do for a real mouse.
+
 ### The console argv convention: handlers receive ARGUMENTS ONLY
 
 `ConsoleRunner` passed `argv[0]` as the command name, which shifted every argument by one. The
