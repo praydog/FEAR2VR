@@ -132,6 +132,29 @@ public:
     // asking for more silently gets that -- predicted_half_view_plane() will say so.
     void set_fov_override(float fov_x, float fov_y);
 
+    // ---- MOVING THE EYE IN THE WORLD -----------------------------------------------------------
+    //
+    // A WORLD-SPACE delta added to the camera position of every eye, applied before the per-eye IPD
+    // shift. World space, not camera-local like the IPD offset, because both of its users are about
+    // where the head IS rather than which way it points:
+    //
+    //   ROOMSCALE -- the wearer's own movement inside their play space, which must not rotate with
+    //   the head. Offsetting in the camera's frame would make leaning forward while looking down
+    //   move the eye downward, which is not what the body did.
+    //
+    //   PINNING THE EYE HEIGHT -- the engine moves the camera vertically as the view pitches: 54 cm
+    //   DOWN at -80 degrees, and a non-monotonic +9 / +7 / -0.3 cm going up. That is an artefact of
+    //   the original FPS camera and it is nonsense in a headset, where the wearer's head has not
+    //   moved at all. Cancelling it needs a world-space correction, since the error is vertical in
+    //   the WORLD however the head happens to be oriented.
+    // The camera the ENGINE handed the pass, captured before this mod touches it. The feedback-free
+    // reference: a consumer correcting the camera cannot measure the error against the camera it has
+    // already corrected, or it is measuring its own output.
+    std::optional<std::array<float, 3>> pristine_camera_position() const;
+
+    void set_position_offset(float x, float y, float z);
+    std::array<float, 3> position_offset() const;
+
     // ---- WHAT THE PASSES IN A FRAME ACTUALLY ARE -------------------------------------
     //
     // The renderer issues MORE THAN ONE perspective pass per frame -- measured at roughly 390 setups per

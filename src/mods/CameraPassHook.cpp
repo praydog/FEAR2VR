@@ -30,6 +30,9 @@ std::atomic<uint64_t> g_overridden{0};
 std::atomic<uint64_t> g_rejected{0};
 std::atomic<uint8_t> g_eye{static_cast<uint8_t>(CameraPassHook::Eye::Off)};
 std::atomic<float> g_half_ipd{0.0f};
+std::atomic<float> g_pos_off_x{0.0f};
+std::atomic<float> g_pos_off_y{0.0f};
+std::atomic<float> g_pos_off_z{0.0f};
 std::atomic<bool> g_split{false};
 std::atomic<float> g_fov_x{0.0f};
 std::atomic<float> g_fov_y{0.0f};
@@ -305,8 +308,16 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     // SUBSTITUTED COPIES, never a write through the engine's pointers. The caller owns that storage and may
     // reuse it after this returns; mutating it would be a side effect outside the frame we were asked about.
     const float sign = eye == CameraPassHook::Eye::Left ? -1.0f : 1.0f;
-    const auto shifted = sdk::SceneCamera::offset_transform_local(
+    auto shifted = sdk::SceneCamera::offset_transform_local(
         *camera, sign * g_half_ipd.load(std::memory_order_relaxed), 0.0f, 0.0f);
+
+    if (shifted.has_value()) {
+        // WORLD space, so it survives however the head is turned -- see set_position_offset().
+        shifted->position.x += g_pos_off_x.load(std::memory_order_relaxed);
+        shifted->position.y += g_pos_off_y.load(std::memory_order_relaxed);
+        shifted->position.z += g_pos_off_z.load(std::memory_order_relaxed);
+    }
+
     if (!shifted.has_value()) {
         // A pose whose rotation is not usable as one. Passing the original through is the only safe answer --
         // rendering an eye from a garbage transform is worse than rendering it monocular.
@@ -355,11 +366,15 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
 bool build_eye(const PristineSetup& in, CameraPassHook::Eye eye, regenny::LTNodeTransform& cam_out,
                float rect_out[4]) {
     const float sign = eye == CameraPassHook::Eye::Left ? -1.0f : 1.0f;
-    const auto shifted = sdk::SceneCamera::offset_transform_local(
+    auto shifted = sdk::SceneCamera::offset_transform_local(
         in.camera, sign * g_half_ipd.load(std::memory_order_relaxed), 0.0f, 0.0f);
     if (!shifted.has_value()) {
         return false;
     }
+
+    shifted->position.x += g_pos_off_x.load(std::memory_order_relaxed);
+    shifted->position.y += g_pos_off_y.load(std::memory_order_relaxed);
+    shifted->position.z += g_pos_off_z.load(std::memory_order_relaxed);
     cam_out = *shifted;
     memcpy(rect_out, in.rect, sizeof(in.rect[0]) * 4);
     if (g_split.load(std::memory_order_relaxed)) {
@@ -632,4 +647,24 @@ CameraPassHook::Observed CameraPassHook::observed() const {
     }
     out.probe_pixel = {g_probe_px.load(std::memory_order_relaxed), g_probe_py.load(std::memory_order_relaxed)};
     return out;
+}
+
+void CameraPassHook::set_position_offset(float x, float y, float z) {
+    g_pos_off_x.store(x, std::memory_order_relaxed);
+    g_pos_off_y.store(y, std::memory_order_relaxed);
+    g_pos_off_z.store(z, std::memory_order_relaxed);
+}
+
+std::array<float, 3> CameraPassHook::position_offset() const {
+    return {g_pos_off_x.load(std::memory_order_relaxed), g_pos_off_y.load(std::memory_order_relaxed),
+            g_pos_off_z.load(std::memory_order_relaxed)};
+}
+
+std::optional<std::array<float, 3>> CameraPassHook::pristine_camera_position() const {
+    if (!g_pristine_valid.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+
+    return std::array<float, 3>{g_pristine.camera.position.x, g_pristine.camera.position.y,
+                                g_pristine.camera.position.z};
 }

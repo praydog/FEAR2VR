@@ -10575,6 +10575,15 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("pin_eye") != q.end()) {
+                VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
+            }
+            if (q.find("roomscale") != q.end()) {
+                VR::get().set_roomscale(webapi_query_int(q, "roomscale", 0) != 0);
+            }
+            if (webapi_query_int(q, "recenter", 0) != 0) {
+                VR::get().recenter();
+            }
             if (q.find("level_aim") != q.end()) {
                 ViewHook::get().set_level_aim(webapi_query_int(q, "level_aim", 0) != 0);
             }
@@ -10784,6 +10793,13 @@ bool Framework::initialize() {
               .b("vr_host_pose", VR::get().using_host_pose())
               .b("vr_paced", VR::get().paced())
               .b("vr_level_aim", ViewHook::get().level_aim())
+              .b("vr_pin_eye", VR::get().pin_eye_height())
+              .b("vr_roomscale", VR::get().roomscale())
+              .f("vr_eye_height", sdk::PlayerMgr::eye_height(0).value_or(-1.0f), 3)
+              .f("vr_body_y", sdk::PlayerMgr::body_origin_height(0).value_or(-1.0f), 3)
+              .f("vr_off_x", CameraPassHook::get().position_offset()[0], 3)
+              .f("vr_off_y", CameraPassHook::get().position_offset()[1], 3)
+              .f("vr_off_z", CameraPassHook::get().position_offset()[2], 3)
               .u("vr_level_writes", static_cast<size_t>(ViewHook::get().level_aim_writes()))
               .b("vr_pacing_live", FramePublisher::get().pacing_live())
               .u("vr_tick_waits", static_cast<size_t>(FramePublisher::get().tick_waits()))

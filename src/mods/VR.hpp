@@ -55,6 +55,22 @@ public:
     // all of that rather than opening a second path that has to be re-proven.
     // Let the OpenXR runtime drive the game's frame rate, the way xrWaitFrame does for a native VR
     // title. Off by default: it changes the game's pacing, which is not something to do implicitly.
+    // ---- WHERE THE EYE IS, RATHER THAN WHERE THE ENGINE PUTS IT --------------------------------
+    //
+    // PIN: hold the eye at the body's own height plus its eye height, cancelling the vertical swing
+    // the engine applies as the view pitches -- measured at 54 cm down at -80 degrees, and
+    // non-monotonic going up. Real heads do not do that, and in a headset the wearer's head has not
+    // moved at all, so the engine's curve is pure artefact.
+    //
+    // ROOMSCALE: add the wearer's movement within their play space. Captured relative to wherever
+    // they were when it was switched on, so enabling it never teleports anyone.
+    void update_camera_offset();
+    void set_pin_eye_height(bool on);
+    bool pin_eye_height() const { return m_pin_eye.load(std::memory_order_acquire); }
+    void set_roomscale(bool on);
+    bool roomscale() const { return m_roomscale.load(std::memory_order_acquire); }
+    void recenter();
+
     void set_paced(bool on);
     bool paced() const { return m_paced.load(std::memory_order_acquire); }
 
@@ -163,6 +179,11 @@ public:
 private:
     std::atomic<bool> m_use_host_pose{false};
     std::atomic<bool> m_paced{false};
+    std::atomic<bool> m_pin_eye{false};
+    std::atomic<bool> m_roomscale{false};
+    std::atomic<bool> m_recenter{true};
+    float m_room_origin[3]{};
+    float m_eye_ref{-1.0f};
     std::atomic<uint64_t> m_host_pose_updates{0};
     std::atomic<uint64_t> m_host_pose_stale{0};
     uint32_t m_last_host_sequence{0};

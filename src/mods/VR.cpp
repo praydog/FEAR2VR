@@ -156,6 +156,46 @@ void VR::set_use_host_pose(bool on) {
     }
 }
 
+void VR::set_pin_eye_height(bool on) {
+    if (on) {
+        // Recaptured on every enable: the reference has to be the height while looking LEVEL, and
+        // the only moment we can be reasonably sure of that is when the feature is switched on.
+        // `recenter` recaptures it too, for when it was switched on at a bad moment.
+        m_eye_ref = -1.0f;
+    }
+
+    m_pin_eye.store(on, std::memory_order_release);
+
+    if (!on) {
+        // Hand the camera back exactly as it was found. A mod that stops correcting must also stop
+        // applying its last correction, or "off" quietly means "frozen at whatever it last was".
+        CameraPassHook::get().set_position_offset(0.0f, 0.0f, 0.0f);
+    }
+
+    LOGX("[vr] eye height pinning %s", on ? "ON" : "off");
+}
+
+void VR::recenter() {
+    m_eye_ref = -1.0f;
+    m_recenter.store(true, std::memory_order_release);
+    LOGX("[vr] roomscale origin will be recaptured");
+}
+
+void VR::set_roomscale(bool on) {
+    if (on) {
+        FramePublisher::get().open();
+        m_recenter.store(true, std::memory_order_release);
+    }
+
+    m_roomscale.store(on, std::memory_order_release);
+
+    if (!on) {
+        CameraPassHook::get().set_position_offset(0.0f, 0.0f, 0.0f);
+    }
+
+    LOGX("[vr] roomscale %s", on ? "ON" : "off");
+}
+
 void VR::set_paced(bool on) {
     if (on) {
         FramePublisher::get().open();
@@ -197,6 +237,8 @@ void VR::on_frame() {
     rt.synchronize_frame();
     rt.update_poses();
     rt.update_input();
+
+    update_camera_offset();
 
     // The wearer's actual head, if the host is publishing it. Read before anything consumes poses
     // this frame, so the engine sees where the head IS rather than where it was last frame.
@@ -429,4 +471,77 @@ VR::State VR::state() const {
     }
 
     return s;
+}
+
+void VR::update_camera_offset() {
+    const bool pin = m_pin_eye.load(std::memory_order_acquire);
+    const bool room = m_roomscale.load(std::memory_order_acquire);
+
+    if (!pin && !room) {
+        return;
+    }
+
+    float dx = 0.0f;
+    float dy = 0.0f;
+    float dz = 0.0f;
+
+    if (pin) {
+        // WHERE THE EYE SHOULD BE: the body's own origin plus its eye height. Both are published by
+        // PlayerMgr and were cross-checked against the live camera earlier -- eye_height + body_y
+        // equals cam_y to within 0.003 units when the view is level, which is what makes the
+        // difference below a measurement of the pitch artefact rather than a guess at it.
+        // THE ARTEFACT IS ENTIRELY INSIDE eye_height, which took two wrong references to find.
+        // Measured against pitch, with the body origin rock constant at 2302.100:
+        //
+        //     pitch   0 deg    eye 74.778        pitch +60    eye 81.823
+        //     pitch -40 deg    eye 49.914        pitch -80    eye 20.885
+        //
+        // The engine drops the eye more than half a metre to look at the floor. Both earlier
+        // references failed for the same reason: `applied_pose.y` and `body + eye_height` BOTH
+        // equal the camera height by construction, so the difference was always zero and the
+        // correction never fired. There was no error to see, because every candidate reference was
+        // moving with the thing being corrected.
+        //
+        // Holding eye_height at its level value is therefore the whole fix, and needs no camera
+        // read at all.
+        if (const auto eye = sdk::PlayerMgr::eye_height(0); eye.has_value()) {
+            if (m_eye_ref <= 0.0f) {
+                m_eye_ref = *eye;
+                LOGX("[vr] eye height reference captured at %.3f units", m_eye_ref);
+            }
+
+            dy += m_eye_ref - *eye;
+        }
+    }
+
+    if (room) {
+        if (const auto* host = FramePublisher::get().host_state(); host != nullptr) {
+            if (host->valid != 0u) {
+                if (m_recenter.exchange(false, std::memory_order_acq_rel)) {
+                    m_room_origin[0] = host->position[0];
+                    m_room_origin[1] = host->position[1];
+                    m_room_origin[2] = host->position[2];
+                }
+
+                // ONE UNIT IS ONE CENTIMETRE in this engine -- established by measurement, not by
+                // assumption -- so metres from the runtime scale by 100.
+                constexpr float kMetresToUnits = 100.0f;
+                const float rx = (host->position[0] - m_room_origin[0]) * kMetresToUnits;
+                const float ry = (host->position[1] - m_room_origin[1]) * kMetresToUnits;
+                const float rz = (host->position[2] - m_room_origin[2]) * kMetresToUnits;
+
+                // Rotated into the BODY's heading, not the camera's: leaning left should move the
+                // eye left of where the player is facing, whatever the head is looking at.
+                const auto yaw = sdk::PlayerMgr::aim_yaw(0);
+                const float c = yaw.has_value() ? cosf(*yaw) : 1.0f;
+                const float s = yaw.has_value() ? sinf(*yaw) : 0.0f;
+
+                dx += rx * c + rz * s;
+                dy += ry;
+                dz += -rx * s + rz * c;
+            }
+        }
+    }
+
+    CameraPassHook::get().set_position_offset(dx, dy, dz);
 }

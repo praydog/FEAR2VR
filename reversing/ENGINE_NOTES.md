@@ -1013,6 +1013,48 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The eye swings when you look down, and the artefact is inside eye_height
+
+Reported from the headset: looking up and down moves the camera vertically, worse the closer to
+90 degrees -- "an artefact of how the original FPS camera worked". Measured, with the game's own
+pitch locked level so only the HEAD is pitching:
+
+    pitch    0 deg   eye 74.778   body 2302.100   cam 2376.88
+    pitch  -40 deg   eye 49.914   body 2302.100   cam 2352.01
+    pitch  -80 deg   eye 20.885   body 2302.100   cam 2322.99
+    pitch  +60 deg   eye 81.823   body 2302.100   cam 2383.92
+
+The body origin never moves. **The entire swing is inside `eye_height`** -- the engine drops the eye
+more than half a metre to look at the floor, and raises it slightly then brings it back going up,
+which is why the curve is not symmetric and not monotonic.
+
+**TWO WRONG REFERENCES, both failing the same way.** The correction was first measured against the
+engine's applied pose, then against the pristine pass camera. Both produced an offset of exactly
+0.00 at every pitch. Neither was a bug in the reading: `applied_pose.y` and `body + eye_height` BOTH
+equal the camera height BY CONSTRUCTION -- that identity was verified in this project long ago and
+is still true. Every candidate reference was moving with the thing being corrected, so there was no
+error to see.
+
+Holding `eye_height` at the value it has while level is therefore the whole fix, and it needs no
+camera read at all. Verified: at -80 degrees the offset is +53.89 against an eye height of 20.885,
+restoring 74.78; at +60 it is -7.04, restoring 74.78.
+
+*The general shape of this mistake is worth keeping: when a correction measures zero at every input,
+suspect the REFERENCE before the mechanism.*
+
+### Roomscale, and why the offset is world-space
+
+The wearer's movement inside their play space, added to the camera as a world-space delta and scaled
+by 100 because one engine unit is one centimetre -- measured, not assumed.
+
+World space rather than the camera-local frame the IPD shift uses, because roomscale is about where
+the head IS rather than which way it points: leaning forward while looking down must move the eye
+forward, not downward. The offset is rotated into the BODY's heading so leaning left moves the eye
+left of the direction the player is facing, whatever the head happens to be looking at.
+
+The origin is captured when roomscale is switched on, so enabling it never teleports anyone, and
+`recenter` recaptures both it and the eye-height reference.
+
 ### Levelling the body so the head can turn, and a retraction on how
 
 Reported from the headset: turning the head while the GAME's pitch is far from level feels "like
