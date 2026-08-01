@@ -161,6 +161,23 @@ public:
     void set_pin_eye_height(bool on);
     bool pin_eye_height() const { return m_pin_eye.load(std::memory_order_acquire); }
     void set_roomscale(bool on);
+
+    // ---- WALKING THE CHARACTER, NOT JUST THE CAMERA --------------------------------------------
+    //
+    // With camera-only roomscale the wearer walks their VIEW out of their own body: the character
+    // stands still while the eye drifts across the room. This moves the player object instead, so
+    // the two stay together.
+    //
+    // X AND Z ONLY. Vertical is deliberately excluded -- pushing the player object down sinks them
+    // through the floor, and standing up would launch them; real height is already handled by the
+    // eye placement, which is where it belongs.
+    //
+    // Incremental, frame to frame, rather than absolute against an origin: an absolute mapping
+    // would fight every other thing that moves the player (walking, being pushed, scripted motion)
+    // by dragging them back to wherever the headset says.
+    void set_roomscale_body(bool on);
+    bool roomscale_body() const { return m_room_body.load(std::memory_order_acquire); }
+    uint64_t body_moves() const { return m_body_moves.load(std::memory_order_relaxed); }
     bool roomscale() const { return m_roomscale.load(std::memory_order_acquire); }
     void recenter();
 
@@ -274,6 +291,10 @@ private:
     std::atomic<bool> m_paced{false};
     std::atomic<bool> m_pin_eye{false};
     std::atomic<bool> m_roomscale{false};
+    std::atomic<bool> m_room_body{false};
+    std::atomic<uint64_t> m_body_moves{0};
+    float m_last_room_xz[2]{};
+    bool m_have_last_room{false};
     std::atomic<bool> m_recenter{true};
     float m_room_origin[3]{};
     std::array<float, 3> m_eye_ref_vec{};

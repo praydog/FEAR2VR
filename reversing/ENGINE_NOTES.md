@@ -1013,6 +1013,33 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Roomscale that moves the CHARACTER
+
+Camera-only roomscale walks the wearer's view out of their own body: the character stands still
+while the eye drifts across the room. `displace_player` moves the player object instead.
+
+**X and Z only.** Vertical is deliberately excluded -- pushing the player object down sinks them
+through the floor and standing up would launch them. Real height is already handled by the eye
+placement, which is where it belongs, so the camera keeps the vertical term and the body takes the
+horizontal one. Applying both would double every step.
+
+**Incremental, not absolute.** The delta is measured frame to frame rather than against a fixed
+origin. An absolute mapping would fight everything else that moves the player -- walking, being
+pushed, scripted motion -- by dragging them back to wherever the headset last said they were.
+
+**`external_delta` is set alongside the move**, and it is not optional. The engine subtracts that
+field from the frame's displacement before dividing to get velocity, so without it a metre of real
+walking reads as a metre per frame of running: footsteps fire, the run animation plays, and anything
+gated on speed believes the player is sprinting. It is accumulated rather than assigned, since the
+engine consumes and clears it each frame and two writers must not cancel each other.
+
+**A dead band of 0.1 units**, because a headset never reads exactly still and a stream of
+sub-millimetre writes would fight the engine's own movement code for nothing visible.
+
+**NO COLLISION, knowingly.** The position is written outright, so walking into a wall walks through
+it. The engine's move-with-collision path is a larger job and this is enough to find out whether
+roomscale is worth having at all -- which is the right order.
+
 ### THE WHOLE REFERENCE APPROACH WAS WRONG. Place the eye, do not measure it.
 
 Four versions of the eye pin, each fixing the last one's failure and each failing differently:

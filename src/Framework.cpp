@@ -10597,7 +10597,10 @@ bool Framework::initialize() {
             if (q.find("pin_eye") != q.end()) {
                 VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
             }
-            if (q.find("roomscale") != q.end()) {
+            if (q.find("roomscale_body") != q.end()) {
+                VR::get().set_roomscale_body(webapi_query_int(q, "roomscale_body", 0) != 0);
+            }
+            if (q.find("roomscale") != q.end() && q.find("roomscale_body") == q.end()) {
                 VR::get().set_roomscale(webapi_query_int(q, "roomscale", 0) != 0);
             }
             if (webapi_query_int(q, "recenter", 0) != 0) {
@@ -10825,6 +10828,8 @@ bool Framework::initialize() {
               .f("vr_cam_off_y", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[1], 3)
               .f("vr_cam_off_z", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[2], 3)
               .b("vr_roomscale", VR::get().roomscale())
+              .b("vr_room_body", VR::get().roomscale_body())
+              .u("vr_body_moves", static_cast<size_t>(VR::get().body_moves()))
               .f("vr_eye_height", sdk::PlayerMgr::eye_height(0).value_or(-1.0f), 3)
               .f("vr_body_y", sdk::PlayerMgr::body_origin_height(0).value_or(-1.0f), 3)
               .f("vr_pin_x", VR::get().pin_contribution()[0], 2)

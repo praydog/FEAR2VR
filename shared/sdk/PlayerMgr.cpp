@@ -510,6 +510,41 @@ std::optional<float> PlayerMgr::eye_height(unsigned index) {
     return (*off)[1];
 }
 
+bool PlayerMgr::displace_player(unsigned index, const std::array<float, 3>& delta) {
+    const auto p = player(index);
+
+    if (!p.has_value() || p->object == 0) {
+        return false;
+    }
+
+    std::array<float, 3> pos{};
+
+    if (!mem::copy(pos.data(), p->object + kObjectPosition, sizeof(pos))) {
+        return false;
+    }
+
+    const std::array<float, 3> moved{pos[0] + delta[0], pos[1] + delta[1], pos[2] + delta[2]};
+
+    if (!mem::store(p->object + kObjectPosition, moved.data(), sizeof(moved))) {
+        return false;
+    }
+
+    // Tell the velocity calculation this was not the player running. The field is consumed and
+    // cleared by the engine each frame, so it is accumulated rather than assigned -- two writers in
+    // one frame must not cancel each other.
+    if (p->holder != 0) {
+        std::array<float, 3> ext{};
+
+        if (mem::copy(ext.data(), p->holder + kExternalDeltaField, sizeof(ext))) {
+            const std::array<float, 3> summed{ext[0] + delta[0], ext[1] + delta[1],
+                                              ext[2] + delta[2]};
+            mem::store(p->holder + kExternalDeltaField, summed.data(), sizeof(summed));
+        }
+    }
+
+    return true;
+}
+
 std::optional<PlayerMgr::MovementState> PlayerMgr::movement_state(unsigned index) {
     const auto ctrl = movement_controller(index);
     if (!ctrl.has_value()) {

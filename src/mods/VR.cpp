@@ -281,6 +281,18 @@ void VR::recenter() {
     LOGX("[vr] roomscale origin will be recaptured");
 }
 
+void VR::set_roomscale_body(bool on) {
+    if (on) {
+        FramePublisher::get().open();
+    }
+
+    // Drop the baseline either way, so switching on does not deliver a lurch made of every
+    // millimetre the wearer moved while it was switched off.
+    m_have_last_room = false;
+    m_room_body.store(on, std::memory_order_release);
+    LOGX("[vr] roomscale BODY movement %s", on ? "ON" : "off");
+}
+
 void VR::set_roomscale(bool on) {
     if (on) {
         FramePublisher::get().open();
@@ -681,7 +693,37 @@ void VR::update_camera_offset() {
                 const float c = yaw.has_value() ? cosf(*yaw) : 1.0f;
                 const float s = yaw.has_value() ? sinf(*yaw) : 0.0f;
 
-                m_room_part = {rx * c + rz * s, ry, -rx * s + rz * c};
+                const float wx = rx * c + rz * s;
+                const float wz = -rx * s + rz * c;
+
+                if (m_room_body.load(std::memory_order_acquire)) {
+                    // THE CHARACTER MOVES, so the camera must not: applying both would double every
+                    // step. Vertical stays on the camera, where it cannot sink anyone through a
+                    // floor.
+                    m_room_part = {0.0f, ry, 0.0f};
+
+                    if (m_have_last_room) {
+                        const std::array<float, 3> step{wx - m_last_room_xz[0], 0.0f,
+                                                        wz - m_last_room_xz[1]};
+
+                        // A dead band, because the headset never reads exactly still and a stream
+                        // of sub-millimetre writes would fight the engine's own movement code for
+                        // no visible benefit.
+                        if (step[0] * step[0] + step[2] * step[2] > 0.01f) {
+                            if (sdk::PlayerMgr::displace_player(0, step)) {
+                                m_body_moves.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    }
+
+                    m_last_room_xz[0] = wx;
+                    m_last_room_xz[1] = wz;
+                    m_have_last_room = true;
+                } else {
+                    m_room_part = {wx, ry, wz};
+                    m_have_last_room = false;
+                }
+
                 dx += m_room_part[0];
                 dy += m_room_part[1];
                 dz += m_room_part[2];

@@ -1772,6 +1772,22 @@ public:
     // The controller's movement state. nullopt for an empty slot or a faulted read.
     static std::optional<MovementState> movement_state(unsigned index);
 
+    // ---- MOVING THE PLAYER SIDEWAYS, WITHOUT IT LOOKING LIKE RUNNING ---------------------------
+    //
+    // Displace the player object by a world-space delta. For roomscale: the wearer stepping about
+    // their room has to move the CHARACTER, not just the camera, or they walk their view out of
+    // their own body.
+    //
+    // `external_delta` is set to the same vector, because the engine subtracts it from the frame's
+    // displacement before dividing to get velocity. Without that, a metre of real walking reads as
+    // a metre per frame of running: footsteps fire, the movement animation plays, and anything
+    // gated on speed believes the player is sprinting.
+    //
+    // NO COLLISION. This writes the position outright, so a wearer who walks into a wall walks
+    // through it. That is a deliberate first step -- the engine's own move-with-collision path is a
+    // larger job, and this is enough to find out whether roomscale is worth having at all.
+    static bool displace_player(unsigned index, const std::array<float, 3>& delta);
+
     // ---- STANCE, AND THE NUMBER ROOM-SCALE VR ACTUALLY NEEDS -----------------------------------
     //
     // A RETRACTED CLAIM, kept because the mistake is the instructive part.
