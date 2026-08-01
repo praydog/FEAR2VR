@@ -1013,6 +1013,28 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### Re-arming from memory does not work; there is a script now
+
+The VR path is eight independent switches, and all of them are off after a fresh inject -- which is
+correct, because none of them should turn themselves on in a flatscreen game. It also means that
+re-injecting during development silently disarms the mod.
+
+The failure mode is worse than obvious. The HOST is a separate process and never stopped, so head
+tracking still works and the headset still moves the game's camera; only the pixels stop arriving.
+The wearer sees the host's colour test pattern with a correctly tracking head and reasonably
+concludes the pixel path has broken, when in fact two switches were never turned back on.
+
+That happened twice, both times because re-arming was done from memory -- and "everything I changed
+this turn" is not the same list as "everything that has to be on".
+
+    python tools/arm_vr.py             arm all eight, then verify
+    python tools/arm_vr.py --status    report without changing anything
+    python tools/arm_vr.py --off       back to flatscreen
+
+The verification is the point of it. It reports each switch AND whether frames are actually moving,
+because a switch that is on while the count stands still is a completely different fault from a
+switch that is off, and the two are indistinguishable from inside a headset.
+
 ### The camera orbits a NECK, and the pin has to cover all three axes
 
 Pinning the height alone left the wearer feeling the camera slide backwards when looking up and
