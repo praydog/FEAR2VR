@@ -51,6 +51,7 @@ ARM = [
     ("trigger fires the weapon", "/xr/trigger?on=1"),
     ("shots leave the muzzle", "/xr/fire-muzzle?on=1"),
     ("weapon spread tightened", "/xr/accuracy?scale=0.25"),
+    ("HUD on its own quad", "/render/ui?on=1"),
     ("player body hidden", "/xr/capture?hide_body=1"),
     ("head tracking applied", "/xr/enable?on=1"),
     ("recenter", "/xr/capture?recenter=1"),
@@ -59,6 +60,7 @@ ARM = [
 DISARM = [
     ("head tracking applied", "/xr/enable?on=0"),
     ("player body hidden", "/xr/capture?hide_body=0"),
+    ("HUD on its own quad", "/render/ui?on=0"),
     ("weapon spread tightened", "/xr/accuracy?on=0"),
     ("shots leave the muzzle", "/xr/fire-muzzle?on=0"),
     ("trigger fires the weapon", "/xr/trigger?on=0"),
@@ -126,6 +128,19 @@ def status():
     # ARMED AND RESOLVED, because they fail separately: the hook can be enabled while it never
     # finds the object it is meant to correct, which is the "every switch green, nothing moves"
     # state this whole checklist exists to catch.
+    # THE HUD LAYER, CHECKED FOR LIVENESS. A flag says the mod is armed; a climbing publish count
+    # says the layer is actually reaching the shared mapping, which is the half that can fail on its
+    # own (a lost device drops the surface and the flag stays green).
+    ui_a = get("/render/ui")
+    time.sleep(0.4)
+    ui_b = get("/render/ui")
+    ui_moved = (ui_b.get("publishes") or 0) - (ui_a.get("publishes") or 0)
+    ui_ok = bool(ui_b.get("enabled")) and ui_moved > 0 and (ui_b.get("failures") or 0) == 0
+    ok = ok and ui_ok
+    print("  [%s] HUD on its own quad (%sx%s, +%d published, %s failures)"
+          % ("x" if ui_ok else " ", ui_b.get("layer_width"), ui_b.get("layer_height"),
+             ui_moved, ui_b.get("failures")))
+
     vm = get("/vr/viewmodel")
     vm_ok = bool(vm.get("enabled")) and bool(vm.get("object_resolved"))
     ok = ok and vm_ok

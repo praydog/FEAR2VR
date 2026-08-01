@@ -4107,6 +4107,35 @@ How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRender
 `CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
 whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
 
+### The UI is on its own quad now, and it works
+
+End to end, confirmed in the headset by the wearer: "it works well and I can actually play the game
+now." The whole path:
+
+```
+HUD drawn (2D passes 2-3)  ->  UICapture's A8R8G8B8 surface   (game, render thread)
+  -> GPU downscale to 1280x720 -> readback -> xr::UiFrameHeader + its own slots
+  -> xr64 derives A = max(R,G,B) on upload -> XrCompositionLayerQuad, VIEW space
+```
+
+Four things had to be right at once, and each was wrong at some point:
+
+1. **Swap from PASS 2, not at the bracket.** The bracket's first passes composite the scene; taking
+   the whole bracket steals them and the frame goes black.
+2. **Alpha is derived, not read.** The engine's UI shaders emit none. Deriving it on the HOST keeps
+   a megapixel pass off the game's render thread.
+3. **Premultiplied.** `XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT` and NOT the
+   unpremultiplied bit, or every edge double-darkens.
+4. **VIEW space, not LOCAL.** A quad in LOCAL space looks perfectly stable facing forward and leaves
+   the health bar behind you the moment you turn.
+
+`derive_alpha` shipped as 0 on the first attempt -- an entirely invisible quad with every counter
+reading healthy. It was caught by reading the shared mapping back from an INDEPENDENT reader rather
+than trusting the writer's own counters, which is the only reason it did not reach the headset.
+
+Costs, measured: 81 publishes/s against 81 fps with no frame-rate change, and the desktop mirror
+stays intact (100% non-black) because the composite passes are left alone.
+
 ### The published VR frame contains no UI at all -- measured
 
 Capturing what actually reaches the headset (`/xr/capture?path=...`, 2560x1440) gives a clean
