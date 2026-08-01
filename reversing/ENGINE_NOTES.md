@@ -1069,25 +1069,29 @@ the headset off, from a bound profile whose blocks are not arriving, which is th
 
 A switch being ON, a counter climbing, and a path being LIVE are three different facts.
 
-### The weapon model's forward is NOT its bore -- there is a yaw trim, and it is a dial
+### The bore is the flash SOCKET's orientation, not the weapon object's
 
-Shots leave the barrel visibly to the RIGHT of where the gun points, by roughly 30 degrees, purely
-in yaw. Two candidate sources disagree and neither is obviously the bore:
+The art places the flash socket on the barrel and orients it down the bore. That is precisely the
+question "where does the shot go", and it was available exactly the whole time while the mod was
+using the object's rotation and correcting the difference with a hand-dialled trim.
+
+Measured on one weapon, one instant:
 
 ```
-object rotation forward   bearing +160.87
-flash socket's forward    bearing +145.83     difference -15.04 deg
+object rotation forward   [-0.8576, -0.2210, -0.4644]   bearing -118.4   pitch -12.8
+flash socket's forward    [-0.7652, -0.0028, -0.6438]   bearing -130.0   pitch  -0.2
 ```
 
-So the socket is closer but does not close the gap, and picking between them by argument would be
-guessing with extra steps. `/xr/fire-muzzle?yaw=` is a trim in degrees, POSITIVE IS RIGHT, applied
-about **world Y** after the direction is taken so it cannot disturb pitch -- rotating in the
-weapon's own frame would tilt the shot as the wrist rolls. It defaults to -30, the reported error.
+The two differ by ~12 degrees of YAW and ~13 of PITCH, which matches both reported symptoms exactly:
+shots landing to the right, and then -- once yaw was trimmed -- landing low.
 
-**This is a measured-by-eye constant and is labelled as one.** The only instrument that can settle
-it is a person watching where the rounds land, exactly as the eye-height and sprint-key values were
-settled. If a socket is ever found that points down the bore exactly, the trim should go to zero and
-the source should change -- a dial that has to be non-zero is a placeholder for a fact not yet found.
+**The trim survives at 0.** It is still reachable as `/xr/fire-muzzle?yaw=`, because a per-weapon
+bore offset would show up as a residual, but a non-zero default would mean the source is wrong
+again.
+
+**The lesson is the one this project keeps paying for.** A dial was added to correct a source that
+was already available exactly. The right response to "it is off by about 30 degrees" was to ask what
+the model knows, not to ask the wearer for a number -- and the wearer said so.
 
 ### Firing FROM the muzzle, ALONG the muzzle
 

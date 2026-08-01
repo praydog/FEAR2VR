@@ -462,9 +462,17 @@ void FireRedirect::on_frame() {
         bool ok = false;
 
         if (const auto m = sdk::WeaponMgr::muzzle(0); m.has_value() && !m->stale) {
-            const float len = std::sqrt(m->forward[0] * m->forward[0] +
-                                        m->forward[1] * m->forward[1] +
-                                        m->forward[2] * m->forward[2]);
+            // THE SOCKET'S OWN ORIENTATION, not the object's. The art places the flash socket on
+            // the barrel and orients it down the bore, which is precisely the question being asked;
+            // the object's rotation is the model's local forward and is measurably not the same
+            // thing -- the two differed by 15 degrees of yaw and 11 of pitch on the first weapon
+            // checked. Using the object's and correcting it with a trim was approximating a value
+            // that was already available exactly.
+            //
+            // Falls back to the object's forward when the socket transform is not a rotation, since
+            // a non-unit quaternion there means the transform is half-written or reclaimed.
+            const auto& src = m->socket_rotation_unit ? m->socket_forward : m->forward;
+            const float len = std::sqrt(src[0] * src[0] + src[1] * src[1] + src[2] * src[2]);
 
             // A direction that is not unit-length means the rotation it came from was not a
             // rotation, which is what a half-written or reclaimed transform looks like.
@@ -476,10 +484,10 @@ void FireRedirect::on_frame() {
                 const float t = m_muzzle_yaw.load(std::memory_order_relaxed) * 3.14159265f / 180.0f;
                 const float ct = std::cos(t);
                 const float st = std::sin(t);
-                const float tx = m->forward[0] * ct + m->forward[2] * st;
-                const float tz = -m->forward[0] * st + m->forward[2] * ct;
+                const float tx = src[0] * ct + src[2] * st;
+                const float tz = -src[0] * st + src[2] * ct;
 
-                store3(m_weapon_fwd, tx, m->forward[1], tz);
+                store3(m_weapon_fwd, tx, src[1], tz);
                 store3(m_weapon_origin, m->position[0], m->position[1], m->position[2]);
                 m_origin_ok.store(true, std::memory_order_relaxed);
                 ok = true;

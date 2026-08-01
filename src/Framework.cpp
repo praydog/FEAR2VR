@@ -10841,7 +10841,7 @@ bool Framework::initialize() {
             auto& fr = FireRedirect::get();
             const bool on = webapi_query_int(q, "on", 1) != 0;
             if (q.find("yaw") != q.end()) {
-                fr.set_muzzle_yaw(static_cast<float>(webapi_query_double(q, "yaw", -30.0)));
+                fr.set_muzzle_yaw(static_cast<float>(webapi_query_double(q, "yaw", 0.0)));
             }
             fr.set_mode(on ? FireRedirect::Mode::Muzzle : FireRedirect::Mode::Off);
             fr.set_origin_from_weapon(on);

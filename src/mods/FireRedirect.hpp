@@ -266,7 +266,9 @@ private:
     std::atomic<uint64_t> m_origin_writes{0};
     std::atomic<float> m_weapon_origin[3]{};
     std::atomic<float> m_weapon_fwd[3]{};
-    std::atomic<float> m_muzzle_yaw{-30.0f};
+    // ZERO by default: the direction now comes from the socket the art oriented down the
+    // bore, so a non-zero trim would be correcting a source that is already correct.
+    std::atomic<float> m_muzzle_yaw{0.0f};
     std::atomic<float> m_weapon_quat[4]{};
     std::atomic<float> m_weapon_obj_quat[4]{};
     std::atomic<bool> m_hooked{false};
