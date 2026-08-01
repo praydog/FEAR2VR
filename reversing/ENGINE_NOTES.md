@@ -4032,6 +4032,35 @@ per frame, which is where its per-frame state resets.
 Only GFx KERNEL symbols survived the build (`GMatrix2D`, `GThread`, `GMutex`, `GColor` are all
 mangled-name exports); the renderer itself is unnamed, so the vtables above are the map.
 
+### Isolating the UI: it works, and it costs the desktop mirror
+
+`UICapture` binds its own A8R8G8B8 surface for the HUD bracket, so the UI lands on a transparent
+target of its own instead of across both eyes of the world image. Verified by looking at it: the
+captured layer holds the visor frame, health bar, armour, crosshair, `8/21` ammo and grenade count,
+drawn ONCE at full frame, with nothing of the world in it.
+
+**Alpha is reconstructed, not read.** The engine's UI shaders emit zero alpha, and that is not the
+write mask: the mask was forced to RGBA for the whole bracket and read back as 0xF at the end, so
+nothing reset it -- the Scaleform pixel shaders simply do not write the channel (the shader set has
+explicit `NoAddAlpha` variants). It does not matter. The surface is cleared to TRANSPARENT BLACK and
+only the UI draws into it, so RGB is already the premultiplied contribution and `max(r,g,b)` is the
+coverage. Measured: 3.90% of pixels non-zero, matching the 3.88% of non-black RGB exactly.
+
+**THE BACK BUFFER IS THE BRACKET'S TARGET, AND UNBINDING IT DISCARDS THE FRAME.** `GetBackBuffer`
+returns the same pointer the bracket binds (0x15FFC160 on this run). Binding anything else in its
+place leaves the presented frame ENTIRELY BLACK. This is not our draws going astray -- our surface
+receives only the HUD either way -- the contents are simply gone, which a swap chain created
+`D3DSWAPEFFECT_DISCARD` is entitled to do.
+
+The control that establishes it: rebinding the SAME surface (a no-op the runtime elides) leaves the
+frame at 100% non-black, while binding ours gives 0%. Copying the contents out with `StretchRect`
+before the swap and back afterwards does NOT restore them -- both blits report success and the frame
+is still black, so the discard is not a simple content loss that a copy can undo.
+
+**The headset is unaffected**, because its frame is captured at the second eye, before this bracket
+-- which is also why the published frame never had a HUD in the first place. Only the desktop window
+and present-stage diagnostics see the black. `UICapture` is therefore OFF by default.
+
 ### The HUD has its own render-target bracket, and nothing else is in it
 
 Measured with `RenderTimeline` (`/render/timeline?arm=1`), which hooks CLTRenderer slots 11/12 and

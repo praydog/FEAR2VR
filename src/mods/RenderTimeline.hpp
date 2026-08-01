@@ -76,6 +76,31 @@ public:
     uint64_t ends() const { return m_ends.load(std::memory_order_relaxed); }
     bool hooked() const { return m_hooked.load(std::memory_order_relaxed); }
 
+
+    // ---- THE EXTENSION POINT, which is what a UI-isolation path attaches to -------------------
+    //
+    // Same shape and same reasoning as RenderHook's present callbacks: this mod owns the only
+    // inline hook that may exist on slots 11/12 -- safetyhook cannot place two on one address --
+    // so anything else needing the bracket registers here rather than hooking it again.
+    //
+    // Runs on the RENDER THREAD inside the detour. Begin fires AFTER the engine's own call (the
+    // target is bound and its size derived by then); end fires BEFORE it (the target is still
+    // current). Callbacks must not block or allocate.
+    using BracketCallback = void (*)(bool begin, int32_t width, int32_t height, uint32_t index);
+    static constexpr size_t kMaxBracketCallbacks = 4;
+    bool add_bracket_callback(BracketCallback cb);
+
+    // WHICH BRACKET DREW THE HUD, learned from the previous frame rather than assumed.
+    //
+    // The ordinal is not a constant worth hardcoding: it is 2 in normal play but the frame's
+    // shape changes at a menu, during a load, and whenever an auxiliary view is skipped. Since
+    // the mod is already counting 2D passes per bracket, the index falls out of the measurement
+    // for free and re-derives itself every frame.
+    //
+    // kNoBracket when the last frame drew no 2D passes at all.
+    static constexpr uint32_t kNoBracket = 0xFFFFFFFFu;
+    uint32_t hud_bracket() const { return m_hud_bracket.load(std::memory_order_relaxed); }
+
     // Called from the detours and the frame boundary. Public because the detours are
     // free functions in the .cpp's anonymous namespace.
     void record(Kind kind, uintptr_t target);
@@ -104,6 +129,18 @@ private:
     // detours that run on the same thread.
     uint64_t m_base_cam{0};
     uint64_t m_base_hud{0};
+
+    // Bracket bookkeeping, also game-thread only. `m_frame_bracket` is the ordinal within the
+    // frame in flight; `m_bracket_hud_base` is the 2D pass total when the current bracket opened,
+    // which is how a bracket learns whether it drew the HUD; `m_hud_bracket_next` accumulates the
+    // answer for the frame in flight and is published to `m_hud_bracket` at the boundary.
+    uint32_t m_frame_bracket{0};
+    uint64_t m_bracket_hud_base{0};
+    uint32_t m_hud_bracket_next{kNoBracket};
+    std::atomic<uint32_t> m_hud_bracket{kNoBracket};
+
+    std::array<BracketCallback, kMaxBracketCallbacks> m_bracket_cbs{};
+    std::atomic<size_t> m_bracket_cb_count{0};
 
 public:
     uint32_t overflow() const { return m_overflow.load(std::memory_order_relaxed); }

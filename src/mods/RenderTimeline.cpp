@@ -88,10 +88,36 @@ void RenderTimeline::arm() {
 }
 
 void RenderTimeline::record(Kind kind, uintptr_t target) {
+    const uint64_t hud_now = HudPassHook::get().observed().stored_passes;
+    int32_t w = 0, h = 0;
+    if (const auto sz = sdk::SceneCamera::current_target_size()) {
+        w = (*sz)[0];
+        h = (*sz)[1];
+    }
+
+    uint32_t index = 0;
     if (kind == Kind::BeginTarget) {
         m_begins.fetch_add(1, std::memory_order_relaxed);
+        index = m_frame_bracket;
+        m_bracket_hud_base = hud_now;
     } else if (kind == Kind::EndTarget) {
         m_ends.fetch_add(1, std::memory_order_relaxed);
+        index = m_frame_bracket;
+        // THE DISCRIMINATOR. A bracket that took 2D passes is the HUD's, and it is the LAST such
+        // bracket that wins -- the frame's final screen pass group is the one drawn over the world.
+        if (hud_now > m_bracket_hud_base) {
+            m_hud_bracket_next = index;
+        }
+        ++m_frame_bracket;
+    }
+
+    // Consumers run before the recording gate, because they must fire whether or not anybody is
+    // recording -- the recording is a diagnostic, the callbacks are the feature.
+    const size_t n = m_bracket_cb_count.load(std::memory_order_acquire);
+    for (size_t k = 0; k < n; ++k) {
+        if (auto cb = m_bracket_cbs[k]; cb != nullptr) {
+            cb(kind == Kind::BeginTarget, w, h, index);
+        }
     }
 
     // Arming takes effect at the NEXT frame boundary, so a recording always starts at
@@ -140,6 +166,12 @@ void RenderTimeline::close_frame() {
         return;
     }
 
+    // Publish what this frame learned and start the next one at bracket 0. Done for EVERY frame,
+    // not only while recording: the callbacks depend on it.
+    m_hud_bracket.store(m_hud_bracket_next, std::memory_order_relaxed);
+    m_hud_bracket_next = kNoBracket;
+    m_frame_bracket = 0;
+
     if (m_armed.exchange(false, std::memory_order_acq_rel)) {
         m_write.store(0, std::memory_order_relaxed);
         m_base_cam = CameraPassHook::get().observed().passes;
@@ -153,4 +185,17 @@ RenderTimeline::Event RenderTimeline::event(size_t i) const {
         return Event{};
     }
     return m_events[i];
+}
+
+bool RenderTimeline::add_bracket_callback(BracketCallback cb) {
+    if (cb == nullptr) {
+        return false;
+    }
+    const size_t n = m_bracket_cb_count.load(std::memory_order_relaxed);
+    if (n >= kMaxBracketCallbacks) {
+        return false;
+    }
+    m_bracket_cbs[n] = cb;
+    m_bracket_cb_count.store(n + 1, std::memory_order_release);
+    return true;
 }

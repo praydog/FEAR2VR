@@ -49,6 +49,7 @@
 #include "mods/Comfort.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/RenderTimeline.hpp"
+#include "mods/UICapture.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
 #include "mods/ViewHook.hpp"
@@ -9854,6 +9855,47 @@ std::string build_render_json(const std::string& request_target) {
     const size_t qpos = request_target.find('?');
     const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
 
+    if (route == "/render/ui") {
+        auto& ui = UICapture::get();
+        if (q.find("on") != q.end()) {
+            ui.set_enabled(webapi_query_int(q, "on", 1) != 0);
+        }
+        if (q.find("mode") != q.end()) {
+            ui.set_mode(webapi_query_int(q, "mode", 3));
+        }
+        if (q.find("preserve") != q.end()) {
+            ui.set_preserve(webapi_query_int(q, "preserve", 1) != 0);
+        }
+        bool shot_accepted = false;
+        if (const std::string path = webapi_query_string(q, "path"); !path.empty()) {
+            shot_accepted = ui.request_shot(path);
+        }
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true)
+              .b("enabled", ui.enabled())
+              .i("mode", ui.mode())
+              .b("preserve", ui.preserve())
+              .b("have_surface", ui.have_surface())
+              .b("shot_accepted", shot_accepted)
+              .i("width", ui.width())
+              .i("height", ui.height())
+              .i("alpha_coverage_per_mille", ui.alpha_coverage())
+              .u("hud_bracket", RenderTimeline::get().hud_bracket())
+              .u("swaps", static_cast<size_t>(ui.swaps()))
+              .u("restores", static_cast<size_t>(ui.restores()))
+              .u("failures", static_cast<size_t>(ui.failures()))
+              .u("device_lost", ui.device_lost_events())
+              .u("colorwrite_at_end", ui.colorwrite_at_end())
+              .hex("last_test_cooperative_level", ui.last_tcl())
+              .b("target_is_backbuffer", ui.target_is_backbuffer())
+              .hex("backbuffer", ui.backbuffer_ptr())
+              .hex("displaced", ui.displaced_ptr());
+        }
+        return out;
+    }
+
     if (route != "/render/timeline") {
         return "{\"ok\":false,\"error\":\"unknown /render route\"}";
     }
@@ -10476,6 +10518,7 @@ bool Framework::initialize() {
     Mods::get().add(&AmmoKeeper::get());
     Mods::get().add(&Accuracy::get());
     Mods::get().add(&RenderTimeline::get());
+    Mods::get().add(&UICapture::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
