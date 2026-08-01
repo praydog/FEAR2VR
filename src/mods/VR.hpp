@@ -65,6 +65,21 @@ public:
     // ROOMSCALE: add the wearer's movement within their play space. Captured relative to wherever
     // they were when it was switched on, so enabling it never teleports anyone.
     void update_camera_offset();
+    // ---- THE ENGINE'S OWN CAMERA OFFSET, NEUTRALISED -------------------------------------------
+    //
+    // The engine builds the camera as `socket_pose.position + rotate(CameraAttachedOffset, camera
+    // rotation)`. That offset is a fixed vector in the CAMERA's frame, so once a headset is driving
+    // the rotation, every head movement swings the eye around a pivot: measured at 11.8 units of
+    // travel for a 90 degree yaw and 29 units for an 80 degree pitch, felt in the headset as the
+    // camera sliding backwards when looking up.
+    //
+    // For a flatscreen FPS that offset is a deliberate framing choice. In VR it is a lever arm on
+    // the wearer's neck, and the honest value is zero -- the headset already reports where the head
+    // actually is. Three float stores through the cached console variables; the originals are kept
+    // so switching this off restores the game exactly.
+    void set_neutral_camera_offset(bool on);
+    bool neutral_camera_offset() const { return m_neutral_cam_off.load(std::memory_order_acquire); }
+
     void set_pin_eye_height(bool on);
     bool pin_eye_height() const { return m_pin_eye.load(std::memory_order_acquire); }
     void set_roomscale(bool on);
@@ -183,7 +198,11 @@ private:
     std::atomic<bool> m_roomscale{false};
     std::atomic<bool> m_recenter{true};
     float m_room_origin[3]{};
-    float m_eye_ref{-1.0f};
+    std::array<float, 3> m_eye_ref_vec{};
+    bool m_have_eye_ref{false};
+    std::atomic<bool> m_neutral_cam_off{false};
+    std::array<float, 3> m_saved_cam_off{};
+    bool m_have_saved_cam_off{false};
     std::atomic<uint64_t> m_host_pose_updates{0};
     std::atomic<uint64_t> m_host_pose_stale{0};
     uint32_t m_last_host_sequence{0};

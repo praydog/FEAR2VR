@@ -156,12 +156,34 @@ void VR::set_use_host_pose(bool on) {
     }
 }
 
+void VR::set_neutral_camera_offset(bool on) {
+    if (on) {
+        if (!m_have_saved_cam_off) {
+            if (const auto cur = sdk::PlayerMgr::camera_attached_offset(); cur.has_value()) {
+                m_saved_cam_off = *cur;
+                m_have_saved_cam_off = true;
+                LOGX("[vr] camera attached offset saved: %.3f %.3f %.3f", (*cur)[0], (*cur)[1],
+                     (*cur)[2]);
+            }
+        }
+
+        sdk::PlayerMgr::set_camera_attached_offset({0.0f, 0.0f, 0.0f});
+    } else if (m_have_saved_cam_off) {
+        // Restore EXACTLY what was there. These are the game's own console variables, not ours, and
+        // leaving them zeroed would change the flatscreen game for the rest of the session.
+        sdk::PlayerMgr::set_camera_attached_offset(m_saved_cam_off);
+    }
+
+    m_neutral_cam_off.store(on, std::memory_order_release);
+    LOGX("[vr] camera attached offset %s", on ? "NEUTRALISED" : "restored");
+}
+
 void VR::set_pin_eye_height(bool on) {
     if (on) {
-        // Recaptured on every enable: the reference has to be the height while looking LEVEL, and
-        // the only moment we can be reasonably sure of that is when the feature is switched on.
-        // `recenter` recaptures it too, for when it was switched on at a bad moment.
-        m_eye_ref = -1.0f;
+        // Recaptured on every enable: the reference must be the offset while looking LEVEL and
+        // FORWARD, and switching the feature on is the only moment we can reasonably assume that.
+        // `recenter` recaptures it, for when it was enabled at a bad moment.
+        m_have_eye_ref = false;
     }
 
     m_pin_eye.store(on, std::memory_order_release);
@@ -176,7 +198,7 @@ void VR::set_pin_eye_height(bool on) {
 }
 
 void VR::recenter() {
-    m_eye_ref = -1.0f;
+    m_have_eye_ref = false;
     m_recenter.store(true, std::memory_order_release);
     LOGX("[vr] roomscale origin will be recaptured");
 }
@@ -490,27 +512,34 @@ void VR::update_camera_offset() {
         // PlayerMgr and were cross-checked against the live camera earlier -- eye_height + body_y
         // equals cam_y to within 0.003 units when the view is level, which is what makes the
         // difference below a measurement of the pitch artefact rather than a guess at it.
-        // THE ARTEFACT IS ENTIRELY INSIDE eye_height, which took two wrong references to find.
-        // Measured against pitch, with the body origin rock constant at 2302.100:
+        // PIN THE WHOLE EYE OFFSET, not just its height.
         //
-        //     pitch   0 deg    eye 74.778        pitch +60    eye 81.823
-        //     pitch -40 deg    eye 49.914        pitch -80    eye 20.885
+        // `eye_offset` is the camera object's position MINUS the body model's -- the eye's position
+        // relative to the body, which is exactly the quantity that should not change when only the
+        // head turns. Measured with the body stationary and the head rotated:
         //
-        // The engine drops the eye more than half a metre to look at the floor. Both earlier
-        // references failed for the same reason: `applied_pose.y` and `body + eye_height` BOTH
-        // equal the camera height by construction, so the difference was always zero and the
-        // correction never fired. There was no error to see, because every candidate reference was
-        // moving with the thing being corrected.
+        //     yaw  +90 deg   dx  +0.10  dy   0.00  dz -11.82
+        //     pitch +80 deg  dx +25.41  dy  -0.32  dz -14.76
+        //     pitch -80 deg  dx +11.47  dy -53.88  dz  -6.66
         //
-        // Holding eye_height at its level value is therefore the whole fix, and needs no camera
-        // read at all.
-        if (const auto eye = sdk::PlayerMgr::eye_height(0); eye.has_value()) {
-            if (m_eye_ref <= 0.0f) {
-                m_eye_ref = *eye;
-                LOGX("[vr] eye height reference captured at %.3f units", m_eye_ref);
+        // The yaw figures trace a chord of 2r*sin(theta/2) with r about 8.4 units -- a NECK. FEAR
+        // carries a full body model, the "Camera" socket sits on its head bone, and the injected
+        // head rotation swings that bone. For a flatscreen shooter that lever arm is free realism;
+        // in a headset it is a second neck fighting the wearer's real one.
+        //
+        // Not CameraAttachedOffset, which was the obvious suspect and is already 0,0,0 here --
+        // zeroing it changed nothing, measured. The motion is in the socket itself.
+        if (const auto off = sdk::PlayerMgr::eye_offset(0); off.has_value()) {
+            if (!m_have_eye_ref) {
+                m_eye_ref_vec = *off;
+                m_have_eye_ref = true;
+                LOGX("[vr] eye offset reference captured: %.2f %.2f %.2f", m_eye_ref_vec[0],
+                     m_eye_ref_vec[1], m_eye_ref_vec[2]);
             }
 
-            dy += m_eye_ref - *eye;
+            dx += m_eye_ref_vec[0] - (*off)[0];
+            dy += m_eye_ref_vec[1] - (*off)[1];
+            dz += m_eye_ref_vec[2] - (*off)[2];
         }
     }
 

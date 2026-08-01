@@ -1013,6 +1013,36 @@ but the REBUILD can -- so the rebuild is what the suite exercises.
 not ask for: touch it only from the thread that created it, and never hold a default-pool resource
 across a loss. Both are invisible until they are catastrophic, and both are now asserted.
 
+### The camera orbits a NECK, and the pin has to cover all three axes
+
+Pinning the height alone left the wearer feeling the camera slide backwards when looking up and
+drift when turning. Measured with the body stationary and only the head rotated:
+
+    yaw   +90 deg   dx  +0.10   dy   0.00   dz -11.82
+    yaw   +45 deg   dx  -2.40   dy   0.00   dz  -5.93
+    pitch +80 deg   dx +25.41   dy  -0.32   dz -14.76
+    pitch -80 deg   dx +11.47   dy -53.88   dz  -6.66
+
+**The yaw figures trace a chord**, 2r*sin(theta/2) with r about 8.4 units. That is a NECK: FEAR
+carries a full body model, the "Camera" socket sits on its head bone, and the head rotation we inject
+swings that bone through an arc. For a flatscreen shooter that lever arm is free realism. In a
+headset it is a second neck fighting the wearer's real one, and it has to go.
+
+**CameraAttachedOffset was the obvious suspect and is innocent.** The engine documents the camera as
+`socket_pose.position + rotate(CameraAttachedOffset, rotation)`, which is exactly the shape of the
+artefact -- but the offset reads 0,0,0 here, and zeroing it changed the sweep by nothing at all
+(measured before and after, identical to the hundredth). The motion is in the SOCKET.
+
+`PlayerMgr::eye_offset` already computed the right quantity: the camera object's position minus the
+body model's, i.e. the eye relative to the body -- precisely what must not change when only the head
+turns. Pinning that vector to its value at recenter cancels the orbit on all three axes, verified as
+an exact negation of every figure above.
+
+**Three references were tried before this one worked**, and the first two failed identically by
+being derived from the camera they were meant to correct. The rule earned here: *a correction needs
+a reference that is independent of the thing being corrected -- if it reads zero at every input, the
+reference is the suspect, not the mechanism.*
+
 ### The eye swings when you look down, and the artefact is inside eye_height
 
 Reported from the headset: looking up and down moves the camera vertically, worse the closer to

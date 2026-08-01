@@ -10575,6 +10575,9 @@ bool Framework::initialize() {
             if (q.find("mirror") != q.end()) {
                 FrameCapture::get().set_gpu_mirror(webapi_query_int(q, "mirror", 0) != 0);
             }
+            if (q.find("neutral_cam") != q.end()) {
+                VR::get().set_neutral_camera_offset(webapi_query_int(q, "neutral_cam", 0) != 0);
+            }
             if (q.find("pin_eye") != q.end()) {
                 VR::get().set_pin_eye_height(webapi_query_int(q, "pin_eye", 0) != 0);
             }
@@ -10794,6 +10797,10 @@ bool Framework::initialize() {
               .b("vr_paced", VR::get().paced())
               .b("vr_level_aim", ViewHook::get().level_aim())
               .b("vr_pin_eye", VR::get().pin_eye_height())
+              .b("vr_neutral_cam", VR::get().neutral_camera_offset())
+              .f("vr_cam_off_x", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[0], 3)
+              .f("vr_cam_off_y", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[1], 3)
+              .f("vr_cam_off_z", sdk::PlayerMgr::camera_attached_offset().value_or(std::array<float, 3>{})[2], 3)
               .b("vr_roomscale", VR::get().roomscale())
               .f("vr_eye_height", sdk::PlayerMgr::eye_height(0).value_or(-1.0f), 3)
               .f("vr_body_y", sdk::PlayerMgr::body_origin_height(0).value_or(-1.0f), 3)
