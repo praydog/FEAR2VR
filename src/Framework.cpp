@@ -9901,6 +9901,7 @@ std::string build_render_json(const std::string& request_target) {
               .u("refused", static_cast<size_t>(mi.refused()))
               .b("controller", mi.controller_enabled())
               .u("controller_keys", static_cast<size_t>(mi.controller_keys()))
+              .u("pause_presses", static_cast<size_t>(mi.pause_presses()))
               .b("menu_up", mi.menu_up())
               .b("flat", FramePublisher::get().flat())
               .i("flat_override", mi.flat_override())

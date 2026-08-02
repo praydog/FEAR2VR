@@ -203,6 +203,13 @@ bool UICapture::request_shot(const std::string& path) {
 }
 
 void UICapture::on_present() {
+    // Teardown runs HERE, on the thread that owns the device. See on_shutdown().
+    if (m_release_requested.load(std::memory_order_acquire)) {
+        free_device_resources();
+        m_released.store(true, std::memory_order_release);
+        return;
+    }
+
     auto* dev = sdk::Render::device();
     if (dev == nullptr) {
         return;
@@ -297,7 +304,26 @@ void UICapture::on_shutdown() {
         FramePublisher::get().publish_ui(nullptr, 0, 0, 0, true, true, true);
     }
 
-    free_device_resources();
+    // ---- THE DEVICE IS SINGLE-THREADED, AND THIS RUNS ON THE UNLOAD THREAD -------------------
+    //
+    // Releasing D3D surfaces from here HUNG THE GAME. The device is created with BehaviorFlags
+    // 0x42 -- no D3DCREATE_MULTITHREADED -- so a Release from a thread that does not own it is
+    // undefined, and what it did in practice was wedge the renderer mid-unload: the log stopped
+    // after the previous mod's shutdown line and the process never came back.
+    //
+    // FrameCapture already had this exactly right and I did not copy it. Ask the render thread to
+    // do it, wait a bounded time, and LEAK rather than hang if the game is not presenting -- a
+    // stuck unload is worse than a leaked surface, and an unload happens when the payload is going
+    // away anyway.
+    m_released.store(false, std::memory_order_relaxed);
+    m_release_requested.store(true, std::memory_order_release);
+    for (int i = 0; i < 200 && !m_released.load(std::memory_order_acquire); ++i) {
+        ::Sleep(5);
+    }
+    m_release_requested.store(false, std::memory_order_release);
+    if (!m_released.load(std::memory_order_acquire)) {
+        LOGX("[uicap] surfaces NOT released -- the game was not presenting; leaking rather than hanging");
+    }
 }
 
 void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {

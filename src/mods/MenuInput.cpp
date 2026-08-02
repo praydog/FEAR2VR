@@ -4,6 +4,7 @@
 
 #include "Log.hpp"
 #include "RenderHook.hpp"
+#include "SyntheticInput.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/Events.hpp"
 #include "FramePublisher.hpp"
@@ -123,13 +124,6 @@ void MenuInput::poll_controller() {
         }
     }
     FramePublisher::get().set_flat(forced < 0 ? menu_up : forced != 0);
-    if (!menu_up) {
-        m_stick_dir = 0;
-        m_stick_dir_x = 0;
-        m_repeat_countdown = 0;
-        return;
-    }
-
     // ---- STRAIGHT FROM THE HOST, NOT FROM THE SIMULATED RUNTIME -----------------------------
     //
     // VR ingests the controller block in its per-frame update, and that update is fanned out from
@@ -157,6 +151,39 @@ void MenuInput::poll_controller() {
     m_left_active.store(left.active != 0u, std::memory_order_relaxed);
     m_stick_x.store(left.stick[0], std::memory_order_relaxed);
     m_stick_y.store(left.stick[1], std::memory_order_relaxed);
+
+    // ---- PAUSE, WHICH MUST WORK WHEN NO MENU IS UP -------------------------------------------
+    //
+    // The left controller's MENU button, above the gate on purpose: its whole job is to open the
+    // pause menu from gameplay, so gating it on a menu already being up would make it work only
+    // where it is not needed.
+    //
+    // TWO DIFFERENT DOORS, because the pause menu is opened by the GAME and navigated in FLASH.
+    // Sending Escape through Scaleform while playing does nothing -- measured, it did not pause --
+    // because the movie is not what listens for it; the engine's input is. Once a menu IS up, the
+    // reverse holds and Escape belongs to the movie, which is already how right-B backs out.
+    if (left.active != 0u) {
+        const uint32_t now_l = left.buttons;
+        const uint32_t pressed_l = now_l & ~m_last_left_buttons;
+        m_last_left_buttons = now_l;
+        if ((pressed_l & xr::kHandButtonMenu) != 0u) {
+            if (menu_up) {
+                tap(kEscape);
+            } else {
+                SyntheticInput::get().tap(kVkEscape);
+            }
+            m_pause_presses.fetch_add(1, std::memory_order_relaxed);
+        }
+    } else {
+        m_last_left_buttons = 0;
+    }
+
+    if (!menu_up) {
+        m_stick_dir = 0;
+        m_stick_dir_x = 0;
+        m_repeat_countdown = 0;
+        return;
+    }
 
     // ---- THE STICK, VERTICALLY AND HORIZONTALLY -------------------------------------------
     //

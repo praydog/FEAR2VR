@@ -4107,6 +4107,20 @@ How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRender
 `CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
 whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
 
+### D3D9 resources must be released ON THE RENDER THREAD, or the unload hangs the game
+
+The device is created with BehaviorFlags 0x42 -- no `D3DCREATE_MULTITHREADED` -- so a `Release`
+from any other thread is undefined. In practice it WEDGES THE RENDERER: `UICapture::on_shutdown`
+freed its surfaces directly from the unload thread, the log stopped after the previous mod's
+shutdown line, and the game never came back.
+
+`FrameCapture` already had the pattern and it is the one to copy: set a request flag, let the
+present callback do the release, wait a BOUNDED time, and LEAK rather than hang if the game is not
+presenting. A stuck unload is worse than a leaked surface -- the payload is going away regardless.
+
+Any mod holding a device resource owes this. The symptom is not a crash, it is a hang with a
+truncated log, which reads as "the game froze" rather than as anything to do with the mod.
+
 ### A menu must not be presented as a projection layer
 
 Reported from the headset: while paused, the view is stuck and it is nauseating.

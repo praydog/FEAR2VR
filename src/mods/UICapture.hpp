@@ -174,6 +174,8 @@ private:
     std::atomic<uint32_t> m_colorwrite_at_end{0xFFFFFFFFu};
     std::atomic<uint32_t> m_saved_colorwrite{0};
     std::atomic<bool> m_have_saved_colorwrite{false};
+    std::atomic<bool> m_release_requested{false};
+    std::atomic<bool> m_released{false};
     std::atomic<bool> m_shot_pending{false};
     std::string m_shot_path;  // guarded by m_shot_pending's release/acquire
 };

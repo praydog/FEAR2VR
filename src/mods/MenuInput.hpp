@@ -57,12 +57,17 @@ public:
     static constexpr uint32_t kRight = 39;
     static constexpr uint32_t kEnter = 13;
     static constexpr uint32_t kEscape = 27;
+    // The WINDOWS virtual key, for the engine's own input rather than Flash's. They happen to
+    // agree on 27, but they are different namespaces reaching different code and are named apart
+    // so a later divergence cannot silently alias them.
+    static constexpr uint32_t kVkEscape = 0x1B;
 
     // Drive the menu from the VR controllers while the front end is up. On by default: a headset
     // wearer has no keyboard, and the menu is the one screen they cannot get past without one.
     void set_controller_enabled(bool on) { m_controller.store(on, std::memory_order_release); }
     bool controller_enabled() const { return m_controller.load(std::memory_order_relaxed); }
     uint64_t controller_keys() const { return m_controller_keys.load(std::memory_order_relaxed); }
+    uint64_t pause_presses() const { return m_pause_presses.load(std::memory_order_relaxed); }
 
     // What the mod is reading right now. Published because "the stick does nothing" has two very
     // different causes -- no controller data reaching us, or data that never crosses the threshold
@@ -110,6 +115,7 @@ private:
     std::atomic<bool> m_movie_ok{false};
     std::atomic<bool> m_controller{true};
     std::atomic<uint64_t> m_controller_keys{0};
+    std::atomic<uint64_t> m_pause_presses{0};
     std::atomic<bool> m_menu_up{false};
     std::atomic<int> m_flat_override{-1};
     std::atomic<uint32_t> m_override_frames{0};
@@ -133,4 +139,5 @@ private:
     int32_t m_stick_dir_x{0};
     uint32_t m_repeat_countdown{0};
     uint32_t m_last_buttons{0};
+    uint32_t m_last_left_buttons{0};
 };
