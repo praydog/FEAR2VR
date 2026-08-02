@@ -541,9 +541,18 @@ void FrameCapture::service_continuous() {
                 // Tell the reader what it is looking at rather than letting it guess. Split stereo
                 // puts both eyes in one frame side by side; anything else is a single image for
                 // both eyes.
+                //
+                // THE SWITCHES ARE NOT THE FRAME. `cam.stereo && cam.split_viewport` say the split
+                // is ARMED, not that this image got one -- the split is applied to a scene pass, and
+                // the main menu draws no scene. Publishing a mono menu tagged side-by-side makes the
+                // host halve it and give one half to each eye, which is exactly how the front end
+                // came out with a different piece of itself in either eye. So the tag follows the
+                // FRAME: one published by the no-scene fallback is mono, whatever the switches say.
                 const auto cam = CameraPassHook::get().observed();
-                const uint32_t layout = (cam.stereo && cam.split_viewport) ? xr::kLayoutSideBySide
-                                                                           : xr::kLayoutMono;
+                const bool really_split = cam.stereo && cam.split_viewport &&
+                                          m_presents_since_service.load(std::memory_order_relaxed) <
+                                              kMenuFallbackPresents;
+                const uint32_t layout = really_split ? xr::kLayoutSideBySide : xr::kLayoutMono;
                 FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
                                               layout, m_pipe_seq[ready]);
             }

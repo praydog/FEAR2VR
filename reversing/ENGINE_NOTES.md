@@ -4120,8 +4120,15 @@ because the question that matters is "is anything producing frames", not a proxy
 stands down by itself the moment a scene draws again. In-world it never fires (measured: 161 frames
 in 2 s, fallbacks 0).
 
-The menu's back buffer is mono -- there is no stereo split without a scene -- so the layout tag comes
-out `kLayoutMono` and the host shows it to both eyes, which is what a flat front end wants.
+The menu's back buffer is mono -- there is no stereo split without a scene -- and the layout tag has
+to say so. **The SWITCHES are not the FRAME**: `cam.stereo && cam.split_viewport` mean the split is
+ARMED, not that this image received one, and the split is applied to a scene pass. Tagging a mono
+menu side-by-side made the host halve it and give one half to each eye, which is what "each eye
+renders a different HUD texture" at the front end actually was. The tag now follows the frame -- a
+frame published by the no-scene fallback is mono whatever the switches say.
+
+Measured at the menu: 2560x1440, layout 0, 183 frames published in 2 s with the scene stage
+producing none.
 
 ### The UI is on its own quad now, and it works
 
