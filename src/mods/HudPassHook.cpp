@@ -123,10 +123,11 @@ char __stdcall stored_detour(int a1) {
     // frame -- see the header for why the ordinal matters.
     {
         const uint32_t ordinal = g_stored_this_frame.load(std::memory_order_relaxed);
+        const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
         const size_t n = g_pass_cb_count.load(std::memory_order_acquire);
         for (size_t k = 0; k < n; ++k) {
             if (auto cb = g_pass_cbs[k]; cb != nullptr) {
-                cb(ordinal);
+                cb(ordinal, caller);
             }
         }
     }

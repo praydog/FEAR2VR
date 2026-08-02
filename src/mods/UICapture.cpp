@@ -9,6 +9,7 @@
 #include "FramePublisher.hpp"
 #include "HudPassHook.hpp"
 #include "RenderTimeline.hpp"
+#include "sdk/Modules.hpp"
 #include "sdk/Render.hpp"
 
 namespace {
@@ -17,8 +18,8 @@ void bracket_cb(bool begin, int32_t width, int32_t height, uint32_t index) {
     UICapture::get().on_bracket(begin, width, height, index);
 }
 
-void pass_cb(uint32_t ordinal) {
-    UICapture::get().on_pass(ordinal);
+void pass_cb(uint32_t ordinal, uintptr_t caller) {
+    UICapture::get().on_pass(ordinal, caller);
 }
 
 void present_cb() {
@@ -142,182 +143,53 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
     if (index != RenderTimeline::get().hud_bracket() || width <= 0 || height <= 0) {
         return;
     }
-
     auto* dev = sdk::Render::device();
     if (dev == nullptr) {
         return;
     }
 
-    // In per-pass mode the bracket only CREATES the surface and performs the restore; the swap
-    // itself happens later, at the chosen pass.
-    const bool per_pass = m_swap_from_pass.load(std::memory_order_relaxed) >= 0;
-
     if (begin) {
-        // Recreate on a size change as well as on absence: a resolution change leaves a surface
-        // the engine's viewport no longer matches, and binding it would silently letterbox.
+        // The bracket only PREPARES. Which passes inside it are the HUD is decided per pass, by
+        // who issued them -- see on_pass().
+        m_seen_fullscreen = false;
+        m_cleared_this_frame = false;
+        m_pass_seen = 0;
+
         auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
-        if (surf == nullptr || m_width.load(std::memory_order_relaxed) != width ||
-            m_height.load(std::memory_order_relaxed) != height) {
-            free_device_resources();
-            IDirect3DSurface9* created = nullptr;
-            // A8R8G8B8 with no multisampling and no lockable flag: the read back path is
-            // GetRenderTargetData into SYSTEMMEM, which does not need a lockable target.
-            if (FAILED(dev->CreateRenderTarget(static_cast<UINT>(width), static_cast<UINT>(height),
-                                               D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
-                                               &created, nullptr)) ||
-                created == nullptr) {
-                m_failures.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
-            m_surface.store(created, std::memory_order_release);
-            m_width.store(width, std::memory_order_relaxed);
-            m_height.store(height, std::memory_order_relaxed);
-            surf = created;
-            LOGX("[uicap] created a %dx%d A8R8G8B8 UI target", width, height);
+        if (surf != nullptr && m_width.load(std::memory_order_relaxed) == width &&
+            m_height.load(std::memory_order_relaxed) == height) {
+            return;
         }
-
-        // THE VIEWPORT, WHICH SetRenderTarget SILENTLY RESETS. D3D9 sets the viewport to the full
-        // surface on every target bind, so binding ours and putting the engine's back leaves the
-        // viewport at full size even though the engine had configured its own. Measured, and it is
-        // not subtle: with the swap in place the final frame came out ENTIRELY BLACK while our
-        // surface held a perfect HUD, the bracket structure was unchanged and no call failed --
-        // the engine's own composite after the bracket was drawing through a viewport we had
-        // clobbered. Saved here and restored after the target goes back.
-        D3DVIEWPORT9 vp{};
-        m_have_saved_viewport.store(SUCCEEDED(dev->GetViewport(&vp)), std::memory_order_relaxed);
-        m_saved_viewport = vp;
-
-        IDirect3DSurface9* current = nullptr;
-        if (FAILED(dev->GetRenderTarget(0, &current)) || current == nullptr) {
+        // Recreate on a size change as well as on absence: a resolution change leaves a surface the
+        // engine's viewport no longer matches, and binding it would silently letterbox.
+        free_device_resources();
+        IDirect3DSurface9* created = nullptr;
+        if (FAILED(dev->CreateRenderTarget(static_cast<UINT>(width), static_cast<UINT>(height),
+                                           D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &created,
+                                           nullptr)) ||
+            created == nullptr) {
             m_failures.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        // MODE 4 IS THE CONTROL: rebind the surface that is ALREADY bound. If the frame still comes
-        // out black then the damage is done by the unbind/rebind cycle itself -- a swap chain with
-        // D3DSWAPEFFECT_DISCARD does not guarantee back-buffer contents survive one -- rather than
-        // by where the HUD's draws went.
-        // ---- PRESERVE THE BACK BUFFER ACROSS THE SWAP ------------------------------------
-        //
-        // Binding a DIFFERENT surface discards what the back buffer held. Measured with a control:
-        // rebinding the SAME surface leaves the frame intact (100% non-black) while binding ours
-        // blackens it completely, and our surface receives only the HUD either way -- so nothing is
-        // being redirected, the contents are simply gone. That is legal: a swap chain created
-        // D3DSWAPEFFECT_DISCARD makes no promise about back-buffer contents once it is unbound.
-        //
-        // The headset does not care -- its frame is captured at the second eye, before this bracket
-        // -- but the desktop window shows the back buffer, and a black window is not something to
-        // ship. So the scene is copied out before the swap and put back after it: two full-screen
-        // GPU blits, which is the cost of borrowing the target the engine is presenting.
-        if (m_preserve.load(std::memory_order_relaxed)) {
-            if (m_scratch.load(std::memory_order_relaxed) == nullptr) {
-                IDirect3DSurface9* scratch = nullptr;
-                D3DSURFACE_DESC sd{};
-                if (SUCCEEDED(current->GetDesc(&sd)) &&
-                    SUCCEEDED(dev->CreateRenderTarget(sd.Width, sd.Height, sd.Format,
-                                                      D3DMULTISAMPLE_NONE, 0, FALSE, &scratch, nullptr))) {
-                    m_scratch.store(scratch, std::memory_order_release);
-                }
-            }
-            if (auto* scratch = static_cast<IDirect3DSurface9*>(m_scratch.load(std::memory_order_relaxed))) {
-                if (FAILED(dev->StretchRect(current, nullptr, scratch, nullptr, D3DTEXF_NONE))) {
-                    m_failures.fetch_add(1, std::memory_order_relaxed);
-                }
-            }
-        }
-
-        if (per_pass) {
-            current->Release();   // the surface exists now; the swap waits for its pass
-            return;
-        }
-
-        IDirect3DSurface9* bind_target = m_mode.load(std::memory_order_relaxed) == 4 ? current : surf;
-        if (FAILED(dev->SetRenderTarget(0, bind_target))) {
-            current->Release();
-            m_failures.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        // IS THE UI BRACKET'S TARGET THE SWAP CHAIN'S BACK BUFFER? The answer decides what the
-        // engine does after the bracket, and it is one call to find out rather than an argument.
-        if (IDirect3DSurface9* bb = nullptr;
-            SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb != nullptr) {
-            m_target_is_backbuffer.store(bb == current, std::memory_order_relaxed);
-            m_backbuffer_ptr.store(reinterpret_cast<uintptr_t>(bb), std::memory_order_relaxed);
-            bb->Release();
-        }
-        m_displaced_ptr.store(reinterpret_cast<uintptr_t>(current), std::memory_order_relaxed);
-
-        if (m_probe_at_begin.exchange(false, std::memory_order_acq_rel)) {
-            m_probe_begin_lit.store(sample_lit(dev, current), std::memory_order_relaxed);
-        }
-
-        m_saved.store(current, std::memory_order_release);
-
-        // ALPHA WRITES, WHICH THE ENGINE HAS NO REASON TO LEAVE ON. Drawing to a back buffer whose
-        // alpha nobody reads, it masks the channel off -- measured: the isolated HUD came back with
-        // correct RGB on 3.9% of pixels and alpha 0 everywhere. A composition layer needs that
-        // channel, so it is forced for the bracket and put back at the end.
-        DWORD cwe = 0;
-        if (m_mode.load(std::memory_order_relaxed) >= 3 &&
-            SUCCEEDED(dev->GetRenderState(D3DRS_COLORWRITEENABLE, &cwe))) {
-            m_saved_colorwrite.store(static_cast<uint32_t>(cwe), std::memory_order_relaxed);
-            m_have_saved_colorwrite.store(true, std::memory_order_relaxed);
-            dev->SetRenderState(D3DRS_COLORWRITEENABLE,
-                                D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
-                                    D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
-        }
-        // TRANSPARENT, not black: the whole point is that everything the UI does not cover stays
-        // see-through when it is composited as a layer.
-        if (m_mode.load(std::memory_order_relaxed) >= 2) {
-            dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
-        }
-        m_swaps.fetch_add(1, std::memory_order_relaxed);
+        m_surface.store(created, std::memory_order_release);
+        m_width.store(width, std::memory_order_relaxed);
+        m_height.store(height, std::memory_order_relaxed);
+        LOGX("[uicap] created a %dx%d A8R8G8B8 UI target", width, height);
         return;
     }
 
-    // End of the bracket: put the engine's surface back before it tears the target down.
-    // WHAT THE ENGINE LEFT IT AS. If this reads back without the alpha bit, the mask is being set
-    // per pass or per draw and a bracket-level force cannot win -- which decides whether alpha is
-    // obtainable at all or has to be reconstructed.
-    if (DWORD end_cwe = 0; SUCCEEDED(dev->GetRenderState(D3DRS_COLORWRITEENABLE, &end_cwe))) {
-        m_colorwrite_at_end.store(static_cast<uint32_t>(end_cwe), std::memory_order_relaxed);
-    }
-    if (m_have_saved_colorwrite.exchange(false, std::memory_order_acq_rel)) {
-        dev->SetRenderState(D3DRS_COLORWRITEENABLE, m_saved_colorwrite.load(std::memory_order_relaxed));
-    }
-    if (auto* saved = static_cast<IDirect3DSurface9*>(m_saved.exchange(nullptr, std::memory_order_acq_rel))) {
-        if (SUCCEEDED(dev->SetRenderTarget(0, saved))) {
-            m_restores.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            m_failures.fetch_add(1, std::memory_order_relaxed);
-        }
-        saved->Release();
-        // AFTER the target is back, because the bind is what resets it.
-        if (m_have_saved_viewport.exchange(false, std::memory_order_acq_rel)) {
-            dev->SetViewport(&m_saved_viewport);
-        }
-        // And put the scene back into the target we borrowed.
-        if (m_preserve.load(std::memory_order_relaxed)) {
-            // MODE 5 sources the blit from our UI surface instead of the scratch. It has KNOWN
-            // content, so if the back buffer stays black with it too, the destination is refusing
-            // the blit rather than the scratch being empty.
-            void* src = m_mode.load(std::memory_order_relaxed) == 5
-                            ? m_surface.load(std::memory_order_relaxed)
-                            : m_scratch.load(std::memory_order_relaxed);
-            if (auto* from = static_cast<IDirect3DSurface9*>(src)) {
-                if (FAILED(dev->StretchRect(from, nullptr, saved, nullptr, D3DTEXF_NONE))) {
-                    m_failures.fetch_add(1, std::memory_order_relaxed);
-                }
-            }
-        }
+    // End of the bracket: hand the engine's target back if a pass left us holding it.
+    restore_target(dev);
 
-        // IN PHASE, AT BOTH ENDS. Which end the back buffer is black at is the whole question:
-        // black at BEGIN means the scene arrives during this bracket, black only at END means
-        // unbinding lost it. One probe answers what a dozen arguments could not.
-        if (m_probe_at_end.exchange(false, std::memory_order_acq_rel)) {
-            m_probe_lit.store(sample_lit(dev, saved), std::memory_order_relaxed);
+    // The presented frame, sampled IN PHASE and only when asked. This is the check that catches
+    // the mod costing the picture -- the failure it exists for looked perfectly healthy in every
+    // counter.
+    if (m_probe_at_end.exchange(false, std::memory_order_acq_rel)) {
+        IDirect3DSurface9* bb = nullptr;
+        if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb != nullptr) {
+            m_probe_lit.store(sample_lit(dev, bb), std::memory_order_relaxed);
+            bb->Release();
         }
-
-
     }
 }
 
@@ -417,45 +289,59 @@ void UICapture::on_shutdown() {
     free_device_resources();
 }
 
-void UICapture::on_pass(uint32_t ordinal) {
+void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
+    // Record who issued each pass, for one frame at a time, so the boundary between the engine's
+    // own full-screen work and the game's HUD can be READ rather than assumed to sit at a fixed
+    // ordinal -- which is what broke when a scope overlay pushed the HUD later in the frame.
+    if (ordinal < kMaxPassRecord) {
+        m_pass_caller[ordinal] = caller;
+        const uint32_t seen = ordinal + 1u;
+        if (seen > m_pass_seen) {
+            m_pass_seen = seen;
+        }
+    }
+
     if (!m_enabled.load(std::memory_order_acquire)) {
         return;
     }
-    // ---- SWAP LATE, NOT AT THE BRACKET ---------------------------------------------------
-    //
-    // The bracket's first passes composite the SCENE into the back buffer; only the later ones
-    // draw the HUD. Taking the whole bracket therefore costs the presented frame, so the target is
-    // borrowed from `swap_from_pass` onward and the composite is left to run where it belongs.
-    //
-    // Which pass that is, is a measurement, not a constant -- sweep it and watch two numbers: the
-    // back buffer must stay lit and our surface must still hold the whole HUD.
-    if (ordinal != static_cast<uint32_t>(m_swap_from_pass.load(std::memory_order_relaxed))) {
-        return;
-    }
     auto* dev = sdk::Render::device();
-    if (dev == nullptr || m_saved.load(std::memory_order_relaxed) != nullptr) {
-        return;  // already swapped this frame
-    }
-    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
-    if (surf == nullptr) {
+    if (dev == nullptr) {
         return;
     }
-    IDirect3DSurface9* current = nullptr;
-    if (FAILED(dev->GetRenderTarget(0, &current)) || current == nullptr) {
-        m_failures.fetch_add(1, std::memory_order_relaxed);
+
+    // ---- WHO DREW IT, NOT WHEN --------------------------------------------------------------
+    //
+    // The first version keyed off the pass ORDINAL and it was wrong in play: aiming down sights and
+    // entering a mech each add a full-screen effect, which pushes the HUD one pass later, and the
+    // fixed index then captured the effect into the quad -- the whole frame appearing inside the
+    // HUD layer. Measured, both layouts on the same build:
+    //
+    //     hip fire   0 gameclient | 1 ?         | 2..10 gameclient   (HUD from 2)
+    //     ADS        0 gameclient | 1 ? | 2 ?   | 3..10 gameclient   (HUD from 3)
+    //
+    // The ordinal moves; the CALLER does not. The engine's full-screen work is issued from outside
+    // gameclient.dll, the HUD from inside it, so that is the discriminator.
+    const auto* gc = sdk::Modules::get().game_client();
+    const bool from_game =
+        gc != nullptr && gc->base != 0 && caller >= gc->base && caller < gc->base + gc->size;
+
+    if (!from_game) {
+        // An engine full-screen pass. It belongs on the back buffer, so if we are currently
+        // borrowing the target, give it back for the duration -- interleaving is handled rather
+        // than assumed away, because "the effects are contiguous" is exactly the kind of thing that
+        // holds until some weapon or vehicle proves it does not.
+        m_seen_fullscreen = true;
+        restore_target(dev);
         return;
     }
-    D3DVIEWPORT9 vp{};
-    m_have_saved_viewport.store(SUCCEEDED(dev->GetViewport(&vp)), std::memory_order_relaxed);
-    m_saved_viewport = vp;
-    if (FAILED(dev->SetRenderTarget(0, surf))) {
-        current->Release();
-        m_failures.fetch_add(1, std::memory_order_relaxed);
+
+    // A gameclient pass BEFORE any full-screen work is part of building the frame, not the HUD:
+    // borrowing the target there blackened the presented image.
+    if (!m_seen_fullscreen) {
         return;
     }
-    m_saved.store(current, std::memory_order_release);
-    dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
-    m_swaps.fetch_add(1, std::memory_order_relaxed);
+
+    swap_target(dev);
 }
 
 void UICapture::publish_layer(IDirect3DDevice9* dev) {
@@ -527,5 +413,54 @@ void UICapture::publish_layer(IDirect3DDevice9* dev) {
         m_publishes.fetch_add(1, std::memory_order_relaxed);
     } else {
         m_failures.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void UICapture::swap_target(IDirect3DDevice9* dev) {
+    if (m_saved.load(std::memory_order_relaxed) != nullptr) {
+        return;  // already borrowed
+    }
+    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+    if (surf == nullptr) {
+        return;
+    }
+    IDirect3DSurface9* current = nullptr;
+    if (FAILED(dev->GetRenderTarget(0, &current)) || current == nullptr) {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    D3DVIEWPORT9 vp{};
+    m_have_saved_viewport.store(SUCCEEDED(dev->GetViewport(&vp)), std::memory_order_relaxed);
+    m_saved_viewport = vp;
+    if (FAILED(dev->SetRenderTarget(0, surf))) {
+        current->Release();
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    m_saved.store(current, std::memory_order_release);
+
+    // CLEARED ONCE PER FRAME, not once per swap. The target is handed back for every engine
+    // full-screen pass and taken again afterwards, so clearing on each swap would wipe the HUD
+    // elements drawn before the interruption.
+    if (!m_cleared_this_frame) {
+        dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+        m_cleared_this_frame = true;
+    }
+    m_swaps.fetch_add(1, std::memory_order_relaxed);
+}
+
+void UICapture::restore_target(IDirect3DDevice9* dev) {
+    auto* saved = static_cast<IDirect3DSurface9*>(m_saved.exchange(nullptr, std::memory_order_acq_rel));
+    if (saved == nullptr) {
+        return;
+    }
+    if (SUCCEEDED(dev->SetRenderTarget(0, saved))) {
+        m_restores.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_failures.fetch_add(1, std::memory_order_relaxed);
+    }
+    saved->Release();
+    if (m_have_saved_viewport.exchange(false, std::memory_order_acq_rel)) {
+        dev->SetViewport(&m_saved_viewport);
     }
 }

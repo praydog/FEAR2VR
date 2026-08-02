@@ -4120,8 +4120,23 @@ HUD drawn (2D passes 2-3)  ->  UICapture's A8R8G8B8 surface   (game, render thre
 
 Four things had to be right at once, and each was wrong at some point:
 
-1. **Swap from PASS 2, not at the bracket.** The bracket's first passes composite the scene; taking
-   the whole bracket steals them and the frame goes black.
+1. **Redirect by WHO ISSUED the pass, never by its ordinal.** The bracket's first passes composite
+   the scene and apply full-screen effects; taking the whole bracket steals them and the frame goes
+   black. Keying off a fixed ordinal instead is the same bug one step later, and it SHIPPED: aiming
+   down sights and entering a mech each add a full-screen effect, which pushes the HUD one pass on,
+   and the fixed index then pulled the whole frame into the quad. Measured, same build:
+
+   ```
+   hip fire   0 gameclient | 1 ?       | 2..10 gameclient    HUD from 2
+   ADS        0 gameclient | 1 ? | 2 ? | 3..10 gameclient    HUD from 3
+   ```
+
+   The ordinal moves; the caller does not. The engine's full-screen work is issued from OUTSIDE
+   gameclient.dll and the HUD from inside it, so the rule is: redirect a pass iff its caller is in
+   gameclient.dll AND an engine full-screen pass has already run this frame. The target is handed
+   back for each engine pass and taken again after, so interleaving is handled rather than assumed
+   away -- and the transparent clear happens once per FRAME, not once per swap, or the hand-back
+   would wipe the HUD drawn before it.
 2. **Alpha is derived, not read.** The engine's UI shaders emit none. Deriving it on the HOST keeps
    a megapixel pass off the game's render thread.
 3. **Premultiplied.** `XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT` and NOT the

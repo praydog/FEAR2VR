@@ -31,7 +31,10 @@ public:
     // telling them apart is what lets one be redirected without the other.
     //
     // Fires BEFORE the engine's own setup, on the render thread. Must not block or allocate.
-    using PassCallback = void (*)(uint32_t ordinal);
+    // `caller` is the return address that issued the pass. It matters more than the ordinal: the
+    // ordinal moves whenever the frame gains a full-screen effect (aiming down sights, entering a
+    // mech), while the code that draws a given element does not.
+    using PassCallback = void (*)(uint32_t ordinal, uintptr_t caller);
     static constexpr size_t kMaxPassCallbacks = 4;
     bool add_pass_callback(PassCallback cb);
 

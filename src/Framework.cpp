@@ -9866,9 +9866,6 @@ std::string build_render_json(const std::string& request_target) {
         if (webapi_query_int(q, "probe", 0) != 0) {
             ui.request_probe();
         }
-        if (q.find("from_pass") != q.end()) {
-            ui.set_swap_from_pass(webapi_query_int(q, "from_pass", -1));
-        }
         if (q.find("preserve") != q.end()) {
             ui.set_preserve(webapi_query_int(q, "preserve", 1) != 0);
         }
@@ -9876,14 +9873,30 @@ std::string build_render_json(const std::string& request_target) {
         if (const std::string path = webapi_query_string(q, "path"); !path.empty()) {
             shot_accepted = ui.request_shot(path);
         }
+        // Who issued each 2D pass last frame, classified. This is the view that says where the
+        // engine's own full-screen work ends and the game's HUD begins.
+        std::string passes = "[";
+        for (uint32_t i = 0; i < ui.pass_count(); ++i) {
+            if (i != 0) {
+                passes += ',';
+            }
+            const auto info = Watchpoints::classify(ui.pass_caller(i));
+            char buf[192];
+            snprintf(buf, sizeof(buf), "{\"n\":%u,\"caller\":\"0x%08" PRIXPTR "\",\"module\":\"%s\",\"static\":\"0x%08" PRIXPTR "\"}",
+                     i, ui.pass_caller(i), info.known ? info.module.c_str() : "?",
+                     info.known ? info.static_address : 0);
+            passes += buf;
+        }
+        passes += ']';
+
         std::string out;
         {
             JsonFields jf(out);
             jf.b("ok", true)
+              .raw("passes", passes)
               .b("enabled", ui.enabled())
               .i("mode", ui.mode())
               .b("preserve", ui.preserve())
-              .i("swap_from_pass", ui.swap_from_pass())
               .u("publishes", static_cast<size_t>(ui.publishes()))
               .i("layer_width", ui.layer_width())
               .i("layer_height", ui.layer_height())
