@@ -172,6 +172,11 @@ public:
     // device went away, and a rising count with no recovery is a real symptom.
     uint32_t device_lost_events() const { return m_device_lost.load(std::memory_order_relaxed); }
 
+    // How many frames the MENU fallback has published -- see on_present(). Non-zero means the
+    // configured stage is not firing and this is carrying the picture instead, which is normal at
+    // the front end and a symptom anywhere else.
+    uint64_t menu_fallbacks() const { return m_menu_fallbacks.load(std::memory_order_relaxed); }
+
     // Drop every device resource at the next frame, as a device loss would. Exists so the REBUILD
     // path -- the half that actually breaks -- can be exercised on demand instead of only when
     // someone alt-tabs. Returns false if no frame can service it.
@@ -270,6 +275,15 @@ private:
     std::atomic<bool> m_release_requested{false};
     std::atomic<bool> m_released{false};
     std::atomic<uint32_t> m_device_lost{0};
+
+    // Presents since a scene-driven capture last ran, and how often the fallback fired. Public to
+    // the mod's own free functions in the .cpp, which is where on_present lives.
+public:
+    static constexpr uint64_t kMenuFallbackPresents = 4;
+    std::atomic<uint64_t> m_presents_since_service{0};
+    std::atomic<uint64_t> m_menu_fallbacks{0};
+
+private:
     std::atomic<bool> m_drop_requested{false};
     std::atomic<bool> m_publishing{false};
 

@@ -11221,6 +11221,7 @@ bool Framework::initialize() {
               .u("vr_host_updates", static_cast<size_t>(VR::get().host_pose_updates()))
               .u("vr_host_stale", static_cast<size_t>(VR::get().host_pose_stale()))
               .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))
+              .u("fc_menu_fallbacks", static_cast<size_t>(FrameCapture::get().menu_fallbacks()))
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
               .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())

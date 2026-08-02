@@ -114,10 +114,36 @@ void FrameCapture::on_present() {
     if (FrameCapture::get().stage() == FrameCapture::Stage::Present) {
         FrameCapture::get().service_continuous();
         FrameCapture::get().service();
+        return;
+    }
+
+    // ---- THE MENU, WHICH HAS NO SCENE TO HANG A CAPTURE ON ---------------------------------
+    //
+    // Every other stage is serviced from inside a scene hook: AfterSecondEye runs in
+    // CLTRenderer's DrawScene detour. The MAIN MENU never draws a scene, so that stage simply
+    // never fires and the headset gets nothing at all -- not a black world, no frames whatsoever,
+    // which is exactly how the front end came to be invisible in VR while everything else worked.
+    //
+    // So when the configured stage has not produced a frame for a while, publish from here
+    // instead. The back buffer at present IS the menu, and it is mono -- there is no stereo split
+    // without a scene -- so the layout tag comes out kLayoutMono and the host shows it to both
+    // eyes, which is what a flat front end should look like.
+    //
+    // Threshold rather than a world flag: this asks the question that matters ("is anything
+    // producing frames") instead of a proxy for it, and it recovers on its own the moment the
+    // scene starts drawing again.
+    auto& fc = FrameCapture::get();
+    const uint64_t idle = fc.m_presents_since_service.fetch_add(1, std::memory_order_relaxed);
+    if (idle >= kMenuFallbackPresents) {
+        fc.service_continuous();
+        fc.service();
+        fc.m_menu_fallbacks.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
 void FrameCapture::service_now() {
+    // A scene-driven capture just happened, so the fallback above stands down.
+    m_presents_since_service.store(0, std::memory_order_relaxed);
     // THE PIPELINE RUNS AT WHATEVER STAGE CALLS THIS, which for stereo is the only correct place.
     // The published frame used to come from the present hook, and present DESTROYS the right half
     // of a split-stereo frame -- measured: the right eye is correct immediately after it draws and

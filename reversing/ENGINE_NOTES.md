@@ -4107,6 +4107,22 @@ How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRender
 `CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
 whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
 
+### The main menu publishes nothing, because every capture stage hangs off a scene
+
+`stage=second_eye` -- the shipping configuration -- is serviced from INSIDE `draw_scene_detour`,
+CLTRenderer's DrawScene. The main menu never draws a scene, so the stage never fires and the headset
+receives no frames at all: not a black world, nothing. Everything downstream looks healthy because
+nothing downstream is wrong.
+
+`FrameCapture::on_present` now falls back to publishing from the frame boundary when the configured
+stage has produced nothing for `kMenuFallbackPresents` frames. Threshold rather than a world flag,
+because the question that matters is "is anything producing frames", not a proxy for it -- and it
+stands down by itself the moment a scene draws again. In-world it never fires (measured: 161 frames
+in 2 s, fallbacks 0).
+
+The menu's back buffer is mono -- there is no stereo split without a scene -- so the layout tag comes
+out `kLayoutMono` and the host shows it to both eyes, which is what a flat front end wants.
+
 ### The UI is on its own quad now, and it works
 
 End to end, confirmed in the headset by the wearer: "it works well and I can actually play the game
