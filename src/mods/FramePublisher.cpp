@@ -102,6 +102,21 @@ void FramePublisher::close() {
     }
 }
 
+void FramePublisher::set_flat(bool on) {
+    m_flat.store(on, std::memory_order_release);
+
+    // WRITTEN THROUGH IMMEDIATELY, not left for the next publish. The flag exists for the case
+    // where the game has stopped being a 3D world, and "stopped" is exactly when publishing may
+    // stop as well -- a loading screen, or a menu that freezes the renderer. Leaving it to
+    // publish() would mean the one situation it is for is the one where it never arrives.
+    //
+    // A lone aligned uint32 needs no sequence protocol: x86 will not tear it, and the host reads it
+    // outside the pixel seqlock for the same reason.
+    if (m_base != nullptr) {
+        static_cast<xr::SharedFrameHeader*>(m_base)->flat = on ? 1u : 0u;
+    }
+}
+
 bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
                                 bool bgra, bool premultiplied, bool derive_alpha) {
     if (m_base == nullptr) {

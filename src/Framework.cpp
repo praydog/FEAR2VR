@@ -9882,6 +9882,12 @@ std::string build_render_json(const std::string& request_target) {
         if (q.find("controller") != q.end()) {
             mi.set_controller_enabled(webapi_query_int(q, "controller", 1) != 0);
         }
+        // FORCE the flat flag, for testing the presentation without needing a menu open. The gate
+        // overwrites this on the next frame, which is the point: it proves the header write and the
+        // host's response separately from the gate that normally drives them.
+        if (q.find("flat") != q.end()) {
+            mi.set_flat_override(webapi_query_int(q, "flat", -1));
+        }
         std::string out;
         {
             JsonFields jf(out);
@@ -9896,6 +9902,8 @@ std::string build_render_json(const std::string& request_target) {
               .b("controller", mi.controller_enabled())
               .u("controller_keys", static_cast<size_t>(mi.controller_keys()))
               .b("menu_up", mi.menu_up())
+              .b("flat", FramePublisher::get().flat())
+              .i("flat_override", mi.flat_override())
               .b("hands_readable", mi.hands_readable())
               .b("left_active", mi.left_active())
               .f("stick_x", mi.stick_x(), 3)

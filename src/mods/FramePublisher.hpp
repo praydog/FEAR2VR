@@ -47,6 +47,16 @@ public:
     bool publish_ui(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
                     bool premultiplied, bool derive_alpha);
 
+    // PRESENT THE FRAMES FLAT -- see xr::SharedFrameHeader::flat. Set while a menu is up, so the
+    // host stops claiming the image was rendered from the pose it just handed out and shows it on
+    // a quad instead.
+    //
+    // Writes the header AT ONCE rather than waiting for the next publish: the flag is for the case
+    // where the game has stopped being a 3D world, and that is exactly when publishing may stop
+    // too.
+    void set_flat(bool on);
+    bool flat() const { return m_flat.load(std::memory_order_relaxed); }
+
     bool publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
                  uint32_t layout, uint32_t host_sequence);
 

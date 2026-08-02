@@ -69,6 +69,17 @@ public:
     // -- and they need different fixes.
     // Whether a menu is considered up at all -- the gate that decides if sticks navigate.
     bool menu_up() const { return m_menu_up.load(std::memory_order_relaxed); }
+
+    // Force the flat presentation on or off regardless of the menu gate. -1 is automatic.
+    // Exists so the PRESENTATION can be judged separately from the DETECTION -- two things that
+    // fail independently and, tested together, hide each other.
+    //
+    // IT EXPIRES. A debug override that outlives its test stops being a tool and becomes a bug
+    // wearing the feature's clothes: this one was left forced ON, and the next report was "it stays
+    // flat even when I unpause" -- a defect that did not exist. It reverts to automatic after
+    // kOverrideFrames and says so in the log.
+    void set_flat_override(int v);
+    int flat_override() const { return m_flat_override.load(std::memory_order_relaxed); }
     bool hands_readable() const { return m_hands_ok.load(std::memory_order_relaxed); }
     bool left_active() const { return m_left_active.load(std::memory_order_relaxed); }
     float stick_x() const { return m_stick_x.load(std::memory_order_relaxed); }
@@ -100,6 +111,9 @@ private:
     std::atomic<bool> m_controller{true};
     std::atomic<uint64_t> m_controller_keys{0};
     std::atomic<bool> m_menu_up{false};
+    std::atomic<int> m_flat_override{-1};
+    std::atomic<uint32_t> m_override_frames{0};
+    static constexpr uint32_t kOverrideFrames = 5000;  // roughly a minute -- long enough to look at
     std::atomic<bool> m_hands_ok{false};
     std::atomic<bool> m_left_active{false};
     std::atomic<float> m_stick_x{0.0f};

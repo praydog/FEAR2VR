@@ -108,6 +108,21 @@ void MenuInput::poll_controller() {
         }
     }
     m_menu_up.store(menu_up, std::memory_order_relaxed);
+    // FLAT WHILE A MENU IS UP. The same gate that decides whether the sticks navigate also decides
+    // whether the picture may claim to be a 3D world: both ask "has the game stopped following the
+    // head", and answering that in two places would be two things to keep in step.
+    int forced = m_flat_override.load(std::memory_order_relaxed);
+    if (forced >= 0) {
+        const uint32_t left = m_override_frames.load(std::memory_order_relaxed);
+        if (left == 0) {
+            m_flat_override.store(-1, std::memory_order_release);
+            forced = -1;
+            LOGX("[menu] flat override expired -- back to following the menu gate");
+        } else {
+            m_override_frames.store(left - 1, std::memory_order_relaxed);
+        }
+    }
+    FramePublisher::get().set_flat(forced < 0 ? menu_up : forced != 0);
     if (!menu_up) {
         m_stick_dir = 0;
         m_stick_dir_x = 0;
@@ -234,4 +249,9 @@ void MenuInput::service() {
         // rather than as one indistinguishable blur.
         break;
     }
+}
+
+void MenuInput::set_flat_override(int v) {
+    m_flat_override.store(v, std::memory_order_release);
+    m_override_frames.store(v >= 0 ? kOverrideFrames : 0u, std::memory_order_release);
 }
