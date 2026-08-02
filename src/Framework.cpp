@@ -9895,6 +9895,7 @@ std::string build_render_json(const std::string& request_target) {
               .u("refused", static_cast<size_t>(mi.refused()))
               .b("controller", mi.controller_enabled())
               .u("controller_keys", static_cast<size_t>(mi.controller_keys()))
+              .b("menu_up", mi.menu_up())
               .b("hands_readable", mi.hands_readable())
               .b("left_active", mi.left_active())
               .f("stick_x", mi.stick_x(), 3)

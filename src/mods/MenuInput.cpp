@@ -4,6 +4,7 @@
 
 #include "Log.hpp"
 #include "RenderHook.hpp"
+#include "sdk/Engine.hpp"
 #include "sdk/Events.hpp"
 #include "FramePublisher.hpp"
 #include "vr/runtimes/SimulatedRuntime.hpp"
@@ -90,9 +91,24 @@ void MenuInput::poll_controller() {
     if (!m_controller.load(std::memory_order_acquire)) {
         return;
     }
-    // ONLY AT THE FRONT END. In game these same sticks are locomotion, and the menu keys would be
-    // sent into a movie nobody is looking at.
-    if (sdk::Events::ui_mode() != sdk::Events::UiMode::Menu) {
+    // ---- ONLY WHILE A MENU IS UP, WHICH IS TWO SITUATIONS ------------------------------------
+    //
+    // The main menu reports UiMode::Menu. The PAUSE menu does not -- it reports UiMode::InGame,
+    // because it is drawn through the in-game UI system, so gating on Menu alone left the pause
+    // screen exactly as unusable as the front end had been.
+    //
+    // The second half is the engine's own clock: paused means a menu has stopped the world, and
+    // that is a state the engine maintains rather than something inferred from the UI. In play the
+    // clock advances and these sticks stay locomotion, which is the behaviour that must not break.
+    const auto mode = sdk::Events::ui_mode();
+    bool menu_up = mode == sdk::Events::UiMode::Menu;
+    if (!menu_up && mode == sdk::Events::UiMode::InGame) {
+        if (const auto clock = sdk::Engine::clock_state()) {
+            menu_up = clock->paused;
+        }
+    }
+    m_menu_up.store(menu_up, std::memory_order_relaxed);
+    if (!menu_up) {
         m_stick_dir = 0;
         m_stick_dir_x = 0;
         m_repeat_countdown = 0;

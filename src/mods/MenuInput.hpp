@@ -67,6 +67,8 @@ public:
     // What the mod is reading right now. Published because "the stick does nothing" has two very
     // different causes -- no controller data reaching us, or data that never crosses the threshold
     // -- and they need different fixes.
+    // Whether a menu is considered up at all -- the gate that decides if sticks navigate.
+    bool menu_up() const { return m_menu_up.load(std::memory_order_relaxed); }
     bool hands_readable() const { return m_hands_ok.load(std::memory_order_relaxed); }
     bool left_active() const { return m_left_active.load(std::memory_order_relaxed); }
     float stick_x() const { return m_stick_x.load(std::memory_order_relaxed); }
@@ -97,6 +99,7 @@ private:
     std::atomic<bool> m_movie_ok{false};
     std::atomic<bool> m_controller{true};
     std::atomic<uint64_t> m_controller_keys{0};
+    std::atomic<bool> m_menu_up{false};
     std::atomic<bool> m_hands_ok{false};
     std::atomic<bool> m_left_active{false};
     std::atomic<float> m_stick_x{0.0f};

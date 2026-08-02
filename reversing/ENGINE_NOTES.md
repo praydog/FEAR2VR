@@ -4107,6 +4107,28 @@ How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRender
 `CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
 whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
 
+### Nothing that must work in a MENU may hang off CClientShell::Update
+
+Three separate features broke on this one fact, and each looked like its own bug:
+
+| symptom | actual cause |
+|---|---|
+| main menu renders nothing in VR | the capture stage is serviced inside DrawScene |
+| injected menu keys go nowhere | the queue was drained from `Mods::on_frame` |
+| controller does nothing at a menu | `VR` ingests the hand block in its per-frame update |
+
+`Mods::on_frame` is fanned out from `CClientShell::Update`, and that does not tick at the front end
+-- measured, the VR frame counter reads +0 there while the renderer keeps presenting at 80+ fps.
+Anything a menu depends on belongs on the FRAME BOUNDARY (`RenderHook`), or must read shared state
+directly, as `MenuInput` now does for the controller block.
+
+**And a menu is TWO states, not one.** `Events::ui_mode()` reports `Menu` for the front end but
+`InGame` for the PAUSE menu, which is drawn through the in-game UI system. Gating on `Menu` alone
+leaves the pause screen as unusable as the front end was. The second half of the test is the
+engine's own clock: `Engine::clock_state()->paused` means a menu has stopped the world, which the
+engine maintains rather than the UI implying. In play the clock advances and the sticks stay
+locomotion.
+
 ### The main menu publishes nothing, because every capture stage hangs off a scene
 
 `stage=second_eye` -- the shipping configuration -- is serviced from INSIDE `draw_scene_detour`,
