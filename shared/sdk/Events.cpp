@@ -676,6 +676,62 @@ uintptr_t Events::inner_method(const GFxMovie& movie, uint32_t vtable_slot) {
     return mem::read_ptr(movie.inner_vtable + vtable_slot * sizeof(uintptr_t)).value_or(0);
 }
 
+namespace {
+
+// Shared shape for every GFxEvent this SDK sends. 0x14 covers the mouse-button field, so one
+// struct serves keys and pointer alike -- the layout is documented on kGFxInnerHandleEvent.
+struct GFxEventRaw {
+    uint32_t type;
+    uint32_t key_or_x;
+    uint8_t modifiers;
+    uint8_t ascii;
+    uint16_t pad;
+    uint32_t wchar_or_y;
+    uint32_t button;
+};
+
+}  // namespace
+
+bool Events::send_mouse_move(const GFxMovie& movie, int32_t x, int32_t y) {
+    const uintptr_t fn = inner_method(movie, kGFxInnerHandleEvent);
+    if (fn == 0 || movie.inner == 0) {
+        return false;
+    }
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || fn < exe->base || fn >= exe->base + exe->size) {
+        return false;
+    }
+    GFxEventRaw ev{};
+    ev.type = 1u;  // mouse move
+    ev.key_or_x = static_cast<uint32_t>(x);
+    ev.wchar_or_y = static_cast<uint32_t>(y);
+    using Fn = int(__fastcall*)(uintptr_t, uintptr_t, GFxEventRaw*);
+    reinterpret_cast<Fn>(fn)(movie.inner, 0, &ev);
+    return true;
+}
+
+bool Events::send_mouse_button(const GFxMovie& movie, int32_t x, int32_t y, uint32_t button,
+                               bool down) {
+    const uintptr_t fn = inner_method(movie, kGFxInnerHandleEvent);
+    if (fn == 0 || movie.inner == 0) {
+        return false;
+    }
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || fn < exe->base || fn >= exe->base + exe->size) {
+        return false;
+    }
+    // POSITION TRAVELS WITH THE BUTTON. The dispatcher re-sends x/y on types 2 and 3 as well, so a
+    // click carries where it happened rather than relying on a move having landed first.
+    GFxEventRaw ev{};
+    ev.type = down ? 2u : 3u;
+    ev.key_or_x = static_cast<uint32_t>(x);
+    ev.wchar_or_y = static_cast<uint32_t>(y);
+    ev.button = button;
+    using Fn = int(__fastcall*)(uintptr_t, uintptr_t, GFxEventRaw*);
+    reinterpret_cast<Fn>(fn)(movie.inner, 0, &ev);
+    return true;
+}
+
 bool Events::send_key(const GFxMovie& movie, uint32_t key_code, bool down) {
     const uintptr_t fn = inner_method(movie, kGFxInnerHandleEvent);
     if (fn == 0 || movie.inner == 0) {
@@ -691,22 +747,14 @@ bool Events::send_key(const GFxMovie& movie, uint32_t key_code, bool down) {
 
     // The layout is documented on kGFxInnerHandleEvent. 0x14 covers the mouse-button field too, so
     // one shape serves every event the dispatcher reads.
-    struct GFxEvent {
-        uint32_t type;
-        uint32_t key;
-        uint8_t modifiers;
-        uint8_t ascii;
-        uint16_t pad;
-        uint32_t wchar_code;
-        uint32_t button;
-    } ev{};
+    GFxEventRaw ev{};
     ev.type = down ? 5u : 6u;
-    ev.key = key_code;
+    ev.key_or_x = key_code;
     // Deliberately NO character: the dispatcher turns a wchar >= 0x20 into a separate CHAR event,
     // which a navigation key must not produce or a text field would receive the arrow as typing.
-    ev.wchar_code = 0;
+    ev.wchar_or_y = 0;
 
-    using Fn = int(__fastcall*)(uintptr_t, uintptr_t, GFxEvent*);
+    using Fn = int(__fastcall*)(uintptr_t, uintptr_t, GFxEventRaw*);
     reinterpret_cast<Fn>(fn)(movie.inner, 0, &ev);
     return true;
 }

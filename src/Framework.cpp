@@ -9879,6 +9879,9 @@ std::string build_render_json(const std::string& request_target) {
         if (!key.empty() && code != 0) {
             accepted = mi.tap(code);
         }
+        if (q.find("controller") != q.end()) {
+            mi.set_controller_enabled(webapi_query_int(q, "controller", 1) != 0);
+        }
         std::string out;
         {
             JsonFields jf(out);
@@ -9889,7 +9892,9 @@ std::string build_render_json(const std::string& request_target) {
               .b("movie_available", mi.movie_available())
               .u("ui_mode", static_cast<size_t>(static_cast<uint32_t>(sdk::Events::ui_mode())))
               .u("sent", static_cast<size_t>(mi.sent()))
-              .u("refused", static_cast<size_t>(mi.refused()));
+              .u("refused", static_cast<size_t>(mi.refused()))
+              .b("controller", mi.controller_enabled())
+              .u("controller_keys", static_cast<size_t>(mi.controller_keys()));
         }
         return out;
     }

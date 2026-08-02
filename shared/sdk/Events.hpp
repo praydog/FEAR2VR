@@ -350,6 +350,18 @@ public:
     // Drive it from a Mod's on_frame, which the framework fans out from CClientShell::Update.
     static bool send_key(const GFxMovie& movie, uint32_t key_code, bool down);
 
+    // THE MOUSE, WHICH IS WHAT THIS MENU ACTUALLY LISTENS TO.
+    //
+    // Keys are delivered and IGNORED: two down presses moved nothing, verified by screenshot. The
+    // front end is pointer-driven -- AGENTS.md already recorded "cursor moves, highlight follows"
+    // -- so navigation means moving a pointer, not pressing arrows.
+    //
+    // `x`/`y` are in the movie's own coordinate space, which the dispatcher passes straight to
+    // vtable slot 34 along with the button mask it keeps at this[58].
+    static bool send_mouse_move(const GFxMovie& movie, int32_t x, int32_t y);
+    static bool send_mouse_button(const GFxMovie& movie, int32_t x, int32_t y, uint32_t button,
+                                  bool down);
+
     // Resolve one of the INNER (Scaleform) methods; use the kGFxInner* constants. 0 when unreadable.
     static uintptr_t inner_method(const GFxMovie& movie, uint32_t vtable_slot);
 

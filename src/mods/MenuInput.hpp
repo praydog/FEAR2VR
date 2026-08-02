@@ -45,6 +45,9 @@ public:
 
     // Drains the queue. Runs on the frame boundary rather than on_frame -- see on_initialize().
     void service();
+
+    // Reads the VR sticks and buttons and turns them into menu keys. Called by service().
+    void poll_controller();
     void on_shutdown() override {}
 
     // Flash key codes, which match the Windows virtual keys for everything a menu needs.
@@ -54,6 +57,12 @@ public:
     static constexpr uint32_t kRight = 39;
     static constexpr uint32_t kEnter = 13;
     static constexpr uint32_t kEscape = 27;
+
+    // Drive the menu from the VR controllers while the front end is up. On by default: a headset
+    // wearer has no keyboard, and the menu is the one screen they cannot get past without one.
+    void set_controller_enabled(bool on) { m_controller.store(on, std::memory_order_release); }
+    bool controller_enabled() const { return m_controller.load(std::memory_order_relaxed); }
+    uint64_t controller_keys() const { return m_controller_keys.load(std::memory_order_relaxed); }
 
     // Queue one press-and-release. False when the queue is full.
     bool tap(uint32_t key_code);
@@ -78,4 +87,21 @@ private:
     std::atomic<uint64_t> m_sent{0};
     std::atomic<uint64_t> m_refused{0};
     std::atomic<bool> m_movie_ok{false};
+    std::atomic<bool> m_controller{true};
+    std::atomic<uint64_t> m_controller_keys{0};
+
+    // Stick and button edge state, frame-boundary thread only.
+    //
+    // A STICK IS NOT A BUTTON: held past the threshold it must produce ONE key, then repeat at a
+    // readable rate, or a single nudge runs the whole menu past you. Frame counts rather than a
+    // clock because this is already driven from the frame boundary.
+    static constexpr float kStickOn = 0.6f;    // cross this to fire
+    static constexpr float kStickOff = 0.35f;  // fall back inside this to re-arm -- hysteresis, or
+                                               // a stick resting near the edge chatters
+    static constexpr uint32_t kRepeatDelay = 28;   // frames before the first repeat
+    static constexpr uint32_t kRepeatEvery = 9;    // and between repeats after that
+    int32_t m_stick_dir{0};        // -1 up, 0 centred, +1 down
+    int32_t m_stick_dir_x{0};
+    uint32_t m_repeat_countdown{0};
+    uint32_t m_last_buttons{0};
 };
