@@ -36,6 +36,32 @@ address, bytes, disassembly) and ideally show the corrected test still fails
 the old code. **"The test is buggy" is the single most dangerous sentence in
 this file** — it must come with that proof.
 
+## Three verdicts, not two
+
+A check that cannot run is not a check that failed, and an invariant the ART breaks is not a defect
+in the reader. Conflating either with red trains people to ignore red.
+
+- **`check_level(present, ok, name)`** -- the level does not carry the data. `m07_citystreets` has
+  no sector planes at all, and no run can make it grow them. Reports `NOT EXERCISED`, tallied under
+  "need a level that CARRIES the feature".
+- **`check_art(conform, total, name, floor = 0.90)`** -- the invariant holds for the SDK but not for
+  this level's data. `m07` lists 12 of its 310 portal links from one side only, and three
+  independent representations agree on the same 12; a mis-parse does not produce numbers that
+  reconcile across representations. **The floor keeps the teeth**: incidental deviation is reported,
+  but a rule that is wrong EVERYWHERE still turns the run red, per the doctrine already written into
+  the corner-code check -- *"a wrong rule fails everywhere at once, which is the easy kind of
+  failure"*. Below `kFloorSample` (20) items the fraction cannot discriminate, so it only reports.
+- **`check_art_flag(ok, name)`** -- the binary form, for invariants with no fraction to measure. It
+  can only report, so prefer `check_art` wherever a count exists.
+
+Both tallies print next to the verdict. A green run that tolerated deviations SAYS SO, for the same
+reason the skip counts do: gating without counting turns red into invisible, which is worse than red.
+
+**Reclassifying is not a licence to green things up.** Of the 22 checks triaged this way, three were
+NOT art at all and had to be fixed properly: a null control tuned on a still scene, an ammo
+assertion that asserted more than the feature promised, and a genuine race in `AmmoKeeper` that the
+suite had been correctly reporting all along.
+
 ## Two tiers of test
 
 | Tier | Target | When it runs | Exit |

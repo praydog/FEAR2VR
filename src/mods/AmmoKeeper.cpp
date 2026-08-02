@@ -71,8 +71,16 @@ void AmmoKeeper::on_frame() {
     // ceiling, and from then on the ceiling is the trigger. Firing still drops the
     // reserve below it and still triggers a top-up; what stops is asking for rounds
     // the game was never going to hand over.
+    //
+    // EQUALITY, NOT <=. A reserve that came back LOWER does not mean the grant was refused -- it
+    // means the player FIRED while the ask was in flight, and a burst is exactly when this mod is
+    // being used. Reading that as a ceiling pins it at whatever the reserve happened to be
+    // mid-burst, permanently, and the keeper then sits satisfied below the real ceiling and never
+    // tops up again. The fixture caught this by firing immediately after enabling the keeper.
+    //
+    // Declining to learn is the safe direction: the next sweep simply asks again.
     if (!m_pending.empty() && m_pending == ammo) {
-        if (*held <= m_pending_before) {
+        if (*held == m_pending_before) {
             m_ceiling_ammo = ammo;
             m_ceiling = *held;
             LOGX("[ammo] %s tops out at %d -- treating that as its floor", ammo.c_str(), *held);
