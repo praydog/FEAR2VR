@@ -49,6 +49,7 @@
 #include "mods/Comfort.hpp"
 #include "mods/RenderHook.hpp"
 #include "mods/RenderTimeline.hpp"
+#include "mods/MenuInput.hpp"
 #include "mods/UICapture.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
@@ -6792,6 +6793,19 @@ std::string build_shader_params_json(bool include_write_probes) {
     json_append_bool(out, "gfx_resolved", movie.has_value());
     if (movie.has_value()) {
         json_append_double(out, "gfx_slot", static_cast<double>(movie->slot), 0);
+        // The raw addresses. FEAR2.exe loads at its preferred base, so these paste straight into
+        // the exe IDB -- which is how the movie's engine-side vtable gets read at all.
+        {
+            char tmp[24];
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, movie->object);
+            json_append_string(out, "gfx_object", tmp);
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, movie->vtable);
+            json_append_string(out, "gfx_vtable", tmp);
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, movie->inner);
+            json_append_string(out, "gfx_inner", tmp);
+            snprintf(tmp, sizeof(tmp), "0x%08" PRIXPTR, movie->inner_vtable);
+            json_append_string(out, "gfx_inner_vtable", tmp);
+        }
         json_append_bool(out, "gfx_usable", sdk::Events::movie_usable(*movie));
         const auto* gcm = sdk::Modules::get().game_client();
         const bool vt_outside_gc = gcm == nullptr || gcm->base == 0 ||
@@ -9855,6 +9869,31 @@ std::string build_render_json(const std::string& request_target) {
     const size_t qpos = request_target.find('?');
     const std::string route = qpos == std::string::npos ? request_target : request_target.substr(0, qpos);
 
+    if (route == "/render/menu") {
+        // Drive the Scaleform front end through its own HandleEvent -- see mods/MenuInput.hpp for
+        // why nothing else reaches it.
+        auto& mi = MenuInput::get();
+        bool accepted = false;
+        const std::string key = webapi_query_string(q, "key");
+        const uint32_t code = key.empty() ? 0u : MenuInput::key_for(key);
+        if (!key.empty() && code != 0) {
+            accepted = mi.tap(code);
+        }
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true)
+              .b("accepted", accepted)
+              .b("key_known", key.empty() || code != 0)
+              .u("key_code", code)
+              .b("movie_available", mi.movie_available())
+              .u("ui_mode", static_cast<size_t>(static_cast<uint32_t>(sdk::Events::ui_mode())))
+              .u("sent", static_cast<size_t>(mi.sent()))
+              .u("refused", static_cast<size_t>(mi.refused()));
+        }
+        return out;
+    }
+
     if (route == "/render/ui") {
         auto& ui = UICapture::get();
         if (q.find("on") != q.end()) {
@@ -10544,6 +10583,7 @@ bool Framework::initialize() {
     Mods::get().add(&Accuracy::get());
     Mods::get().add(&RenderTimeline::get());
     Mods::get().add(&UICapture::get());
+    Mods::get().add(&MenuInput::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());

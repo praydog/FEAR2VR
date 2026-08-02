@@ -320,6 +320,36 @@ public:
     static constexpr uint32_t kGFxInnerSetVariableArray = 13;
     static constexpr uint32_t kGFxInnerInvoke = 18;
 
+    // Slot 33: GFxMovieView::HandleEvent(const GFxEvent&). THE INPUT DOOR.
+    //
+    // This is how the engine's own key and mouse events reach Scaleform, and it is the reason the
+    // front end has been undriveable. AGENT.MD records three routes that all fail -- SendInput, the
+    // window-message queue, and the engine's device array -- and they fail for the same reason: the
+    // menu does not read any of them, it reads a queue that HandleEvent fills and Advance drains
+    // (slot 28 pops it, types 5 and 6, and dispatches id 64/128 to every sprite).
+    //
+    // The event is a plain struct, read straight out of the dispatcher:
+    //
+    //     +0x00 uint32  type     1 mouse move, 2/3 mouse down/up, 5/6 key down/up,
+    //                            8 set focus, 9 kill focus, 0x0D char
+    //     +0x04 uint32  key code (or mouse x, or the character for type 0x0D)
+    //     +0x08 uint8   modifiers -- bit 3 caps, bit 4 num, bit 5 scroll
+    //     +0x09 uint8   ascii
+    //     +0x0C uint32  wchar -- pushed as a CHAR event too when >= 0x20 and not 127
+    //     +0x10 uint32  mouse button index, for types 2 and 3
+    //
+    // Key codes are Flash's, which match the Windows virtual keys for everything a menu needs:
+    // 38 up, 40 down, 37 left, 39 right, 13 enter, 27 escape.
+    static constexpr uint32_t kGFxInnerHandleEvent = 33;
+
+    // Send one key to the ACTIVE movie. Returns false when no movie resolves or the slot does not
+    // land inside the executable.
+    //
+    // THREAD AFFINITY: the game thread, and this one is not a formality -- Scaleform is being asked
+    // to mutate its own state, so calling it from the IPC thread races the engine's own Advance.
+    // Drive it from a Mod's on_frame, which the framework fans out from CClientShell::Update.
+    static bool send_key(const GFxMovie& movie, uint32_t key_code, bool down);
+
     // Resolve one of the INNER (Scaleform) methods; use the kGFxInner* constants. 0 when unreadable.
     static uintptr_t inner_method(const GFxMovie& movie, uint32_t vtable_slot);
 

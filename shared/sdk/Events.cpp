@@ -676,4 +676,39 @@ uintptr_t Events::inner_method(const GFxMovie& movie, uint32_t vtable_slot) {
     return mem::read_ptr(movie.inner_vtable + vtable_slot * sizeof(uintptr_t)).value_or(0);
 }
 
+bool Events::send_key(const GFxMovie& movie, uint32_t key_code, bool down) {
+    const uintptr_t fn = inner_method(movie, kGFxInnerHandleEvent);
+    if (fn == 0 || movie.inner == 0) {
+        return false;
+    }
+    // INSIDE THE EXE OR NOT AT ALL. The movie's vtable belongs to the engine, so a slot that
+    // resolves anywhere else means the read was wrong and calling it would jump into whatever
+    // happened to be there.
+    const auto* exe = Modules::get().exe();
+    if (exe == nullptr || exe->base == 0 || fn < exe->base || fn >= exe->base + exe->size) {
+        return false;
+    }
+
+    // The layout is documented on kGFxInnerHandleEvent. 0x14 covers the mouse-button field too, so
+    // one shape serves every event the dispatcher reads.
+    struct GFxEvent {
+        uint32_t type;
+        uint32_t key;
+        uint8_t modifiers;
+        uint8_t ascii;
+        uint16_t pad;
+        uint32_t wchar_code;
+        uint32_t button;
+    } ev{};
+    ev.type = down ? 5u : 6u;
+    ev.key = key_code;
+    // Deliberately NO character: the dispatcher turns a wchar >= 0x20 into a separate CHAR event,
+    // which a navigation key must not produce or a text field would receive the arrow as typing.
+    ev.wchar_code = 0;
+
+    using Fn = int(__fastcall*)(uintptr_t, uintptr_t, GFxEvent*);
+    reinterpret_cast<Fn>(fn)(movie.inner, 0, &ev);
+    return true;
+}
+
 }  // namespace sdk
