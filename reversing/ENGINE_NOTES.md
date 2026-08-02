@@ -4107,6 +4107,22 @@ How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRender
 `CLTRenderer_EndRenderTarget` (`char __stdcall(finish)`), both driving `g_SceneRenderer` (0x72E788),
 whose +0x174/+0x178/+0x17C/+0x180 are the dimensions and offsets `HudPassHook` already writes.
 
+### A menu must not be presented as a projection layer
+
+Reported from the headset: while paused, the view is stuck and it is nauseating.
+
+That is a projection layer keeping a promise it cannot: the layer type asserts "this image was
+rendered from the pose you gave me", and the compositor reprojects it against real head motion on
+that basis. While a menu is up the game's camera stops following the head, so the promise is false
+and the reprojection turns a frozen world into one that swings when the wearer looks -- which is
+both wrong and sickening.
+
+The host already had the right machinery and the right reasoning written down, reserved for the
+pre-tracking case: two quads, one per eye, claiming nothing. `xr::SharedFrameHeader::flat` lets the
+GAME trigger it, because only the game knows a menu is up -- and it is stamped from the SAME gate
+that decides whether the sticks navigate, since both are asking "has the game stopped following the
+head" and answering that twice would be two things to keep in step.
+
 ### Nothing that must work in a MENU may hang off CClientShell::Update
 
 Three separate features broke on this one fact, and each looked like its own bug:

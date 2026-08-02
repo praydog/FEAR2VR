@@ -187,6 +187,9 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     header->bgra = bgra ? 1u : 0u;
     header->layout = layout;
     header->host_sequence = host_sequence;
+    // Stamped on every frame rather than latched: the flag has to be true for exactly the frames a
+    // menu is up, and a stale one either reprojects a menu or flattens live gameplay.
+    header->flat = m_flat.load(std::memory_order_relaxed) ? 1u : 0u;
     header->slot = write_slot;
 
     // ONE memcpy, straight from the locked surface. Row-by-row would be tidier if the destination

@@ -153,6 +153,8 @@ struct SharedReader {
     // True when a COMPLETE frame newer than the last one is available.
     uint32_t layout() const { return header == nullptr ? 0u : header->layout; }
     uint32_t frame_host_sequence() const { return header == nullptr ? 0u : header->host_sequence; }
+    // The game asking to be shown FLAT -- see xr::SharedFrameHeader::flat. True while a menu is up.
+    bool frame_flat() const { return header != nullptr && header->flat != 0u; }
 
     bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
         if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
@@ -1353,7 +1355,19 @@ int main(int argc, char** argv) {
 
         const uint32_t rendered_seq = reader.frame_host_sequence();
         const PosePair& slot = pose_history[(rendered_seq / 2u) % 16u];
-        const bool pose_known = use_projection && rendered_seq != 0 && slot.sequence == rendered_seq;
+        // ---- THE GAME CAN ASK NOT TO BE PROJECTED ------------------------------------------
+        //
+        // While a menu is up the game's camera stops following the head, so a projection layer's
+        // promise -- "rendered from the pose you gave me" -- is false, and the compositor
+        // reprojects a frozen world against real head motion. That is the swimming, nauseating
+        // picture reported from the headset while paused.
+        //
+        // The quad path below already exists for exactly this reasoning; it was simply reserved
+        // for the pre-tracking case. `flat` lets the GAME trigger it, because only the game knows
+        // a menu is up.
+        const bool flat_requested = reader.frame_flat();
+        const bool pose_known =
+            !flat_requested && use_projection && rendered_seq != 0 && slot.sequence == rendered_seq;
 
         if (fs.shouldRender != XR_FALSE && screen_ready && pose_known) {
             if (!have_frame) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -92,6 +93,10 @@ private:
     uint32_t m_consecutive_timeouts{0};
     void* m_base{nullptr};
     std::string m_error;
+
+    // Whether the next published frames should be presented FLAT. Read on the render thread inside
+    // publish(), written from the frame boundary, so it is atomic rather than a plain bool.
+    std::atomic<bool> m_flat{false};
     uint32_t m_last_w{0};
     uint32_t m_last_h{0};
     int64_t m_last_ticks{0};

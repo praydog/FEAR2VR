@@ -21,9 +21,9 @@
 namespace xr {
 
 constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
-// 2 adds the UI layer block. The host VALIDATES this: a mismatched pair would otherwise read the
+// 3 adds the `flat` flag. The host VALIDATES this: a mismatched pair would otherwise read the
 // pixels at the wrong offset and show garbage rather than refusing.
-constexpr uint32_t kSharedFrameVersion = 2u;
+constexpr uint32_t kSharedFrameVersion = 3u;
 
 // Sized for the game's own back buffer at 2560x1440 BGRA. Deliberately NOT sized for a supersampled
 // future: the section is committed memory in both processes, and the resolution question is settled
@@ -83,6 +83,19 @@ struct alignas(64) SharedFrameHeader {
     // Declaring the current pose for an image rendered from an older one is the difference between
     // reprojection CORRECTING head motion and reprojection doing nothing while the image swims.
     uint32_t host_sequence;
+
+    // PRESENT THIS FLAT -- as a quad, not as a projection layer.
+    //
+    // A projection layer asserts "this image was rendered from the pose you just gave me", and the
+    // compositor reprojects it against head motion on that promise. While a MENU is up the game's
+    // camera stops following the head, so the promise is false and the reprojection turns a frozen
+    // world into one that swings when the wearer looks around -- reported from the headset as
+    // nauseating, which is exactly what it is.
+    //
+    // A quad claims nothing: a flat rectangle at a fixed place. The host already has that path for
+    // the pre-tracking case; this lets the GAME ask for it, because only the game knows a menu is
+    // up. Set whenever the front end or the pause menu is showing.
+    uint32_t flat;
 };
 
 // 128 now that the slot index is carried: alignas(64) rounds up, and the exact size matters far
