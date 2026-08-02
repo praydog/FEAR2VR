@@ -243,9 +243,30 @@ inject → test → uninject with the game never restarting.
      gameclient.dll took 13339, which is exactly the setup for renaming a
      hundred symbols into the wrong database. Always `list_instances` first and
      pick the port by BINARY NAME, never from memory of a previous session.
-   - Rename functions/globals in IDA as you map them (MCP `rename` batch; see
-     `skill://ida-friction` for the persistent-rename gotchas). Verify by
-     re-decompiling, and run `idb_save` when a mapping batch lands.
+   - **ANYTHING YOU REVERSE GETS NAMED IN THE IDB, IN THE SAME SESSION. This is
+     unconditional and does not need asking for.** It applies when reversing is
+     incidental to some other job -- fixing a bug, chasing a crash, adding a
+     feature -- exactly as much as when "map X" was the task. Most reversing here
+     happens on the way to something else, so a rule that only covers deliberate
+     mapping passes covers the minority of it.
+
+     The test is not "was this a reversing task" but **"did I learn what an
+     address is?"** If a `sub_XXXXXXXX` became meaningful to you, it gets a name
+     before you move on; if it is still a guess, it does not get a name at all.
+     Leaving it as `sub_` throws the finding away: the next session re-derives it,
+     and this project has re-derived the same structure three times.
+
+     Name FUNCTIONS, GLOBALS and VTABLES; comment the EVIDENCE (slot number,
+     offsets, how it was found) on anything load-bearing, because a name says
+     what and only the comment says how you know. MCP `rename` batch; see
+     `skill://ida-friction` for the persistent-rename gotchas. Verify by
+     re-decompiling, and `idb_save` when a batch lands.
+
+     **Do NOT rename a symbol that already has a good name.** Existing names are
+     cited from `reversing/*.md` and `fear2.genny`, and improving one to taste
+     silently orphans those references -- `g_vtbl_GFxMovie` was renamed for
+     precision and reverted for exactly this reason. Extra nuance belongs in a
+     comment, which costs nobody a broken citation.
    - The lithtech/FEAR sources in `I:\Programming\projects\fear-source-code`
      are *structural analogues* for naming (Build 69 ≈ FEAR1; FEAR2 is "Loki"),
      not ground truth for FEAR2's exact build.
