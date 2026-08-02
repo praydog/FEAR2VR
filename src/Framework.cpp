@@ -9894,7 +9894,11 @@ std::string build_render_json(const std::string& request_target) {
               .u("sent", static_cast<size_t>(mi.sent()))
               .u("refused", static_cast<size_t>(mi.refused()))
               .b("controller", mi.controller_enabled())
-              .u("controller_keys", static_cast<size_t>(mi.controller_keys()));
+              .u("controller_keys", static_cast<size_t>(mi.controller_keys()))
+              .b("hands_readable", mi.hands_readable())
+              .b("left_active", mi.left_active())
+              .f("stick_x", mi.stick_x(), 3)
+              .f("stick_y", mi.stick_y(), 3);
         }
         return out;
     }

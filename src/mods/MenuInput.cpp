@@ -5,7 +5,9 @@
 #include "Log.hpp"
 #include "RenderHook.hpp"
 #include "sdk/Events.hpp"
+#include "FramePublisher.hpp"
 #include "vr/runtimes/SimulatedRuntime.hpp"
+#include "xr/SharedFrame.hpp"
 
 MenuInput& MenuInput::get() {
     static MenuInput instance;
@@ -97,9 +99,33 @@ void MenuInput::poll_controller() {
         return;
     }
 
-    auto& rt = vr::simulated_runtime();
-    const auto left = rt.hand(vr::VRRuntime::Hand::LEFT);
-    const auto right = rt.hand(vr::VRRuntime::Hand::RIGHT);
+    // ---- STRAIGHT FROM THE HOST, NOT FROM THE SIMULATED RUNTIME -----------------------------
+    //
+    // VR ingests the controller block in its per-frame update, and that update is fanned out from
+    // CClientShell::Update -- which does not tick at the MAIN MENU. So at the one screen this mod
+    // exists for, the simulated runtime holds whatever the controllers were doing when the world
+    // last ran, which is nothing. Reading the shared block here bypasses the dead path entirely.
+    //
+    // Same seqlock discipline VR uses: odd means mid-write, and the sequence is re-read after the
+    // copy so a block that moved underneath us is discarded rather than believed.
+    const auto* hands = FramePublisher::get().hands_state();
+    if (hands == nullptr) {
+        return;
+    }
+    const uint32_t seq = hands->sequence;
+    if ((seq & 1u) != 0u) {
+        return;
+    }
+    const xr::HandsState snap = *hands;
+    if (hands->sequence != seq) {
+        return;
+    }
+    const auto& left = snap.hand[xr::kHandLeft];
+    const auto& right = snap.hand[xr::kHandRight];
+    m_hands_ok.store(true, std::memory_order_relaxed);
+    m_left_active.store(left.active != 0u, std::memory_order_relaxed);
+    m_stick_x.store(left.stick[0], std::memory_order_relaxed);
+    m_stick_y.store(left.stick[1], std::memory_order_relaxed);
 
     // ---- THE STICK, VERTICALLY AND HORIZONTALLY -------------------------------------------
     //
@@ -107,9 +133,9 @@ void MenuInput::poll_controller() {
     // once here rather than at each use.
     const int32_t was_y = m_stick_dir;
     const int32_t was_x = m_stick_dir_x;
-    if (left.active) {
-        m_stick_dir = stick_dir(-left.thumbstick[1], m_stick_dir, kStickOn, kStickOff);
-        m_stick_dir_x = stick_dir(left.thumbstick[0], m_stick_dir_x, kStickOn, kStickOff);
+    if (left.active != 0u) {
+        m_stick_dir = stick_dir(-left.stick[1], m_stick_dir, kStickOn, kStickOff);
+        m_stick_dir_x = stick_dir(left.stick[0], m_stick_dir_x, kStickOn, kStickOff);
     } else {
         m_stick_dir = 0;
         m_stick_dir_x = 0;
@@ -144,15 +170,15 @@ void MenuInput::poll_controller() {
     //
     // Rising edges on the RIGHT hand, which is where they sit in game too (A jumps, B reloads), so
     // the thumb does not have to learn a second place for "yes".
-    if (right.active) {
+    if (right.active != 0u) {
         const uint32_t now = right.buttons;
         const uint32_t pressed = now & ~m_last_buttons;
         m_last_buttons = now;
-        if ((pressed & vr::VRRuntime::kButtonA) != 0u) {
+        if ((pressed & xr::kHandButtonA) != 0u) {
             tap(kEnter);
             m_controller_keys.fetch_add(1, std::memory_order_relaxed);
         }
-        if ((pressed & vr::VRRuntime::kButtonB) != 0u) {
+        if ((pressed & xr::kHandButtonB) != 0u) {
             tap(kEscape);
             m_controller_keys.fetch_add(1, std::memory_order_relaxed);
         }

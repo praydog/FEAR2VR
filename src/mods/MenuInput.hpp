@@ -64,6 +64,14 @@ public:
     bool controller_enabled() const { return m_controller.load(std::memory_order_relaxed); }
     uint64_t controller_keys() const { return m_controller_keys.load(std::memory_order_relaxed); }
 
+    // What the mod is reading right now. Published because "the stick does nothing" has two very
+    // different causes -- no controller data reaching us, or data that never crosses the threshold
+    // -- and they need different fixes.
+    bool hands_readable() const { return m_hands_ok.load(std::memory_order_relaxed); }
+    bool left_active() const { return m_left_active.load(std::memory_order_relaxed); }
+    float stick_x() const { return m_stick_x.load(std::memory_order_relaxed); }
+    float stick_y() const { return m_stick_y.load(std::memory_order_relaxed); }
+
     // Queue one press-and-release. False when the queue is full.
     bool tap(uint32_t key_code);
 
@@ -89,6 +97,10 @@ private:
     std::atomic<bool> m_movie_ok{false};
     std::atomic<bool> m_controller{true};
     std::atomic<uint64_t> m_controller_keys{0};
+    std::atomic<bool> m_hands_ok{false};
+    std::atomic<bool> m_left_active{false};
+    std::atomic<float> m_stick_x{0.0f};
+    std::atomic<float> m_stick_y{0.0f};
 
     // Stick and button edge state, frame-boundary thread only.
     //
