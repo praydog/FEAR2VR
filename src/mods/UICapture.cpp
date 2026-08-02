@@ -286,6 +286,17 @@ void UICapture::on_present() {
 
 void UICapture::on_shutdown() {
     m_enabled.store(false, std::memory_order_release);
+
+    // RETIRE THE LAYER HERE, not on the next present -- there is no next present. The frame
+    // callbacks are retired before this runs, so the usual "publish nothing once disabled" path
+    // never executes on an uninject, and the host would go on showing the last HUD it was given:
+    // a frozen ammo counter floating in the headset over a game that is no longer modded.
+    //
+    // Safe from here: it writes the shared header, which needs no device and no game thread.
+    if (m_published.exchange(false, std::memory_order_acq_rel)) {
+        FramePublisher::get().publish_ui(nullptr, 0, 0, 0, true, true, true);
+    }
+
     free_device_resources();
 }
 
