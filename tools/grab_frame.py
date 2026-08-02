@@ -1,7 +1,7 @@
 """Save what the game is ACTUALLY rendering, from the shared frame mapping.
 
 Every claim about the viewmodel in this project has so far been a claim about a socket transform or
-a counter -- never about a pixel. `AGENT.MD` records that the engine's own desktop capture returns
+a counter -- never about a pixel. `AGENTS.md` records that the engine's own desktop capture returns
 black, so "take a screenshot" had no answer and the question went unasked.
 
 It has one now: the VR pipeline already publishes the finished frame into `Local\\fear2vr_frame` for

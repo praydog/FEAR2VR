@@ -32,7 +32,7 @@ std::atomic<uint32_t> g_callback_count{0};
 std::atomic<uint32_t> g_dispatch_in_flight{0};
 
 // __thiscall(this) in the original; the detour form for x86 is __fastcall with the edx placeholder
-// (AGENT.MD rule 1). Returns int, which the engine's own tail call produces.
+// (AGENTS.md rule 1). Returns int, which the engine's own tail call produces.
 int __fastcall present_detour(void* self, void* /*edx*/) {
     // SAME-PHASE READ. The gate above this function requires the renderer state to equal 1, and this is the
     // only place that claim can be checked against the frame it describes -- an IPC-thread read lands in a
@@ -90,7 +90,7 @@ int __fastcall present_detour(void* self, void* /*edx*/) {
     if (hook == nullptr) {
         return 0;
     }
-    // original<Fn*>(), NOT call<>(). AGENT.MD rule 7 says so and this is why it is a rule: safetyhook's call<>
+    // original<Fn*>(), NOT call<>(). AGENTS.md rule 7 says so and this is why it is a rule: safetyhook's call<>
     // uses the compiler's DEFAULT convention (__cdecl on x86) and takes a scoped_lock on the hook.
     //
     // Both halves are fatal here. The original is __thiscall, so __cdecl put `this` on the stack instead of

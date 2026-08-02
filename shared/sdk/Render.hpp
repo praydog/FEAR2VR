@@ -200,7 +200,7 @@ public:
     // Slots 37, 38 and 34. THE RENDER-TARGET SURFACE, which is what isolating the UI turns on: the HUD is
     // drawn into whatever target is bound after the scene, so "which target, bound by whom" is the first
     // question. Arm an EXECUTE watch on set_render_target_fn() and read the callers -- that is how
-    // LTRenderer_PresentAndSync was found from slot 17, and AGENT.MD rule 5 requires it over a scan.
+    // LTRenderer_PresentAndSync was found from slot 17, and AGENTS.md rule 5 requires it over a scan.
     static std::optional<uintptr_t> set_render_target_fn();
     static std::optional<uintptr_t> get_render_target_fn();
     // Slot 34, the target-to-target blit. On the same trail: a scene rendered offscreen reaches the back

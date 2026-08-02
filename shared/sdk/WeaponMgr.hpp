@@ -245,7 +245,7 @@ public:
     // spawn nearer than the gun. A pointer the game maintains cannot be fooled that way.
     //
     // THE OFFSET IS THE SCHEMA'S, not this header's: `regenny::CClientWeapon::model_object`. It was
-    // briefly a `static constexpr uintptr_t` here, which AGENT.MD rule 9b forbids for exactly the
+    // briefly a `static constexpr uintptr_t` here, which AGENTS.md rule 9b forbids for exactly the
     // reason it exists -- a layout restated in C++ is a second source of truth that rots silently
     // the moment the .genny changes.
     //

@@ -32,7 +32,7 @@
 // ABI, from the disassembly and not from the decompiler's guess:
 //     __thiscall, `this` in ecx
 //     three 4-byte stack arguments -- BOTH exits are `retn 0Ch`
-// An x86 detour is written `__fastcall(this, edx_dummy, ...)` (AGENT.MD rule 1). That works because fastcall
+// An x86 detour is written `__fastcall(this, edx_dummy, ...)` (AGENTS.md rule 1). That works because fastcall
 // is callee-cleans and emits the matching `retn 0Ch`; a wrong arity would corrupt esp on every call, so the
 // count comes from the return instruction.
 class ViewHook final : public Mod {

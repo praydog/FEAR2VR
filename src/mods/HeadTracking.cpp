@@ -23,7 +23,7 @@ std::atomic<float> g_readback[4]{};
 std::atomic<bool> g_readback_ok{false};
 
 // __thiscall(this) with no stack arguments -- `this` is the camera holder, the same object ClampPitch reads
-// +324 from. x86 detour form is __fastcall with the edx placeholder (AGENT.MD rule 1).
+// +324 from. x86 detour form is __fastcall with the edx placeholder (AGENTS.md rule 1).
 void __fastcall attached_rotation_detour(void* self, void* /*edx*/) {
     g_writer_calls.fetch_add(1, std::memory_order_relaxed);
     const auto holder = reinterpret_cast<uintptr_t>(self);

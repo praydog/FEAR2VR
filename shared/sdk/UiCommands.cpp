@@ -69,7 +69,7 @@ uintptr_t UiCommands::table_address() {
             return 0;
         }
         // kananlib does both halves: find the literal, then find the pointer to it. Hand-rolling either would
-        // be the image-scan mistake AGENT.MD rule 6 already records.
+        // be the image-scan mistake AGENTS.md rule 6 already records.
         const auto str = utility::scan_string(gc->handle, kAnchorName, true);
         if (!str.has_value()) {
             return 0;

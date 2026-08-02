@@ -778,7 +778,7 @@ resolves module handles once, and the normal unattended path injects AT THE MAIN
 "module unresolved (no session yet?)" forever, including thirty seconds into a loaded world with the
 DLL plainly present.
 
-`Modules::resolve_lazy_module()` re-resolves on demand, which is AGENT.MD rule 6's retryable-versus-
+`Modules::resolve_lazy_module()` re-resolves on demand, which is AGENTS.md rule 6's retryable-versus-
 definitive split applied to the module table rather than to a function-local static. After it,
 injecting at the menu and loading a world gives `fr_hooked=true` within seconds.
 
@@ -1169,7 +1169,7 @@ Ask the weapon, do not search the world. The field holds the LTObject the weapon
 survived four weapons and three switches unchanged.
 
 **The offset lives in `fear2.genny`, not in C++.** It was first written as a
-`static constexpr uintptr_t kWeaponModelObject = 0x38` in `sdk/WeaponMgr.hpp`, which AGENT.MD rule
+`static constexpr uintptr_t kWeaponModelObject = 0x38` in `sdk/WeaponMgr.hpp`, which AGENTS.md rule
 9b forbids for exactly the reason the rule exists: a layout restated in C++ is a second source of
 truth that rots silently the moment the schema changes. It is now
 `regenny::CClientWeapon::model_object`, generated, and the compiler derives the offset.
@@ -4100,7 +4100,7 @@ what it actually does). And the 640x360 target is the auxiliary view `CameraPass
 already counts.
 
 How the bracket was found: an EXECUTE watchpoint on `IDirect3DDevice9::SetRenderTarget` (slot 37,
-`sdk::Render::set_render_target_fn()`), per AGENT.MD rule 5. Its caller candidates named
+`sdk::Render::set_render_target_fn()`), per AGENTS.md rule 5. Its caller candidates named
 `SceneRenderer_BeginRenderTarget` -> `sub_620C55` -> `sub_6131C6` -> `call [ecx+0x94]`, where 0x94 is
 37*4 -- confirming the slot from the other end. The wrappers are
 `CLTRenderer_BeginRenderTarget` (`bool __stdcall(target, _, offsets, _)`) and

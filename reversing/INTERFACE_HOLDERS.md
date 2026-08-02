@@ -2,7 +2,7 @@
 
 Recovered by reversing `CAPIHolder_ctor` (FEAR2_dump.exe `0x4050DB`) and
 enumerating all 147 of its call sites. Names are LithTech-SDK **analogues**
-(AGENT.MD rule 9 -- the shipping build has no RTTI); the layout facts are
+(AGENTS.md rule 9 -- the shipping build has no RTTI); the layout facts are
 FEAR2 ground truth.
 
 ## What the mechanism is

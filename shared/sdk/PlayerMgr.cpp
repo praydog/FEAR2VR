@@ -901,7 +901,7 @@ using GetActiveCameraClampFn = float*(__thiscall*)(void* self, float* out);
 
 GetActiveCameraClampFn get_active_camera_clamp_fn() {
     // RETRYABLE, not latched-on-failure: gameclient is a separately loaded module and a caller
-    // reaching here before Modules::initialize() must be able to succeed later (AGENT.MD rule 5).
+    // reaching here before Modules::initialize() must be able to succeed later (AGENTS.md rule 5).
     static GetActiveCameraClampFn s_fn = nullptr;
 
     if (s_fn == nullptr) {
@@ -915,7 +915,7 @@ GetActiveCameraClampFn get_active_camera_clamp_fn() {
 
 // SEH-ISOLATED: calling into gameclient with a holder that has just been freed is a fault, not a
 // null. Its own free function with POD-only locals and a POD return, because MSVC C2712 forbids
-// __try in any scope holding a non-trivial local (AGENT.MD rule 6).
+// __try in any scope holding a non-trivial local (AGENTS.md rule 6).
 bool seh_get_camera_clamp(GetActiveCameraClampFn fn, uintptr_t holder, float* out) {
     bool ok = false;
     KANANLIB_SEH_TRY {
@@ -944,7 +944,7 @@ constexpr const char* kApplyLookToRotation =
 using ApplyLookToRotationFn = void(__thiscall*)(void* camera, float* delta);
 
 ApplyLookToRotationFn apply_look_fn() {
-    // RETRYABLE: gameclient may not be mapped yet (AGENT.MD rule 5).
+    // RETRYABLE: gameclient may not be mapped yet (AGENTS.md rule 5).
     static ApplyLookToRotationFn s_fn = nullptr;
 
     if (s_fn == nullptr) {

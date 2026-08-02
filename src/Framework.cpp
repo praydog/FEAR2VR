@@ -341,7 +341,7 @@ public:
         m_out += tmp;
         return *this;
     }
-    // Explicit absence -- never an invented zero (see AGENT.MD's fail-closed convention and the
+    // Explicit absence -- never an invented zero (see AGENTS.md's fail-closed convention and the
     // /api/* contract's "absent values are null" rule). Used throughout the /api/* builders below.
     JsonFields& n(const char* k) {
         key(k);
@@ -6287,7 +6287,7 @@ std::string build_shader_params_json(bool include_write_probes) {
 
     // ---- THE VIEW HOOK ------------------------------------------------------------------------
     //
-    // Data only, per AGENT.MD rule 2: the pass/fail judgement lives host-side. What matters here is that the
+    // Data only, per AGENTS.md rule 2: the pass/fail judgement lives host-side. What matters here is that the
     // CALL COUNT is exposed, because "the hook is installed" is a static shape and never sufficient -- the
     // suite polls this twice and requires it to ADVANCE (TESTING.MD rule 3).
     {
@@ -6339,7 +6339,7 @@ std::string build_shader_params_json(bool include_write_probes) {
         // exact bob detector, and checks affected by bob can be mode-aware instead of the suite dictating a
         // graphics setting. Forcing it off would mean only ever testing a mode no player uses, and bob-on is
         // what exposed four real defects.
-        // THE CLOCK'S ADDRESS, published so a watchpoint can be pointed at it. This is the workflow AGENT.MD
+        // THE CLOCK'S ADDRESS, published so a watchpoint can be pointed at it. This is the workflow AGENTS.md
         // prescribes for "what updates X": publish the address, trap the store, then read the writer in IDA.
         if (const auto ck = sdk::Engine::client_time_addresses()) {
             char tmp[32];
@@ -9015,7 +9015,7 @@ std::string build_engine_hook_json(const std::string& name) {
 
 // =====================================================================================
 // /api/* -- read-only endpoints for the browser-based inspector (WebUi). Diagnostics
-// only, per AGENT.MD rule 2: reads go through sdk:: accessors and sdk::mem guarded
+// only, per AGENTS.md rule 2: reads go through sdk:: accessors and sdk::mem guarded
 // readers, nothing here calls into the engine, and absence is always JSON `null`,
 // never an invented zero (see PlayerStats/TimerState/etc. below).
 // =====================================================================================
@@ -10380,7 +10380,7 @@ std::string build_api_vars_json(const WebApiQuery& q) {
 //
 // Read-only. It walks buckets through snapshot_objects (POD copied out, no
 // engine pointers held), which is exactly what makes it sound to run from the
-// IPC thread -- see AGENT.MD rule 6 on thread affinity.
+// IPC thread -- see AGENTS.md rule 6 on thread affinity.
 std::string build_spawns_json(const std::string& request_target) {
     const WebApiQuery q = webapi_parse_query(request_target);
     // OT_PARTICLESYSTEM by default: the bucket effects land in.

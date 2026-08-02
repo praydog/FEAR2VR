@@ -12,7 +12,7 @@
 // ---- DRIVING THE FRONT END ------------------------------------------------
 //
 // The main menu is Scaleform, and it ignores every input this project could
-// previously produce. AGENT.MD records three measured failures -- SendInput, the
+// previously produce. AGENTS.md records three measured failures -- SendInput, the
 // window-message key queue, and the engine's own device array -- and the reason
 // is the same for all three: the menu reads NONE of them. It reads a queue that
 // `GFxMovieView::HandleEvent` fills and `Advance` drains.

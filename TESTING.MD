@@ -671,7 +671,7 @@ Rank the options and pick the highest feasible one:
 - **gameserver.dll is lazy.** Absent at main menu is not a bug.
 - **The game keeps running between iterations.** Dormant leftovers show in
   `injector --status` and are not evidence of failure.
-- **kananlib first (hard rule -- see AGENT.MD 6 for the API table).** Never
+- **kananlib first (hard rule -- see AGENTS.md 6 for the API table).** Never
   reimplement module/scan/SEH/instruction-decode gadgets. If you are writing a
   memory loop, a `VirtualQuery` walk, a byte search, or an operand decoder,
   stop and look in `I:\Programming\projects\kananlib\include\utility` first.
@@ -1029,7 +1029,7 @@ letting it change the world rather than against.
 ## The runner could never launch the game, and nobody noticed for months
 
 `fixture_test_runner` spawned `FEAR2.exe` with `CreateProcessW`. That CANNOT WORK: the on-disk exe
-is CEG/SteamStub-wrapped and refuses a direct launch, which AGENT.MD has stated since the project
+is CEG/SteamStub-wrapped and refuses a direct launch, which AGENTS.md has stated since the project
 was scaffolded. The branch is only reached when no game is already running, and in practice one
 always was -- so the bug sat behind a condition that never fired until the game crashed mid-session
 and ctest started reporting a launch failure that read like a broken fixture.

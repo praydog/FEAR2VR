@@ -74,7 +74,7 @@ Slot* claim_slot(uint32_t vk) {
     return nullptr;
 }
 
-// __thiscall(this) with no arguments, so __fastcall with the edx placeholder (AGENT.MD rule 1).
+// __thiscall(this) with no arguments, so __fastcall with the edx placeholder (AGENTS.md rule 1).
 void __fastcall poll_detour(void* self, void* /*edx*/) {
     // APPLIED BEFORE THE ORIGINAL, deliberately. These writes go to the INCOMING bank, which is exactly what
     // the poll then shifts into current -- so the engine's own pipeline produces the press edge instead of us

@@ -396,7 +396,7 @@ class LTConVarTable 0x424 {
 // The NAMES below are SOURCE-ANALOGUE ALIASES, not FEAR2-confirmed. They
 // come from lithtech/sdk/inc/ltbasedefs.h's object-type enum (OT_NORMAL..
 // OT_PARTICLESYSTEM occupy exactly 0..6 there, and FEAR2 has exactly 7
-// buckets -- a strong structural match). Per AGENT.MD rule 9 the FEAR1/
+// buckets -- a strong structural match). Per AGENTS.md rule 9 the FEAR1/
 // LithTech sources are analogues for NAMING ONLY, never ground truth for
 // this build, and two observations argue for caution: OT_LIGHT (4) held
 // ZERO objects in a fully-loaded scene, and OT_CAMERA (5) held 474 --
@@ -869,7 +869,7 @@ class LTAttachment 0x30 {
 // call sites: 2 = position, 4 = rotation, 6 = both, 8 = flags, 0x10 = +0x30,
 // 0x4000 = dims. Slots 10-15 of the simple types are ICF-folded shared stubs
 // (0x651914 is `nullsub`, reached from 55 different vtable slots) -- see
-// AGENT.MD on not over-claiming from folded bodies.
+// AGENTS.md on not over-claiming from folded bodies.
 class LTObject 0xCC {
     void* vtable          @0x00 [[code]]
     uint8_t color_b       @0x04   // CONFIRMED the BLUE channel, and the whole field is finally explained. CLTClient_SetObjectRGB writes `obj[6]=r, obj[5]=g, obj[4]=b` -- so the byte order on disk is B, G, R, A and the dword reads 0xAARRGGBB. CLTClient_GetObjectColor hands out that whole dword from +0x04, and CLTClient_SetObjectColor writes it back. // THIS RESOLVES AN OLD "MEANING UNMAPPED": the note here used to read "ctor writes all four bytes as 0xFF, live 0xFFFFFFFF on 3265/3583, a -1 none default". It is not a sentinel at all -- 0xFFFFFFFF is WHITE, FULLY OPAQUE, which is exactly what a constructor should set. // NOTE THE REFERENCE DISAGREES ON ORDER: its LTObject declares m_ColorR, m_ColorG, m_ColorB, m_ColorA in that sequence, i.e. red first. FEAR 2 stores blue first. The concept transfers, the byte order does not.
@@ -1085,7 +1085,7 @@ class LTWorldModelObject 0x13C {
 // which is why it inherits the cached transform pair and adds only 4 bytes:
 // 320 - 316 == the uint16 below plus padding.
 //
-// NAME IS A LithTech-SDK ANALOGUE (AGENT.MD rule 9): the shipping build has no
+// NAME IS A LithTech-SDK ANALOGUE (AGENTS.md rule 9): the shipping build has no
 // RTTI, so "camera" comes from the reference enum's ordering, not from FEAR2.
 // The inherited transform-plus-inverse is exactly a view-matrix pair, which fits
 // a camera -- but now that the pair is known to come from WorldModel it is much
@@ -2555,7 +2555,7 @@ class LTObjectHandleTable 0x10 {
 // offset before this pass; this formalizes it into the regenny convention).
 // Live instance via g_pClientMgr: FEAR2.exe base + RVA 0x2ECCA0
 // (FEAR2_dump.exe VA 0x6ECCA0; FEAR2.exe loads at its preferred base
-// 0x400000 at runtime -- see AGENT.MD's "IDB truth vs runtime truth" note --
+// 0x400000 at runtime -- see AGENTS.md's "IDB truth vs runtime truth" note --
 // so the dump VA is directly usable as the RVA source, not just a hint).
 //
 // client_shell/updating: CONFIRMED live (2026-07) via TWO independent paths
@@ -2636,7 +2636,7 @@ class LTObjectHandleTable 0x10 {
 // Note (4) is suggestive, not decisive -- an embedded subobject at offset 0
 // is layout-INDISTINGUISHABLE from direct fields, so no binary access
 // pattern can prove or disprove a purely nominal wrapper. That cuts both
-// ways: it cannot be confirmed either, and AGENT.MD rule 9 says FEAR2 is
+// ways: it cannot be confirmed either, and AGENTS.md rule 9 says FEAR2 is
 // ground truth and the source drop is a NAMING hint only. So the lists stay
 // declared directly on CClientMgr. Do not re-import this nesting from the
 // source drop without FEAR2-side evidence.

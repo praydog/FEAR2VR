@@ -763,7 +763,7 @@ public:
     // matching `retn 0Ch`. Getting the arity wrong here corrupts esp at every call, so it is pinned by the
     // return instruction, not by the prototype Hex-Rays guessed.
     //
-    // 0 until gameclient.dll is resolved; the caller may retry (RETRYABLE, per AGENT.MD rule 5).
+    // 0 until gameclient.dll is resolved; the caller may retry (RETRYABLE, per AGENTS.md rule 5).
     static uintptr_t apply_look_delta_fn();
 
     // PlayerCamera_UpdateViewPose, the PER-FRAME half of the view path.

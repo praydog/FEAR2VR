@@ -48,7 +48,7 @@ uintptr_t Modules::scan_game_server(const char* pattern, const char* name) const
         // normal unattended path is AT THE MAIN MENU -- gameserver.dll does not exist yet. Latching
         // that absence meant the module stayed "unresolved" for the entire session even after a
         // world loaded, so FireRedirect's retry loop re-scanned forever against a null handle and
-        // the fire hooks never installed. AGENT.MD rule 6's retryable-versus-definitive split,
+        // the fire hooks never installed. AGENTS.md rule 6's retryable-versus-definitive split,
         // in its module-table form.
         //
         // Measured: injected at the menu, then in-world for 30 s, the log repeated

@@ -71,7 +71,7 @@ public:
 
     // THE TIMER NODE BEHIND THE CLOCK, and the answer to "what stops engine time".
     //
-    // Found the way AGENT.MD prescribes: a hardware write watch on the live millisecond field named the store
+    // Found the way AGENTS.md prescribes: a hardware write watch on the live millisecond field named the store
     // (0x00415A1A), the stack named its callers, and the decompiled function gave the layout. No offset
     // scanning, no guessing -- see reversing/MAPPING_WORKFLOW.MD for why that distinction is load-bearing here.
     //

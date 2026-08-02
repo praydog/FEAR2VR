@@ -74,7 +74,7 @@ def header(iface, instances):
         "// interface's engine-side NAME and the holder slots carrying its",
         "// pointer, NOT any vtable layout or member offset. Adding a method",
         "// requires reversing that vtable and mapping it in fear2.genny first",
-        "// (AGENT.MD 5a).",
+        "// (AGENTS.md 5a).",
         "//",
         "// A getter may return nullptr: the interface database fills slots via",
         "// APIFound() and clears them via APIRemoved(), so null means \"not",

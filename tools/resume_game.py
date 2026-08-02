@@ -335,7 +335,7 @@ def main():
 
     # A DEAD PLAYER IN A LOADED WORLD is its own case: the world is fine, so Menu.StartCheckpoint
     # (a MENU command) is not the route -- `LoadCheckpoint` is, and it only works from inside a
-    # world, which is exactly where we are. AGENT.MD records the mode split: Menu.StartCheckpoint
+    # world, which is exactly where we are. AGENTS.md records the mode split: Menu.StartCheckpoint
     # is mode 8, LoadCheckpoint mode 9, and each refuses the other's context.
     if sp.get("ws_world_loaded") and "ps_alive" in sp and not sp.get("ps_alive"):
         print("[resume] in-world but the player is DEAD -- reloading the checkpoint")

@@ -25,7 +25,7 @@
 //
 // An EXECUTE watchpoint on the live d3d9.dll Present entry (`/watch/arm?type=exec`). Present runs every frame,
 // so the trap needed no player input; its caller candidates named LTRenderer_PresentAndSync directly and
-// CLTRenderer_SwapBuffers above it. See AGENT.MD rule 5 -- an offset scan could not have answered this.
+// CLTRenderer_SwapBuffers above it. See AGENTS.md rule 5 -- an offset scan could not have answered this.
 //
 // ---- WHAT IT MEASURES, AND WHY IN-HOOK ----------------------------------------------------------------------
 //

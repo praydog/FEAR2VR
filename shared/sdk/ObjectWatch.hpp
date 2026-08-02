@@ -47,7 +47,7 @@ namespace sdk {
 //
 // THREAD AFFINITY: this copies POD out through `CClientMgr::snapshot_objects`
 // and holds no engine pointers, so it is safe to drive from a diagnostic thread
-// -- the same reason that method exists (AGENT.MD rule 6). What it is NOT is
+// -- the same reason that method exists (AGENTS.md rule 6). What it is NOT is
 // internally synchronised: one `ObjectWatch` belongs to one caller.
 class ObjectWatch {
 public:

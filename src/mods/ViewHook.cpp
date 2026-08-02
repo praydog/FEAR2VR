@@ -340,7 +340,7 @@ void apply_override(bool decrement) {
     }
 }
 
-// The detour. `edx` is the dummy that makes an x86 __thiscall reachable as __fastcall (AGENT.MD rule 1), and
+// The detour. `edx` is the dummy that makes an x86 __thiscall reachable as __fastcall (AGENTS.md rule 1), and
 // the three stack arguments match `retn 0Ch` at both of the original's exits.
 //
 // STAY LEAN AND NEVER THROW. This runs inside the camera update on the engine's thread every frame; anything

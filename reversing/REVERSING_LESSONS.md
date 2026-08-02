@@ -1065,7 +1065,7 @@ How to identify what a function or field IS, and the attribution errors that rec
   handful of functions that most directly back a field/offset you're about
   to commit to `fear2.genny` — cite the vtable slot, the offset it reads,
   and the live sample count that confirmed it.
-- `idb_save` after every batch that lands (AGENT.MD rule 9).
+- `idb_save` after every batch that lands (AGENTS.md rule 9).
 
 ## Phase 2 technique notes: live verification
 

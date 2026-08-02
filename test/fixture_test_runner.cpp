@@ -697,7 +697,7 @@ struct SpawnedProcess {
 // BRING THE GAME UP THE ONLY WAY IT COMES UP: through Steam, via tools/resume_game.py.
 //
 // This used to CreateProcessW the exe directly, and that CANNOT WORK -- the on-disk FEAR2.exe is
-// CEG/SteamStub-wrapped and refuses a direct launch (AGENT.MD rule 9 and the launcher notes say so
+// CEG/SteamStub-wrapped and refuses a direct launch (AGENTS.md rule 9 and the launcher notes say so
 // explicitly). The bug hid for the entire life of the runner because the branch only executes when
 // no game is already running, and in practice one always was. The moment the game crashed, ctest
 // started reporting a launch failure that looked like a broken fixture rather than a runner that

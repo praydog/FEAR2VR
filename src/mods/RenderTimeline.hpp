@@ -35,7 +35,7 @@
 // turn a list of targets into "this target received the two scene passes, that one
 // received the ten 2D passes", which is the actual finding.
 //
-// DIAGNOSTIC ONLY. It records and reports; it changes nothing. Per AGENT.MD rule 2
+// DIAGNOSTIC ONLY. It records and reports; it changes nothing. Per AGENTS.md rule 2
 // it renders no verdict -- the host decides what the numbers mean.
 class RenderTimeline final : public Mod {
 public:

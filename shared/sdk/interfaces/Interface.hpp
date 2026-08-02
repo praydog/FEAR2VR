@@ -34,7 +34,7 @@ namespace sdk::interfaces {
 // The generated classes are empty by design: no fields, no methods. What is
 // proven is each interface's NAME and the holder slots carrying its pointer --
 // not any vtable or member offset. Adding a method requires reversing that
-// vtable and mapping it in reversing/fear2.genny first (AGENT.MD 5a). Until
+// vtable and mapping it in reversing/fear2.genny first (AGENTS.md 5a). Until
 // then a typed handle is exactly as much as the evidence supports: it buys
 // type-distinct plumbing without inventing structure.
 

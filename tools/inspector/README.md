@@ -7,7 +7,7 @@ no frameworks, no CDN. It only ever performs `GET` requests.
 **This tool is READ-ONLY. It never calls any game/engine function and never
 writes game memory.** Every value it shows comes from the DLL's own
 diagnostics endpoints, which themselves only read memory through the SDK's
-guarded readers (see `AGENT.MD` / `TESTING.MD` in the repo root). The one
+guarded readers (see `AGENTS.md` / `TESTING.MD` in the repo root). The one
 pre-existing endpoint that mutates DLL state, `/unload`, is intentionally
 **not** exposed anywhere in this UI (not even on the Raw tab) so a stray
 click can't unload the mod out from under you.

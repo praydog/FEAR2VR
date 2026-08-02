@@ -323,7 +323,7 @@ public:
     // Slot 33: GFxMovieView::HandleEvent(const GFxEvent&). THE INPUT DOOR.
     //
     // This is how the engine's own key and mouse events reach Scaleform, and it is the reason the
-    // front end has been undriveable. AGENT.MD records three routes that all fail -- SendInput, the
+    // front end has been undriveable. AGENTS.md records three routes that all fail -- SendInput, the
     // window-message queue, and the engine's device array -- and they fail for the same reason: the
     // menu does not read any of them, it reads a queue that HandleEvent fills and Advance drains
     // (slot 28 pops it, types 5 and 6, and dispatches id 64/128 to every sprite).

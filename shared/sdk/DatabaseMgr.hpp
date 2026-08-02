@@ -77,7 +77,7 @@ public:
     // GetNumCategories, +0x62E8 GetCategoryByIndex; see fear2.genny's
     // DatabaseMgrSubRecord comment) -- these mirror that vtable's exact
     // field/bounds semantics via direct struct reads (no vtable call: no
-    // refcount/mutation risk, see AGENT.MD 5a testing corollary).
+    // refcount/mutation risk, see AGENTS.md 5a testing corollary).
     static size_t category_count(const regenny::DatabaseMgrSubRecord* database);
     static regenny::DatabaseMgrCategory* category(const regenny::DatabaseMgrSubRecord* database, size_t index);
 

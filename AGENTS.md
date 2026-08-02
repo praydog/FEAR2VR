@@ -1,4 +1,4 @@
-# AGENT.MD — fear2vr project rules
+# AGENTS.md — fear2vr project rules
 
 Working rules for anyone (human or AI) touching this repo. They encode the
 conventions established while bootstrapping the project; TESTING.MD owns the

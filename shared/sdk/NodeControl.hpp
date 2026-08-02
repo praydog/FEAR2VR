@@ -45,7 +45,7 @@ namespace sdk {
 //
 // THE GENERATED TYPE, not a copy of it. This was hand-declared for several sessions beside a
 // static_assert, because codegen was believed broken; it was not (the crash needs a null `m_sdk`,
-// i.e. an instance where no schema ever parsed -- see AGENT.MD 9a). The hand-written mirror is
+// i.e. an instance where no schema ever parsed -- see AGENTS.md 9a). The hand-written mirror is
 // gone and the schema owns the layout, which is the rule: `reversing/fear2.genny` is ground truth
 // for structure, and the SDK should not restate a field order the generator can emit.
 using NodeControlCell = regenny::LTNodeControlCell;

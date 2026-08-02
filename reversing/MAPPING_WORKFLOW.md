@@ -1,7 +1,7 @@
 # Mapping workflow -- from a raw pointer to a tested `sdk::X` method
 
 The recipe for "map [engine concept] in [one of the five IDBs] and expose it as `sdk::X::method()`".
-This file is the MECHANICS. The rules it must obey live in `AGENT.MD` (rules 5a, 6, 9) and
+This file is the MECHANICS. The rules it must obey live in `AGENTS.md` (rules 5a, 6, 9) and
 `TESTING.MD` (the evidence contract); it cites them rather than restating them.
 
 ## The three reversing documents, and which one you want
@@ -70,7 +70,7 @@ probably called**. They are a FALSE FRIEND for anything else -- close enough to 
 and wrong on the specifics that matter. Measured divergences: `LTList` is 16 bytes there and 8 here,
 `LTLink` carries `m_pData` there and FEAR2's lists are intrusive, `CAPIHolderBase` has a version field
 there and an output pointer here. Never take a layout, a size, a field order, or a member's existence
-from it. See AGENT.MD rule 9.
+from it. See AGENTS.md rule 9.
 
 ## Phase 1 -- IDA static
 
@@ -225,7 +225,7 @@ regenny:sdk():generate("I:/Programming/projects/fear2/shared/sdk/regenny")
 
 ## Phase 5 -- The SDK class
 
-Governed by AGENT.MD 5a and rule 13. The mechanics that trip people up:
+Governed by AGENTS.md 5a and rule 13. The mechanics that trip people up:
 
 - **SEH-guard every dereference of a caller-provided pointer**, in its OWN function scope. MSVC C2712:
   `__try` cannot share a scope with a lambda, a static-local initialiser, or ANY non-POD local --

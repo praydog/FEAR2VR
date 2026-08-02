@@ -35,7 +35,7 @@ const char* object_type_name(ObjectType type);
 // FEAR2_dump.exe 0x6ECCA0 (data), referenced from e.g. CClientShell::Update's
 // prologue (`mov ecx,[g_pClientMgr]`).
 //
-// SDK CLASS CONVENTION (AGENT.MD 5a): regenny::CClientMgr (reversing/
+// SDK CLASS CONVENTION (AGENTS.md 5a): regenny::CClientMgr (reversing/
 // fear2.genny) is ground truth. What is mapped, and what that buys you:
 //
 //   object_lists[7]        7 intrusive circular lists of LTObject, bucketed
@@ -123,7 +123,7 @@ public:
     // cap, i.e. a corrupt list or a wrong mapping) or faulted. The cap value
     // is deliberately NOT part of this API: callers (diagnostics, tests) must
     // never restate it -- that would put a magic value outside the SDK, which
-    // is exactly what AGENT.MD 5a's testing corollary forbids. Ask "did it
+    // is exactly what AGENTS.md 5a's testing corollary forbids. Ask "did it
     // terminate?" (has_value), never "is the count below <literal>?".
     std::optional<size_t> start_shell_list_count() const;
 
@@ -857,7 +857,7 @@ private:
     // reads alone would spin forever, so every walk also stops here and
     // reports failure rather than a plausible-looking partial answer.
     //
-    // PRIVATE ON PURPOSE (AGENT.MD 5a): if callers could read this, a
+    // PRIVATE ON PURPOSE (AGENTS.md 5a): if callers could read this, a
     // diagnostic or test would eventually restate it, putting a magic bound
     // outside the SDK that silently disagrees when this changes.
     static constexpr size_t max_object_walk = 100000;

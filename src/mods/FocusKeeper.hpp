@@ -57,7 +57,7 @@ public:
     void on_shutdown() override {}
 
     // Start or stop refusing focus-loss pauses. Idempotent. Off by default: this changes engine behaviour, and
-    // AGENT.MD's rule is that a mutation is opt-in and visible.
+    // AGENTS.md's rule is that a mutation is opt-in and visible.
     void keep_running(bool on);
 
     struct State {
