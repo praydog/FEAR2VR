@@ -112,6 +112,15 @@ std::atomic<uint64_t> g_pristine_clobbered{0};
 // whether the frame was rendered from the pose we say it was.
 std::atomic<uint64_t> g_view_check_samples{0};
 std::atomic<uint64_t> g_view_mismatch_frames{0};
+// WHICH EYE the engine disagreed on. The left is the engine's own pass that we override in place;
+// the right is our replay, set up by us after closing the engine's. If an auxiliary pass in the
+// same frame is disturbing one of them, they will not disagree at the same rate -- and that says
+// whether the corruption is in the engine's pass or in ours.
+std::atomic<uint64_t> g_view_mismatch_left{0};
+std::atomic<uint64_t> g_view_mismatch_right{0};
+// And whether an auxiliary pass had already run this frame when the disagreement happened.
+std::atomic<uint32_t> g_aux_passes_this_frame{0};
+std::atomic<uint64_t> g_mismatch_after_aux{0};
 std::atomic<float> g_view_mismatch_worst{0.0f};
 std::atomic<uint64_t> g_second_eye_skipped{0};
 
@@ -181,6 +190,10 @@ void close_frame_census() {
     g_published_count.store(n, std::memory_order_release);
     g_frame_slot.store(slot ^ 1u, std::memory_order_relaxed);
     g_filling_count = 0;
+    // Per-FRAME, so "an auxiliary pass had already run when the engine disagreed" means this frame
+    // rather than at any point since injection. Reset at the boundary, which is what this callback
+    // already is.
+    g_aux_passes_this_frame.store(0, std::memory_order_relaxed);
 }
 
 // Applies the per-eye projection centre AFTER the engine has built its matrices, then has the engine rebuild
@@ -335,6 +348,10 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
         }
     }
 
+    if (!is_main_view) {
+        g_aux_passes_this_frame.fetch_add(1, std::memory_order_relaxed);
+    }
+
     // THE PRISTINE COPY for a second eye, taken before any override touches it.
     if (camera != nullptr && fov != nullptr && rect != nullptr) {
         g_pristine.camera = *camera;
@@ -469,6 +486,14 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
                     // degrees, so the threshold belongs where a real one would land.
                     if (deg > 0.5f) {
                         g_view_mismatch_frames.fetch_add(1, std::memory_order_relaxed);
+                        if (eye == CameraPassHook::Eye::Left) {
+                            g_view_mismatch_left.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            g_view_mismatch_right.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        if (g_aux_passes_this_frame.load(std::memory_order_relaxed) > 0) {
+                            g_mismatch_after_aux.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                     float worst = g_view_mismatch_worst.load(std::memory_order_relaxed);
                     while (deg > worst && !g_view_mismatch_worst.compare_exchange_weak(
@@ -844,4 +869,20 @@ uint64_t CameraPassHook::view_mismatch_frames() {
 
 float CameraPassHook::view_mismatch_worst() {
     return g_view_mismatch_worst.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::view_mismatch_left() {
+    return g_view_mismatch_left.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::view_mismatch_right() {
+    return g_view_mismatch_right.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::mismatch_after_aux() {
+    return g_mismatch_after_aux.load(std::memory_order_relaxed);
+}
+
+void CameraPassHook::reset_frame_aux() {
+    g_aux_passes_this_frame.store(0, std::memory_order_relaxed);
 }

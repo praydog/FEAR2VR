@@ -4409,7 +4409,26 @@ the mod on the game thread. Reading it as the compositor's rate compares the gam
 which is how a beat stayed invisible across three probe runs that all looked healthy. The
 compositor's own rate is `HostState.frames`, published as `host_frames`.
 
-### A THIRD camera pass is NORMAL here -- it is not what makes any place different
+### The extra scene draw IS the differentiator -- measured against a real control at last
+
+Retracted, then UN-retracted, and the second time with a control that was actually taken in a place
+the wearer called smooth:
+
+| | fine | juddering |
+|---|---|---|
+| passes / scene draws | **2 / 300** | **3 / 602** |
+| axis error between the head delta and the camera delta | 0.125 deg/frame | **1.410** |
+| frames over 0.5 deg | **2** of 301 | **265** of 300 |
+| engine view matrix disagreed with the camera we handed it | **0** of 301 | **20** of 300, worst 2.507 deg |
+
+The judder spot draws the scene TWICE per frame; the smooth one draws it once. Two independent
+checks -- the axis comparison in the mod and the engine's own view matrix read back inside the pass
+-- both fire only where that second draw happens, and the error is 1 to 2.5 degrees, varying frame
+to frame. That is visible judder on its own.
+
+**The first retraction was wrong because the control was taken somewhere that also had a second
+draw.** A control has to be measured where the symptom is ABSENT, confirmed by the person who can
+see it, or it is not a control -- and a wrong control retired a correct theory for two rounds.
 
 Retracted. The third pass was measured in a place with a monitor and treated for several rounds as
 the reason that place misbehaved. It is present in an ORDINARY spot too -- `cp_passes_last_frame`

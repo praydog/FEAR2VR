@@ -201,6 +201,11 @@ def main():
         print("[judder] engine view matrix: %d checked, DISAGREED on %d (%.1f%%), worst %.3f deg"
               % (d_vc, d_vm, 100.0 * d_vm / d_vc, b.get("cp_view_mismatch_deg", 0.0)))
         if d_vm > 0:
+            print("         split: LEFT (the engine's own pass) %d, RIGHT (our replay) %d, "
+                  "after an aux pass %d"
+                  % (b.get("cp_vm_left", 0) - a.get("cp_vm_left", 0),
+                     b.get("cp_vm_right", 0) - a.get("cp_vm_right", 0),
+                     b.get("cp_vm_after_aux", 0) - a.get("cp_vm_after_aux", 0)))
             print("[judder] -> THE ENGINE RENDERED FROM A DIFFERENT CAMERA on %.1f%% of passes.\n"
                   "         The frame is not the pose we stamped on it, and no check of our own\n"
                   "         bookkeeping could see it because our bookkeeping is correct."

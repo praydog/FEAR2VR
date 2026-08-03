@@ -167,6 +167,10 @@ public:
     // other rotation check in this project compares our inputs to each other and is circular.
     static uint64_t view_check_samples();
     static uint64_t view_mismatch_frames();
+    static uint64_t view_mismatch_left();
+    static uint64_t view_mismatch_right();
+    static uint64_t mismatch_after_aux();
+    static void reset_frame_aux();
     static float view_mismatch_worst();
 
     static uint64_t pristine_clobbered();
