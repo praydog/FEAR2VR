@@ -160,6 +160,23 @@ def main():
     else:
         print("[judder] rotation census: no moving frames sampled (hold still? head not tracked?)")
 
+    # ---- DID EVERY MAIN-VIEW FRAME GET ITS SECOND EYE? -----------------------------------------
+    # Where a frame contains a second view -- a monitor, a camera feed -- an auxiliary setup can
+    # land between the main view's setup and its draw. The replay is then built from, or skipped
+    # because of, the wrong pass, and the right half of the split keeps the PREVIOUS frame. That is
+    # a stale half image once per affected frame, and it looks like the whole scene juddering.
+    d_clob = b.get("cp_pristine_clobbered", 0) - a.get("cp_pristine_clobbered", 0)
+    d_draws = b_sp.get("cp_draw_calls", 0) - a_sp.get("cp_draw_calls", 0)
+    d_eyes = b_sp.get("cp_second_eye_draws", 0) - a_sp.get("cp_second_eye_draws", 0)
+    print("[judder] passes: %d scene draws, %d second-eye replays, CLOBBERED %d"
+          % (d_draws, d_eyes, d_clob))
+    if d_clob > 0:
+        print("[judder] -> THE PRISTINE TRANSFORM WAS OVERWRITTEN on %d frames (%.1f%% of "
+              "published).\n"
+              "         Each is a frame whose second eye was built from another pass, or skipped --\n"
+              "         the right half keeps the previous frame. This is spot-specific by nature."
+              % (d_clob, 100.0 * d_clob / max(1, d_pub)))
+
     # A frame published without a fresh second eye ships half a stale image.
     d_pass = b_sp.get("cp_second_eye_draws", 0) - a_sp.get("cp_second_eye_draws", 0)
     if d_pub > 0 and d_pass > 0 and d_pass < d_pub * 0.98:

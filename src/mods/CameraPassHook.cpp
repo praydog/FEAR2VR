@@ -96,6 +96,19 @@ std::atomic<bool> g_pristine_valid{false};
 // quarter-resolution auxiliary pass would draw a second copy of something that is not a view.
 std::atomic<bool> g_pristine_main{false};
 
+// ---- THE MAIN VIEW'S OWN COPY -------------------------------------------------------------------
+//
+// g_pristine belongs to whichever pass set up LAST, and that is not necessarily the pass being
+// drawn. Where the frame contains a second view -- a monitor, a camera feed -- an auxiliary setup
+// landing between the main view's setup and its draw replaces the transform the second eye is
+// built from. The replay then either uses the wrong camera or is skipped entirely, leaving the
+// right half of the split holding the PREVIOUS frame. Once per frame, intermittently, and only in
+// places that draw a second view.
+PristineSetup g_pristine_main_copy{};
+std::atomic<bool> g_pristine_main_valid{false};
+std::atomic<uint64_t> g_pristine_clobbered{0};
+std::atomic<uint64_t> g_second_eye_skipped{0};
+
 // Last arguments seen, published for diagnostics. Plain floats behind an atomic sequence would be tidier, but
 // these are read for reporting rather than for control, and a torn pair here misleads nobody.
 std::atomic<float> g_pos[3]{};
@@ -300,6 +313,10 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
         g_pristine.depth_max = depth_max;
         g_pristine_main.store(is_main_view, std::memory_order_relaxed);
         g_pristine_valid.store(true, std::memory_order_release);
+        if (is_main_view) {
+            g_pristine_main_copy = g_pristine;
+            g_pristine_main_valid.store(true, std::memory_order_release);
+        }
     }
 
     auto* hook = Hooks::get().find(kHookName);
@@ -440,9 +457,28 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
         !g_pristine_valid.load(std::memory_order_acquire)) {
         return first;
     }
-    if (g_main_only.load(std::memory_order_relaxed) &&
-        !g_pristine_main.load(std::memory_order_relaxed)) {
+    // WHETHER THIS DRAW IS THE MAIN VIEW IS A PROPERTY OF THIS DRAW, asked now rather than
+    // inherited from whichever setup happened to run last. The stale flag is what an intervening
+    // auxiliary pass corrupts.
+    bool draw_is_main = g_pristine_main.load(std::memory_order_relaxed);
+    if (const auto ts = sdk::SceneCamera::current_target_size()) {
+        if (const auto pp = sdk::Render::present_params()) {
+            draw_is_main = (*ts)[0] == static_cast<int32_t>(pp->BackBufferWidth) &&
+                           (*ts)[1] == static_cast<int32_t>(pp->BackBufferHeight);
+        }
+    }
+    if (draw_is_main && !g_pristine_main.load(std::memory_order_relaxed)) {
+        // The main view is being drawn but the pristine copy belongs to something else: an
+        // auxiliary setup landed in between. THIS is the frame that would have gone out mono.
+        g_pristine_clobbered.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (g_main_only.load(std::memory_order_relaxed) && !draw_is_main) {
+        g_second_eye_skipped.fetch_add(1, std::memory_order_relaxed);
         return first;  // the pass just drawn was the auxiliary one; it gets no second eye
+    }
+    if (!g_pristine_main_valid.load(std::memory_order_acquire)) {
+        g_second_eye_skipped.fetch_add(1, std::memory_order_relaxed);
+        return first;
     }
 
     auto* setup_hook = Hooks::get().find(kHookName);
@@ -453,7 +489,7 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
 
     regenny::LTNodeTransform cam{};
     float rect[4]{};
-    if (!build_eye(g_pristine, CameraPassHook::Eye::Right, cam, rect)) {
+    if (!build_eye(g_pristine_main_copy, CameraPassHook::Eye::Right, cam, rect)) {
         return first;
     }
 
@@ -466,13 +502,13 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
     if (end_pass() == 0) {
         return first;  // not in a configured pass -- leave the frame exactly as the engine had it
     }
-    float fov[2] = {g_pristine.fov[0], g_pristine.fov[1]};
+    float fov[2] = {g_pristine_main_copy.fov[0], g_pristine_main_copy.fov[1]};
     const float ox = g_fov_x.load(std::memory_order_relaxed);
     const float oy = g_fov_y.load(std::memory_order_relaxed);
     if (ox > 0.0f) { fov[0] = ox; }
     if (oy > 0.0f) { fov[1] = oy; }
 
-    if (setup_hook->original<SetupFn>()(&cam, fov, rect, g_pristine.depth_min, g_pristine.depth_max) == 0) {
+    if (setup_hook->original<SetupFn>()(&cam, fov, rect, g_pristine_main_copy.depth_min, g_pristine_main_copy.depth_max) == 0) {
         return first;
     }
     apply_frustum_centre(CameraPassHook::Eye::Right);
@@ -483,7 +519,7 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
     // invisible one. A diagnostic that omits the interesting case is how the split defect stayed
     // unexplained for two sessions.
     capture_viewport();
-    record_pass(&cam, fov, rect, g_pristine.depth_min, g_pristine.depth_max);
+    record_pass(&cam, fov, rect, g_pristine_main_copy.depth_min, g_pristine_main_copy.depth_max);
 
     draw_original(a1, a2);
     g_second_draws.fetch_add(1, std::memory_order_relaxed);
@@ -713,4 +749,12 @@ void CameraPassHook::camera_rotation_now(float out[4]) {
     for (int i = 0; i < 4; ++i) {
         out[i] = g_view_rot[i].load(std::memory_order_relaxed);
     }
+}
+
+uint64_t CameraPassHook::pristine_clobbered() {
+    return g_pristine_clobbered.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::second_eye_skipped() {
+    return g_second_eye_skipped.load(std::memory_order_relaxed);
 }

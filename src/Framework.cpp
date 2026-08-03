@@ -11304,6 +11304,8 @@ bool Framework::initialize() {
               .u("stamp_worst_ahead", static_cast<size_t>(FrameCapture::get().stamp_worst()))
               .u("stamp_tid", static_cast<size_t>(FrameCapture::get().stamp_tid()))
               .u("view_tid", static_cast<size_t>(CameraPassHook::last_view_tid()))
+              .u("cp_pristine_clobbered", static_cast<size_t>(CameraPassHook::pristine_clobbered()))
+              .u("cp_second_eye_skipped", static_cast<size_t>(CameraPassHook::second_eye_skipped()))
               .u("apply_tid", static_cast<size_t>(VR::get().apply_tid()))
               .b("head_position", VR::get().head_position())
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)

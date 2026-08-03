@@ -161,6 +161,11 @@ public:
     // frame was drawn with, as opposed to the pose we stamp on it.
     static void camera_rotation_now(float out[4]);
 
+    // Frames where the main view was drawn but the pristine transform belonged to another pass --
+    // an auxiliary view's setup landing in between. Each one is a frame that went out mono.
+    static uint64_t pristine_clobbered();
+    static uint64_t second_eye_skipped();
+
     static uint32_t last_view_seq();
     static uint32_t last_view_tid();
     std::array<float, 3> position_offset() const;
