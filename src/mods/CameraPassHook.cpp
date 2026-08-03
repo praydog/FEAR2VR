@@ -121,8 +121,12 @@ std::atomic<uint64_t> g_view_mismatch_right{0};
 // And whether an auxiliary pass had already run this frame when the disagreement happened.
 std::atomic<uint32_t> g_aux_passes_this_frame{0};
 std::atomic<uint64_t> g_mismatch_after_aux{0};
-// HOW MANY PASSES CALLED THEMSELVES THE MAIN VIEW this frame. It must be exactly two -- the
-// engine's own left eye, and our replayed right. THREE means the auxiliary pass was misclassified,
+// HOW MANY PASSES CALLED THEMSELVES THE MAIN VIEW this frame. Exactly ONE: the engine's own left
+// eye. The replayed right eye goes straight down the trampoline on purpose -- routing it through
+// this detour would displace the transform twice -- so it is never seen here. I guessed two and the
+// census said one, which is the answer being correct rather than the check being broken.
+//
+// More than one means the auxiliary pass was misclassified,
 // which would write ITS camera into g_view_rot and make the camera's rotation delta disagree with
 // the head's about an AXIS while still matching in MAGNITUDE. That is precisely the shape of the
 // error being measured, so it has to be excluded before the measurement means anything.
@@ -203,7 +207,7 @@ void close_frame_census() {
     // rather than at any point since injection. Reset at the boundary, which is what this callback
     // already is.
     g_aux_passes_this_frame.store(0, std::memory_order_relaxed);
-    if (g_main_this_frame == 2) {
+    if (g_main_this_frame == 1) {
         g_frames_two_main.fetch_add(1, std::memory_order_relaxed);
     } else {
         g_frames_other_main.fetch_add(1, std::memory_order_relaxed);

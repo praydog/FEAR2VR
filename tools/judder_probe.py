@@ -223,15 +223,16 @@ def main():
              b.get("fp_gap_min_ms", 0.0), b.get("fp_gap_max_ms", 0.0)))
 
     # ---- DID EXACTLY TWO PASSES CLAIM TO BE THE MAIN VIEW? -------------------------------------
-    # Must be two: the engine's left eye and our replayed right. Three means the auxiliary pass was
-    # misclassified, and its camera would land in the samples the axis check reads -- producing a
-    # delta that matches in magnitude and disagrees about the axis, which is the error being chased.
+    # Must be ONE: the engine's left eye. The replayed right eye bypasses the detour deliberately.
+    # More than one means the auxiliary pass was misclassified, and its camera would land in the
+    # samples the axis check reads -- a delta matching in magnitude and disagreeing about the axis,
+    # which is exactly the error being chased.
     d_2m = b.get("cp_frames_2main", 0) - a.get("cp_frames_2main", 0)
     d_om = b.get("cp_frames_other_main", 0) - a.get("cp_frames_other_main", 0)
-    print("[judder] main-view passes per frame: exactly 2 on %d frames, OTHER on %d (worst seen %s)"
+    print("[judder] main-view passes per frame: exactly 1 on %d frames, OTHER on %d (worst seen %s)"
           % (d_2m, d_om, b.get("cp_main_worst")))
     if d_om > 0:
-        print("[judder] -> %d frames did not have exactly two main-view passes. The auxiliary draw\n"
+        print("[judder] -> %d frames did not have exactly one main-view pass. The auxiliary draw\n"
               "         is being taken for the main view, so its camera pollutes both the override\n"
               "         and the axis measurement." % d_om)
 
