@@ -4382,7 +4382,15 @@ the mod on the game thread. Reading it as the compositor's rate compares the gam
 which is how a beat stayed invisible across three probe runs that all looked healthy. The
 compositor's own rate is `HostState.frames`, published as `host_frames`.
 
-### Some places draw a THIRD camera pass, and the single-value diagnostics report it
+### A THIRD camera pass is NORMAL here -- it is not what makes any place different
+
+Retracted. The third pass was measured in a place with a monitor and treated for several rounds as
+the reason that place misbehaved. It is present in an ORDINARY spot too -- `cp_passes_last_frame`
+reads 3 either way -- so it differentiates nothing, and a probe was printing "which is why this spot
+differs" on every single run.
+
+The pass census is still worth having, and the trap below is real. But **an observation is only a
+differentiator if the control was measured**, and this one never was.
 
 Measured in a spot with a monitor or camera feed: three camera setups in one frame, not two.
 
