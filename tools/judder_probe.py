@@ -208,6 +208,15 @@ def main():
     else:
         print("[judder] engine view matrix: not sampled (is stereo armed?)")
 
+    # ---- HOW EVENLY, NOT HOW FAST -------------------------------------------------------------
+    # 38 fps in a smooth place and 38 fps in a juddering one. The mean is identical, so it is the
+    # SPREAD that has never been compared. A steady 26 ms and an alternating 20/32 average the same
+    # and only one of them moves the relationship between when a pose was sampled and when its
+    # frame is shown -- which is what the head path rides on and the stick path does not.
+    print("[judder] frame interval: mean %.2f ms, sd %.2f, min %.2f, max %.2f"
+          % (b.get("fp_gap_mean_ms", 0.0), b.get("fp_gap_sd_ms", 0.0),
+             b.get("fp_gap_min_ms", 0.0), b.get("fp_gap_max_ms", 0.0)))
+
     # ---- ARE WE PUBLISHING THE SAME PICTURE TWICE? ---------------------------------------------
     # The only theory-free question left. Every counter can read clean while the PIXELS repeat.
     d_dup = b.get("fc_dup_frames", 0) - a.get("fc_dup_frames", 0)
@@ -270,7 +279,12 @@ def main():
              b.get("cp_pristine_clobbered", 0) - a.get("cp_pristine_clobbered", 0),
              cam if d_rot else 0.0, host if d_rot else 0.0, miss if d_rot else 0.0,
              d_updates)
-          + " | viewchk=%d/%d worst=%.3f" % (d_vm, d_vc, b.get("cp_view_mismatch_deg", 0.0)))
+          + " | viewchk=%d/%d worst=%.3f" % (d_vm, d_vc, b.get("cp_view_mismatch_deg", 0.0))
+          + " | gap=%.2f+-%.2f (%.2f..%.2f)" % (b.get("fp_gap_mean_ms", 0.0),
+                                                b.get("fp_gap_sd_ms", 0.0),
+                                                b.get("fp_gap_min_ms", 0.0),
+                                                b.get("fp_gap_max_ms", 0.0))
+          + " | axis=%.3f/%d" % (b.get("rot_axis_worst", 0.0), b.get("rot_axis_bad", 0)))
     return 0
 
 

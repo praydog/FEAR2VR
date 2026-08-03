@@ -8,6 +8,15 @@
 
 namespace {
 
+int64_t qpc_frequency() {
+    static const int64_t f = [] {
+        LARGE_INTEGER v{};
+        ::QueryPerformanceFrequency(&v);
+        return v.QuadPart != 0 ? v.QuadPart : 1;
+    }();
+    return f;
+}
+
 int64_t now_ticks() {
     LARGE_INTEGER v{};
     ::QueryPerformanceCounter(&v);
@@ -221,6 +230,28 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
 
     m_last_ticks = t1 - t0;
     m_worst_ticks = m_last_ticks > m_worst_ticks ? m_last_ticks : m_worst_ticks;
+
+    // ---- HOW EVENLY IS THE GAME PRODUCING FRAMES? ----------------------------------------------
+    //
+    // Not how FAST -- that reads a flat 38 fps in both a smooth place and a juddering one. How
+    // EVENLY. A mean cannot tell a steady 26 ms from an alternating 20/32, and only the second one
+    // makes the relationship between when a pose was sampled and when its frame is shown move
+    // about. That would disturb the head path, which depends on that relationship through timewarp,
+    // and leave stick rotation alone, which does not -- which is the asymmetry actually observed.
+    //
+    // Kept as sum and sum-of-squares so the spread comes out of the same pass, plus the extremes.
+    if (m_prev_publish_qpc != 0) {
+        const double ms = static_cast<double>(t1 - m_prev_publish_qpc) * 1000.0 /
+                          static_cast<double>(qpc_frequency());
+        if (ms > 0.0 && ms < 1000.0) {
+            ++m_gap_count;
+            m_gap_sum += ms;
+            m_gap_sum_sq += ms * ms;
+            m_gap_min = m_gap_count == 1 || ms < m_gap_min ? ms : m_gap_min;
+            m_gap_max = ms > m_gap_max ? ms : m_gap_max;
+        }
+    }
+    m_prev_publish_qpc = t1;
     m_last_w = width;
     m_last_h = height;
     return true;

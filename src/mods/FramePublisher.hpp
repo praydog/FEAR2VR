@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -82,7 +84,20 @@ public:
     bool wait_for_host_tick(uint32_t timeout_ms);
     uint64_t tick_waits() const { return m_tick_waits; }
     uint64_t tick_timeouts() const { return m_tick_timeouts; }
-    bool pacing_live() const { return m_consecutive_timeouts < kPacingGiveUp; }
+    uint64_t gap_count() const { return m_gap_count; }
+    double gap_mean_ms() const { return m_gap_count ? m_gap_sum / static_cast<double>(m_gap_count) : 0.0; }
+    double gap_stddev_ms() const {
+        if (m_gap_count < 2) {
+            return 0.0;
+        }
+        const double n = static_cast<double>(m_gap_count);
+        const double var = (m_gap_sum_sq - (m_gap_sum * m_gap_sum) / n) / (n - 1.0);
+        return var > 0.0 ? sqrt(var) : 0.0;
+    }
+    double gap_min_ms() const { return m_gap_min; }
+    double gap_max_ms() const { return m_gap_max; }
+
+        bool pacing_live() const { return m_consecutive_timeouts < kPacingGiveUp; }
 
     // Drop a tick that fired while the last frame was still rendering, so a game that cannot hold
     // the compositor's rate settles on a SUBMULTIPLE of it instead of beating against it.
@@ -107,6 +122,15 @@ public:
 
 private:
     FramePublisher() = default;
+
+    // The SPREAD of the interval between publishes. Mean frame rate is identical in a smooth place
+    // and a juddering one; evenness is the thing never compared.
+    int64_t m_prev_publish_qpc{0};
+    uint64_t m_gap_count{0};
+    double m_gap_sum{0.0};
+    double m_gap_sum_sq{0.0};
+    double m_gap_min{0.0};
+    double m_gap_max{0.0};
 
     std::atomic<bool> m_phase_lock{true};
     // The compositor periods spent per game frame. Held rather than recomputed, so a workload that
