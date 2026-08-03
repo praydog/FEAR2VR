@@ -844,6 +844,104 @@ int main(int argc, char** argv) {
         // THE FRAME CLOCK, relayed. xrWaitFrame has just told us when the runtime wants the next
         // frame; releasing the game here makes its update run on the compositor's cadence instead
         // of free-running at whatever the hardware allows.
+        // ---- THE POSE MUST EXIST BEFORE THE GAME IS RELEASED -----------------------------------
+        //
+        // This used to sit two hundred lines further down, AFTER the tick. So the game was woken to
+        // render a frame and then read whatever pose happened to be in the mapping -- last frame's,
+        // unless it lost the race with the publish below. Which one it got depended on how the two
+        // processes interleaved, so the frame was stamped with an honest sequence for a pose that
+        // was sometimes a whole compositor frame stale. Intermittent, and indistinguishable from
+        // the wrong pose being sent.
+        //
+        // The tick means "a new pose is ready and a boundary has happened". It cannot mean that if
+        // the pose is written afterwards.
+        //
+        // xrLocateViews needs only predictedDisplayTime, which xrWaitFrame has just given us, so
+        // there is nothing that required it to run after xrBeginFrame.
+        // ---- TELL THE GAME WHERE THE HEAD IS ---------------------------------------------------
+        //
+        // Published every frame, whether or not the game is listening: the pose is what makes a
+        // projection layer honest later, and a game that starts listening mid-session should find
+        // current data rather than wait a frame for it.
+        if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
+            XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
+            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            vli.displayTime = fs.predictedDisplayTime;
+            vli.space = space;
+
+            XrViewState vs{XR_TYPE_VIEW_STATE};
+            uint32_t located = 0;
+            std::vector<XrView> hv(view_count, {XR_TYPE_VIEW});
+
+            if (XR_SUCCEEDED(xrLocateViews(session, &vli, &vs, view_count, &located, hv.data())) &&
+                located >= 2) {
+                auto* hs = reader.host;
+                hs->sequence |= 1u;
+                MemoryBarrier();
+
+                // The HEAD is the midpoint of the two eyes -- the runtime reports eyes, not a head,
+                // and handing the game one eye's pose would offset the whole world by half an IPD.
+                for (int k = 0; k < 3; ++k) {
+                    const float a = (&hv[0].pose.position.x)[k];
+                    const float b = (&hv[1].pose.position.x)[k];
+                    (&hs->position[0])[k] = (a + b) * 0.5f;
+                }
+
+                hs->orientation[0] = hv[0].pose.orientation.x;
+                hs->orientation[1] = hv[0].pose.orientation.y;
+                hs->orientation[2] = hv[0].pose.orientation.z;
+                hs->orientation[3] = hv[0].pose.orientation.w;
+
+                const float dx = hv[1].pose.position.x - hv[0].pose.position.x;
+                const float dy = hv[1].pose.position.y - hv[0].pose.position.y;
+                const float dz = hv[1].pose.position.z - hv[0].pose.position.z;
+                hs->ipd_m = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                // The SMALLEST SYMMETRIC frustum containing the headset's asymmetric one. This
+                // engine offers no asymmetric projection, so the game over-renders the corners and
+                // the compositor crops -- pixels spent to keep the frustum truthful.
+                float mx = 0.0f;
+                float my = 0.0f;
+
+                for (uint32_t v = 0; v < 2; ++v) {
+                    mx = (std::max)(mx, (std::max)(fabsf(hv[v].fov.angleLeft),
+                                                   fabsf(hv[v].fov.angleRight)));
+                    my = (std::max)(my, (std::max)(fabsf(hv[v].fov.angleUp),
+                                                   fabsf(hv[v].fov.angleDown)));
+                }
+
+                hs->fov_x = mx;
+                hs->fov_y = my;
+                hs->valid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) ? 1u : 0u;
+                hs->write_qpc = 0;
+
+                MemoryBarrier();
+                hs->sequence = (hs->sequence + 1u) & ~1u;
+                published_sequence = hs->sequence;
+
+                // Keep what we just handed out, so the frame rendered from it can be submitted with
+                // it rather than with whatever is current by the time the pixels arrive.
+                PosePair& slot = pose_history[(published_sequence / 2u) % 16u];
+                slot.sequence = published_sequence;
+                slot.pose[0] = hv[0].pose;
+                slot.pose[1] = hv[1].pose;
+
+                // The SYMMETRIC frustum we asked the game for...
+                slot.rendered.angleLeft = -mx;
+                slot.rendered.angleRight = mx;
+                slot.rendered.angleUp = my;
+                slot.rendered.angleDown = -my;
+
+                // ...and the ASYMMETRIC one each eye actually needs. A headset's frustums are
+                // sheared toward the nose, and that shear IS the convergence: two parallel
+                // symmetric frustums put infinity at a non-zero disparity, so nothing ever
+                // converges and the eyes are asked to diverge. Reported as "the eyes are not
+                // converging, at all", which is exactly what parallel cameras look like.
+                slot.wanted[0] = hv[0].fov;
+                slot.wanted[1] = hv[1].fov;
+            }
+        }
+
         // ---- ONE PER COMPOSITOR FRAME, AND ONLY HERE -------------------------------------------
         //
         // This is a CLOCK, and the game paces on it: it waits for the counter to advance by its
@@ -1036,89 +1134,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ---- TELL THE GAME WHERE THE HEAD IS ---------------------------------------------------
-        //
-        // Published every frame, whether or not the game is listening: the pose is what makes a
-        // projection layer honest later, and a game that starts listening mid-session should find
-        // current data rather than wait a frame for it.
-        if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
-            XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
-            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            vli.displayTime = fs.predictedDisplayTime;
-            vli.space = space;
-
-            XrViewState vs{XR_TYPE_VIEW_STATE};
-            uint32_t located = 0;
-            std::vector<XrView> hv(view_count, {XR_TYPE_VIEW});
-
-            if (XR_SUCCEEDED(xrLocateViews(session, &vli, &vs, view_count, &located, hv.data())) &&
-                located >= 2) {
-                auto* hs = reader.host;
-                hs->sequence |= 1u;
-                MemoryBarrier();
-
-                // The HEAD is the midpoint of the two eyes -- the runtime reports eyes, not a head,
-                // and handing the game one eye's pose would offset the whole world by half an IPD.
-                for (int k = 0; k < 3; ++k) {
-                    const float a = (&hv[0].pose.position.x)[k];
-                    const float b = (&hv[1].pose.position.x)[k];
-                    (&hs->position[0])[k] = (a + b) * 0.5f;
-                }
-
-                hs->orientation[0] = hv[0].pose.orientation.x;
-                hs->orientation[1] = hv[0].pose.orientation.y;
-                hs->orientation[2] = hv[0].pose.orientation.z;
-                hs->orientation[3] = hv[0].pose.orientation.w;
-
-                const float dx = hv[1].pose.position.x - hv[0].pose.position.x;
-                const float dy = hv[1].pose.position.y - hv[0].pose.position.y;
-                const float dz = hv[1].pose.position.z - hv[0].pose.position.z;
-                hs->ipd_m = sqrtf(dx * dx + dy * dy + dz * dz);
-
-                // The SMALLEST SYMMETRIC frustum containing the headset's asymmetric one. This
-                // engine offers no asymmetric projection, so the game over-renders the corners and
-                // the compositor crops -- pixels spent to keep the frustum truthful.
-                float mx = 0.0f;
-                float my = 0.0f;
-
-                for (uint32_t v = 0; v < 2; ++v) {
-                    mx = (std::max)(mx, (std::max)(fabsf(hv[v].fov.angleLeft),
-                                                   fabsf(hv[v].fov.angleRight)));
-                    my = (std::max)(my, (std::max)(fabsf(hv[v].fov.angleUp),
-                                                   fabsf(hv[v].fov.angleDown)));
-                }
-
-                hs->fov_x = mx;
-                hs->fov_y = my;
-                hs->valid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) ? 1u : 0u;
-                hs->write_qpc = 0;
-
-                MemoryBarrier();
-                hs->sequence = (hs->sequence + 1u) & ~1u;
-                published_sequence = hs->sequence;
-
-                // Keep what we just handed out, so the frame rendered from it can be submitted with
-                // it rather than with whatever is current by the time the pixels arrive.
-                PosePair& slot = pose_history[(published_sequence / 2u) % 16u];
-                slot.sequence = published_sequence;
-                slot.pose[0] = hv[0].pose;
-                slot.pose[1] = hv[1].pose;
-
-                // The SYMMETRIC frustum we asked the game for...
-                slot.rendered.angleLeft = -mx;
-                slot.rendered.angleRight = mx;
-                slot.rendered.angleUp = my;
-                slot.rendered.angleDown = -my;
-
-                // ...and the ASYMMETRIC one each eye actually needs. A headset's frustums are
-                // sheared toward the nose, and that shear IS the convergence: two parallel
-                // symmetric frustums put infinity at a non-zero disparity, so nothing ever
-                // converges and the eyes are asked to diverge. Reported as "the eyes are not
-                // converging, at all", which is exactly what parallel cameras look like.
-                slot.wanted[0] = hv[0].fov;
-                slot.wanted[1] = hv[1].fov;
-            }
-        }
 
         // ---- TELL THE GAME WHAT THE HANDS ARE DOING --------------------------------------------
         //
