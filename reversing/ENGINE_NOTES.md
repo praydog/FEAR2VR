@@ -4133,10 +4133,23 @@ needs pacing. 66 fps into a 72 Hz compositor beats at about 6 Hz: some display f
 image, some get a repeat, and that cycle is the judder.
 
 **A tick you missed is not permission to start the next frame; it is the boundary you already
-missed.** Dropping it makes the wait land on the NEXT boundary, so a game that cannot hold 72
+missed.** But dropping it is not enough on its own -- see below. Dropping it makes the wait land on the NEXT boundary, so a game that cannot hold 72
 settles on 36 instead of sliding between them -- the same hard step a native OpenXR application
 takes, and why runtimes show 45/90 rather than 66. It cannot over-correct: a frame that finishes
 before its boundary finds nothing to drop and still runs at full rate.
+
+**AN EVENT CANNOT COUNT.** An auto-reset event says only "at least one boundary passed", never how
+many, and a divisor needs the number: at 1/4 the drain ate one legitimate boundary per frame and the
+game landed on FIVE periods, measuring 30 fps against a 150 Hz tick where 37.5 was intended. The
+clock is now the host's frame COUNTER, which is exact; the event only wakes the waiter.
+
+**HOLD THE DIVISOR, AND DECIDE THE DOWNGRADE ON THE WORK.** Aligning each frame to the next boundary
+is not halving: a workload straddling a boundary alternates N and N+1 periods and the beat survives
+in a quieter form. Worse, "did this frame fit the current budget" is trivially yes at 1/2, so the
+divisor FLAPS -- climb because 1 period is tight, drop because 2 is roomy, repeat, measured as 1.72
+periods per frame. The downgrade must ask whether the measured WORK fits the SMALLER budget, using
+the worst frame in the window rather than the mean. With that, a game between two divisors holds the
+slower one: 150 Hz tick, game capable of ~95 fps, settles at exactly 75.00 fps and stays.
 
 **`runtime_frames` IS THE GAME, NOT THE HOST.** It is the simulated runtime's counter, advanced by
 the mod on the game thread. Reading it as the compositor's rate compares the game against itself,

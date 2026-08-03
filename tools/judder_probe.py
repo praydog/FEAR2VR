@@ -93,6 +93,19 @@ def main():
     # ---- IS THE GAME ON A SUBMULTIPLE OF THE COMPOSITOR? ---------------------------------------
     # Anything else beats: 66 into 72 means some display frames get a new image and some get a
     # repeat, on a ~6 Hz cycle, and that cycle IS the judder.
+    # ---- IS PACING ACTUALLY IN EFFECT? ---------------------------------------------------------
+    # A cadence verdict means nothing if the game is not waiting on the tick at all. Timeouts
+    # climbing every frame means the wait is not blocking, and the lock cannot bite however it is
+    # configured.
+    d_to = b.get("vr_tick_timeouts", 0) - a.get("vr_tick_timeouts", 0)
+    d_drop = b.get("ticks_dropped", 0) - a.get("ticks_dropped", 0)
+    print("[judder] pacing: paced=%s lock=%s | %d tick timeouts, %d boundaries dropped"
+          % (b.get("vr_paced"), b.get("phase_lock"), d_to, d_drop))
+    if d_pub > 0 and d_to > d_pub * 0.5:
+        print("[judder] -> PACING IS NOT IN EFFECT: the wait timed out on %.0f%% of frames, so the\n"
+              "         game is free-running whatever the lock says. Is xr64.exe up the whole time?"
+              % (100.0 * d_to / d_pub))
+
     if host_fps > 1.0:
         ratio = host_fps / max(game_fps, 0.001)
         nearest = max(1, round(ratio))

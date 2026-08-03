@@ -11289,6 +11289,7 @@ bool Framework::initialize() {
               .u("host_frames", static_cast<size_t>(FramePublisher::get().host_frames()))
               .b("phase_lock", FramePublisher::get().phase_lock())
               .u("ticks_dropped", static_cast<size_t>(FramePublisher::get().ticks_dropped()))
+              .u("pace_divisor", static_cast<size_t>(FramePublisher::get().pace_divisor()))
               .u("rot_samples", static_cast<size_t>(FrameCapture::get().rot_samples()))
               .f("rot_sum_cam", FrameCapture::get().rot_sum_cam(), 3)
               .f("rot_sum_host", FrameCapture::get().rot_sum_host(), 3)

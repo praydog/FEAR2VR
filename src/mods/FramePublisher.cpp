@@ -277,10 +277,113 @@ bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
     // It does not over-correct: a frame that finishes BEFORE its boundary finds nothing to drop and
     // still runs at full rate. Only work that overran pays, and it pays by waiting rather than by
     // juddering.
-    if (m_phase_lock.load(std::memory_order_relaxed)) {
-        if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), 0) == WAIT_OBJECT_0) {
-            ++m_ticks_dropped;
+    //
+    // NOT WHILE GIVEN UP, or the state can never clear. With the give-up counter latched the wait
+    // below is non-blocking, so the single pending tick is the ONLY evidence the host is alive --
+    // and draining it here consumed exactly that, leaving the poll to time out forever. Pacing then
+    // stayed off permanently with phase_lock reading true, which is how a run showed a 1.36 cadence
+    // and a lock that appeared to be enabled.
+    // ---- COUNT BOUNDARIES, DO NOT JUST FEEL THEM ---------------------------------------------
+    //
+    // An auto-reset event can only ever say "at least one boundary passed". It cannot say how many,
+    // and a divisor needs the number: at 1/4 the drain ate one legitimate boundary every frame and
+    // the game landed on FIVE periods, measuring 30 fps against a 150 Hz tick when 37.5 was the
+    // intent. So the clock is the host's own frame COUNTER, which is exact, and the event is
+    // demoted to what it is good at -- waking us up.
+    //
+    // Holding a divisor rather than aligning to the nearest edge is the actual rule: a workload
+    // that straddles a boundary otherwise alternates between N and N+1 periods and the beat
+    // survives. Runtimes show a hard 45/90 for this reason.
+    if (m_phase_lock.load(std::memory_order_relaxed) && m_consecutive_timeouts < kPacingGiveUp &&
+        host_state() != nullptr) {
+        // A FRESH START AFTER SILENCE -- a load, an alt-tab, a host restart. The old divisor
+        // describes a situation that no longer exists, and inheriting it means crawling through
+        // whatever comes next.
+        if (m_consecutive_timeouts > 0 || !m_tick_primed) {
+            m_divisor = 1;
+            m_window_frames = 0;
+            m_window_overruns = 0;
+            m_clean_windows = 0;
+            m_last_tick_seen = host_frames();
+            m_tick_primed = true;
         }
+
+        LARGE_INTEGER wait_begin{};
+        ::QueryPerformanceCounter(&wait_begin);
+        const uint32_t target = m_last_tick_seen + m_divisor;
+        while (static_cast<int32_t>(host_frames() - target) < 0) {
+            if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), wait) != WAIT_OBJECT_0) {
+                ++m_tick_timeouts;
+                if (m_consecutive_timeouts < kPacingGiveUp) {
+                    ++m_consecutive_timeouts;
+                }
+                return false;
+            }
+        }
+
+        LARGE_INTEGER wait_end{};
+        ::QueryPerformanceCounter(&wait_end);
+        m_wait_qpc = wait_end.QuadPart - wait_begin.QuadPart;
+
+        // How many periods the frame ACTUALLY took, which is the only honest input to the divisor.
+        const uint32_t now = host_frames();
+        const uint32_t elapsed = now - m_last_tick_seen;
+        m_last_tick_seen = now;
+        m_consecutive_timeouts = 0;
+
+        // ---- WHAT THE DOWNGRADE MUST ACTUALLY ASK ----------------------------------------------
+        //
+        // Not "did this frame fit in the current budget" -- at 1/2 it always does, which is what
+        // made the divisor FLAP: climb because 1 period is too tight, drop because 2 is roomy,
+        // repeat. Measured 1.72 periods per frame at 150 Hz, which is the average of a 1 and a 2,
+        // and a divisor that alternates is the very beat this exists to remove.
+        //
+        // The honest question is whether the WORK would fit in the SMALLER budget, so the frame is
+        // timed and compared against (divisor - 1) periods with a margin. A game sitting between
+        // two divisors then stays on the slower one instead of oscillating across the gap.
+        LARGE_INTEGER qpc{};
+        ::QueryPerformanceCounter(&qpc);
+        if (m_work_start_qpc != 0 && elapsed > 0) {
+            const int64_t frame_qpc = qpc.QuadPart - m_work_start_qpc;
+            const int64_t period = frame_qpc / static_cast<int64_t>(elapsed);
+            m_period_qpc = m_period_qpc == 0 ? period : (m_period_qpc * 7 + period) / 8;
+            // The wait is the idle part; the work is what is left of the frame.
+            const int64_t work = frame_qpc - m_wait_qpc;
+            if (work > m_window_work_qpc) {
+                m_window_work_qpc = work;
+            }
+        }
+        m_work_start_qpc = qpc.QuadPart;
+
+        if (elapsed > m_divisor) {
+            ++m_ticks_dropped;
+            ++m_window_overruns;
+        }
+
+        if (++m_window_frames >= kDivisorWindow) {
+            if (m_window_overruns > kDivisorWindow / 10) {
+                if (m_divisor < kMaxDivisor) {
+                    ++m_divisor;
+                }
+                m_clean_windows = 0;
+            } else if (m_window_overruns == 0 && m_divisor > 1 && m_period_qpc > 0 &&
+                       m_window_work_qpc * 23 <
+                           m_period_qpc * static_cast<int64_t>(m_divisor - 1) * 20) {
+                // The WORST frame in the window would fit the next divisor down with ~15% to
+                // spare. Worst rather than mean, because a divisor chosen for the average is wrong
+                // for every frame above it.
+                if (++m_clean_windows >= 2) {
+                    --m_divisor;
+                    m_clean_windows = 0;
+                }
+            } else {
+                m_clean_windows = 0;
+            }
+            m_window_frames = 0;
+            m_window_overruns = 0;
+            m_window_work_qpc = 0;
+        }
+        return true;
     }
 
     if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), wait) == WAIT_OBJECT_0) {

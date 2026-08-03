@@ -89,6 +89,7 @@ public:
     void set_phase_lock(bool on) { m_phase_lock.store(on, std::memory_order_relaxed); }
     bool phase_lock() const { return m_phase_lock.load(std::memory_order_relaxed); }
     uint64_t ticks_dropped() const { return m_ticks_dropped; }
+    uint32_t pace_divisor() const { return m_divisor; }
 
     // The host's own frame counter, straight from the mapping -- the COMPOSITOR's rate, which is
     // what the game's rate has to divide into. Not the runtime frame counter, which is the game's.
@@ -108,6 +109,24 @@ private:
     FramePublisher() = default;
 
     std::atomic<bool> m_phase_lock{true};
+    // The compositor periods spent per game frame. Held rather than recomputed, so a workload that
+    // straddles a boundary settles instead of alternating.
+    uint32_t m_divisor{1};
+    uint32_t m_window_frames{0};
+    uint32_t m_window_overruns{0};
+    uint32_t m_clean_windows{0};
+    uint32_t m_last_tick_seen{0};
+    bool m_tick_primed{false};
+    int64_t m_work_start_qpc{0};
+    int64_t m_wait_qpc{0};
+    int64_t m_period_qpc{0};
+    int64_t m_window_work_qpc{0};
+    // SHORT, because recovery is measured in frames and the frames are slow precisely when the
+    // divisor is high: at 60 frames a window lasted 3 seconds at 1/4 rate, so climbing back from a
+    // heavy area took twenty. A window has to be short enough that leaving the hard part of a level
+    // feels like leaving it.
+    static constexpr uint32_t kDivisorWindow = 24;
+    static constexpr uint32_t kMaxDivisor = 4;
     uint64_t m_ticks_dropped{0};
     static constexpr uint32_t kPacingGiveUp = 30;  // ~0.6 s of silence at 90 Hz
 
