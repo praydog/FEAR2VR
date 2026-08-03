@@ -539,6 +539,58 @@ void FrameCapture::service_continuous() {
                !m_stamp_worst.compare_exchange_weak(worst, ahead, std::memory_order_relaxed)) {
         }
     }
+    // ---- IS THE ROTATION WE STAMP THE ROTATION THAT WAS DRAWN? ---------------------------------
+    //
+    // The sequence check above only proves we named the right pose RECORD. It cannot see the game
+    // adding rotation of its own -- a scripted camera, a lean, recoil, a mounted view -- after our
+    // head pose went in. When that happens the compositor timewarps using a rotation the image was
+    // never rendered with, and the error is proportional to head speed.
+    //
+    // Compared as PER-FRAME MAGNITUDES, which needs no agreement about handedness or order between
+    // the engine's quaternion and OpenXR's: if the camera is faithfully following the head, the two
+    // turn by the same ANGLE each frame whatever basis each is expressed in. A divergence is the
+    // game rotating the view by itself.
+    {
+        float cam[4];
+        CameraPassHook::camera_rotation_now(cam);
+        const auto* host = FramePublisher::get().host_state();
+        if (host != nullptr) {
+            const float hq[4] = {host->orientation[0], host->orientation[1], host->orientation[2],
+                                 host->orientation[3]};
+            auto angle_between = [](const float a[4], const float b[4]) {
+                float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+                d = d < 0.0f ? -d : d;
+                if (d > 1.0f) {
+                    d = 1.0f;
+                }
+                return 2.0f * acosf(d) * 57.2957795f;  // degrees
+            };
+            if (m_rot_primed) {
+                const float d_cam = angle_between(m_prev_cam, cam);
+                const float d_host = angle_between(m_prev_host, hq);
+                // Only while the head is actually turning: at rest both are noise, and a ratio of
+                // two noises says nothing.
+                if (d_host > 0.05f) {
+                    const float miss = d_cam > d_host ? d_cam - d_host : d_host - d_cam;
+                    m_rot_samples.fetch_add(1, std::memory_order_relaxed);
+                    m_rot_sum_cam.store(m_rot_sum_cam.load(std::memory_order_relaxed) + d_cam,
+                                        std::memory_order_relaxed);
+                    m_rot_sum_host.store(m_rot_sum_host.load(std::memory_order_relaxed) + d_host,
+                                         std::memory_order_relaxed);
+                    m_rot_sum_miss.store(m_rot_sum_miss.load(std::memory_order_relaxed) + miss,
+                                         std::memory_order_relaxed);
+                    float worst = m_rot_worst.load(std::memory_order_relaxed);
+                    while (miss > worst && !m_rot_worst.compare_exchange_weak(
+                                               worst, miss, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+            memcpy(m_prev_cam, cam, sizeof(cam));
+            memcpy(m_prev_host, hq, sizeof(hq));
+            m_rot_primed = true;
+        }
+    }
+
     m_pipe_seq[issue] = stamped;
     back->Release();
 

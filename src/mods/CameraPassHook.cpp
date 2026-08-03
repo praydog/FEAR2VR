@@ -694,3 +694,9 @@ uint32_t CameraPassHook::last_view_seq() {
 uint32_t CameraPassHook::last_view_tid() {
     return g_view_tid.load(std::memory_order_relaxed);
 }
+
+void CameraPassHook::camera_rotation_now(float out[4]) {
+    for (int i = 0; i < 4; ++i) {
+        out[i] = g_rot[i].load(std::memory_order_relaxed);
+    }
+}

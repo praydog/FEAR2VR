@@ -4121,6 +4121,25 @@ presenting. A stuck unload is worse than a leaked surface -- the payload is goin
 Any mod holding a device resource owes this. The symptom is not a crash, it is a hang with a
 truncated log, which reads as "the game froze" rather than as anything to do with the mod.
 
+### Some places draw a THIRD camera pass, and the single-value diagnostics report it
+
+Measured in a spot with a monitor or camera feed: three camera setups in one frame, not two.
+
+| pass | fov | viewport | note |
+|---|---|---|---|
+| 0 | 1.695 x 1.134 -- the GAME'S DEFAULT 97x65 | 640x360 | a render-to-texture, from its own camera |
+| 1 | 1.885 x 1.885 -- the headset | 0..1280 x 1440 | left eye |
+| 2 | 1.885 x 1.885 -- the headset | 1280..2560 x 1440 | right eye |
+
+**The scalar `cf_*` / `cp_fov_*` fields hold whichever pass ran last, so in these places they
+describe the RTT and not the eyes.** Reading them here shows the game rendering at 97x65 and looks
+exactly like the FOV override having failed -- it has not; the eyes are on the line above. Diagnose
+FOV from `cp_frame_passes`, which is per-pass, and never from the scalars.
+
+This is the same shape as the HUD-bracket bug: a per-frame quantity collapsed to one value, read
+somewhere the frame had more than one of them. Anything keyed on pass ORDINAL is also suspect in
+these places, since the RTT shifts every later pass along by one.
+
 ### A menu must not be presented as a projection layer
 
 Reported from the headset: while paused, the view is stuck and it is nauseating.

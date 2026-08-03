@@ -42,7 +42,12 @@
 // COPY rather than an allocation.
 class FrameCapture final : public Mod {
 public:
-    uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
+    uint64_t rot_samples() const { return m_rot_samples.load(std::memory_order_relaxed); }
+    float rot_sum_cam() const { return m_rot_sum_cam.load(std::memory_order_relaxed); }
+    float rot_sum_host() const { return m_rot_sum_host.load(std::memory_order_relaxed); }
+    float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
+    float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
+        uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
     uint64_t stamp_drift() const { return m_stamp_drift.load(std::memory_order_relaxed); }
     uint32_t stamp_worst() const { return m_stamp_worst.load(std::memory_order_relaxed); }
     uint32_t stamp_tid() const { return m_stamp_tid.load(std::memory_order_relaxed); }
@@ -277,6 +282,16 @@ private:
     bool verify_gpu_mirror();
 
     std::atomic<bool> m_registered{false};
+    // Rotation-faithfulness census -- see the stamp site in FrameCapture.cpp.
+    float m_prev_cam[4]{};
+    float m_prev_host[4]{};
+    bool m_rot_primed{false};
+    std::atomic<uint64_t> m_rot_samples{0};
+    std::atomic<float> m_rot_sum_cam{0.0f};
+    std::atomic<float> m_rot_sum_host{0.0f};
+    std::atomic<float> m_rot_sum_miss{0.0f};
+    std::atomic<float> m_rot_worst{0.0f};
+
     // Stamp-truth census -- see the comment at the stamp site in FrameCapture.cpp.
     std::atomic<uint64_t> m_stamp_agree{0};
     std::atomic<uint64_t> m_stamp_drift{0};

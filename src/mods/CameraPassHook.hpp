@@ -157,6 +157,10 @@ public:
     // The host-pose sequence in effect where the PRISTINE camera was taken -- the pose this frame's
     // view matrix actually corresponds to. Compare against what FrameCapture stamps: a difference
     // means the projection layer is claiming a pose the image was never rendered from.
+    // The rotation the engine's camera ACTUALLY held for the last pass set up -- i.e. what the
+    // frame was drawn with, as opposed to the pose we stamp on it.
+    static void camera_rotation_now(float out[4]);
+
     static uint32_t last_view_seq();
     static uint32_t last_view_tid();
     std::array<float, 3> position_offset() const;

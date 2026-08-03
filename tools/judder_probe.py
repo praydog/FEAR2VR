@@ -44,9 +44,14 @@ def main():
         print("         run:  build/bin/injector.exe --inject")
         return 2
 
+    # The pass census lives on a different route from the pose counters.
+    a_sp = get("/sdk/shader-params")
     print("[judder] sampling %.0fs -- MOVE YOUR HEAD steadily the whole time" % seconds)
+    print("         (use the HEAD only -- turning with the stick puts body yaw in the camera "
+          "and not in the head pose)")
     time.sleep(seconds)
     b = get("/xr/head")
+    b_sp = get("/sdk/shader-params")
 
     d_frames = b.get("frames", 0) - a.get("frames", 0)
     d_updates = b.get("vr_host_updates", 0) - a.get("vr_host_updates", 0)
@@ -63,6 +68,12 @@ def main():
                     "runtime reports no valid pose and nothing can drift")
     if d_agree + d_drift <= 0:
         void.append("no frames were captured and stamped (is the VR capture armed?)")
+    passes = b_sp.get("cp_passes_last_frame", 0)
+    if passes > 2:
+        print("[judder] NOTE: %d camera passes this frame -- more than the two eyes. A "
+              "render-to-texture\n"
+              "         (monitor, mirror, camera feed) is drawing here, which is why this spot "
+              "differs." % passes)
     if void:
         print("[judder] SAMPLE VOID -- measuring nothing:")
         for v in void:
@@ -83,6 +94,33 @@ def main():
           % (b.get("view_tid"), b.get("stamp_tid"),
              "  (SAME -- no cross-thread window)"
              if b.get("view_tid") == b.get("stamp_tid") else "  (DIFFERENT -- a window exists)"))
+
+    # ---- DID THE VIEW ROTATE BY WHAT THE HEAD ROTATED? -----------------------------------------
+    # The sequence check above proves only that we named the right pose RECORD. This asks whether
+    # the picture actually turned by the amount the pose claims, which is what timewarp acts on.
+    d_rot = b.get("rot_samples", 0) - a.get("rot_samples", 0)
+    if d_rot > 0:
+        cam = (b.get("rot_sum_cam", 0.0) - a.get("rot_sum_cam", 0.0)) / d_rot
+        host = (b.get("rot_sum_host", 0.0) - a.get("rot_sum_host", 0.0)) / d_rot
+        miss = (b.get("rot_sum_miss", 0.0) - a.get("rot_sum_miss", 0.0)) / d_rot
+        ratio = cam / host if host > 1e-6 else 0.0
+        print("[judder] ROTATION per frame over %d moving frames: camera %.3f deg, head %.3f deg"
+              % (d_rot, cam, host))
+        print("         mismatch %.3f deg/frame (%.0f%% of head motion), worst %.2f deg"
+              % (miss, 100.0 * miss / host if host > 1e-6 else 0.0, b.get("rot_worst_deg", 0.0)))
+        if miss > 0.25 * host:
+            print("[judder] -> THE VIEW IS NOT TURNING WITH THE HEAD (ratio %.2f). The frame is drawn\n"
+                  "         with a rotation the stamped pose does not describe, so timewarp corrects\n"
+                  "         by the difference. If you were turning with the STICK, re-run without it\n"
+                  "         -- body yaw lands in the camera and not in the head pose." % ratio)
+    else:
+        print("[judder] rotation census: no moving frames sampled (hold still? head not tracked?)")
+
+    # A frame published without a fresh second eye ships half a stale image.
+    d_pass = b_sp.get("cp_second_eye_draws", 0) - a_sp.get("cp_second_eye_draws", 0)
+    if d_pub > 0 and d_pass > 0 and d_pass < d_pub * 0.98:
+        print("[judder] STALE HALF-FRAMES: %d second-eye draws for %d published frames (%.1f%% "
+              "short)" % (d_pass, d_pub, 100.0 * (1.0 - d_pass / d_pub)))
 
     if d_drift > 0:
         print("[judder] -> THE STAMP IS LYING on %.1f%% of frames. The layer claims a pose the "
