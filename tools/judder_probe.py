@@ -246,10 +246,10 @@ def main():
     # Everything measured, compactly, so the same command at a good spot and a bad one can be put
     # side by side. Whatever is actually different will be in here; guessing at it from one sample
     # has not worked.
-    print("[diff] fps=%.0f hz=%.0f cad=%.2f | drift=%d ooo=%d | dup=%d/%d rb=%d | "
+    print("[diff] fps=%.0f hz=%.0f cad=%.2f | drift=%d stale=%d | dup=%d/%d rb=%d | "
           "passes=%d draws=%d eyes=%d clob=%d | rot=%.3f/%.3f miss=%.3f | poses=%d"
           % (game_fps, host_fps, host_fps / max(game_fps, 0.001),
-             d_drift, b.get("stamp_worst_ahead", 0),
+             d_drift, d_dupmoved,
              d_dup, d_dupmoved, d_rb,
              b_sp.get("cp_passes_last_frame", 0),
              b_sp.get("cp_draw_calls", 0) - a_sp.get("cp_draw_calls", 0),

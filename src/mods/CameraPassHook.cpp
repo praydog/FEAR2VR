@@ -436,7 +436,12 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
                     d = d > 1.0f ? 1.0f : d;
                     const float deg = 2.0f * acosf(d) * 57.2957795f;
                     g_view_check_samples.fetch_add(1, std::memory_order_relaxed);
-                    if (deg > 0.05f) {
+                    // 0.05 was BELOW THE ARITHMETIC. Matrix to quaternion and back does not
+                    // round-trip exactly, and the worst disagreement ever measured was 0.079 deg
+                    // -- reported as "the engine rendered from a different camera on 2% of
+                    // passes", which was precision, not a camera. A real substitution would be
+                    // degrees, so the threshold belongs where a real one would land.
+                    if (deg > 0.5f) {
                         g_view_mismatch_frames.fetch_add(1, std::memory_order_relaxed);
                     }
                     float worst = g_view_mismatch_worst.load(std::memory_order_relaxed);

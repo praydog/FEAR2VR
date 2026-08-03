@@ -334,6 +334,9 @@ int main(int argc, char** argv) {
     // smooth and late beats sharp and juddering.
     //
     // 0 disables it.
+    // How many compositor periods AHEAD to aim the head pose handed to the game, to cover the
+    // measured distance between rendering a frame and displaying it. See the locate call.
+    uint32_t predict_ahead_steps = 0;
     uint32_t target_age = 0;
     std::vector<uint8_t> deferred_pixels;
     uint32_t deferred_w = 0, deferred_h = 0, deferred_pitch = 0;
@@ -351,6 +354,8 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--predict-ahead") == 0 && i + 1 < argc) {
+            predict_ahead_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--target-age") == 0 && i + 1 < argc) {
             target_age = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--pose-lag") == 0 && i + 1 < argc) {
@@ -940,7 +945,25 @@ int main(int argc, char** argv) {
         if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            vli.displayTime = fs.predictedDisplayTime;
+            // ---- LATE LATCHING, DONE BY PREDICTING FORWARD ---------------------------------
+            //
+            // The game renders from this pose, but its frame is not shown at predictedDisplayTime
+            // -- it is shown after it has been captured, published, picked up and submitted, which
+            // we MEASURED at roughly two compositor periods. Aiming the pose at the moment the
+            // frame is really displayed is what a single-process VR renderer gets for free by
+            // sampling late; across two processes the equivalent is to sample EARLY and predict
+            // the extra distance.
+            //
+            // The runtime's own predictedDisplayPeriod is used rather than a constant, so this
+            // follows the headset's rate and whatever ASW is doing to it.
+            //
+            // It is not a lie to the compositor: the layer is still submitted with the pose the
+            // image was genuinely rendered from. The difference is that the pose now describes
+            // where the head WILL be, so the correction timewarp has to apply shrinks toward zero
+            // instead of being a fixed ~47 ms of accumulated head motion.
+            vli.displayTime =
+                fs.predictedDisplayTime +
+                static_cast<XrTime>(predict_ahead_steps) * fs.predictedDisplayPeriod;
             vli.space = space;
 
             XrViewState vs{XR_TYPE_VIEW_STATE};
