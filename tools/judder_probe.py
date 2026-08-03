@@ -177,6 +177,20 @@ def main():
               "         the right half keeps the previous frame. This is spot-specific by nature."
               % (d_clob, 100.0 * d_clob / max(1, d_pub)))
 
+    # ---- DID THE READBACK THAT FILLS THE FRAME ACTUALLY SUCCEED? -------------------------------
+    # A failed GetRenderTargetData leaves the slot holding the PREVIOUS frame's pixels. Published
+    # under the current pose that is a stale image wearing a fresh pose -- which is what "it
+    # judders to a stale frame" looks like from inside the headset.
+    d_rb = b.get("fc_readback_failures", 0) - a.get("fc_readback_failures", 0)
+    if d_rb > 0:
+        print("[judder] -> READBACK FAILED on %d frames (%.1f%% of published), last hr 0x%08X.\n"
+              "         Each one held the previous frame's pixels. Those are now withheld rather\n"
+              "         than published, but the failures themselves are the defect."
+              % (d_rb, 100.0 * d_rb / max(1, d_pub),
+                 b.get("fc_last_readback_hr", 0) & 0xFFFFFFFF))
+    else:
+        print("[judder] readback: 0 failures")
+
     # A frame published without a fresh second eye ships half a stale image.
     d_pass = b_sp.get("cp_second_eye_draws", 0) - a_sp.get("cp_second_eye_draws", 0)
     if d_pub > 0 and d_pass > 0 and d_pass < d_pub * 0.98:

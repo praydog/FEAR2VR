@@ -4140,6 +4140,26 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### A failed readback does not clear its destination -- it republishes the last frame
+
+`GetRenderTargetData` filling the capture pipeline had its HRESULT DISCARDED, alone among the four
+call sites in the file; one of the others carries a comment about the same function "failing
+silently".
+
+A failure leaves the destination surface holding the PREVIOUS frame's pixels. That slot is then
+published a frame later stamped with the CURRENT pose -- a stale image wearing a fresh pose. Every
+counter stays clean: the sequence is honest, the association is exact, the transport is in order,
+and the picture is still old. It is indistinguishable from a pose/frame mis-association from inside
+the headset, and it is exactly what "it randomly judders to a stale frame" describes.
+
+Checked now, counted as `fc_readback_failures`, and a slot whose readback failed is NEVER published:
+holding the previous frame is honest -- the host counts it as `held` and the compositor reprojects
+it -- whereas publishing stale pixels under a new pose is a lie the rest of the pipeline then acts
+on.
+
+**Whenever a symptom is "the data is right but the picture is old", audit the calls that FILL the
+picture, not the ones that describe it.**
+
 ### Pose staleness is 47 ms, and that is a SEPARATE problem from the wall judder
 
 Measured with forced ASW on, so the host loop is 36 Hz and one pose step is 27.8 ms:

@@ -48,6 +48,8 @@ public:
     float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
     float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
         float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
+        uint64_t readback_failures() const { return m_readback_failures.load(std::memory_order_relaxed); }
+    int32_t last_readback_hr() const { return m_last_readback_hr.load(std::memory_order_relaxed); }
         uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
     uint64_t stamp_drift() const { return m_stamp_drift.load(std::memory_order_relaxed); }
     uint32_t stamp_worst() const { return m_stamp_worst.load(std::memory_order_relaxed); }
@@ -368,6 +370,11 @@ private:
     uint32_t m_pipe_w{0};
     uint32_t m_pipe_h{0};
     uint32_t m_issue{0};
+    // Whether each pipeline slot's readback actually succeeded. A failed one holds the previous
+    // frame's pixels and must not be published under a new pose.
+    bool m_pipe_ok[2]{false, false};
+    std::atomic<uint64_t> m_readback_failures{0};
+    std::atomic<int32_t> m_last_readback_hr{0};
     bool m_pipe_primed{false};
     uint32_t m_scaled_w{0};
     uint32_t m_scaled_h{0};

@@ -11299,6 +11299,8 @@ bool Framework::initialize() {
               .f("rot_sum_miss", FrameCapture::get().rot_sum_miss(), 3)
               .f("rot_sum_lag", FrameCapture::get().rot_sum_lag(), 3)
               .f("rot_worst_deg", FrameCapture::get().rot_worst(), 3)
+              .u("fc_readback_failures", static_cast<size_t>(FrameCapture::get().readback_failures()))
+              .i("fc_last_readback_hr", static_cast<int64_t>(FrameCapture::get().last_readback_hr()))
               .u("stamp_agree", static_cast<size_t>(FrameCapture::get().stamp_agree()))
               .u("stamp_drift", static_cast<size_t>(FrameCapture::get().stamp_drift()))
               .u("stamp_worst_ahead", static_cast<size_t>(FrameCapture::get().stamp_worst()))

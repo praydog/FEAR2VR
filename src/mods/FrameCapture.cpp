@@ -517,7 +517,22 @@ void FrameCapture::service_continuous() {
     // number continuous_lock_ms() reports.
     const uint32_t issue = m_issue;
     const uint32_t ready = issue ^ 1u;
-    device->GetRenderTargetData(source, static_cast<IDirect3DSurface9*>(m_pipe[issue]));
+    // ---- THE ONE READBACK WHOSE RESULT WE NEVER CHECKED ----------------------------------------
+    //
+    // Every other GetRenderTargetData in this file tests its HRESULT -- one of them carries a
+    // comment about it "failing silently" -- and this, the call that fills the frame we actually
+    // publish, threw it away.
+    //
+    // A failure does not clear the destination: the slot keeps the PREVIOUS frame's pixels. We then
+    // publish that slot stamped with the CURRENT pose. A stale image wearing a fresh pose, which is
+    // indistinguishable from a pose/frame mis-association and is exactly what "it judders to a
+    // stale frame" looks like.
+    const HRESULT grtd = device->GetRenderTargetData(source, static_cast<IDirect3DSurface9*>(m_pipe[issue]));
+    m_pipe_ok[issue] = SUCCEEDED(grtd);
+    if (!m_pipe_ok[issue]) {
+        m_readback_failures.fetch_add(1, std::memory_order_relaxed);
+        m_last_readback_hr.store(static_cast<int32_t>(grtd), std::memory_order_relaxed);
+    }
 
     // Recorded HERE, against the surface being issued, because this is the moment whose pixels it
     // captures. Reading it later -- when the surface is finally locked -- would attribute a frame
@@ -619,7 +634,10 @@ void FrameCapture::service_continuous() {
             // desc.Format is the back buffer's, and every D3D9 back buffer format this engine uses
             // (X8R8G8B8 / A8R8G8B8) is BGRA in memory. Told to the reader rather than assumed by it,
             // because a wrong guess swaps red and blue and looks like a grading bug.
-            if (m_publishing.load(std::memory_order_acquire)) {
+            // NEVER PUBLISH A SLOT WHOSE READBACK FAILED. Holding the previous frame is honest --
+            // the host counts it as `held` and the compositor reprojects it -- whereas publishing
+            // stale pixels under a fresh pose is a lie the whole pipeline then acts on.
+            if (m_publishing.load(std::memory_order_acquire) && m_pipe_ok[ready]) {
                 // Tell the reader what it is looking at rather than letting it guess. Split stereo
                 // puts both eyes in one frame side by side; anything else is a single image for
                 // both eyes.
