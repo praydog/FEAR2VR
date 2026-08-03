@@ -11301,6 +11301,7 @@ bool Framework::initialize() {
               .u("stamp_worst_ahead", static_cast<size_t>(FrameCapture::get().stamp_worst()))
               .u("stamp_tid", static_cast<size_t>(FrameCapture::get().stamp_tid()))
               .u("view_tid", static_cast<size_t>(CameraPassHook::last_view_tid()))
+              .u("apply_tid", static_cast<size_t>(VR::get().apply_tid()))
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
               .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())

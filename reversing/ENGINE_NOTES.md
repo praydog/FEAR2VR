@@ -4140,6 +4140,37 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### Pose ingest, view build and frame stamp are all ONE thread
+
+Measured, because the whole question of pose-to-frame association turns on it:
+
+```
+pose APPLIED on thread : 293332
+view BUILT on thread   : 293332
+frame STAMPED on thread: 293332
+```
+
+`VR::on_frame` ingests the host pose and writes the camera, `draw_scene_detour` builds both eyes
+from the pristine camera, and `FrameCapture` stamps the published frame -- in that order, on one
+thread. So the frame CANNOT be stamped with a pose it was not drawn from, and the class of bug where
+a renderer draws an older tick's camera does not exist here. The two-slot readback pipeline pairs
+correctly too: the sequence travels with the slot (`m_pipe_seq[ready]`), not with the moment of
+publication.
+
+The RTT pass is excluded from the capture: per published frame the census shows two `draw_scene`
+calls but only ONE second-eye replay and one publish, so the back buffer is never read while the
+monitor is what was being drawn.
+
+**What this leaves is not association but PARALLAX.** We submit a projection layer with no depth,
+so the runtime can only timewarp ROTATION. Head rotation always carries translation -- the eyes
+orbit the neck by ~10 cm -- and uncorrected translation is an angular error inversely proportional
+to distance. Against a near wall it is large; across a room it is invisible. That matches a judder
+that appears at one wall, worsens when the frame is held longer, and cannot be felt on a flat
+screen where there is no reprojection at all.
+
+`XR_KHR_composition_layer_depth` is what fixes it, and we do not enable it -- the only extension
+enabled is `XR_KHR_D3D11_ENABLE`.
+
 ### HostState.frames is a CLOCK, so it must tick once -- it used to tick 0, 1 or 2 times
 
 It was incremented in two places per host loop: once inside the head-pose publish (guarded by

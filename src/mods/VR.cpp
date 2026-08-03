@@ -422,6 +422,12 @@ void VR::on_frame() {
 
                 if (host->sequence == seq) {  // still unchanged: the read was clean
                     rt.set_head_pose(pose);
+                    // WHICH THREAD APPLIES THE POSE, recorded because the whole question of
+                    // pose-to-frame association turns on whether this is the thread that draws.
+                    // If it is, ingest and render are one ordered sequence and the association is
+                    // exact. If it is not, the renderer can be drawing a camera built from an
+                    // OLDER tick while we stamp the newest pose onto it.
+                    m_apply_tid.store(::GetCurrentThreadId(), std::memory_order_relaxed);
                     m_last_host_sequence = seq;
                     m_last_host_seq_pub.store(seq, std::memory_order_release);
 
