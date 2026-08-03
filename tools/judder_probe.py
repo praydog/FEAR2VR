@@ -108,11 +108,22 @@ def main():
               % (d_rot, cam, host))
         print("         mismatch %.3f deg/frame (%.0f%% of head motion), worst %.2f deg"
               % (miss, 100.0 * miss / host if host > 1e-6 else 0.0, b.get("rot_worst_deg", 0.0)))
-        if miss > 0.25 * host:
+        lag = (b.get("rot_sum_lag", 0.0) - a.get("rot_sum_lag", 0.0)) / d_rot
+        print("         against the PREVIOUS frame's head motion: %.3f deg/frame" % lag)
+        if lag < miss * 0.6:
+            print("[judder] -> THE PICTURE IS A FRAME BEHIND THE POSE STAMPED ON IT. It matches the\n"
+                  "         previous frame's head motion (%.3f) far better than this one's (%.3f),\n"
+                  "         which is a PHASE error, not a scale one. Timewarp is correcting by a\n"
+                  "         difference we introduced." % (lag, miss))
+        elif miss > 0.25 * host:
             print("[judder] -> THE VIEW IS NOT TURNING WITH THE HEAD (ratio %.2f). The frame is drawn\n"
                   "         with a rotation the stamped pose does not describe, so timewarp corrects\n"
                   "         by the difference. If you were turning with the STICK, re-run without it\n"
                   "         -- body yaw lands in the camera and not in the head pose." % ratio)
+        else:
+            print("[judder] -> the view is turning with the head (mismatch %.0f%% of motion, and no\n"
+                  "         phase offset). The rotation handed to timewarp is faithful."
+                  % (100.0 * miss / host if host > 1e-6 else 0.0))
     else:
         print("[judder] rotation census: no moving frames sampled (hold still? head not tracked?)")
 

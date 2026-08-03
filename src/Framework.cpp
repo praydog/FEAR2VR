@@ -11285,6 +11285,7 @@ bool Framework::initialize() {
               .f("rot_sum_cam", FrameCapture::get().rot_sum_cam(), 3)
               .f("rot_sum_host", FrameCapture::get().rot_sum_host(), 3)
               .f("rot_sum_miss", FrameCapture::get().rot_sum_miss(), 3)
+              .f("rot_sum_lag", FrameCapture::get().rot_sum_lag(), 3)
               .f("rot_worst_deg", FrameCapture::get().rot_worst(), 3)
               .u("stamp_agree", static_cast<size_t>(FrameCapture::get().stamp_agree()))
               .u("stamp_drift", static_cast<size_t>(FrameCapture::get().stamp_drift()))

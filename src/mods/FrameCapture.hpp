@@ -46,7 +46,8 @@ public:
     float rot_sum_cam() const { return m_rot_sum_cam.load(std::memory_order_relaxed); }
     float rot_sum_host() const { return m_rot_sum_host.load(std::memory_order_relaxed); }
     float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
-    float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
+    float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
+        float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
         uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
     uint64_t stamp_drift() const { return m_stamp_drift.load(std::memory_order_relaxed); }
     uint32_t stamp_worst() const { return m_stamp_worst.load(std::memory_order_relaxed); }
@@ -291,6 +292,8 @@ private:
     std::atomic<float> m_rot_sum_host{0.0f};
     std::atomic<float> m_rot_sum_miss{0.0f};
     std::atomic<float> m_rot_worst{0.0f};
+    std::atomic<float> m_rot_sum_lag{0.0f};
+    float m_prev_d_host{0.0f};
 
     // Stamp-truth census -- see the comment at the stamp site in FrameCapture.cpp.
     std::atomic<uint64_t> m_stamp_agree{0};

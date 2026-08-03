@@ -64,6 +64,13 @@ std::atomic<uint64_t> g_draw_calls{0};
 // corrects by the difference -- judder proportional to head speed, with every pose counter on the
 // host still reading a clean hit.
 std::atomic<uint32_t> g_view_seq{0};
+
+// THE ROTATION THE MAIN VIEW IS BEING DRAWN WITH -- separate from the g_rot reporting copy, which
+// the setup detour writes for EVERY pass. In a place that draws a render-to-texture (a monitor or
+// camera feed) g_rot may hold the RTT's own camera, and comparing that against the head reports a
+// mismatch of tens of degrees that never happened. Written only where we actually override the
+// main view, so it is always an eye.
+std::atomic<float> g_view_rot[4]{};
 std::atomic<uint32_t> g_view_tid{0};
 std::atomic<uintptr_t> g_draw_target{0};
 std::atomic<uintptr_t> g_endpass_fn{0};
@@ -369,6 +376,13 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     }
 
     g_overridden.fetch_add(1, std::memory_order_relaxed);
+    if (is_main_view) {
+        // Position offsets above do not touch rotation, so this is the pristine view rotation.
+        g_view_rot[0].store(shifted->rotation.x, std::memory_order_relaxed);
+        g_view_rot[1].store(shifted->rotation.y, std::memory_order_relaxed);
+        g_view_rot[2].store(shifted->rotation.z, std::memory_order_relaxed);
+        g_view_rot[3].store(shifted->rotation.w, std::memory_order_relaxed);
+    }
     const char r = original(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     apply_frustum_centre(eye);
     capture_viewport();
@@ -697,6 +711,6 @@ uint32_t CameraPassHook::last_view_tid() {
 
 void CameraPassHook::camera_rotation_now(float out[4]) {
     for (int i = 0; i < 4; ++i) {
-        out[i] = g_rot[i].load(std::memory_order_relaxed);
+        out[i] = g_view_rot[i].load(std::memory_order_relaxed);
     }
 }

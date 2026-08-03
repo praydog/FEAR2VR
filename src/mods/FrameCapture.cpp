@@ -572,6 +572,18 @@ void FrameCapture::service_continuous() {
                 // two noises says nothing.
                 if (d_host > 0.05f) {
                     const float miss = d_cam > d_host ? d_cam - d_host : d_host - d_cam;
+                    // ---- IS IT A LAG RATHER THAN AN ERROR? ---------------------------------
+                    // A camera that follows the head ONE FRAME LATE turns by the same total
+                    // amount -- so the means agree and only the per-frame deltas disagree,
+                    // which is a phase signature and not a scale one. Comparing this frame's
+                    // camera delta against the PREVIOUS head delta separates them: if that
+                    // matches better, the picture is a frame behind the pose stamped on it,
+                    // and timewarp is correcting by a difference we introduced.
+                    const float miss_lag =
+                        d_cam > m_prev_d_host ? d_cam - m_prev_d_host : m_prev_d_host - d_cam;
+                    m_rot_sum_lag.store(m_rot_sum_lag.load(std::memory_order_relaxed) + miss_lag,
+                                        std::memory_order_relaxed);
+                    m_prev_d_host = d_host;
                     m_rot_samples.fetch_add(1, std::memory_order_relaxed);
                     m_rot_sum_cam.store(m_rot_sum_cam.load(std::memory_order_relaxed) + d_cam,
                                         std::memory_order_relaxed);
