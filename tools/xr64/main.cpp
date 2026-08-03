@@ -783,6 +783,13 @@ int main(int argc, char** argv) {
     uint64_t age_samples = 0;
     uint64_t age_total = 0;
     uint32_t age_worst = 0;
+    // ---- THE DISTRIBUTION, NOT THE MEAN ---------------------------------------------------------
+    //
+    // A CONSTANT age is smooth: every frame shows the world from the same offset behind the head,
+    // which reads as latency. A VARYING age is judder: consecutive frames show it from different
+    // offsets, so the world steps back and forth. The mean cannot tell those apart -- 1.6 could be
+    // every frame at 1.6, or 60% at 1 and 40% at 2.5, and only the second one judders.
+    uint64_t age_hist[4] = {0, 0, 0, 0};  // 0, 1, 2, 3+
     bool pose_ever_published = false;
     // WHY A FRAME PUBLISHED NO POSE. If the head pose stalls for a frame the game's camera stalls
     // with it, and that is an update-rate defect however clean the association is.
@@ -1498,6 +1505,7 @@ int main(int argc, char** argv) {
                 if (age > age_worst) {
                     age_worst = age;
                 }
+                ++age_hist[age > 3u ? 3u : age];
             }
         }
         // Deliberately reach further back when asked. The lookup is by sequence, so an older slot
@@ -1720,7 +1728,7 @@ int main(int argc, char** argv) {
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
                         "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
-                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms), "
+                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms, age-hist %llu/%llu/%llu/%llu), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
@@ -1736,7 +1744,11 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(pose_skip_should),
                         static_cast<unsigned long long>(pose_skip_locate),
                         stale_ms_samples ? stale_ms_total / static_cast<double>(stale_ms_samples) : 0.0,
-                        stale_ms_worst, state_name(state), rs(end),
+                        stale_ms_worst,
+                        static_cast<unsigned long long>(age_hist[0]),
+                        static_cast<unsigned long long>(age_hist[1]),
+                        static_cast<unsigned long long>(age_hist[2]),
+                        static_cast<unsigned long long>(age_hist[3]), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],
