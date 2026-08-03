@@ -4174,6 +4174,33 @@ finally shown would pair those pixels with a newer pose -- manufacturing the exa
 the deferral exists to remove. That bug was written and caught before it shipped; it is the same
 mistake in a new place.
 
+### Late latching is sampling LATER, not predicting FURTHER
+
+Worth writing down because the distinction was got wrong here first. Meta's late latching feeds the
+pose to the GPU by a side channel and latches it immediately before the queued commands execute, so
+the render uses a pose sampled long after the CPU recorded the work. It does not aim the pose
+further into the future -- prediction error grows with distance, so predicting further is a worse
+guess, not a shorter latency.
+
+The GPU-side version is unavailable here: D3D9, and the engine's shaders are not ours to rewrite.
+The CPU-side equivalent is, and the gap it closes is not small:
+
+```
+CClientShell::Update  ->  VR::on_frame ingests the pose        <- where we used to sample
+   ... the entire game update ...
+draw_scene_detour     ->  the view is built and drawn          <- where we can sample instead
+```
+
+Both on the same thread, so everything between is latency added for nothing.
+
+It composes exactly rather than approximately, because HeadTracking writes the camera's OUTER
+operand -- `camera = head * aim`. Replacing the head is a LEFT multiply by `head_new * head_old^-1`,
+leaving the aim, the body and the weapon untouched.
+
+**The published sequence advances with the latch.** A latch that skipped that would buy latency and
+pay for it in a frame stamped with a pose it was not drawn from, which is the defect this whole
+investigation has been chasing.
+
 ### A failed readback does not clear its destination -- it republishes the last frame
 
 `GetRenderTargetData` filling the capture pipeline had its HRESULT DISCARDED, alone among the four

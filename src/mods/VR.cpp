@@ -112,6 +112,74 @@ void VR::on_shutdown() {
     vr::simulated_runtime().destroy();
 }
 
+// ---- LATE LATCHING, THE PART OF IT WE CAN ACTUALLY DO -------------------------------------------
+//
+// Meta's technique latches the pose on the GPU, immediately before the queued commands execute, so
+// the render uses a pose sampled long after the CPU recorded the work. We cannot do that: D3D9, and
+// the engine's shaders are not ours to rewrite.
+//
+// But the same principle has a large unclaimed win one level up. The pose is ingested at the START
+// of the engine's update, in on_frame, and the view is not built until draw_scene_detour -- after
+// all the game logic, on the same thread. Every millisecond of that update is latency we add for
+// nothing. Re-reading the pose at the draw and correcting the camera is the CPU-side equivalent of
+// the latch, and it is exact rather than predictive: this is where the head IS, not a guess about
+// where it will be.
+//
+// It composes cleanly because HeadTracking writes the camera's OUTER operand -- camera = head * aim
+// -- so replacing the head means left-multiplying by (head_new * head_old^-1) and the aim, the
+// body and the weapon are untouched.
+//
+// The published sequence is advanced with it, so the frame is stamped with the pose it was actually
+// drawn from. A latch that did not do that would buy latency and pay for it in exactly the
+// mis-association this whole hunt has been about.
+std::optional<std::array<float, 4>> VR::late_latch_head() {
+    if (!m_late_latch.load(std::memory_order_relaxed)) {
+        return std::nullopt;
+    }
+
+    const auto* host = FramePublisher::get().host_state();
+    if (host == nullptr) {
+        return std::nullopt;
+    }
+
+    const uint32_t seq = host->sequence;
+    if ((seq & 1u) != 0u || host->valid == 0u) {
+        return std::nullopt;  // mid-write, or the runtime has no pose
+    }
+
+    const std::array<float, 4> fresh{host->orientation[0], host->orientation[1],
+                                     host->orientation[2], host->orientation[3]};
+    if (host->sequence != seq) {
+        return std::nullopt;  // torn
+    }
+
+    const auto now = runtime_to_engine_rotation(fresh);
+    const std::array<float, 4> was{g_head_eng[0].load(std::memory_order_relaxed),
+                                   g_head_eng[1].load(std::memory_order_relaxed),
+                                   g_head_eng[2].load(std::memory_order_relaxed),
+                                   g_head_eng[3].load(std::memory_order_relaxed)};
+    const float n = was[0] * was[0] + was[1] * was[1] + was[2] * was[2] + was[3] * was[3];
+    if (n < 0.5f) {
+        return std::nullopt;  // nothing composed yet this session
+    }
+
+    // delta = now * conj(was), both unit, so the conjugate is the inverse.
+    const std::array<float, 4> inv{-was[0], -was[1], -was[2], was[3]};
+    const std::array<float, 4> d{
+        now[3] * inv[0] + now[0] * inv[3] + now[1] * inv[2] - now[2] * inv[1],
+        now[3] * inv[1] - now[0] * inv[2] + now[1] * inv[3] + now[2] * inv[0],
+        now[3] * inv[2] + now[0] * inv[1] - now[1] * inv[0] + now[2] * inv[3],
+        now[3] * inv[3] - now[0] * inv[0] - now[1] * inv[1] - now[2] * inv[2]};
+
+    for (size_t i = 0; i < 4; ++i) {
+        g_head_eng[i].store(now[i], std::memory_order_relaxed);
+    }
+    m_last_host_sequence = seq;
+    m_last_host_seq_pub.store(seq, std::memory_order_release);
+    m_late_latches.fetch_add(1, std::memory_order_relaxed);
+    return d;
+}
+
 std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& q) {
     // Mirror along Z: conjugating a rotation by diag(1,1,-1) negates X and Y, leaves Z and W.
     return {-q[0], -q[1], q[2], q[3]};

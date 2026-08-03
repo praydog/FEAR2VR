@@ -309,6 +309,32 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
         }
     }
 
+    // ---- LATCH THE POSE HERE, NOT AT THE TOP OF THE UPDATE -------------------------------------
+    //
+    // The pristine copy below is what both eyes are built from, so correcting it here corrects the
+    // whole frame -- and here is as late as this side of the pipeline gets: the game logic has run,
+    // the draw is about to be issued.
+    //
+    // Applied to the camera BEFORE the pristine copy is taken, because the eye offset is computed
+    // from the rotation and would otherwise displace the eyes along the stale axis.
+    regenny::LTNodeTransform latched{};
+    if (is_main_view && camera != nullptr) {
+        if (const auto d = VR::get().late_latch_head()) {
+            latched = *camera;
+            const auto& q = latched.rotation;
+            // camera = head * aim, so replacing the head is a LEFT multiply by the delta.
+            const float x = (*d)[3] * q.x + (*d)[0] * q.w + (*d)[1] * q.z - (*d)[2] * q.y;
+            const float y = (*d)[3] * q.y - (*d)[0] * q.z + (*d)[1] * q.w + (*d)[2] * q.x;
+            const float z = (*d)[3] * q.z + (*d)[0] * q.y - (*d)[1] * q.x + (*d)[2] * q.w;
+            const float w = (*d)[3] * q.w - (*d)[0] * q.x - (*d)[1] * q.y - (*d)[2] * q.z;
+            latched.rotation.x = x;
+            latched.rotation.y = y;
+            latched.rotation.z = z;
+            latched.rotation.w = w;
+            camera = &latched;
+        }
+    }
+
     // THE PRISTINE COPY for a second eye, taken before any override touches it.
     if (camera != nullptr && fov != nullptr && rect != nullptr) {
         g_pristine.camera = *camera;
