@@ -156,6 +156,19 @@ struct SharedReader {
     // The game asking to be shown FLAT -- see xr::SharedFrameHeader::flat. True while a menu is up.
     bool frame_flat() const { return header != nullptr && header->flat != 0u; }
 
+    // THE POSE THE FRAME WAS ACTUALLY DRAWN FROM, stated by the writer rather than looked up here.
+    // False when the writer could not recover it, in which case the sequence lookup stands.
+    bool frame_rendered_pose(XrQuaternionf& out) const {
+        if (header == nullptr || header->rendered_valid == 0u) {
+            return false;
+        }
+        out.x = header->rendered_orientation[0];
+        out.y = header->rendered_orientation[1];
+        out.z = header->rendered_orientation[2];
+        out.w = header->rendered_orientation[3];
+        return true;
+    }
+
     bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
         if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
             return false;
@@ -815,6 +828,13 @@ int main(int argc, char** argv) {
     uint64_t age_samples = 0;
     uint64_t age_total = 0;
     uint32_t age_worst = 0;
+    // How far the pose the game SAYS it drew with differs from the one we recorded sending under
+    // that sequence. Zero means the index was telling the truth all along and this whole question
+    // is closed; anything else is the discrepancy, measured rather than argued.
+    uint64_t stated_samples = 0;
+    double stated_sum_deg = 0.0;
+    double stated_worst_deg = 0.0;
+    uint64_t stated_absent = 0;
     // ---- THE DISTRIBUTION, NOT THE MEAN ---------------------------------------------------------
     //
     // A CONSTANT age is smooth: every frame shows the world from the same offset behind the head,
@@ -1614,6 +1634,11 @@ int main(int argc, char** argv) {
         // for the pre-tracking case. `flat` lets the GAME trigger it, because only the game knows
         // a menu is up.
         const bool flat_requested = reader.frame_flat();
+        XrQuaternionf stated{};
+        const bool stated_ok = reader.frame_rendered_pose(stated);
+        if (!stated_ok) {
+            ++stated_absent;
+        }
         const bool pose_known =
             !flat_requested && use_projection && rendered_seq != 0 && slot.sequence == lag_seq;
 
@@ -1660,6 +1685,29 @@ int main(int argc, char** argv) {
                 const int32_t py1 = to_px(y1, screen_h);
 
                 proj_views[e].pose = slot.pose[e];
+
+            // ---- PREFER WHAT THE WRITER STATES OVER WHAT WE REMEMBER SENDING -------------------
+            //
+            // The orientation only: the per-eye POSITIONS come from this record and are still the
+            // right ones, since the game derives its eye offset from the same IPD. What the game
+            // cannot tell us is where its eyes were in the room, and what we cannot know is what
+            // its engine did to the rotation after we handed it over.
+            if (stated_ok) {
+                if (e == 0) {
+                    const float d = std::fabs(stated.x * slot.pose[e].orientation.x +
+                                              stated.y * slot.pose[e].orientation.y +
+                                              stated.z * slot.pose[e].orientation.z +
+                                              stated.w * slot.pose[e].orientation.w);
+                    const double deg =
+                        2.0 * std::acos(static_cast<double>(d > 1.0f ? 1.0f : d)) * 57.2957795;
+                    ++stated_samples;
+                    stated_sum_deg += deg;
+                    if (deg > stated_worst_deg) {
+                        stated_worst_deg = deg;
+                    }
+                }
+                proj_views[e].pose.orientation = stated;
+            }
 
                 // Declare what the CROP represents, not what was rendered: the rectangle now is the
                 // headset's own asymmetric frustum.
@@ -1819,6 +1867,7 @@ int main(int argc, char** argv) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
                         "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
                         "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms, age-hist %llu/%llu/%llu/%llu, "
+                        "STATED-vs-INDEX %.3f/%.3f deg over %llu (absent %llu), "
                         "deferred %llu), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
@@ -1840,6 +1889,9 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(age_hist[1]),
                         static_cast<unsigned long long>(age_hist[2]),
                         static_cast<unsigned long long>(age_hist[3]),
+                        stated_samples ? stated_sum_deg / static_cast<double>(stated_samples) : 0.0,
+                        stated_worst_deg, static_cast<unsigned long long>(stated_samples),
+                        static_cast<unsigned long long>(stated_absent),
                         static_cast<unsigned long long>(frames_deferred), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",

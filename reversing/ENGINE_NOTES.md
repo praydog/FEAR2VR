@@ -4409,6 +4409,44 @@ the mod on the game thread. Reading it as the compositor's rate compares the gam
 which is how a beat stayed invisible across three probe runs that all looked healthy. The
 compositor's own rate is `HostState.frames`, published as `host_frames`.
 
+### STATE the pose the frame was drawn from -- an index cannot express what the engine did
+
+**This was the judder.** The frame header carried `host_sequence`, a 32-bit INDEX, and the host
+resolved it against `pose_history` -- its own record of the pose it had SENT under that sequence.
+That is a promise about what the game was GIVEN. It says nothing about what the game DREW, and
+everything between the two is invisible to the compositor:
+
+- `runtime_to_engine_rotation` into the engine's basis
+- the conjugation into the body's frame, `heading * head * heading^-1`
+- the engine's own `outer * inner` composition
+- the engine's pitch clamp, and any other filtering it applies to the operand
+
+Any of those altering the rotation leaves the compositor warping from a pose the image was never
+rendered with. It is invisible while still, invisible on the desktop mirror -- the game renders
+itself perfectly consistently -- and becomes visible MOTION error exactly when the head turns,
+because only then does timewarp have a delta to apply. Rotating with the stick stays smooth for the
+same reason: it changes no layer pose, so nothing is warped.
+
+The header now carries the pose itself (version 4): `rendered_valid` and `rendered_orientation`,
+recovered from the engine's OWN outer operand at `holder[+552]`, so whatever it did to our write is
+included --
+
+```
+outer    = heading * head_eng * heading^-1     (what we wrote, as the engine now holds it)
+head_eng = heading^-1 * outer * heading
+head_xr  = phi(head_eng)                        phi is its own inverse
+```
+
+-- carried with the pipeline SLOT like the sequence, since the readback is a frame deep. The host
+uses it for the submitted layer orientation and keeps its own per-eye positions, which the game
+cannot know.
+
+**An index is a promise about someone else's memory. A value is the thing itself.** Every question
+about whether the sequence could be stale, recycled, double-incremented or clobbered simply stops
+existing once the pose travels with the frame -- and those questions had consumed an entire session
+of instruments that all measured clean because they were all checking the bookkeeping, which was
+correct, rather than the quantity, which was not.
+
 ### The head is applied in the BODY's frame, and any check of it must say so
 
 `HeadTracking` does not write the head rotation raw. It writes

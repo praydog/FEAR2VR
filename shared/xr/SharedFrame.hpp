@@ -23,7 +23,7 @@ namespace xr {
 constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // 3 adds the `flat` flag. The host VALIDATES this: a mismatched pair would otherwise read the
 // pixels at the wrong offset and show garbage rather than refusing.
-constexpr uint32_t kSharedFrameVersion = 3u;
+constexpr uint32_t kSharedFrameVersion = 4u;  // 4 adds the rendered pose
 
 // Sized for the game's own back buffer at 2560x1440 BGRA. Deliberately NOT sized for a supersampled
 // future: the section is committed memory in both processes, and the resolution question is settled
@@ -96,6 +96,26 @@ struct alignas(64) SharedFrameHeader {
     // the pre-tracking case; this lets the GAME ask for it, because only the game knows a menu is
     // up. Set whenever the front end or the pause menu is showing.
     uint32_t flat;
+
+    // ---- THE POSE THIS IMAGE WAS ACTUALLY RENDERED FROM ----------------------------------------
+    //
+    // `host_sequence` above is an INDEX, and the host resolves it against its own record of what it
+    // sent. That is a promise about what the game was GIVEN, not about what it DREW, and everything
+    // between the two is invisible to the compositor: the conversion into the engine's basis, the
+    // conjugation into the body's frame, the engine's own `outer * inner` composition, and its
+    // pitch clamp. Any of those altering the rotation leaves the compositor warping from a pose the
+    // image was never rendered with -- a fixed discrepancy that only becomes visible MOTION error
+    // when the head turns, and stays invisible on the desktop because the game rendered itself
+    // consistently.
+    //
+    // So the writer states it outright, in the runtime's own space: the head orientation recovered
+    // from the camera the frame was drawn with. An index can be stale, recycled or double-counted;
+    // a value cannot be any of those things.
+    //
+    // `rendered_valid` is zero when the writer could not recover it, and the reader must fall back
+    // to the sequence lookup rather than trusting zeros.
+    uint32_t rendered_valid;
+    float rendered_orientation[4];  // x, y, z, w in the host's LOCAL space
 };
 
 // 128 now that the slot index is carried: alignas(64) rounds up, and the exact size matters far

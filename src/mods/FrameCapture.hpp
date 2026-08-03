@@ -408,6 +408,10 @@ private:
     // Whether each pipeline slot's readback actually succeeded. A failed one holds the previous
     // frame's pixels and must not be published under a new pose.
     bool m_pipe_ok[2]{false, false};
+    // The head pose each slot's pixels were actually drawn from, in the runtime's space. Carried
+    // beside the sequence so the reader never has to resolve an index against its own memory.
+    float m_pipe_pose[2][4]{};
+    bool m_pipe_pose_ok[2]{false, false};
     std::atomic<uint64_t> m_readback_failures{0};
     std::atomic<int32_t> m_last_readback_hr{0};
 

@@ -59,8 +59,13 @@ public:
     void set_flat(bool on);
     bool flat() const { return m_flat.load(std::memory_order_relaxed); }
 
+    // `rendered_orientation` is the head pose the pixels were ACTUALLY drawn from, in the runtime's
+    // space, or null when the writer could not recover it. Stated rather than referenced: the
+    // sequence beside it is only an index into the reader's own memory, and cannot express what the
+    // engine did to the pose after we handed it over.
     bool publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height, bool bgra,
-                 uint32_t layout, uint32_t host_sequence);
+                 uint32_t layout, uint32_t host_sequence,
+                 const float* rendered_orientation = nullptr);
 
     // ---- WHAT A CONSUMER WANTS TO KNOW ---------------------------------------------------------
     // WHAT THE HEADSET IS DOING, written by the host into the same mapping. Null until the section

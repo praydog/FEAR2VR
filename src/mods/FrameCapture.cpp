@@ -762,6 +762,48 @@ void FrameCapture::service_continuous() {
         }
     }
 
+    // ---- STATE THE POSE, DO NOT JUST NAME IT ---------------------------------------------------
+    //
+    // The sequence is an INDEX and the host resolves it against its own record of what it SENT. That
+    // says nothing about what the engine finally DREW: the conversion into its basis, the
+    // conjugation into the body's frame, its own outer*inner composition and its pitch clamp all
+    // sit in between, and any of them altering the rotation leaves the compositor warping from a
+    // pose this image was never rendered with.
+    //
+    // `outer` here is read from the engine's own holder, so whatever it did to our write is in it.
+    // Undo the two transforms we applied and the result is the head pose this frame actually
+    // corresponds to, in the runtime's space.
+    //
+    //     outer     = heading * head_eng * heading^-1
+    //     head_eng  = heading^-1 * outer * heading
+    //     head_xr   = phi(head_eng)          -- phi is its own inverse
+    //
+    // Travels with the SLOT, like the sequence, because the readback is a frame deep.
+    m_pipe_pose_ok[issue] = false;
+    if (const auto ops = sdk::PlayerMgr::camera_rotation_operands(0)) {
+        if (const auto yaw = sdk::PlayerMgr::aim_yaw(0)) {
+            const float h = *yaw * 0.5f;
+            const std::array<float, 4> hq{0.0f, sinf(h), 0.0f, cosf(h)};
+            const std::array<float, 4> hqi{0.0f, -sinf(h), 0.0f, cosf(h)};
+            auto qm = [](const std::array<float, 4>& a, const std::array<float, 4>& b) {
+                return std::array<float, 4>{a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+                                            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+                                            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+                                            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+            };
+            const auto head_eng = qm(qm(hqi, ops->outer), hq);
+            const auto head_xr = VR::runtime_to_engine_rotation(head_eng);  // involution
+            const float n = head_xr[0] * head_xr[0] + head_xr[1] * head_xr[1] +
+                            head_xr[2] * head_xr[2] + head_xr[3] * head_xr[3];
+            if (n > 0.9f && n < 1.1f) {  // a quaternion that is not unit length is not a rotation
+                for (size_t k = 0; k < 4; ++k) {
+                    m_pipe_pose[issue][k] = head_xr[k];
+                }
+                m_pipe_pose_ok[issue] = true;
+            }
+        }
+    }
+
     m_pipe_seq[issue] = stamped;
     back->Release();
 
@@ -834,7 +876,8 @@ void FrameCapture::service_continuous() {
                                               kMenuFallbackPresents;
                 const uint32_t layout = really_split ? xr::kLayoutSideBySide : xr::kLayoutMono;
                 FramePublisher::get().publish(lr.pBits, static_cast<uint32_t>(lr.Pitch), w, h, true,
-                                              layout, m_pipe_seq[ready]);
+                                              layout, m_pipe_seq[ready],
+                                              m_pipe_pose_ok[ready] ? m_pipe_pose[ready] : nullptr);
             }
 
             static_cast<IDirect3DSurface9*>(m_pipe[ready])->UnlockRect();

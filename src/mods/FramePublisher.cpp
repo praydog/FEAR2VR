@@ -178,7 +178,8 @@ bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width
 }
 
 bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
-                             bool bgra, uint32_t layout, uint32_t host_sequence) {
+                             bool bgra, uint32_t layout, uint32_t host_sequence,
+                             const float* rendered_orientation) {
     if (m_base == nullptr || bits == nullptr || width == 0 || height == 0) {
         return false;
     }
@@ -222,6 +223,17 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     std::memcpy(payload, bits, static_cast<size_t>(needed));
 
     const int64_t t1 = now_ticks();
+    // Written inside the odd/even window with the rest of the header, so a reader either sees this
+    // frame's pose or the previous frame's -- never half of one.
+    if (rendered_orientation != nullptr) {
+        for (int k = 0; k < 4; ++k) {
+            header->rendered_orientation[k] = rendered_orientation[k];
+        }
+        header->rendered_valid = 1u;
+    } else {
+        header->rendered_valid = 0u;
+    }
+
     header->write_qpc = t1;
     ++header->frames_written;
 
