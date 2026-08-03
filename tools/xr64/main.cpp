@@ -1663,19 +1663,19 @@ int main(int argc, char** argv) {
 
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu, stale %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu), "
+                        "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
                         static_cast<unsigned long long>(held),
+                        static_cast<unsigned long long>(pose_hits),
+                        static_cast<unsigned long long>(pose_misses),
                         static_cast<unsigned long long>(content_waits_expired),
                         static_cast<unsigned long long>(seq_backwards),
                         static_cast<unsigned long long>(seq_repeats),
                         age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples) : 0.0,
-                        static_cast<unsigned long long>(age_worst),
-                        static_cast<unsigned long long>(pose_hits),
-                        static_cast<unsigned long long>(pose_misses), state_name(state), rs(end),
+                        static_cast<unsigned long long>(age_worst), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],

@@ -4140,6 +4140,28 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### The transport is in order; what varies is which POSE a frame carries
+
+Measured at the consumer, which is the only place that can see it:
+
+```
+OUT-OF-ORDER 0     repeats ~13%     age mean 1.18 steps, worst 3     held 0
+```
+
+- **No out-of-order delivery.** `rendered_seq` never went backwards over thousands of frames, so
+  the ring is not being lapped and headers are not tearing.
+- **`held` is zero**, so every submission carried a NEW image.
+- But **13% of submissions carried a pose sequence already submitted** -- a new picture claiming a
+  pose the previous picture had claimed. That is the signature of the game rendering before the
+  pose for that boundary existed, which it did: the tick was signalled ~200 lines before
+  `xrLocateViews` published the pose.
+
+**Read the format string against the argument list before believing a number.** This line printed
+`OUT-OF-ORDER 4607992913809357429` -- the bit pattern of a double near 1.18, because a `%.2f` and a
+`%llu` had been appended where they read well in the source rather than where the format wanted
+them. MSVC does not warn at the project's level. The values had to be decoded by hand from IEEE-754
+before any of the above could be said.
+
 ### Pose ingest, view build and frame stamp are all ONE thread
 
 Measured, because the whole question of pose-to-frame association turns on it:
