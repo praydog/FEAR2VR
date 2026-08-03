@@ -52,6 +52,10 @@ void AmmoKeeper::on_frame() {
     // its own type on the sweep after the switch.
     const auto ammo = sdk::WeaponMgr::current_ammo_name();
     if (ammo.empty()) {
+        // COUNTED, because a sweep that bails looks identical to a sweep that decided not to grant
+        // -- and the difference is the whole diagnosis. 13 sweeps with one grant was read as the
+        // keeper refusing to top up when it had never got as far as asking.
+        m_no_ammo_name.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -59,6 +63,7 @@ void AmmoKeeper::on_frame() {
     // pickup, so an unconditional grant would keep announcing itself to the player.
     const auto held = sdk::PlayerMgr::ammo_count(0, ammo);
     if (!held.has_value()) {
+        m_no_count.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -93,6 +98,7 @@ void AmmoKeeper::on_frame() {
         want = m_ceiling;
     }
     if (*held >= want) {
+        m_satisfied.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -106,6 +112,7 @@ void AmmoKeeper::on_frame() {
         return; // an ammo name that long is not one the database holds
     }
 
+    m_asked.fetch_add(1, std::memory_order_relaxed);
     if (ConsoleRunner::get().queue(line)) {
         m_grants.fetch_add(1, std::memory_order_relaxed);
         m_countdown.store(kGrantCooldown, std::memory_order_relaxed);

@@ -4121,6 +4121,25 @@ presenting. A stuck unload is worse than a leaked surface -- the payload is goin
 Any mod holding a device resource owes this. The symptom is not a crash, it is a hang with a
 truncated log, which reads as "the game froze" rather than as anything to do with the mod.
 
+### A disarmed watchpoint can still trap, and the trap kills the process
+
+Seen killing the game mid-suite:
+
+```
+[watch] slot 0 armed at 0x00468976 size 1 rw 0 across 115 thread(s)
+[watch] slot 0 disarmed after 448 hit(s)
+[crash] code 0x80000004 at 0x00468976  FEAR2.exe+0x68976
+```
+
+`0x80000004` is `STATUS_SINGLE_STEP`, raised at exactly the address that had just been disarmed. The
+debug registers are PER THREAD, the arm walks the threads alive at that moment -- 115 of them -- and
+anything that misses the sweep, or any trap already in flight when the handler goes away, arrives
+with nobody to take it. An unhandled single-step is fatal.
+
+Intermittent: the same suite passed earlier in the session. It is a teardown race in a debug-only
+feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
+reported `Timeout` with an unrelated check as the last line printed.
+
 ### Pacing that lets a late frame through is not pacing
 
 The frame tick is an AUTO-RESET event, signalled by the host once per `xrWaitFrame`. That holds ONE

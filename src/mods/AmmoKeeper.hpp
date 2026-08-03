@@ -52,6 +52,11 @@
 // does, which the memory-writing version could not do safely.
 class AmmoKeeper final : public Mod {
 public:
+    uint64_t no_ammo_name() const { return m_no_ammo_name.load(std::memory_order_relaxed); }
+    uint64_t no_count() const { return m_no_count.load(std::memory_order_relaxed); }
+    uint64_t satisfied() const { return m_satisfied.load(std::memory_order_relaxed); }
+    uint64_t asked() const { return m_asked.load(std::memory_order_relaxed); }
+
     static AmmoKeeper& get();
 
     std::string_view get_name() const override { return "AmmoKeeper"; }
@@ -79,6 +84,12 @@ private:
 
     // The pool only moves when the player fires, so checking every frame would be
     // pointless work. This is the bounded-work rule the frame hook already obeys.
+    // Why a sweep did nothing. Without these, "swept 13 times, granted once" is unreadable.
+    std::atomic<uint64_t> m_no_ammo_name{0};
+    std::atomic<uint64_t> m_no_count{0};
+    std::atomic<uint64_t> m_satisfied{0};
+    std::atomic<uint64_t> m_asked{0};
+
     static constexpr uint32_t kSweepInterval = 30;
 
     // After asking, wait longer than a sweep: the grant is a round trip to the
