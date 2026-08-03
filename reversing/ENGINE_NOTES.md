@@ -4409,6 +4409,23 @@ the mod on the game thread. Reading it as the compositor's rate compares the gam
 which is how a beat stayed invisible across three probe runs that all looked healthy. The
 compositor's own rate is `HostState.frames`, published as `host_frames`.
 
+### AmmoKeeper still learns a false ceiling, and the counters now say so
+
+`asked 1, satisfied 44` in the fixture: the keeper asked once, concluded the type was at its
+ceiling, and was satisfied on every sweep afterwards.
+
+The `held <= before` test was narrowed to `held == before` to stop a burst being mistaken for a
+refused grant. That was necessary and not sufficient: **a grant whose queued console command has not
+executed yet also leaves `held == before`**, so an ask that simply has not landed is still read as a
+ceiling. `ConsoleRunner::queue` is asynchronous, and nothing waits for the line to run.
+
+Reproduces only in the fixture, never by hand -- by hand the keeper asks four times and recovers
+within a second -- which is the signature of a state the suite reaches and a person does not.
+
+The fixture now prints asked/satisfied/no-name/no-count beside the result, so the next failure is a
+read rather than an investigation. The fix is to confirm the command EXECUTED before judging the
+reserve, not to compare the reserve harder.
+
 ### STATE the pose the frame was drawn from -- an index cannot express what the engine did
 
 **This was the judder.** The frame header carried `host_sequence`, a 32-bit INDEX, and the host

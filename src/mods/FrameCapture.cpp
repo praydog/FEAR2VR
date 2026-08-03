@@ -589,48 +589,6 @@ void FrameCapture::service_continuous() {
                 const float d_host = angle_between(m_prev_host, hq);
                 // Only while the head is actually turning: at rest both are noise, and a ratio of
                 // two noises says nothing.
-                // ---- AIM WHILE THE HEAD IS STILL --------------------------------------
-                //
-                // The split that names the cause. If `aim` only moves when the HEAD moves, the
-                // engine is filtering or resisting the head write and the camera is not
-                // head * aim at all. If it moves just as much while the head is still, it is the
-                // game's own sway or bob and has nothing to do with us.
-                //
-                // Same recovery as below, run on the other side of the gate.
-                if (d_host <= 0.05f) {
-                    const auto still_eng = VR::runtime_to_engine_rotation(
-                        {hq[0], hq[1], hq[2], hq[3]});
-                    const float sx = -still_eng[0], sy = -still_eng[1], sz = -still_eng[2],
-                                sw = still_eng[3];
-                    const float ax = sw * cam[0] + sx * cam[3] + sy * cam[2] - sz * cam[1];
-                    const float ay = sw * cam[1] - sx * cam[2] + sy * cam[3] + sz * cam[0];
-                    const float az = sw * cam[2] + sx * cam[1] - sy * cam[0] + sz * cam[3];
-                    const float aw = sw * cam[3] - sx * cam[0] - sy * cam[1] - sz * cam[2];
-                    if (m_aim_still_primed) {
-                        const float dx = aw * -m_prev_aim_still[0] + ax * m_prev_aim_still[3] +
-                                         ay * -m_prev_aim_still[2] - az * -m_prev_aim_still[1];
-                        const float dy = aw * -m_prev_aim_still[1] - ax * -m_prev_aim_still[2] +
-                                         ay * m_prev_aim_still[3] + az * -m_prev_aim_still[0];
-                        const float dz = aw * -m_prev_aim_still[2] + ax * -m_prev_aim_still[1] -
-                                         ay * -m_prev_aim_still[0] + az * m_prev_aim_still[3];
-                        const float dw = aw * m_prev_aim_still[3] - ax * -m_prev_aim_still[0] -
-                                         ay * -m_prev_aim_still[1] - az * -m_prev_aim_still[2];
-                        float dd = dw < 0.0f ? -dw : dw;
-                        dd = dd > 1.0f ? 1.0f : dd;
-                        (void)dx; (void)dy; (void)dz;
-                        const float moved = 2.0f * acosf(dd) * 57.2957795f;
-                        m_aim_still_samples.fetch_add(1, std::memory_order_relaxed);
-                        m_aim_still_sum.store(
-                            m_aim_still_sum.load(std::memory_order_relaxed) + moved,
-                            std::memory_order_relaxed);
-                    }
-                    m_prev_aim_still[0] = ax;
-                    m_prev_aim_still[1] = ay;
-                    m_prev_aim_still[2] = az;
-                    m_prev_aim_still[3] = aw;
-                    m_aim_still_primed = true;
-                }
-
                 if (d_host > 0.05f) {
                     const float miss = d_cam > d_host ? d_cam - d_host : d_host - d_cam;
                     // ---- IS IT A LAG RATHER THAN AN ERROR? ---------------------------------
@@ -709,41 +667,6 @@ void FrameCapture::service_continuous() {
                     const float axis_err =
                         angle_between(cam_delta.data(), head_delta.data());
 
-                    // ---- WHAT IS `aim` DOING? -------------------------------------------
-                    //
-                    // camera = head * aim, and head is verified faithful, so an axis
-                    // disagreement between the camera's delta and the head's has to come from
-                    // `aim` moving underneath the composition. Recover it directly --
-                    // aim = head^-1 * camera -- and measure how far it turns per frame.
-                    //
-                    // Aim motion is legitimate WORLD content: turning with the stick moves it,
-                    // it belongs in the image and NOT in the layer pose, and it is smooth. What
-                    // would not be legitimate is aim moving while the player is only turning
-                    // their head, because then the picture carries a rotation the compositor is
-                    // never told about and cannot account for.
-                    const std::array<float, 4> head_inv{-to_eng[0], -to_eng[1], -to_eng[2],
-                                                        to_eng[3]};
-                    const std::array<float, 4> aim_now =
-                        mul(head_inv, {cam[0], cam[1], cam[2], cam[3]});
-                    if (m_aim_primed) {
-                        const std::array<float, 4> aim_delta =
-                            mul(aim_now, {-m_prev_aim[0], -m_prev_aim[1], -m_prev_aim[2],
-                                          m_prev_aim[3]});
-                        const float one[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-                        const float aim_moved = angle_between(aim_delta.data(), one);
-                        m_aim_samples.fetch_add(1, std::memory_order_relaxed);
-                        m_aim_sum.store(m_aim_sum.load(std::memory_order_relaxed) + aim_moved,
-                                        std::memory_order_relaxed);
-                        float mworst = m_aim_worst.load(std::memory_order_relaxed);
-                        while (aim_moved > mworst &&
-                               !m_aim_worst.compare_exchange_weak(mworst, aim_moved,
-                                                                  std::memory_order_relaxed)) {
-                        }
-                    }
-                    for (size_t k = 0; k < 4; ++k) {
-                        m_prev_aim[k] = aim_now[k];
-                    }
-                    m_aim_primed = true;
                     m_rot_sum_axis.store(m_rot_sum_axis.load(std::memory_order_relaxed) + axis_err,
                                          std::memory_order_relaxed);
                     float aworst = m_rot_axis_worst.load(std::memory_order_relaxed);

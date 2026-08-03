@@ -347,19 +347,6 @@ int main(int argc, char** argv) {
     // smooth and late beats sharp and juddering.
     //
     // 0 disables it.
-    // How many compositor periods AHEAD to aim the head pose handed to the game, to cover the
-    // measured distance between rendering a frame and displaying it. See the locate call.
-    uint32_t predict_ahead_steps = 0;
-    uint32_t target_age = 0;
-    std::vector<uint8_t> deferred_pixels;
-    uint32_t deferred_w = 0, deferred_h = 0, deferred_pitch = 0;
-    bool have_deferred = false;
-    // THE SEQUENCE TRAVELS WITH THE PIXELS. Reading it from the header when the held frame is
-    // finally shown would pair those pixels with a LATER pose -- which is the exact
-    // mis-association this whole exercise has been about, reintroduced by the cure.
-    uint32_t deferred_seq = 0;
-    uint32_t showing_deferred_seq = 0;
-    uint64_t frames_deferred = 0;
     float ui_width_m = 1.6f;        // --ui-width <metres>, height follows the UI image's aspect ratio
 
     for (int i = 1; i < argc; ++i) {
@@ -367,10 +354,6 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--predict-ahead") == 0 && i + 1 < argc) {
-            predict_ahead_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
-        } else if (std::strcmp(argv[i], "--target-age") == 0 && i + 1 < argc) {
-            target_age = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--pose-lag") == 0 && i + 1 < argc) {
             pose_lag_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
@@ -965,25 +948,7 @@ int main(int argc, char** argv) {
         if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            // ---- LATE LATCHING, DONE BY PREDICTING FORWARD ---------------------------------
-            //
-            // The game renders from this pose, but its frame is not shown at predictedDisplayTime
-            // -- it is shown after it has been captured, published, picked up and submitted, which
-            // we MEASURED at roughly two compositor periods. Aiming the pose at the moment the
-            // frame is really displayed is what a single-process VR renderer gets for free by
-            // sampling late; across two processes the equivalent is to sample EARLY and predict
-            // the extra distance.
-            //
-            // The runtime's own predictedDisplayPeriod is used rather than a constant, so this
-            // follows the headset's rate and whatever ASW is doing to it.
-            //
-            // It is not a lie to the compositor: the layer is still submitted with the pose the
-            // image was genuinely rendered from. The difference is that the pose now describes
-            // where the head WILL be, so the correction timewarp has to apply shrinks toward zero
-            // instead of being a fixed ~47 ms of accumulated head motion.
-            vli.displayTime =
-                fs.predictedDisplayTime +
-                static_cast<XrTime>(predict_ahead_steps) * fs.predictedDisplayPeriod;
+            vli.displayTime = fs.predictedDisplayTime;
             vli.space = space;
 
             XrViewState vs{XR_TYPE_VIEW_STATE};
@@ -1140,41 +1105,6 @@ int main(int argc, char** argv) {
             if (ui_enabled) {
                 ui_present_now = reader.ui_present();
                 have_ui_frame = reader.poll_ui(uw, uh, upitch, uderive_alpha, ubits);
-            }
-        }
-
-        // ---- EVEN OUT THE PIPELINE DEPTH -------------------------------------------------------
-        //
-        // A frame whose pose is younger than the target is held for one step. The pixels are copied
-        // out because the mapping is a ring the game keeps writing to -- the pointer would not
-        // survive the wait.
-        if (target_age > 0) {
-            if (have_deferred) {
-                // Last step's early frame, now exactly one step older. Show it.
-                fbits = deferred_pixels.data();
-                fw = deferred_w;
-                fh = deferred_h;
-                fpitch = deferred_pitch;
-                have_frame = true;
-                have_deferred = false;
-                showing_deferred_seq = deferred_seq;
-            } else if (have_frame && reader.host != nullptr) {
-                const uint32_t rs = reader.frame_host_sequence();
-                const uint32_t rel = published_sequence - rs;
-                if (rs != 0 && static_cast<int32_t>(rel) >= 0 && (rel / 2u) < target_age) {
-                    const size_t need = static_cast<size_t>(fpitch) * fh;
-                    if (deferred_pixels.size() < need) {
-                        deferred_pixels.resize(need);
-                    }
-                    std::memcpy(deferred_pixels.data(), fbits, need);
-                    deferred_w = fw;
-                    deferred_h = fh;
-                    deferred_pitch = fpitch;
-                    deferred_seq = rs;
-                    have_deferred = true;
-                    have_frame = false;  // show the previous picture for one more step
-                    ++frames_deferred;
-                }
             }
         }
 
@@ -1574,12 +1504,7 @@ int main(int argc, char** argv) {
             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 
-        // A HELD FRAME CARRIES THE SEQUENCE IT WAS CAPTURED WITH, not whatever the header says by
-        // the time it is shown. Taking it from the header here would pair the held pixels with a
-        // newer pose and manufacture precisely the defect the deferral exists to remove.
-        const uint32_t rendered_seq =
-            showing_deferred_seq != 0 ? showing_deferred_seq : reader.frame_host_sequence();
-        showing_deferred_seq = 0;
+        const uint32_t rendered_seq = reader.frame_host_sequence();
         if (rendered_seq != 0) {
             if (last_rendered_seq != 0) {
                 const int32_t d = static_cast<int32_t>(rendered_seq - last_rendered_seq);
@@ -1892,7 +1817,7 @@ int main(int argc, char** argv) {
                         stated_samples ? stated_sum_deg / static_cast<double>(stated_samples) : 0.0,
                         stated_worst_deg, static_cast<unsigned long long>(stated_samples),
                         static_cast<unsigned long long>(stated_absent),
-                        static_cast<unsigned long long>(frames_deferred), state_name(state), rs(end),
+                        state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],

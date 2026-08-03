@@ -46,12 +46,7 @@ public:
     float rot_sum_cam() const { return m_rot_sum_cam.load(std::memory_order_relaxed); }
     float rot_sum_host() const { return m_rot_sum_host.load(std::memory_order_relaxed); }
     float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
-    uint64_t aim_still_samples() const { return m_aim_still_samples.load(std::memory_order_relaxed); }
-    float aim_still_sum() const { return m_aim_still_sum.load(std::memory_order_relaxed); }
-        uint64_t aim_samples() const { return m_aim_samples.load(std::memory_order_relaxed); }
-    float aim_sum() const { return m_aim_sum.load(std::memory_order_relaxed); }
-    float aim_worst() const { return m_aim_worst.load(std::memory_order_relaxed); }
-        float rot_sum_axis() const { return m_rot_sum_axis.load(std::memory_order_relaxed); }
+            float rot_sum_axis() const { return m_rot_sum_axis.load(std::memory_order_relaxed); }
     float rot_axis_worst() const { return m_rot_axis_worst.load(std::memory_order_relaxed); }
     uint64_t rot_axis_bad() const { return m_rot_axis_bad.load(std::memory_order_relaxed); }
         float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
@@ -315,21 +310,6 @@ private:
     std::atomic<float> m_rot_axis_worst{0.0f};
     std::atomic<uint64_t> m_rot_axis_bad{0};
 
-    // `aim` recovered as head^-1 * camera, and how far it turns per frame. Aim motion is world
-    // content and belongs in the image rather than the layer pose -- but only the game knows it is
-    // happening, so the compositor cannot account for it.
-    float m_prev_aim[4]{};
-    bool m_aim_primed{false};
-    std::atomic<uint64_t> m_aim_samples{0};
-    std::atomic<float> m_aim_sum{0.0f};
-    std::atomic<float> m_aim_worst{0.0f};
-    // The same recovery on frames where the head is NOT moving. Aim that moves only with the head
-    // means the engine is filtering the head write; aim that moves regardless is the game's own
-    // sway and is nothing to do with us.
-    float m_prev_aim_still[4]{};
-    bool m_aim_still_primed{false};
-    std::atomic<uint64_t> m_aim_still_samples{0};
-    std::atomic<float> m_aim_still_sum{0.0f};
     float m_prev_d_host{0.0f};
 
     // Stamp-truth census -- see the comment at the stamp site in FrameCapture.cpp.

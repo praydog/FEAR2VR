@@ -11904,8 +11904,21 @@ int main(int argc, char** argv) {
                         if (http::get(port, "/xr/head", st)) {
                             json_int(http::body_of(st), "ak_grants", grants);
                         }
+                        // WHY, not just whether. A sweep that bailed looks identical to one that
+                        // decided not to grant, and this check has failed twice with nothing in the
+                        // log to separate them -- both times reproducing perfectly by hand, which
+                        // is the signature of a state the fixture reaches and a human does not.
+                        long long asked = -1, satisfied = -1, no_name = -1, no_count = -1;
+                        if (http::get(port, "/xr/head", st)) {
+                            json_int(http::body_of(st), "ak_asked", asked);
+                            json_int(http::body_of(st), "ak_satisfied", satisfied);
+                            json_int(http::body_of(st), "ak_no_name", no_name);
+                            json_int(http::body_of(st), "ak_no_count", no_count);
+                        }
                         printf("[fixture] ammo keeper: recovered to %lld of %lld after the burst, "
                                "%lld grant(s) total\n", recovered, total_before, grants);
+                        printf("[fixture] ammo keeper why: asked %lld, satisfied %lld, no ammo name "
+                               "%lld, no reserve count %lld\n", asked, satisfied, no_name, no_count);
 
                         check(sweeps > 0, "the keeper swept while enabled");
                         // WHAT THE KEEPER ACTUALLY PROMISES is a FLOOR -- not that firing is free.
