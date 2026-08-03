@@ -731,6 +731,11 @@ int main(int argc, char** argv) {
         uint32_t sequence = 0xFFFFFFFFu;
         XrPosef pose[2]{};
 
+        // WHEN THIS POSE WAS PREDICTED FOR. Sequence steps say how many publishes ago a frame's
+        // pose was; this says how far in the past it was aimed, which is the number that actually
+        // describes the error the compositor has to undo.
+        XrTime predicted_for = 0;
+
         // What the game was ASKED to render: one symmetric frustum, the same for both eyes.
         XrFovf rendered{};
 
@@ -783,6 +788,11 @@ int main(int argc, char** argv) {
     // with it, and that is an update-rate defect however clean the association is.
     uint64_t pose_skip_should = 0;   // shouldRender was false
     uint64_t pose_skip_locate = 0;   // xrLocateViews failed or returned fewer than two views
+    // Pose staleness in TIME rather than in steps: predicted-for versus the display time of the
+    // frame it is finally submitted in.
+    uint64_t stale_ms_samples = 0;
+    double stale_ms_total = 0.0;
+    double stale_ms_worst = 0.0;
     uint64_t submitted = 0;
     const ULONGLONG started = GetTickCount64();
 
@@ -956,6 +966,7 @@ int main(int argc, char** argv) {
                 // it rather than with whatever is current by the time the pixels arrive.
                 PosePair& slot = pose_history[(published_sequence / 2u) % 16u];
                 slot.sequence = published_sequence;
+                slot.predicted_for = fs.predictedDisplayTime;
                 slot.pose[0] = hv[0].pose;
                 slot.pose[1] = hv[1].pose;
 
@@ -1466,6 +1477,20 @@ int main(int argc, char** argv) {
             }
             // Age in POSE STEPS: sequences advance by two per publish (seqlock), so halve it.
             const int32_t delta = static_cast<int32_t>(published_sequence - rendered_seq);
+            // The submit site's lookup, repeated here because that one is declared further down.
+            const uint32_t ms_seq = rendered_seq - (pose_lag_steps * 2u);
+            const PosePair& ms_slot = pose_history[(ms_seq / 2u) % 16u];
+            if (pose_ever_published && ms_slot.predicted_for != 0 && ms_slot.sequence == ms_seq) {
+                const double ms =
+                    static_cast<double>(fs.predictedDisplayTime - ms_slot.predicted_for) / 1.0e6;
+                if (ms >= 0.0 && ms < 1000.0) {
+                    ++stale_ms_samples;
+                    stale_ms_total += ms;
+                    if (ms > stale_ms_worst) {
+                        stale_ms_worst = ms;
+                    }
+                }
+            }
             if (pose_ever_published && delta >= 0) {
                 const uint32_t age = static_cast<uint32_t>(delta) / 2u;
                 ++age_samples;
@@ -1695,7 +1720,7 @@ int main(int argc, char** argv) {
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
                         "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
-                        "POSE-SKIP %llu/%llu), "
+                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
@@ -1709,7 +1734,9 @@ int main(int argc, char** argv) {
                         age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples) : 0.0,
                         static_cast<unsigned long long>(age_worst),
                         static_cast<unsigned long long>(pose_skip_should),
-                        static_cast<unsigned long long>(pose_skip_locate), state_name(state), rs(end),
+                        static_cast<unsigned long long>(pose_skip_locate),
+                        stale_ms_samples ? stale_ms_total / static_cast<double>(stale_ms_samples) : 0.0,
+                        stale_ms_worst, state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],
