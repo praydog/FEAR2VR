@@ -261,6 +261,28 @@ bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
     const DWORD wait = m_consecutive_timeouts >= kPacingGiveUp ? 0u : timeout_ms;
     ++m_tick_waits;
 
+    // ---- LOCK TO A SUBMULTIPLE, WHICH IS THE WHOLE POINT OF PACING -----------------------------
+    //
+    // An auto-reset event holds ONE credit, and one credit is exactly enough to let every late
+    // frame straight through: a tick that fired WHILE we were rendering leaves the event signalled,
+    // so the wait returns immediately and the game free-runs. It is therefore unpaced in precisely
+    // the case that needs pacing -- when it cannot hit the compositor's rate -- and 66 fps against
+    // 72 Hz beats at 6 Hz, which is the judder.
+    //
+    // A tick we missed is not permission to start the next frame; it is the boundary we already
+    // missed. Dropping it makes the wait land on the NEXT boundary, so a game that cannot hold 72
+    // settles on 36 rather than sliding between them. That is the same hard step a native OpenXR
+    // application takes, and it is why runtimes show 45/90 rather than 66.
+    //
+    // It does not over-correct: a frame that finishes BEFORE its boundary finds nothing to drop and
+    // still runs at full rate. Only work that overran pays, and it pays by waiting rather than by
+    // juddering.
+    if (m_phase_lock.load(std::memory_order_relaxed)) {
+        if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), 0) == WAIT_OBJECT_0) {
+            ++m_ticks_dropped;
+        }
+    }
+
     if (::WaitForSingleObject(static_cast<HANDLE>(m_tick_event), wait) == WAIT_OBJECT_0) {
         m_consecutive_timeouts = 0;
         return true;

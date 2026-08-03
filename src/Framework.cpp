@@ -10998,6 +10998,11 @@ bool Framework::initialize() {
             if (q.find("level_aim") != q.end()) {
                 ViewHook::get().set_level_aim(webapi_query_int(q, "level_aim", 0) != 0);
             }
+            // Phase-locking belongs beside pacing: it decides what pacing DOES when the game
+            // cannot hold the compositor's rate -- settle on a submultiple, or slide between.
+            if (q.find("lock") != q.end()) {
+                FramePublisher::get().set_phase_lock(webapi_query_int(q, "lock", 1) != 0);
+            }
             if (q.find("paced") != q.end()) {
                 VR::get().set_paced(webapi_query_int(q, "paced", 0) != 0);
             }
@@ -11281,6 +11286,9 @@ bool Framework::initialize() {
               .u("vr_host_stale", static_cast<size_t>(VR::get().host_pose_stale()))
               .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))
               .u("fc_menu_fallbacks", static_cast<size_t>(FrameCapture::get().menu_fallbacks()))
+              .u("host_frames", static_cast<size_t>(FramePublisher::get().host_frames()))
+              .b("phase_lock", FramePublisher::get().phase_lock())
+              .u("ticks_dropped", static_cast<size_t>(FramePublisher::get().ticks_dropped()))
               .u("rot_samples", static_cast<size_t>(FrameCapture::get().rot_samples()))
               .f("rot_sum_cam", FrameCapture::get().rot_sum_cam(), 3)
               .f("rot_sum_host", FrameCapture::get().rot_sum_host(), 3)

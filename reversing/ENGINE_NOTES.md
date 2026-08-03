@@ -4121,6 +4121,28 @@ presenting. A stuck unload is worse than a leaked surface -- the payload is goin
 Any mod holding a device resource owes this. The symptom is not a crash, it is a hang with a
 truncated log, which reads as "the game froze" rather than as anything to do with the mod.
 
+### Pacing that lets a late frame through is not pacing
+
+The frame tick is an AUTO-RESET event, signalled by the host once per `xrWaitFrame`. That holds ONE
+credit -- and one credit is exactly enough to let EVERY late frame straight through, because a tick
+that fired while the game was still rendering leaves the event signalled and the next wait returns
+immediately.
+
+So the game was paced only while it was ALREADY fast enough, and free-ran in exactly the case that
+needs pacing. 66 fps into a 72 Hz compositor beats at about 6 Hz: some display frames get a new
+image, some get a repeat, and that cycle is the judder.
+
+**A tick you missed is not permission to start the next frame; it is the boundary you already
+missed.** Dropping it makes the wait land on the NEXT boundary, so a game that cannot hold 72
+settles on 36 instead of sliding between them -- the same hard step a native OpenXR application
+takes, and why runtimes show 45/90 rather than 66. It cannot over-correct: a frame that finishes
+before its boundary finds nothing to drop and still runs at full rate.
+
+**`runtime_frames` IS THE GAME, NOT THE HOST.** It is the simulated runtime's counter, advanced by
+the mod on the game thread. Reading it as the compositor's rate compares the game against itself,
+which is how a beat stayed invisible across three probe runs that all looked healthy. The
+compositor's own rate is `HostState.frames`, published as `host_frames`.
+
 ### Some places draw a THIRD camera pass, and the single-value diagnostics report it
 
 Measured in a spot with a monitor or camera feed: three camera setups in one frame, not two.

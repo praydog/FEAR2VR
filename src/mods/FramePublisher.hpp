@@ -84,6 +84,19 @@ public:
     uint64_t tick_timeouts() const { return m_tick_timeouts; }
     bool pacing_live() const { return m_consecutive_timeouts < kPacingGiveUp; }
 
+    // Drop a tick that fired while the last frame was still rendering, so a game that cannot hold
+    // the compositor's rate settles on a SUBMULTIPLE of it instead of beating against it.
+    void set_phase_lock(bool on) { m_phase_lock.store(on, std::memory_order_relaxed); }
+    bool phase_lock() const { return m_phase_lock.load(std::memory_order_relaxed); }
+    uint64_t ticks_dropped() const { return m_ticks_dropped; }
+
+    // The host's own frame counter, straight from the mapping -- the COMPOSITOR's rate, which is
+    // what the game's rate has to divide into. Not the runtime frame counter, which is the game's.
+    uint32_t host_frames() const {
+        const auto* h = host_state();
+        return h == nullptr ? 0u : h->frames;
+    }
+
     uint32_t frames() const;
     double last_publish_ms() const;
     double worst_publish_ms() const;
@@ -94,6 +107,8 @@ public:
 private:
     FramePublisher() = default;
 
+    std::atomic<bool> m_phase_lock{true};
+    uint64_t m_ticks_dropped{0};
     static constexpr uint32_t kPacingGiveUp = 30;  // ~0.6 s of silence at 90 Hz
 
     void* m_mapping{nullptr};

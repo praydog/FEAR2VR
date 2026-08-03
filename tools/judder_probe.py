@@ -53,7 +53,10 @@ def main():
     b = get("/xr/head")
     b_sp = get("/sdk/shader-params")
 
-    d_frames = b.get("frames", 0) - a.get("frames", 0)
+    # `frames` is the SIMULATED RUNTIME's counter, which the mod advances on the game thread -- so
+    # it is the game's rate, not the host's. Printing it as "host fps" compared the game against
+    # itself and made every beat invisible. The host's own counter comes from the mapping.
+    d_frames = b.get("host_frames", 0) - a.get("host_frames", 0)
     d_updates = b.get("vr_host_updates", 0) - a.get("vr_host_updates", 0)
     d_agree = b.get("stamp_agree", 0) - a.get("stamp_agree", 0)
     d_drift = b.get("stamp_drift", 0) - a.get("stamp_drift", 0)
@@ -85,8 +88,25 @@ def main():
     game_fps = d_pub / seconds
     host_fps = d_frames / seconds
 
-    print("[judder] game %.0f fps published | host %.0f fps | %d frames stamped"
+    print("[judder] game %.0f fps published | COMPOSITOR %.0f Hz | %d frames stamped"
           % (game_fps, host_fps, total))
+    # ---- IS THE GAME ON A SUBMULTIPLE OF THE COMPOSITOR? ---------------------------------------
+    # Anything else beats: 66 into 72 means some display frames get a new image and some get a
+    # repeat, on a ~6 Hz cycle, and that cycle IS the judder.
+    if host_fps > 1.0:
+        ratio = host_fps / max(game_fps, 0.001)
+        nearest = max(1, round(ratio))
+        off = abs(ratio - nearest) / nearest
+        print("[judder] cadence: %.2f compositor frames per game frame (nearest submultiple 1/%d, "
+              "%.1f%% off)%s"
+              % (ratio, nearest, 100.0 * off,
+                 "  phase_lock=%s" % b.get("phase_lock")))
+        if off > 0.04:
+            print("[judder] -> NOT ON A SUBMULTIPLE. %.0f fps into %.0f Hz beats at ~%.1f Hz: some\n"
+                  "         display frames get a new image and some get a repeat, and that cycle is\n"
+                  "         the judder. Pacing should settle it on %.0f fps instead of sliding."
+                  % (game_fps, host_fps, abs(host_fps - game_fps * nearest),
+                     host_fps / nearest))
     print("[judder] head poses ingested: %d" % d_updates)
     print("[judder] STAMP DRIFT: %d of %d (%.1f%%), worst %s sequence steps ahead"
           % (d_drift, total, pct, b.get("stamp_worst_ahead")))
