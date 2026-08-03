@@ -4140,6 +4140,30 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### Locking the game's rate does nothing unless the RUNTIME is told
+
+The host is paced by `xrWaitFrame` and submitted a full projection layer on EVERY compositor frame,
+re-showing the last game frame when nothing new had arrived (the `held` counter). From the runtime's
+side that is indistinguishable from an application comfortably hitting full rate, so its own
+reprojection -- ASW on this runtime -- never engages: the wearer gets the same picture for two or
+three display frames with nothing but rotational timewarp between them.
+
+**Pacing the game to a submultiple made this WORSE on its own.** We locked the content to 36 and
+carried on telling the compositor it was 90, so the judder stayed and the frame rate halved.
+
+A slow application is LATE. So the host now waits (bounded) for real content before submitting,
+which pushes `xrEndFrame` past the deadline exactly as a heavy frame would -- and that lateness is
+the signal the runtime's reprojection is driven by. `--content-wait <ms>`, 0 restores the old
+always-submit behaviour for an A/B.
+
+The bound matters: a game that has stopped -- loading, alt-tabbed, hitching -- must not take the
+compositor with it, so past the bound the held frame is submitted as before.
+
+**The proper mechanism for a deliberately half-rate application is `XR_FB_space_warp`**, where the
+app hands the runtime motion vectors and depth per frame and the runtime synthesises the in-between
+frames. That needs a velocity buffer this D3D9 engine does not produce, so it is not reachable
+cheaply -- but it is the honest answer if the lateness signal proves too blunt.
+
 ### Pacing that lets a late frame through is not pacing
 
 The frame tick is an AUTO-RESET event, signalled by the host once per `xrWaitFrame`. That holds ONE

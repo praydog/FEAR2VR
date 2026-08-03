@@ -305,6 +305,10 @@ int main(int argc, char** argv) {
     bool ui_enabled = true;
     bool ui_world_fixed = false;         // --no-ui disables the UI quad layer entirely
     float ui_distance_m = 1.8f;     // --ui-distance <metres>, along -Z from the reference space origin
+    // How long to wait for a NEW game frame before giving up and re-showing the last one. This is
+    // what lets the runtime observe the game's real rate and engage its own reprojection; see the
+    // wait itself. Zero restores the old always-submit behaviour for an A/B.
+    uint32_t content_wait_ms = 12;
     float ui_width_m = 1.6f;        // --ui-width <metres>, height follows the UI image's aspect ratio
 
     for (int i = 1; i < argc; ++i) {
@@ -312,6 +316,8 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
+            content_wait_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--no-ui") == 0) {
             ui_enabled = false;
         } else if (std::strcmp(argv[i], "--ui-distance") == 0 && i + 1 < argc) {
@@ -749,6 +755,7 @@ int main(int argc, char** argv) {
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool running = false;
     uint64_t frames = 0;
+    uint64_t content_waits_expired = 0;
     uint64_t submitted = 0;
     const ULONGLONG started = GetTickCount64();
 
@@ -865,6 +872,32 @@ int main(int argc, char** argv) {
 
         if (reader.open()) {
             have_frame = reader.poll(fw, fh, fpitch, fbits);
+
+            // ---- LET THE RUNTIME SEE THE REAL FRAME RATE -------------------------------------
+            //
+            // Re-showing the last frame ON TIME is indistinguishable, from the runtime's side,
+            // from an application comfortably hitting full rate -- so it has no reason to engage
+            // ASW, and the wearer gets the same picture for two or three display frames with only
+            // rotational timewarp between them. Pacing the GAME to a submultiple made that worse,
+            // not better: we locked the content to 36 and kept telling the compositor it was 90.
+            //
+            // A slow application is late, so BE late. Waiting here for real content pushes
+            // xrEndFrame past the deadline exactly as a heavy frame would, which is the signal the
+            // runtime's reprojection is driven by.
+            //
+            // BOUNDED, because a game that has stopped -- loading, alt-tabbed, hitching -- must
+            // not take the compositor down with it. Past the bound we submit the held frame, which
+            // is the old behaviour and still better than nothing on screen.
+            if (!have_frame && content_wait_ms > 0) {
+                const ULONGLONG deadline = GetTickCount64() + content_wait_ms;
+                while (!have_frame && GetTickCount64() < deadline) {
+                    Sleep(1);
+                    have_frame = reader.poll(fw, fh, fpitch, fbits);
+                }
+                if (!have_frame) {
+                    ++content_waits_expired;
+                }
+            }
 
             if (ui_enabled) {
                 ui_present_now = reader.ui_present();
@@ -1569,11 +1602,12 @@ int main(int argc, char** argv) {
 
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu), state %s, last xrEndFrame %s, hands bound %s, "
+                        "pose %llu, stale %llu), state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
                         static_cast<unsigned long long>(held),
+                        static_cast<unsigned long long>(content_waits_expired),
                         static_cast<unsigned long long>(pose_hits),
                         static_cast<unsigned long long>(pose_misses), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
