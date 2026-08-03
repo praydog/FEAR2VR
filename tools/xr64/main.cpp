@@ -756,6 +756,16 @@ int main(int argc, char** argv) {
     bool running = false;
     uint64_t frames = 0;
     uint64_t content_waits_expired = 0;
+    // ---- IS THE TRANSPORT DELIVERING IN ORDER, AND HOW OLD IS WHAT IT DELIVERS? ----------------
+    // The consumer is the only place that can see either. `rendered_seq` is the pose the game says
+    // it drew with; it must never go BACKWARDS, and its distance behind the pose we last published
+    // is the age of the picture in compositor frames.
+    uint32_t last_rendered_seq = 0;
+    uint64_t seq_backwards = 0;
+    uint64_t seq_repeats = 0;
+    uint64_t age_samples = 0;
+    uint64_t age_total = 0;
+    uint32_t age_worst = 0;
     uint64_t submitted = 0;
     const ULONGLONG started = GetTickCount64();
 
@@ -1418,6 +1428,26 @@ int main(int argc, char** argv) {
             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 
         const uint32_t rendered_seq = reader.frame_host_sequence();
+        if (rendered_seq != 0) {
+            if (last_rendered_seq != 0) {
+                const int32_t d = static_cast<int32_t>(rendered_seq - last_rendered_seq);
+                if (d < 0) {
+                    ++seq_backwards;  // OUT OF ORDER -- a frame older than one already shown
+                } else if (d == 0) {
+                    ++seq_repeats;    // the same picture again; expected when the game is slower
+                }
+            }
+            if (static_cast<int32_t>(rendered_seq - last_rendered_seq) > 0) {
+                last_rendered_seq = rendered_seq;
+            }
+            // Age in POSE STEPS: sequences advance by two per publish (seqlock), so halve it.
+            const uint32_t age = (published_sequence - rendered_seq) / 2u;
+            ++age_samples;
+            age_total += age;
+            if (age > age_worst) {
+                age_worst = age;
+            }
+        }
         const PosePair& slot = pose_history[(rendered_seq / 2u) % 16u];
         // ---- THE GAME CAN ASK NOT TO BE PROJECTED ------------------------------------------
         //
@@ -1633,12 +1663,17 @@ int main(int argc, char** argv) {
 
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu, stale %llu), state %s, last xrEndFrame %s, hands bound %s, "
+                        "pose %llu, stale %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu), "
+                        "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
                         static_cast<unsigned long long>(held),
                         static_cast<unsigned long long>(content_waits_expired),
+                        static_cast<unsigned long long>(seq_backwards),
+                        static_cast<unsigned long long>(seq_repeats),
+                        age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples) : 0.0,
+                        static_cast<unsigned long long>(age_worst),
                         static_cast<unsigned long long>(pose_hits),
                         static_cast<unsigned long long>(pose_misses), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
