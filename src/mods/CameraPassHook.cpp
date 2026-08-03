@@ -121,6 +121,15 @@ std::atomic<uint64_t> g_view_mismatch_right{0};
 // And whether an auxiliary pass had already run this frame when the disagreement happened.
 std::atomic<uint32_t> g_aux_passes_this_frame{0};
 std::atomic<uint64_t> g_mismatch_after_aux{0};
+// HOW MANY PASSES CALLED THEMSELVES THE MAIN VIEW this frame. It must be exactly two -- the
+// engine's own left eye, and our replayed right. THREE means the auxiliary pass was misclassified,
+// which would write ITS camera into g_view_rot and make the camera's rotation delta disagree with
+// the head's about an AXIS while still matching in MAGNITUDE. That is precisely the shape of the
+// error being measured, so it has to be excluded before the measurement means anything.
+uint32_t g_main_this_frame = 0;  // render thread only
+std::atomic<uint64_t> g_frames_two_main{0};
+std::atomic<uint64_t> g_frames_other_main{0};
+std::atomic<uint32_t> g_main_worst{0};
 std::atomic<float> g_view_mismatch_worst{0.0f};
 std::atomic<uint64_t> g_second_eye_skipped{0};
 
@@ -194,6 +203,12 @@ void close_frame_census() {
     // rather than at any point since injection. Reset at the boundary, which is what this callback
     // already is.
     g_aux_passes_this_frame.store(0, std::memory_order_relaxed);
+    if (g_main_this_frame == 2) {
+        g_frames_two_main.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_frames_other_main.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_main_this_frame = 0;
 }
 
 // Applies the per-eye projection centre AFTER the engine has built its matrices, then has the engine rebuild
@@ -350,6 +365,11 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
 
     if (!is_main_view) {
         g_aux_passes_this_frame.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        ++g_main_this_frame;
+        if (g_main_this_frame > g_main_worst.load(std::memory_order_relaxed)) {
+            g_main_worst.store(g_main_this_frame, std::memory_order_relaxed);
+        }
     }
 
     // THE PRISTINE COPY for a second eye, taken before any override touches it.
@@ -885,4 +905,16 @@ uint64_t CameraPassHook::mismatch_after_aux() {
 
 void CameraPassHook::reset_frame_aux() {
     g_aux_passes_this_frame.store(0, std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::frames_two_main() {
+    return g_frames_two_main.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::frames_other_main() {
+    return g_frames_other_main.load(std::memory_order_relaxed);
+}
+
+uint32_t CameraPassHook::main_worst() {
+    return g_main_worst.load(std::memory_order_relaxed);
 }

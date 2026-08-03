@@ -170,6 +170,12 @@ public:
     static uint64_t view_mismatch_left();
     static uint64_t view_mismatch_right();
     static uint64_t mismatch_after_aux();
+
+    // Frames where exactly TWO passes called themselves the main view, against any other count.
+    // Three means the auxiliary pass was misclassified and its camera polluted the samples.
+    static uint64_t frames_two_main();
+    static uint64_t frames_other_main();
+    static uint32_t main_worst();
     static void reset_frame_aux();
     static float view_mismatch_worst();
 
