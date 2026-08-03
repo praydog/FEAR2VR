@@ -46,10 +46,15 @@ def main():
 
     # The pass census lives on a different route from the pose counters.
     a_sp = get("/sdk/shader-params")
-    print("[judder] sampling %.0fs -- MOVE YOUR HEAD steadily the whole time" % seconds)
-    print("         (use the HEAD only -- turning with the stick puts body yaw in the camera "
-          "and not in the head pose)")
-    time.sleep(seconds)
+    # TWO HALVES, because the measurement needs both. The still half is what says whether `aim`
+    # moves BECAUSE the head moved -- and asking for continuous motion for the whole sample, as this
+    # did, collected zero frames on that side and printed nothing.
+    half = seconds / 2.0
+    print("[judder] %.0fs: MOVE YOUR HEAD steadily -- head only, no stick" % half)
+    time.sleep(half)
+    print("[judder] %.0fs: NOW HOLD STILL -- hands off the stick and mouse too" % half)
+    time.sleep(half)
+    print("[judder] sampled")
     b = get("/xr/head")
     b_sp = get("/sdk/shader-params")
 
