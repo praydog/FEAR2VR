@@ -163,6 +163,12 @@ public:
 
     // Frames where the main view was drawn but the pristine transform belonged to another pass --
     // an auxiliary view's setup landing in between. Each one is a frame that went out mono.
+    // The engine's OWN view matrix compared, inside the pass, against the camera we handed it. Every
+    // other rotation check in this project compares our inputs to each other and is circular.
+    static uint64_t view_check_samples();
+    static uint64_t view_mismatch_frames();
+    static float view_mismatch_worst();
+
     static uint64_t pristine_clobbered();
     static uint64_t second_eye_skipped();
 

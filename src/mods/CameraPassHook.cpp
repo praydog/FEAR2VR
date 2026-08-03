@@ -107,6 +107,12 @@ std::atomic<bool> g_pristine_main{false};
 PristineSetup g_pristine_main_copy{};
 std::atomic<bool> g_pristine_main_valid{false};
 std::atomic<uint64_t> g_pristine_clobbered{0};
+
+// The engine's own view matrix against the camera we handed it -- the only non-circular check of
+// whether the frame was rendered from the pose we say it was.
+std::atomic<uint64_t> g_view_check_samples{0};
+std::atomic<uint64_t> g_view_mismatch_frames{0};
+std::atomic<float> g_view_mismatch_worst{0.0f};
 std::atomic<uint64_t> g_second_eye_skipped{0};
 
 // Last arguments seen, published for diagnostics. Plain floats behind an atomic sequence would be tidier, but
@@ -403,6 +409,44 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     const char r = original(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     apply_frustum_centre(eye);
     capture_viewport();
+
+    // ---- WHAT DID THE ENGINE ACTUALLY TAKE? ----------------------------------------------------
+    //
+    // Every other check in this project compares our INPUTS to each other -- the pose we ingested
+    // against the camera we built from it -- which is circular and answers 0.000 by construction.
+    // This reads the engine's OWN view matrix back out of its record, inside the pass, and asks
+    // whether it is the one we just handed over.
+    //
+    // In the pass because the record is only a perspective one while a perspective pass is
+    // configured; from anywhere else it describes whatever ran last. That has caught two
+    // diagnostics in this project already.
+    //
+    // A divergence means the engine rendered from a camera other than ours -- a script, a shake, a
+    // recompute from player state -- which is a game-to-render discrepancy that no amount of
+    // checking our own bookkeeping could ever see.
+    if (is_main_view) {
+        if (const auto snap = sdk::SceneCamera::snapshot()) {
+            if (const auto want = sdk::SceneCamera::view_matrix_from_pose(shifted.value())) {
+                const auto got_rot = sdk::SceneCamera::rotation_from_matrix(snap->view);
+                const auto want_rot = sdk::SceneCamera::rotation_from_matrix(*want);
+                if (got_rot.has_value() && want_rot.has_value()) {
+                    float d = got_rot->x * want_rot->x + got_rot->y * want_rot->y +
+                              got_rot->z * want_rot->z + got_rot->w * want_rot->w;
+                    d = d < 0.0f ? -d : d;
+                    d = d > 1.0f ? 1.0f : d;
+                    const float deg = 2.0f * acosf(d) * 57.2957795f;
+                    g_view_check_samples.fetch_add(1, std::memory_order_relaxed);
+                    if (deg > 0.05f) {
+                        g_view_mismatch_frames.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    float worst = g_view_mismatch_worst.load(std::memory_order_relaxed);
+                    while (deg > worst && !g_view_mismatch_worst.compare_exchange_weak(
+                                              worst, deg, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+        }
+    }
     project_probe(is_main_view);
     record_pass(&shifted.value(), fov_local, rect_local, depth_min, depth_max);
     return r;
@@ -757,4 +801,16 @@ uint64_t CameraPassHook::pristine_clobbered() {
 
 uint64_t CameraPassHook::second_eye_skipped() {
     return g_second_eye_skipped.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::view_check_samples() {
+    return g_view_check_samples.load(std::memory_order_relaxed);
+}
+
+uint64_t CameraPassHook::view_mismatch_frames() {
+    return g_view_mismatch_frames.load(std::memory_order_relaxed);
+}
+
+float CameraPassHook::view_mismatch_worst() {
+    return g_view_mismatch_worst.load(std::memory_order_relaxed);
 }

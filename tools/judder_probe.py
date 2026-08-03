@@ -178,6 +178,23 @@ def main():
               "         the right half keeps the previous frame. This is spot-specific by nature."
               % (d_clob, 100.0 * d_clob / max(1, d_pub)))
 
+    # ---- DID THE ENGINE RENDER FROM THE CAMERA WE GAVE IT? -------------------------------------
+    # The only NON-CIRCULAR check here. Everything else compares our inputs to each other -- the
+    # pose we ingested against the camera we built from it -- and answers 0.000 by construction.
+    # This reads the engine's own view matrix back out of its record, inside the pass.
+    d_vc = b.get("cp_view_checks", 0) - a.get("cp_view_checks", 0)
+    d_vm = b.get("cp_view_mismatch", 0) - a.get("cp_view_mismatch", 0)
+    if d_vc > 0:
+        print("[judder] engine view matrix: %d checked, DISAGREED on %d (%.1f%%), worst %.3f deg"
+              % (d_vc, d_vm, 100.0 * d_vm / d_vc, b.get("cp_view_mismatch_deg", 0.0)))
+        if d_vm > 0:
+            print("[judder] -> THE ENGINE RENDERED FROM A DIFFERENT CAMERA on %.1f%% of passes.\n"
+                  "         The frame is not the pose we stamped on it, and no check of our own\n"
+                  "         bookkeeping could see it because our bookkeeping is correct."
+                  % (100.0 * d_vm / d_vc))
+    else:
+        print("[judder] engine view matrix: not sampled (is stereo armed?)")
+
     # ---- ARE WE PUBLISHING THE SAME PICTURE TWICE? ---------------------------------------------
     # The only theory-free question left. Every counter can read clean while the PIXELS repeat.
     d_dup = b.get("fc_dup_frames", 0) - a.get("fc_dup_frames", 0)
@@ -239,7 +256,8 @@ def main():
              b_sp.get("cp_second_eye_draws", 0) - a_sp.get("cp_second_eye_draws", 0),
              b.get("cp_pristine_clobbered", 0) - a.get("cp_pristine_clobbered", 0),
              cam if d_rot else 0.0, host if d_rot else 0.0, miss if d_rot else 0.0,
-             d_updates))
+             d_updates)
+          + " | viewchk=%d/%d worst=%.3f" % (d_vm, d_vc, b.get("cp_view_mismatch_deg", 0.0)))
     return 0
 
 
