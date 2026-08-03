@@ -9,6 +9,8 @@
 #include "Log.hpp"
 #include <array>
 
+#include "sdk/PlayerMgr.hpp"
+
 #include "CameraPassHook.hpp"
 #include "CameraPassHook.hpp"
 #include "VR.hpp"
@@ -680,8 +682,27 @@ void FrameCapture::service_continuous() {
                             a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
                             a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
                     };
-                    const std::array<float, 4> head_delta =
+                    // ---- CONJUGATE BY THE HEADING, WHICH IS HOW IT IS APPLIED --------
+                    //
+                    // The head is NOT written into the camera raw. HeadTracking writes
+                    // `heading * head * heading^-1` as the outer operand, deliberately, so the
+                    // head turns in the BODY's frame rather than the world's -- there is a
+                    // measurement in VR.cpp showing what happens otherwise (pitching 20 degrees
+                    // at a 26.86 degree heading gave 17.851, and 20*cos(26.86) is 17.84).
+                    //
+                    // So the camera's delta is the head's delta CONJUGATED BY THE HEADING, and
+                    // comparing it against the raw head delta measures that conjugation: same
+                    // magnitude, rotated axis, scaling with the head motion. Which is exactly
+                    // the "axis error" this check has been reporting -- my own instrument
+                    // omitting a term the engine path applies on purpose.
+                    std::array<float, 4> head_delta =
                         mul(to_eng, {-prev_eng[0], -prev_eng[1], -prev_eng[2], prev_eng[3]});
+                    if (const auto yaw = sdk::PlayerMgr::aim_yaw(0)) {
+                        const float h = *yaw * 0.5f;
+                        const std::array<float, 4> hq_head{0.0f, sinf(h), 0.0f, cosf(h)};
+                        const std::array<float, 4> hq_inv{0.0f, -sinf(h), 0.0f, cosf(h)};
+                        head_delta = mul(mul(hq_head, head_delta), hq_inv);
+                    }
                     const std::array<float, 4> cam_delta =
                         mul({cam[0], cam[1], cam[2], cam[3]},
                             {-m_prev_cam[0], -m_prev_cam[1], -m_prev_cam[2], m_prev_cam[3]});

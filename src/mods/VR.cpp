@@ -125,9 +125,15 @@ void VR::on_shutdown() {
 // the latch, and it is exact rather than predictive: this is where the head IS, not a guess about
 // where it will be.
 //
-// It composes cleanly because HeadTracking writes the camera's OUTER operand -- camera = head * aim
-// -- so replacing the head means left-multiplying by (head_new * head_old^-1) and the aim, the
-// body and the weapon are untouched.
+// THE DELTA MUST BE CONJUGATED BY THE HEADING, and the first version of this was wrong about that.
+// HeadTracking does NOT write the head raw: it writes `heading * head * heading^-1` as the outer
+// operand, so the head turns in the BODY's frame. Replacing the head therefore means
+//
+//     camera_new = heading * (head_new * head_old^-1) * heading^-1 * camera_old
+//
+// Left-multiplying by the bare delta, as this did, differs from that by a conjugation -- same
+// magnitude, rotated axis, scaling with the size of the head motion. That is indistinguishable from
+// the defect being hunted, which is a poor thing for a fix to introduce.
 //
 // The published sequence is advanced with it, so the frame is stamped with the pose it was actually
 // drawn from. A latch that did not do that would buy latency and pay for it in exactly the
@@ -177,7 +183,22 @@ std::optional<std::array<float, 4>> VR::late_latch_head() {
     m_last_host_sequence = seq;
     m_last_host_seq_pub.store(seq, std::memory_order_release);
     m_late_latches.fetch_add(1, std::memory_order_relaxed);
-    return d;
+
+    // Into the body's frame, exactly as the on_frame path does it.
+    const auto heading = sdk::PlayerMgr::aim_yaw(0);
+    if (!heading.has_value()) {
+        return std::nullopt;  // without it the correction would be applied about the wrong axes
+    }
+    const float hh = *heading * 0.5f;
+    const std::array<float, 4> hq{0.0f, std::sin(hh), 0.0f, std::cos(hh)};
+    const std::array<float, 4> hqi{0.0f, -std::sin(hh), 0.0f, std::cos(hh)};
+    auto qmul = [](const std::array<float, 4>& a, const std::array<float, 4>& b) {
+        return std::array<float, 4>{a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+                                    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+                                    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+                                    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+    };
+    return qmul(qmul(hq, d), hqi);
 }
 
 std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& q) {

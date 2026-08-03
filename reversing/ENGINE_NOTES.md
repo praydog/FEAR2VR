@@ -4409,6 +4409,32 @@ the mod on the game thread. Reading it as the compositor's rate compares the gam
 which is how a beat stayed invisible across three probe runs that all looked healthy. The
 compositor's own rate is `HostState.frames`, published as `host_frames`.
 
+### The head is applied in the BODY's frame, and any check of it must say so
+
+`HeadTracking` does not write the head rotation raw. It writes
+
+```
+outer  = heading * head * heading^-1
+camera = outer * aim = heading * head * heading^-1 * aim
+```
+
+deliberately, so the head turns about the body's axes rather than the world's -- there is a
+measurement in VR.cpp for why: pitching 20 degrees at a 26.86 degree heading produced 17.851, and
+20*cos(26.86) is 17.84.
+
+**So the camera's rotation delta is the head's delta CONJUGATED BY THE HEADING.** Any comparison
+between them that omits the conjugation measures the conjugation itself, and a conjugation preserves
+magnitude while rotating the axis, scaling with the size of the motion.
+
+That is exactly the signature of a real mis-composition, which is what made it so convincing: the
+"axis error" of 0.5 deg/frame with magnitudes agreeing to 0.006 was the instrument, not the engine.
+The `aim` measurement derived from it was the same quantity again -- `aim_delta` is
+`head^-1 * cam_delta * prev_head`, a conjugation, so it reported identical numbers to three decimals
+and looked like independent corroboration.
+
+**Two derived quantities that agree exactly are one quantity.** Check the algebra before treating
+the second as a witness.
+
 ### The extra scene draw IS the differentiator -- measured against a real control at last
 
 Retracted, then UN-retracted, and the second time with a control that was actually taken in a place
