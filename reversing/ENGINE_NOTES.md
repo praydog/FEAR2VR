@@ -4140,7 +4140,36 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
-### The transport is in order; what varies is which POSE a frame carries
+### The transport is in order, the pose is published every frame, and the age is 1.3
+
+Measured at the consumer, with the log's format string finally matching its arguments:
+
+```
+OUT-OF-ORDER 0    POSE-SKIP 41/0 (all before FOCUSED)    held 1    age 1.30 mean / 3 worst
+```
+
+Everything on the producing side is accounted for:
+
+- **No out-of-order delivery.** `rendered_seq` never went backwards over thousands of frames.
+- **No skipped publishes.** The host emits a pose on every frame once the session is FOCUSED; the
+  41 skips are the startup window and never advance again.
+- **Association is exact by construction** -- ingest, view build and stamp are one thread in order,
+  and the readback pipeline carries its sequence with its slot.
+- **`age` is 1.3 published poses, worst 3.** That is ordinary pipelining: pose published, game
+  renders, game publishes, host picks it up.
+
+`repeats` at ~15% is NOT a defect: with the game faster than the compositor it publishes more than
+one frame per pose, so consecutive submissions can legitimately carry the same sequence.
+
+**So the remaining question is not whether the pose is right but whether the RUNTIME IS CORRECTING
+IT.** A projection layer declares the pose its image was rendered from and the compositor is meant
+to warp it to wherever the head is at scanout; if that is happening, age is invisible by
+construction. `--pose-lag <steps>` makes the age deliberately larger by submitting an older pose
+that the game genuinely did render from. If the picture is unchanged as it goes up, reprojection is
+working and age is not the mechanism. If it swims, the layer is not being reprojected and the age we
+already have is being shown raw.
+
+
 
 Measured at the consumer, which is the only place that can see it:
 

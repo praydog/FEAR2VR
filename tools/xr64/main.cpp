@@ -309,6 +309,16 @@ int main(int argc, char** argv) {
     // what lets the runtime observe the game's real rate and engage its own reprojection; see the
     // wait itself. Zero restores the old always-submit behaviour for an A/B.
     uint32_t content_wait_ms = 12;
+    // ---- DELIBERATELY SUBMIT AN OLDER POSE ------------------------------------------------------
+    //
+    // The diagnostic for "does pose age matter". A projection layer declares the pose its image was
+    // rendered from, and the compositor is supposed to warp that image to wherever the head
+    // actually is at scanout. If it does, adding age changes NOTHING you can see -- the correction
+    // simply gets bigger. If the picture starts swimming as this goes up, the layer is NOT being
+    // reprojected and the 1.3 frames of age we already have is being shown raw.
+    //
+    // Steps, not milliseconds: one step is one published pose.
+    uint32_t pose_lag_steps = 0;
     float ui_width_m = 1.6f;        // --ui-width <metres>, height follows the UI image's aspect ratio
 
     for (int i = 1; i < argc; ++i) {
@@ -316,6 +326,8 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--pose-lag") == 0 && i + 1 < argc) {
+            pose_lag_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
             content_wait_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--no-ui") == 0) {
@@ -1463,7 +1475,11 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        const PosePair& slot = pose_history[(rendered_seq / 2u) % 16u];
+        // Deliberately reach further back when asked. The lookup is by sequence, so an older slot
+        // is a genuinely older pose the game really did render from at some point -- not a
+        // fabricated one, which the runtime would be entitled to treat as garbage.
+        const uint32_t lag_seq = rendered_seq - (pose_lag_steps * 2u);
+        const PosePair& slot = pose_history[(lag_seq / 2u) % 16u];
         // ---- THE GAME CAN ASK NOT TO BE PROJECTED ------------------------------------------
         //
         // While a menu is up the game's camera stops following the head, so a projection layer's
@@ -1476,7 +1492,7 @@ int main(int argc, char** argv) {
         // a menu is up.
         const bool flat_requested = reader.frame_flat();
         const bool pose_known =
-            !flat_requested && use_projection && rendered_seq != 0 && slot.sequence == rendered_seq;
+            !flat_requested && use_projection && rendered_seq != 0 && slot.sequence == lag_seq;
 
         if (fs.shouldRender != XR_FALSE && screen_ready && pose_known) {
             if (!have_frame) {
