@@ -319,6 +319,31 @@ int main(int argc, char** argv) {
     //
     // Steps, not milliseconds: one step is one published pose.
     uint32_t pose_lag_steps = 0;
+    // ---- HOLD THE PIPELINE AT A CONSTANT DEPTH --------------------------------------------------
+    //
+    // Measured at the wall: the submitted frame's pose age alternates 1, 2, 1, 2 -- half the frames
+    // each -- because the game's frame time straddles the host's period there, so sometimes its
+    // frame lands before the next pick and sometimes after.
+    //
+    // A CONSTANT age is invisible: every frame is warped by the same amount and the picture is
+    // merely late. An ALTERNATING age changes the warp by a whole step every frame, which is the
+    // scene stepping back and forth and the black edges jumping with it.
+    //
+    // So a frame that arrives EARLY is held back one step rather than shown immediately. That costs
+    // a fixed extra step of latency and removes the variance, which is the trade the eye wants:
+    // smooth and late beats sharp and juddering.
+    //
+    // 0 disables it.
+    uint32_t target_age = 0;
+    std::vector<uint8_t> deferred_pixels;
+    uint32_t deferred_w = 0, deferred_h = 0, deferred_pitch = 0;
+    bool have_deferred = false;
+    // THE SEQUENCE TRAVELS WITH THE PIXELS. Reading it from the header when the held frame is
+    // finally shown would pair those pixels with a LATER pose -- which is the exact
+    // mis-association this whole exercise has been about, reintroduced by the cure.
+    uint32_t deferred_seq = 0;
+    uint32_t showing_deferred_seq = 0;
+    uint64_t frames_deferred = 0;
     float ui_width_m = 1.6f;        // --ui-width <metres>, height follows the UI image's aspect ratio
 
     for (int i = 1; i < argc; ++i) {
@@ -326,6 +351,8 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             max_seconds = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--target-age") == 0 && i + 1 < argc) {
+            target_age = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--pose-lag") == 0 && i + 1 < argc) {
             pose_lag_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
@@ -1073,6 +1100,41 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- EVEN OUT THE PIPELINE DEPTH -------------------------------------------------------
+        //
+        // A frame whose pose is younger than the target is held for one step. The pixels are copied
+        // out because the mapping is a ring the game keeps writing to -- the pointer would not
+        // survive the wait.
+        if (target_age > 0) {
+            if (have_deferred) {
+                // Last step's early frame, now exactly one step older. Show it.
+                fbits = deferred_pixels.data();
+                fw = deferred_w;
+                fh = deferred_h;
+                fpitch = deferred_pitch;
+                have_frame = true;
+                have_deferred = false;
+                showing_deferred_seq = deferred_seq;
+            } else if (have_frame && reader.host != nullptr) {
+                const uint32_t rs = reader.frame_host_sequence();
+                const uint32_t rel = published_sequence - rs;
+                if (rs != 0 && static_cast<int32_t>(rel) >= 0 && (rel / 2u) < target_age) {
+                    const size_t need = static_cast<size_t>(fpitch) * fh;
+                    if (deferred_pixels.size() < need) {
+                        deferred_pixels.resize(need);
+                    }
+                    std::memcpy(deferred_pixels.data(), fbits, need);
+                    deferred_w = fw;
+                    deferred_h = fh;
+                    deferred_pitch = fpitch;
+                    deferred_seq = rs;
+                    have_deferred = true;
+                    have_frame = false;  // show the previous picture for one more step
+                    ++frames_deferred;
+                }
+            }
+        }
+
         // A side-by-side frame is TWO pictures: each eye gets half the width.
         const uint32_t layout = reader.layout();
         const uint32_t eye_w = (layout == xr::kLayoutSideBySide) ? fw / 2u : fw;
@@ -1469,7 +1531,12 @@ int main(int argc, char** argv) {
             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
 
-        const uint32_t rendered_seq = reader.frame_host_sequence();
+        // A HELD FRAME CARRIES THE SEQUENCE IT WAS CAPTURED WITH, not whatever the header says by
+        // the time it is shown. Taking it from the header here would pair the held pixels with a
+        // newer pose and manufacture precisely the defect the deferral exists to remove.
+        const uint32_t rendered_seq =
+            showing_deferred_seq != 0 ? showing_deferred_seq : reader.frame_host_sequence();
+        showing_deferred_seq = 0;
         if (rendered_seq != 0) {
             if (last_rendered_seq != 0) {
                 const int32_t d = static_cast<int32_t>(rendered_seq - last_rendered_seq);
@@ -1728,7 +1795,8 @@ int main(int argc, char** argv) {
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
                         "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
-                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms, age-hist %llu/%llu/%llu/%llu), "
+                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms, age-hist %llu/%llu/%llu/%llu, "
+                        "deferred %llu), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
@@ -1748,7 +1816,8 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(age_hist[0]),
                         static_cast<unsigned long long>(age_hist[1]),
                         static_cast<unsigned long long>(age_hist[2]),
-                        static_cast<unsigned long long>(age_hist[3]), state_name(state), rs(end),
+                        static_cast<unsigned long long>(age_hist[3]),
+                        static_cast<unsigned long long>(frames_deferred), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],

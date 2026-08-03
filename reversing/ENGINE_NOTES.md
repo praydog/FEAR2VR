@@ -4140,6 +4140,40 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### The judder is pose age ALTERNATING, not pose age being large
+
+At the wall, measured:
+
+```
+age-hist 0/1071/1059/0      -- half the frames at age 1, half at age 2
+```
+
+That is not a pipeline sitting at a mean of 1.5. It is one ALTERNATING between 1 and 2, and the two
+cases are completely different to the eye:
+
+- **Constant age** -- every frame warped by the same amount. The picture is late and nothing moves
+  wrongly. This is what the rest of the game looks like: latency you cannot really feel, with the
+  source image's black edges sitting still.
+- **Alternating age** -- the warp changes by a WHOLE STEP every frame. At 38 Hz that is ~26 ms of
+  head rotation appearing and disappearing, and the black edges visibly jump with it. Reported from
+  the headset exactly that way.
+
+The cause is the game's frame time straddling the host's period, which happens at this wall because
+of the extra render-to-texture pass and not elsewhere. It explains every observation that killed the
+earlier theories: whole scene, both eyes, spot-specific, INDIFFERENT to `--pose-lag` (which shifts
+the offset and leaves the variance alone), and invisible on the desktop mirror because the game's
+own output is fine.
+
+**The fix is a CONSTANT depth, not a shorter one.** `--target-age N` holds a frame that arrives early
+for one step so every frame is submitted at the same age. It costs a fixed extra step of latency and
+removes the variance -- the trade the eye wants, since smooth and late beats sharp and juddering.
+
+The deferred pixels are COPIED, because the mapping is a ring the game keeps writing to, and the
+deferred SEQUENCE travels with them. Reading the sequence from the header when the held frame is
+finally shown would pair those pixels with a newer pose -- manufacturing the exact mis-association
+the deferral exists to remove. That bug was written and caught before it shipped; it is the same
+mistake in a new place.
+
 ### A failed readback does not clear its destination -- it republishes the last frame
 
 `GetRenderTargetData` filling the capture pipeline had its HRESULT DISCARDED, alone among the four
