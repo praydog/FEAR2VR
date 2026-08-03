@@ -7,8 +7,8 @@
 // This is deliberately NOT built by build.bat: the mod is 32-bit because the game is.
 //
 //   cmake -B build64 -A x64 -S tools/xr64 && cmake --build build64 --config Release
-//   build64/Release/xr64.exe --probe     one-shot capability report, exits
-//   build64/Release/xr64.exe             run the frame loop and submit
+//   build64/RelWithDebInfo/xr64.exe --probe   one-shot capability report, exits
+//   build64/RelWithDebInfo/xr64.exe           run the frame loop and submit
 //
 // FIRST MILESTONE, WHICH IS WHAT THIS CURRENTLY DOES: put ANY image in front of the wearer. Each eye
 // is cleared to a different colour, pulsing, with no shaders, no vertex buffers and no texture
@@ -22,6 +22,7 @@
 #include <windows.h>
 
 #include <d3d11.h>
+#include <dbghelp.h>
 #include <dxgi1_2.h>
 
 #include <cstdio>
@@ -309,7 +310,76 @@ ID3D11Device* create_device_on(LUID luid, D3D_FEATURE_LEVEL min_level, ID3D11Dev
 
 }  // namespace
 
+// ---- A CRASH HAS TO LEAVE SOMETHING BEHIND ------------------------------------------------------
+//
+// The mod has had a handler for a long time -- it writes a dump and a symbolised stack, and every
+// crash it caught was diagnosed from that output. The host had NOTHING: it simply vanished, and the
+// entire report available was "xr64 crashed".
+//
+// Module + offset rather than resolved names on purpose, matching the mod's format: the offset can
+// be pasted straight into a disassembler against the matching binary, and it needs no symbol server
+// or dbghelp initialisation at the worst possible moment. The PDB sits beside the exe for anything
+// that wants more.
+LONG WINAPI host_crash_handler(EXCEPTION_POINTERS* info) {
+    const auto* rec = info != nullptr ? info->ExceptionRecord : nullptr;
+    const auto* ctx = info != nullptr ? info->ContextRecord : nullptr;
+
+    std::fprintf(stderr, "[host] ============== UNHANDLED EXCEPTION ==============\n");
+    if (rec != nullptr) {
+        std::fprintf(stderr, "[host] code 0x%08lX at %p\n",
+                     static_cast<unsigned long>(rec->ExceptionCode), rec->ExceptionAddress);
+    }
+
+    // Walk the return addresses the cheap way. RtlCaptureStackBackTrace does not need the faulting
+    // context to be intact, which a hand-rolled RBP walk would.
+    void* frames[24]{};
+    const USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+    for (USHORT i = 0; i < n; ++i) {
+        HMODULE mod = nullptr;
+        char name[MAX_PATH]{};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(frames[i]), &mod) &&
+            GetModuleFileNameA(mod, name, MAX_PATH) != 0) {
+            const char* base = std::strrchr(name, '\\');
+            const auto off = reinterpret_cast<uintptr_t>(frames[i]) -
+                             reinterpret_cast<uintptr_t>(mod);
+            std::fprintf(stderr, "[host]   #%02u %p  %s+0x%llX\n", i, frames[i],
+                         base != nullptr ? base + 1 : name,
+                         static_cast<unsigned long long>(off));
+        } else {
+            std::fprintf(stderr, "[host]   #%02u %p  (no module)\n", i, frames[i]);
+        }
+    }
+    (void)ctx;
+
+    // The dump last: if writing it faults in turn, the stack above is already out.
+    if (HMODULE dbghelp = LoadLibraryA("dbghelp.dll")) {
+        using WriteFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+                                      PMINIDUMP_EXCEPTION_INFORMATION, PVOID, PVOID);
+        if (auto* write = reinterpret_cast<WriteFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"))) {
+            HANDLE f = CreateFileA("xr64_crash.dmp", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f != INVALID_HANDLE_VALUE) {
+                MINIDUMP_EXCEPTION_INFORMATION mei{};
+                mei.ThreadId = GetCurrentThreadId();
+                mei.ExceptionPointers = info;
+                mei.ClientPointers = FALSE;
+                write(GetCurrentProcess(), GetCurrentProcessId(), f, MiniDumpNormal,
+                      info != nullptr ? &mei : nullptr, nullptr, nullptr);
+                CloseHandle(f);
+                std::fprintf(stderr, "[host] dump written to xr64_crash.dmp\n");
+            }
+        }
+    }
+
+    std::fprintf(stderr, "[host] =================================================\n");
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int main(int argc, char** argv) {
+    SetUnhandledExceptionFilter(host_crash_handler);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleCtrlHandler(console_handler, TRUE);
 
@@ -1789,36 +1859,54 @@ int main(int argc, char** argv) {
         const XrResult end = xrEndFrame(session, &fei);
 
         if (++frames % 90 == 0) {
-            std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
-                        "POSE-SKIP %llu/%llu, stale %.1f/%.1f ms, age-hist %llu/%llu/%llu/%llu, "
-                        "STATED-vs-INDEX %.3f/%.3f deg over %llu (absent %llu), "
-                        "deferred %llu), "
-                        "state %s, last xrEndFrame %s, hands bound %s, "
-                        "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
+            // ---- SPLIT ON PURPOSE ----------------------------------------------------------
+            //
+            // This was ONE printf with 36 specifiers and it broke three times in a single
+            // session: arguments appended where they read well rather than where the format
+            // wanted them, a double's bit pattern printed as %llu, and finally a format field
+            // left behind when its argument was deleted -- which shifted everything after it and
+            // put a float where a %s expected a pointer. That one CRASHED THE HOST, in strnlen,
+            // and it is the only crash this process has ever produced.
+            //
+            // A count that has to be maintained by hand will drift, and mine did, repeatedly.
+            // Several small statements cannot: each is short enough to verify by eye, and a
+            // mistake in one cannot corrupt the fields of another.
+            std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu, "
+                        "missed pose %llu, state %s, last xrEndFrame %s\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
                         static_cast<unsigned long long>(held),
                         static_cast<unsigned long long>(pose_hits),
                         static_cast<unsigned long long>(pose_misses),
-                        static_cast<unsigned long long>(content_waits_expired),
-                        static_cast<unsigned long long>(seq_backwards),
-                        static_cast<unsigned long long>(seq_repeats),
-                        age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples) : 0.0,
+                        state_name(state), rs(end));
+
+            std::printf("[host]   pose: age %.2f/%llu, hist %llu/%llu/%llu/%llu, stale %.1f/%.1f ms, "
+                        "STATED-vs-INDEX %.3f/%.3f deg over %llu (absent %llu)\n",
+                        age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples)
+                                    : 0.0,
                         static_cast<unsigned long long>(age_worst),
-                        static_cast<unsigned long long>(pose_skip_should),
-                        static_cast<unsigned long long>(pose_skip_locate),
-                        stale_ms_samples ? stale_ms_total / static_cast<double>(stale_ms_samples) : 0.0,
-                        stale_ms_worst,
                         static_cast<unsigned long long>(age_hist[0]),
                         static_cast<unsigned long long>(age_hist[1]),
                         static_cast<unsigned long long>(age_hist[2]),
                         static_cast<unsigned long long>(age_hist[3]),
+                        stale_ms_samples ? stale_ms_total / static_cast<double>(stale_ms_samples) : 0.0,
+                        stale_ms_worst,
                         stated_samples ? stated_sum_deg / static_cast<double>(stated_samples) : 0.0,
-                        stated_worst_deg, static_cast<unsigned long long>(stated_samples),
-                        static_cast<unsigned long long>(stated_absent),
-                        state_name(state), rs(end),
-                        hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
+                        stated_worst_deg,
+                        static_cast<unsigned long long>(stated_samples),
+                        static_cast<unsigned long long>(stated_absent));
+
+            std::printf("[host]   transport: OUT-OF-ORDER %llu, repeats %llu, content-wait %llu, "
+                        "POSE-SKIP %llu/%llu\n",
+                        static_cast<unsigned long long>(seq_backwards),
+                        static_cast<unsigned long long>(seq_repeats),
+                        static_cast<unsigned long long>(content_waits_expired),
+                        static_cast<unsigned long long>(pose_skip_should),
+                        static_cast<unsigned long long>(pose_skip_locate));
+
+            std::printf("[host]   hands bound %s, L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
+                        hands_bound_log ? "yes" : "no",
+                        hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],
                         hand_aim_pos_log[xr::kHandLeft][2],

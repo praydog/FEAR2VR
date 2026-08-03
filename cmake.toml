@@ -225,6 +225,23 @@ link-libraries = ["ws2_32"]
 cmake-after = """
 add_test(NAME command-server-test COMMAND command-server-test)
 set_tests_properties(command-server-test PROPERTIES TIMEOUT 60)
+
+# ---- PRINTF ARGUMENTS, CHECKED BY MACHINE ------------------------------------------------------
+#
+# The host's periodic log line broke three times in one session: arguments inserted where they read
+# well in the source rather than where the format wanted them, a double printed through %llu, and a
+# format field left behind after its argument was deleted -- which handed a float to %s and CRASHED
+# THE HOST inside strnlen. MSVC does not warn at this project's level, and a 36-argument call
+# cannot be checked by eye; I signed off on that one twice while it was wrong.
+#
+# Needs no build and no game, so it costs a fraction of a second on every ctest run.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+	add_test(NAME format-strings
+		COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/check_formats.py"
+		WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+	set_tests_properties(format-strings PROPERTIES TIMEOUT 60)
+endif()
 """
 
 [target.command-server-test.properties]

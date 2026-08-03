@@ -4426,6 +4426,32 @@ The fixture now prints asked/satisfied/no-name/no-count beside the result, so th
 read rather than an investigation. The fix is to confirm the command EXECUTED before judging the
 reserve, not to compare the reserve harder.
 
+### A 36-argument printf crashed the host, and it had already lied twice
+
+The periodic `[host]` line broke three times in one session:
+
+1. arguments appended where they read well in the source rather than where the format wanted them,
+   so every field after the insertion showed a different variable;
+2. a `double` passed to `%llu`, printing `4607992913809357429` -- the bit pattern of 1.18 -- as a
+   count, which had to be decoded from IEEE-754 by hand before the run could be read;
+3. a format field left behind when its argument was deleted. Everything after it shifted, a float
+   landed on a `%s`, and `strnlen` dereferenced it. **That crashed the host**, and it is the only
+   crash this process has produced.
+
+MSVC does not warn at this project's warning level. A call with 36 specifiers cannot be verified by
+eye -- it was signed off twice while wrong.
+
+**Fixed structurally, not by recounting.** The call is now four short ones, each verifiable at a
+glance, and a mistake in one cannot corrupt the fields of another. `tools/check_formats.py` counts
+specifiers against arguments across the tree and runs as a ctest (`format-strings`) in a fraction of
+a second, needing no build and no game. It handles concatenated literals, `%.*f` star-width,
+MSVC's `%I64` prefixes, and comments embedded between literal halves -- each of which produced a
+false positive before it was trusted.
+
+The host also builds **RelWithDebInfo** now, with `/Zi` and `/DEBUG` forced for every configuration,
+and installs an unhandled-exception filter that prints a module+offset stack and writes
+`xr64_crash.dmp`. Before that, a host crash left literally nothing: no PDB, no dump, no stack.
+
 ### STATE the pose the frame was drawn from -- an index cannot express what the engine did
 
 **This was the judder.** The frame header carried `host_sequence`, a 32-bit INDEX, and the host
