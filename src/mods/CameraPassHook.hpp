@@ -153,6 +153,12 @@ public:
     std::optional<std::array<float, 3>> pristine_camera_position() const;
 
     void set_position_offset(float x, float y, float z);
+
+    // The host-pose sequence in effect where the PRISTINE camera was taken -- the pose this frame's
+    // view matrix actually corresponds to. Compare against what FrameCapture stamps: a difference
+    // means the projection layer is claiming a pose the image was never rendered from.
+    static uint32_t last_view_seq();
+    static uint32_t last_view_tid();
     std::array<float, 3> position_offset() const;
 
     // ---- WHAT THE PASSES IN A FRAME ACTUALLY ARE -------------------------------------

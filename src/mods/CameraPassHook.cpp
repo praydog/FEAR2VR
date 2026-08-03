@@ -1,5 +1,7 @@
 #include "CameraPassHook.hpp"
 
+#include "VR.hpp"
+
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
@@ -49,6 +51,20 @@ std::atomic<uint64_t> g_centre_checked{0};
 std::atomic<uint64_t> g_centre_inconsistent{0};
 std::atomic<uint64_t> g_second_draws{0};
 std::atomic<uint64_t> g_draw_calls{0};
+
+// ---- WHICH POSE THIS FRAME IS ACTUALLY BEING DRAWN FROM ----------------------------------------
+//
+// Latched where the PRISTINE camera is taken, because that transform already carries the head
+// rotation the engine thread wrote -- build_eye only adds IPD and the position offset. So this is
+// the sequence the view matrix genuinely corresponds to.
+//
+// FrameCapture stamps the published frame from VR::last_host_sequence() at capture-issue instead,
+// which is LATER and on the render thread while the engine thread keeps ingesting. If the two
+// disagree, the projection layer claims a pose the image was not rendered from and the compositor
+// corrects by the difference -- judder proportional to head speed, with every pose counter on the
+// host still reading a clean hit.
+std::atomic<uint32_t> g_view_seq{0};
+std::atomic<uint32_t> g_view_tid{0};
 std::atomic<uintptr_t> g_draw_target{0};
 std::atomic<uintptr_t> g_endpass_fn{0};
 
@@ -394,6 +410,8 @@ using EndPassFn = char(*)();
 
 char __stdcall draw_scene_detour(void* a1, void* a2) {
     g_draw_calls.fetch_add(1, std::memory_order_relaxed);
+    g_view_seq.store(VR::get().last_host_sequence(), std::memory_order_release);
+    g_view_tid.store(::GetCurrentThreadId(), std::memory_order_relaxed);
 
     auto* draw_hook = Hooks::get().find(kDrawHookName);
     if (draw_hook == nullptr) {
@@ -667,4 +685,12 @@ std::optional<std::array<float, 3>> CameraPassHook::pristine_camera_position() c
 
     return std::array<float, 3>{g_pristine.camera.position.x, g_pristine.camera.position.y,
                                 g_pristine.camera.position.z};
+}
+
+uint32_t CameraPassHook::last_view_seq() {
+    return g_view_seq.load(std::memory_order_acquire);
+}
+
+uint32_t CameraPassHook::last_view_tid() {
+    return g_view_tid.load(std::memory_order_relaxed);
 }

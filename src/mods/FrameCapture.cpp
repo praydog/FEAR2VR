@@ -8,6 +8,7 @@
 
 #include "Log.hpp"
 #include "CameraPassHook.hpp"
+#include "CameraPassHook.hpp"
 #include "VR.hpp"
 #include "FramePublisher.hpp"
 #include "RenderHook.hpp"
@@ -521,7 +522,24 @@ void FrameCapture::service_continuous() {
     // Recorded HERE, against the surface being issued, because this is the moment whose pixels it
     // captures. Reading it later -- when the surface is finally locked -- would attribute a frame
     // to whatever pose had arrived in the meantime.
-    m_pipe_seq[issue] = VR::get().last_host_sequence();
+    const uint32_t stamped = VR::get().last_host_sequence();
+    // ---- IS THE STAMP TELLING THE TRUTH? -------------------------------------------------------
+    // Measured rather than argued: the view matrix was built from CameraPassHook::last_view_seq()
+    // at the top of this same DrawScene, on this thread. If the engine thread has ingested a newer
+    // pose since, `stamped` names a pose this image was NOT rendered from.
+    const uint32_t view_seq = CameraPassHook::last_view_seq();
+    m_stamp_tid.store(::GetCurrentThreadId(), std::memory_order_relaxed);
+    if (view_seq == stamped) {
+        m_stamp_agree.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_stamp_drift.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t ahead = stamped - view_seq;  // sequences step by 2 (seqlock)
+        uint32_t worst = m_stamp_worst.load(std::memory_order_relaxed);
+        while (ahead > worst &&
+               !m_stamp_worst.compare_exchange_weak(worst, ahead, std::memory_order_relaxed)) {
+        }
+    }
+    m_pipe_seq[issue] = stamped;
     back->Release();
 
     if (m_pipe_primed) {

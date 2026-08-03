@@ -42,6 +42,11 @@
 // COPY rather than an allocation.
 class FrameCapture final : public Mod {
 public:
+    uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
+    uint64_t stamp_drift() const { return m_stamp_drift.load(std::memory_order_relaxed); }
+    uint32_t stamp_worst() const { return m_stamp_worst.load(std::memory_order_relaxed); }
+    uint32_t stamp_tid() const { return m_stamp_tid.load(std::memory_order_relaxed); }
+
     static FrameCapture& get();
 
     std::string_view get_name() const override { return "FrameCapture"; }
@@ -272,6 +277,11 @@ private:
     bool verify_gpu_mirror();
 
     std::atomic<bool> m_registered{false};
+    // Stamp-truth census -- see the comment at the stamp site in FrameCapture.cpp.
+    std::atomic<uint64_t> m_stamp_agree{0};
+    std::atomic<uint64_t> m_stamp_drift{0};
+    std::atomic<uint32_t> m_stamp_worst{0};
+    std::atomic<uint32_t> m_stamp_tid{0};
     std::atomic<bool> m_release_requested{false};
     std::atomic<bool> m_released{false};
     std::atomic<uint32_t> m_device_lost{0};
