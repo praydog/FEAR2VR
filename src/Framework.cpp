@@ -11000,6 +11000,9 @@ bool Framework::initialize() {
             }
             // Phase-locking belongs beside pacing: it decides what pacing DOES when the game
             // cannot hold the compositor's rate -- settle on a submultiple, or slide between.
+            if (q.find("head_pos") != q.end()) {
+                VR::get().set_head_position(webapi_query_int(q, "head_pos", 1) != 0);
+            }
             if (q.find("lock") != q.end()) {
                 FramePublisher::get().set_phase_lock(webapi_query_int(q, "lock", 1) != 0);
             }
@@ -11302,6 +11305,7 @@ bool Framework::initialize() {
               .u("stamp_tid", static_cast<size_t>(FrameCapture::get().stamp_tid()))
               .u("view_tid", static_cast<size_t>(CameraPassHook::last_view_tid()))
               .u("apply_tid", static_cast<size_t>(VR::get().apply_tid()))
+              .b("head_position", VR::get().head_position())
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
               .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)
               .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())

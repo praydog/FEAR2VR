@@ -4140,6 +4140,33 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### Pose staleness is 47 ms, and that is a SEPARATE problem from the wall judder
+
+Measured with forced ASW on, so the host loop is 36 Hz and one pose step is 27.8 ms:
+
+```
+--pose-lag 0   age 1.69 steps   stale 47.3 mean / 83.6 worst ms
+--pose-lag 3   age 1.80         stale 134.2 / 139.4
+--pose-lag 6   age 1.87         stale 222.1 / 222.9
+```
+
+The step count barely moves while the millisecond figure triples, which is the point of measuring
+in time: at 36 Hz a "one frame" lag is 27.8 ms, not 14.
+
+**Two findings, and they are not the same bug.**
+
+1. **47 ms of pose staleness is real and is FELT.** Raising it with `--pose-lag` produces
+   progressively worse nausea and an obvious rotational delay, so the declared pose is being used
+   and over-declaring it over-corrects. Whatever the compositor is doing, it is not absorbing this.
+
+2. **The wall judder is INDEPENDENT of pose age.** Identical at lag 0, 3 and 6. And the added lag
+   is SMOOTH everywhere except at that wall -- a rotational error is distance-independent by
+   construction, so a residual that appears only near geometry is not rotational.
+
+The second is what `head_pos=0` exists to settle: freezing head POSITION while keeping orientation
+removes every distance-dependent term and leaves every distance-independent one. It is a diagnostic
+and the view will feel pinned; that is the intent.
+
 ### The transport is in order, the pose is published every frame, and the age is 1.3
 
 Measured at the consumer, with the log's format string finally matching its arguments:

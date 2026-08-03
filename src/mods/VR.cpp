@@ -417,6 +417,19 @@ void VR::on_frame() {
                 pose.orientation = {host->orientation[0], host->orientation[1],
                                     host->orientation[2], host->orientation[3]};
                 pose.position = {host->position[0], host->position[1], host->position[2]};
+                // ---- ORIENTATION ONLY, AS A DIAGNOSTIC -------------------------------------
+                //
+                // Splits a distance-dependent error from a distance-independent one, which no
+                // amount of reasoning has managed to do. Rotating the head moves EVERYTHING by
+                // the same angle whatever its distance; TRANSLATING it moves near things more
+                // than far ones. The eyes orbit the neck, so every rotation carries both.
+                //
+                // With position frozen, a judder that is really translation disappears and one
+                // that is really rotation is untouched. The view will feel pinned in place --
+                // that is the point, not a regression.
+                if (!m_head_position.load(std::memory_order_relaxed)) {
+                    pose.position = {0.0f, 0.0f, 0.0f};
+                }
                 pose.valid = true;
                 pose.tracked = true;
 

@@ -308,6 +308,8 @@ public:
     bool paced() const { return m_paced.load(std::memory_order_acquire); }
 
     uint32_t apply_tid() const { return m_apply_tid.load(std::memory_order_relaxed); }
+    void set_head_position(bool on) { m_head_position.store(on, std::memory_order_relaxed); }
+    bool head_position() const { return m_head_position.load(std::memory_order_relaxed); }
     void set_use_host_pose(bool on);
     bool using_host_pose() const { return m_use_host_pose.load(std::memory_order_acquire); }
 
@@ -432,7 +434,8 @@ private:
     bool m_have_weapon_rest{false};
     std::atomic<bool> m_locomotion{false};
     std::atomic<uint64_t> m_stick_turns{0};
-std::atomic<uint32_t> m_apply_tid{0};
+std::atomic<bool> m_head_position{true};
+    std::atomic<uint32_t> m_apply_tid{0};
     std::atomic<uint32_t> m_loco_keys{0};
     std::atomic<float> m_snap_deg{30.0f};
     bool m_snap_armed{true};
