@@ -766,6 +766,11 @@ int main(int argc, char** argv) {
     uint64_t age_samples = 0;
     uint64_t age_total = 0;
     uint32_t age_worst = 0;
+    bool pose_ever_published = false;
+    // WHY A FRAME PUBLISHED NO POSE. If the head pose stalls for a frame the game's camera stalls
+    // with it, and that is an update-rate defect however clean the association is.
+    uint64_t pose_skip_should = 0;   // shouldRender was false
+    uint64_t pose_skip_locate = 0;   // xrLocateViews failed or returned fewer than two views
     uint64_t submitted = 0;
     const ULONGLONG started = GetTickCount64();
 
@@ -873,6 +878,9 @@ int main(int argc, char** argv) {
         // Published every frame, whether or not the game is listening: the pose is what makes a
         // projection layer honest later, and a game that starts listening mid-session should find
         // current data rather than wait a frame for it.
+        if (fs.shouldRender == XR_FALSE && reader.host != nullptr) {
+            ++pose_skip_should;
+        }
         if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -883,8 +891,11 @@ int main(int argc, char** argv) {
             uint32_t located = 0;
             std::vector<XrView> hv(view_count, {XR_TYPE_VIEW});
 
-            if (XR_SUCCEEDED(xrLocateViews(session, &vli, &vs, view_count, &located, hv.data())) &&
-                located >= 2) {
+            const XrResult lr_res = xrLocateViews(session, &vli, &vs, view_count, &located, hv.data());
+            if (!XR_SUCCEEDED(lr_res) || located < 2) {
+                ++pose_skip_locate;
+            }
+            if (XR_SUCCEEDED(lr_res) && located >= 2) {
                 auto* hs = reader.host;
                 hs->sequence |= 1u;
                 MemoryBarrier();
@@ -949,6 +960,7 @@ int main(int argc, char** argv) {
                 // converging, at all", which is exactly what parallel cameras look like.
                 slot.wanted[0] = hv[0].fov;
                 slot.wanted[1] = hv[1].fov;
+                pose_ever_published = true;
             }
         }
 
@@ -1441,11 +1453,14 @@ int main(int argc, char** argv) {
                 last_rendered_seq = rendered_seq;
             }
             // Age in POSE STEPS: sequences advance by two per publish (seqlock), so halve it.
-            const uint32_t age = (published_sequence - rendered_seq) / 2u;
-            ++age_samples;
-            age_total += age;
-            if (age > age_worst) {
-                age_worst = age;
+            const int32_t delta = static_cast<int32_t>(published_sequence - rendered_seq);
+            if (pose_ever_published && delta >= 0) {
+                const uint32_t age = static_cast<uint32_t>(delta) / 2u;
+                ++age_samples;
+                age_total += age;
+                if (age > age_worst) {
+                    age_worst = age;
+                }
             }
         }
         const PosePair& slot = pose_history[(rendered_seq / 2u) % 16u];
@@ -1663,7 +1678,8 @@ int main(int argc, char** argv) {
 
         if (++frames % 90 == 0) {
             std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu (missed "
-                        "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu), "
+                        "pose %llu, content-wait %llu, OUT-OF-ORDER %llu, repeats %llu, age %.2f/%llu, "
+                        "POSE-SKIP %llu/%llu), "
                         "state %s, last xrEndFrame %s, hands bound %s, "
                         "L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         static_cast<unsigned long long>(frames),
@@ -1675,7 +1691,9 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(seq_backwards),
                         static_cast<unsigned long long>(seq_repeats),
                         age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples) : 0.0,
-                        static_cast<unsigned long long>(age_worst), state_name(state), rs(end),
+                        static_cast<unsigned long long>(age_worst),
+                        static_cast<unsigned long long>(pose_skip_should),
+                        static_cast<unsigned long long>(pose_skip_locate), state_name(state), rs(end),
                         hands_bound_log ? "yes" : "no", hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandLeft][0], hand_aim_pos_log[xr::kHandLeft][1],
