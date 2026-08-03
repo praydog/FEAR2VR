@@ -142,6 +142,19 @@ def main():
               % (d_rot, cam, host))
         print("         mismatch %.3f deg/frame (%.0f%% of head motion), worst %.2f deg"
               % (miss, 100.0 * miss / host if host > 1e-6 else 0.0, b.get("rot_worst_deg", 0.0)))
+        # THE AXIS, which the magnitude comparison above is blind to. Same angle about a different
+        # axis reads as a perfect 0.000 there, and would judder only when the HEAD moves -- because
+        # only the head changes the pose handed to timewarp. Rotating with the stick would stay
+        # smooth, which is exactly what is reported.
+        axis = (b.get("rot_sum_axis", 0.0) - a.get("rot_sum_axis", 0.0)) / d_rot
+        print("         AXIS error between the deltas: %.3f deg/frame mean, %.3f worst, %d frames "
+              "over 0.5 deg" % (axis, b.get("rot_axis_worst", 0.0),
+                                b.get("rot_axis_bad", 0) - a.get("rot_axis_bad", 0)))
+        if axis > 0.25 * host:
+            print("[judder] -> THE CAMERA TURNED ABOUT A DIFFERENT AXIS from the head. The picture\n"
+                  "         moves by the right AMOUNT, so every magnitude check reads clean, but it\n"
+                  "         is not the rotation the pose describes -- so timewarp corrects wrongly,\n"
+                  "         and only when the head moves.")
         lag = (b.get("rot_sum_lag", 0.0) - a.get("rot_sum_lag", 0.0)) / d_rot
         print("         against the PREVIOUS frame's head motion: %.3f deg/frame" % lag)
         if lag < miss * 0.6:

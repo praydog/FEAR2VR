@@ -7,6 +7,8 @@
 #include <cstdio>
 
 #include "Log.hpp"
+#include <array>
+
 #include "CameraPassHook.hpp"
 #include "CameraPassHook.hpp"
 #include "VR.hpp"
@@ -609,6 +611,49 @@ void FrameCapture::service_continuous() {
                     float worst = m_rot_worst.load(std::memory_order_relaxed);
                     while (miss > worst && !m_rot_worst.compare_exchange_weak(
                                                worst, miss, std::memory_order_relaxed)) {
+                    }
+
+                    // ---- AXIS, NOT JUST ANGLE -------------------------------------------
+                    //
+                    // Everything above compares MAGNITUDES, and a rotation of the same size
+                    // about a DIFFERENT AXIS passes it as a perfect zero. That is not a
+                    // hypothetical: rotating the view with the stick is smooth while rotating
+                    // the head judders, and the only thing that distinguishes them is that the
+                    // head changes the pose handed to timewarp. If the game applied our head
+                    // motion about a wrong axis on some frames the picture would still turn by
+                    // the right amount, this check would read 0.000, and the warp would be
+                    // wrong exactly when the head moves.
+                    //
+                    // So compare the DELTAS AS ROTATIONS. The head delta is converted into the
+                    // engine's basis first -- the conversion is conjugation by diag(1,1,-1),
+                    // verified to be a homomorphism, so a delta may be converted directly.
+                    const auto to_eng = VR::runtime_to_engine_rotation(
+                        {hq[0], hq[1], hq[2], hq[3]});
+                    const auto prev_eng = VR::runtime_to_engine_rotation(
+                        {m_prev_host[0], m_prev_host[1], m_prev_host[2], m_prev_host[3]});
+                    auto mul = [](const std::array<float, 4>& a, const std::array<float, 4>& b) {
+                        return std::array<float, 4>{
+                            a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+                            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+                            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+                            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+                    };
+                    const std::array<float, 4> head_delta =
+                        mul(to_eng, {-prev_eng[0], -prev_eng[1], -prev_eng[2], prev_eng[3]});
+                    const std::array<float, 4> cam_delta =
+                        mul({cam[0], cam[1], cam[2], cam[3]},
+                            {-m_prev_cam[0], -m_prev_cam[1], -m_prev_cam[2], m_prev_cam[3]});
+                    const float axis_err =
+                        angle_between(cam_delta.data(), head_delta.data());
+                    m_rot_sum_axis.store(m_rot_sum_axis.load(std::memory_order_relaxed) + axis_err,
+                                         std::memory_order_relaxed);
+                    float aworst = m_rot_axis_worst.load(std::memory_order_relaxed);
+                    while (axis_err > aworst &&
+                           !m_rot_axis_worst.compare_exchange_weak(aworst, axis_err,
+                                                                   std::memory_order_relaxed)) {
+                    }
+                    if (axis_err > 0.5f) {
+                        m_rot_axis_bad.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }

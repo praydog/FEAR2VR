@@ -46,7 +46,10 @@ public:
     float rot_sum_cam() const { return m_rot_sum_cam.load(std::memory_order_relaxed); }
     float rot_sum_host() const { return m_rot_sum_host.load(std::memory_order_relaxed); }
     float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
-    float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
+    float rot_sum_axis() const { return m_rot_sum_axis.load(std::memory_order_relaxed); }
+    float rot_axis_worst() const { return m_rot_axis_worst.load(std::memory_order_relaxed); }
+    uint64_t rot_axis_bad() const { return m_rot_axis_bad.load(std::memory_order_relaxed); }
+        float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
     float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
     uint64_t readback_failures() const { return m_readback_failures.load(std::memory_order_relaxed); }
     int32_t last_readback_hr() const { return m_last_readback_hr.load(std::memory_order_relaxed); }
@@ -301,6 +304,11 @@ private:
     std::atomic<float> m_rot_sum_miss{0.0f};
     std::atomic<float> m_rot_worst{0.0f};
     std::atomic<float> m_rot_sum_lag{0.0f};
+    // The delta rotations compared AS ROTATIONS, which the magnitude check above cannot do: same
+    // angle about a different axis reads as a perfect zero there.
+    std::atomic<float> m_rot_sum_axis{0.0f};
+    std::atomic<float> m_rot_axis_worst{0.0f};
+    std::atomic<uint64_t> m_rot_axis_bad{0};
     float m_prev_d_host{0.0f};
 
     // Stamp-truth census -- see the comment at the stamp site in FrameCapture.cpp.
