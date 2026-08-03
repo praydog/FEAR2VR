@@ -177,6 +177,19 @@ def main():
               "         the right half keeps the previous frame. This is spot-specific by nature."
               % (d_clob, 100.0 * d_clob / max(1, d_pub)))
 
+    # ---- ARE WE PUBLISHING THE SAME PICTURE TWICE? ---------------------------------------------
+    # The only theory-free question left. Every counter can read clean while the PIXELS repeat.
+    d_dup = b.get("fc_dup_frames", 0) - a.get("fc_dup_frames", 0)
+    d_dupmoved = b.get("fc_dup_moved", 0) - a.get("fc_dup_moved", 0)
+    print("[judder] duplicate published frames: %d (%.1f%%), of which %d went out under a NEW pose"
+          % (d_dup, 100.0 * d_dup / max(1, d_pub), d_dupmoved))
+    if d_dupmoved > 0:
+        print("[judder] -> STALE PICTURE, FRESH POSE on %d frames (%.1f%% of published). The image\n"
+              "         is one already shown and the pose has moved on, so the compositor warps an\n"
+              "         old picture to a new head position. That is the judder, and no pose counter\n"
+              "         can see it because the pose is correct -- the PIXELS are not."
+              % (d_dupmoved, 100.0 * d_dupmoved / max(1, d_pub)))
+
     # ---- DID THE READBACK THAT FILLS THE FRAME ACTUALLY SUCCEED? -------------------------------
     # A failed GetRenderTargetData leaves the slot holding the PREVIOUS frame's pixels. Published
     # under the current pose that is a stale image wearing a fresh pose -- which is what "it

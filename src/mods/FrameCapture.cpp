@@ -648,6 +648,42 @@ void FrameCapture::service_continuous() {
                 // host halve it and give one half to each eye, which is exactly how the front end
                 // came out with a different piece of itself in either eye. So the tag follows the
                 // FRAME: one published by the no-scene fallback is mono, whatever the switches say.
+                // ---- IS THIS THE SAME PICTURE AS LAST TIME? ---------------------------------
+                //
+                // Theory-free. Every counter in this pipeline can read clean while the PIXELS
+                // repeat: the sequence is honest, the association is exact, the transport is in
+                // order, and the image is still the one shown a moment ago. A duplicate image
+                // published under a NEW pose is what "it judders to a stale frame" is, and it is
+                // the one thing never actually looked at -- the pixels themselves.
+                //
+                // Sparse on purpose: a few hundred taps spread across the frame cost nothing next
+                // to the megabyte already being copied, and two different frames of a moving scene
+                // will not agree on all of them.
+                {
+                    const auto* px = static_cast<const uint8_t*>(lr.pBits);
+                    uint64_t hash = 1469598103934665603ull;
+                    for (uint32_t y = 0; y < h; y += 37) {
+                        const auto* row = px + static_cast<size_t>(y) * lr.Pitch;
+                        for (uint32_t x = 0; x < w; x += 53) {
+                            hash ^= static_cast<uint64_t>(row[static_cast<size_t>(x) * 4u]);
+                            hash *= 1099511628211ull;
+                        }
+                    }
+                    const uint32_t seq_now = m_pipe_seq[ready];
+                    if (m_last_hash != 0) {
+                        if (hash == m_last_hash) {
+                            m_dup_frames.fetch_add(1, std::memory_order_relaxed);
+                            if (seq_now != m_last_hash_seq) {
+                                // The picture repeated but the POSE moved on. The compositor is
+                                // being handed an old image wearing a new pose.
+                                m_dup_moved.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    }
+                    m_last_hash = hash;
+                    m_last_hash_seq = seq_now;
+                }
+
                 const auto cam = CameraPassHook::get().observed();
                 const bool really_split = cam.stereo && cam.split_viewport &&
                                           m_presents_since_service.load(std::memory_order_relaxed) <

@@ -47,10 +47,16 @@ public:
     float rot_sum_host() const { return m_rot_sum_host.load(std::memory_order_relaxed); }
     float rot_sum_miss() const { return m_rot_sum_miss.load(std::memory_order_relaxed); }
     float rot_sum_lag() const { return m_rot_sum_lag.load(std::memory_order_relaxed); }
-        float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
-        uint64_t readback_failures() const { return m_readback_failures.load(std::memory_order_relaxed); }
+    float rot_worst() const { return m_rot_worst.load(std::memory_order_relaxed); }
+    uint64_t readback_failures() const { return m_readback_failures.load(std::memory_order_relaxed); }
     int32_t last_readback_hr() const { return m_last_readback_hr.load(std::memory_order_relaxed); }
-        uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
+
+    // Published frames whose PIXELS were identical to the one before, and the subset of those
+    // where the pose had moved on anyway -- an old image wearing a new pose.
+    uint64_t dup_frames() const { return m_dup_frames.load(std::memory_order_relaxed); }
+    uint64_t dup_moved() const { return m_dup_moved.load(std::memory_order_relaxed); }
+
+    uint64_t stamp_agree() const { return m_stamp_agree.load(std::memory_order_relaxed); }
     uint64_t stamp_drift() const { return m_stamp_drift.load(std::memory_order_relaxed); }
     uint32_t stamp_worst() const { return m_stamp_worst.load(std::memory_order_relaxed); }
     uint32_t stamp_tid() const { return m_stamp_tid.load(std::memory_order_relaxed); }
@@ -375,6 +381,14 @@ private:
     bool m_pipe_ok[2]{false, false};
     std::atomic<uint64_t> m_readback_failures{0};
     std::atomic<int32_t> m_last_readback_hr{0};
+
+    // A sparse hash of the last PUBLISHED frame, with the pose it went out under. Two consecutive
+    // publishes that agree on the pixels but not the pose mean an old picture was shipped wearing
+    // a new pose -- which every other counter in this pipeline reports as perfectly healthy.
+    uint64_t m_last_hash{0};
+    uint32_t m_last_hash_seq{0};
+    std::atomic<uint64_t> m_dup_frames{0};
+    std::atomic<uint64_t> m_dup_moved{0};
     bool m_pipe_primed{false};
     uint32_t m_scaled_w{0};
     uint32_t m_scaled_h{0};
