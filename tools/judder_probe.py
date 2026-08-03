@@ -155,6 +155,31 @@ def main():
                   "         moves by the right AMOUNT, so every magnitude check reads clean, but it\n"
                   "         is not the rotation the pose describes -- so timewarp corrects wrongly,\n"
                   "         and only when the head moves.")
+        d_aim = b.get("aim_samples", 0) - a.get("aim_samples", 0)
+        if d_aim > 0:
+            aim = (b.get("aim_sum", 0.0) - a.get("aim_sum", 0.0)) / d_aim
+            print("         AIM (head^-1 * camera) moved %.3f deg/frame mean, %.3f worst -- the "
+                  "rotation\n"
+                  "         the picture carries that the layer pose does NOT describe"
+                  % (aim, b.get("aim_worst", 0.0)))
+        d_still = b.get("aim_still_samples", 0) - a.get("aim_still_samples", 0)
+        if d_still > 0:
+            still = (b.get("aim_still_sum", 0.0) - a.get("aim_still_sum", 0.0)) / d_still
+            print("         AIM while the head is STILL: %.3f deg/frame over %d frames" %
+                  (still, d_still))
+            if d_aim > 0:
+                moving = (b.get("aim_sum", 0.0) - a.get("aim_sum", 0.0)) / d_aim
+                if moving > 3.0 * max(still, 0.001):
+                    print("[judder] -> AIM MOVES WITH THE HEAD (%.3f moving vs %.3f still). The "
+                          "camera is\n"
+                          "         NOT head * aim: the engine is filtering or resisting the head\n"
+                          "         write, so the picture carries a rotation the layer pose does\n"
+                          "         not describe -- and only when the head moves."
+                          % (moving, still))
+                else:
+                    print("[judder] -> aim moves about the same either way (%.3f vs %.3f), so it is "
+                          "the game's\n         own sway rather than anything to do with the head "
+                          "write." % (moving, still))
         lag = (b.get("rot_sum_lag", 0.0) - a.get("rot_sum_lag", 0.0)) / d_rot
         print("         against the PREVIOUS frame's head motion: %.3f deg/frame" % lag)
         if lag < miss * 0.6:
@@ -303,7 +328,9 @@ def main():
                                                 b.get("fp_gap_sd_ms", 0.0),
                                                 b.get("fp_gap_min_ms", 0.0),
                                                 b.get("fp_gap_max_ms", 0.0))
-          + " | axis=%.3f/%d" % (b.get("rot_axis_worst", 0.0), b.get("rot_axis_bad", 0)))
+          + " | axis=%.3f/%d" % (b.get("rot_axis_worst", 0.0), b.get("rot_axis_bad", 0))
+          + " | aim=%.3f" % ((b.get("aim_sum", 0.0) - a.get("aim_sum", 0.0))
+                             / max(1, b.get("aim_samples", 0) - a.get("aim_samples", 0))))
     return 0
 
 
