@@ -844,6 +844,24 @@ int main(int argc, char** argv) {
         // THE FRAME CLOCK, relayed. xrWaitFrame has just told us when the runtime wants the next
         // frame; releasing the game here makes its update run on the compositor's cadence instead
         // of free-running at whatever the hardware allows.
+        // ---- ONE PER COMPOSITOR FRAME, AND ONLY HERE -------------------------------------------
+        //
+        // This is a CLOCK, and the game paces on it: it waits for the counter to advance by its
+        // divisor. It used to be incremented in two different places -- once in the head-pose
+        // publish and once in the hands block -- so it stepped by 0, 1 or 2 per loop depending on
+        // what the runtime had to say that frame.
+        //
+        // Pacing then read a double step as the game having OVERRUN its budget, every frame, and
+        // climbed the divisor to its cap: with forced ASW holding the loop at 36 Hz and the counter
+        // running at 72, the game landed on 72/3 = 24 fps while 36 was asked for. Measured in the
+        // headset as 23-26.
+        //
+        // Incremented BEFORE the tick is signalled, so a game woken by the event always sees the
+        // count the wake corresponds to rather than the previous one.
+        if (reader.host != nullptr) {
+            ++reader.host->frames;
+        }
+
         if (tick_event != nullptr) {
             SetEvent(tick_event);
         }
@@ -1074,7 +1092,6 @@ int main(int argc, char** argv) {
                 hs->fov_y = my;
                 hs->valid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) ? 1u : 0u;
                 hs->write_qpc = 0;
-                ++hs->frames;
 
                 MemoryBarrier();
                 hs->sequence = (hs->sequence + 1u) & ~1u;
@@ -1257,7 +1274,6 @@ int main(int argc, char** argv) {
             }
 
             hs->write_qpc = 0;
-            ++hs->frames;
 
             MemoryBarrier();
             hs->sequence = (hs->sequence + 1u) & ~1u;

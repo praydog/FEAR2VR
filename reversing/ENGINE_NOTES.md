@@ -4140,6 +4140,26 @@ Intermittent: the same suite passed earlier in the session. It is a teardown rac
 feature, but it takes the GAME down, which makes every later assertion in the run a lie -- the run
 reported `Timeout` with an unrelated check as the last line printed.
 
+### HostState.frames is a CLOCK, so it must tick once -- it used to tick 0, 1 or 2 times
+
+It was incremented in two places per host loop: once inside the head-pose publish (guarded by
+`xrLocateViews` succeeding with two views) and once inside the hands block. So it advanced by 0, 1
+or 2 per compositor frame depending on what the runtime had to say that frame.
+
+The game paces on it -- waiting for the count to advance by its divisor, and treating an advance
+LARGER than the divisor as having overrun the budget. A double step is therefore read as a miss on
+every frame, and the divisor climbs. With Oculus forced ASW holding the host loop at 36 Hz and the
+counter running irregularly above it, the game settled BETWEEN submultiples at 23-26 fps where 36
+was asked for.
+
+Now incremented exactly once per loop, immediately before the tick is signalled, so a game woken by
+the event sees the count that wake corresponds to. Reproduced both ways against a synthetic clock:
+one step per loop gives 36.0 fps at divisor 1; a double step drives the divisor to 2 on identical
+input.
+
+**A counter that anything paces on cannot be maintained opportunistically inside feature branches.**
+It is a clock or it is a statistic, and this one is load-bearing.
+
 ### Locking the game's rate does nothing unless the RUNTIME is told
 
 The host is paced by `xrWaitFrame` and submitted a full projection layer on EVERY compositor frame,
