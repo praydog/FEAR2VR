@@ -2499,7 +2499,34 @@ is now derived from the source so the pixels stay square (1280x658 at this resol
 spans the full height and clips top and bottom, so health and ammo in the bottom corners fall
 outside. The interface is laid out once and never told the screen grew.
 
-The next thing to try: the interface is laid out ONCE and never told the
+**Measured, and it is a hard ceiling in the engine.** HUD extent in SOURCE pixels, read off the
+published layer at three buffer sizes:
+
+| back buffer | HUD height | HUD width | HUD aspect |
+|---|---|---|---|
+| 640x480 | 472 | 613 | 1.30 |
+| 2560x1440 | 1332 | 2428 | 1.82 -- correct |
+| 4320x2224 | 1329 | 3757 | 2.83 -- stretched |
+
+The height SATURATES at about 1330 px. It scaled 472 -> 1332 going 640 -> 2560, then did not move at
+all going 2560 -> 4320, while the width kept following the screen. So past roughly 1440 lines the
+interface stops scaling and smears sideways, with the bottom row -- health and ammo -- pinned to the
+frame edge where the quad clips it.
+
+Two theories died getting here, both worth not repeating:
+
+- *The HUD's letterbox rect is wrong.* It is not. `HUD_ComputeLayoutRect` (gameclient.dll
+  0x100E7A70, now named and commented) letterboxes to 16:9 and clamps to full height when 16:9 will
+  not fit -- but logging its OUTPUT live shows it already returns `(0,0)-(4320,2224)`, the whole
+  screen, because UseWideScreen is off. A mod forcing the rect to the full buffer is a no-op, which
+  is exactly what it measured as.
+- *It is the aspect.* It is not. 3840x2160 and 4320x2430 are both exactly 16:9 and both clip
+  identically; 2560x1440 is 16:9 and is fine. The variable that matters is HEIGHT, not shape.
+
+**The working configuration is therefore a buffer no taller than ~1440.** At 2560x1440 the HUD is
+correct with margins on all sides (content 1214x666 of a 1280x720 layer, nothing touching an edge).
+
+The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
 as announcing them.

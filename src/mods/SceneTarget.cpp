@@ -173,6 +173,8 @@ int __cdecl init_render_detour(const void* mode) {
         *mw = w;
         *mh = h;
 
+
+
         // ---- THE CONSOLE VARIABLES, WHICH THE HUD LAYS OUT FROM --------------------------------
         //
         // g_RMode alone is NOT enough. The interface sizes itself from these, so leaving them at
