@@ -650,6 +650,29 @@ void SceneTarget::set_recommended(uint32_t per_eye_w, uint32_t per_eye_h) {
 float SceneTarget::scale() const { return load_scale(); }
 uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_relaxed); }
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
+// The gate above defers the override until a session exists. That is only safe if the engine asks
+// for presentation parameters AGAIN on world load -- if it does not, the first world would render
+// at the menu's size, which breaks the one constraint that matters. Rather than assume either way,
+// say so the moment it happens: a session with a buffer that is not ours is exactly the failure.
+void SceneTarget::check_session_buffer(uint32_t back_w, uint32_t back_h) {
+    const auto* gs = sdk::Modules::get().game_server();
+    const bool in_session = gs != nullptr && gs->handle != nullptr;
+    if (!in_session) {
+        return;
+    }
+    const uint32_t w = g_last_forced_w.load(std::memory_order_relaxed);
+    if (w != 0 && back_w == w) {
+        return;  // the world got its native buffer
+    }
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+        LOGX("[scenetarget] SESSION ACTIVE BUT BUFFER IS %ux%u -- the engine never re-asked for "
+             "presentation params, so the deferred override never applied. The scene is NOT "
+             "native.",
+             back_w, back_h);
+    }
+}
+
 void SceneTarget::note_transition(const char* why) {
     const auto n = g_transition.fetch_add(1, std::memory_order_relaxed) + 1;
     strncpy_s(g_trace_why, why, _TRUNCATE);

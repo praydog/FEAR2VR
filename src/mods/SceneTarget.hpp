@@ -88,6 +88,10 @@ public:
     // Every device-shaping call marks a transition; the next frame with a device in hand reports
     // the LIVE back buffer and viewport. Bounded to a handful of lines per transition so a play
     // session stays readable.
+    // Reports loudly if a world is running on a buffer we never forced -- the one way the
+    // deferred override could silently cost native rendering.
+    void check_session_buffer(uint32_t back_w, uint32_t back_h);
+
     void note_transition(const char* why);
     void trace_if_pending(void* d3d9_device);
     // The size the main view is actually rendering at, when the override is active. Everything that
