@@ -2577,6 +2577,29 @@ on-screen position or scale while the buffer is supersampled, read what writes i
 stack to the function that DECIDES it. That is the loop this project already has, and every attempt
 so far has skipped it in favour of reasoning about plausible inputs.
 
+### A fourth attempt, and the measurement that looked like an answer was reading the wrong field
+
+Probed `HUD_ClampElementPos` and logged `mode=2, rect=(0,0)-(640,480)` at a 4320x2224 buffer, and
+took it for the ceiling: every element clamped into a 640x480 box. It was NOT evidence. The probe
+printed `self[616..619]`, which the function only reads when `mode == 1`; in mode 2 it reads a
+DIFFERENT rect off the local player (`player + 252 -> [49..52]`). So the value logged was a field
+the engine was not consulting, and the conclusion drawn from it was void.
+
+Acting on it also crashed the game: the fix-up called `PlayerMgr_GetLocalPlayer` (gameclient RVA
+0x73F40) as `__cdecl` on a guess. Its real convention was never confirmed in IDA.
+
+Two rules this cost, both already in the workflow and both skipped:
+
+- **Log the field the branch you are in actually reads.** A value printed from the wrong arm of a
+  conditional is indistinguishable from a finding.
+- **Never call an engine function whose prototype has not been read.** Every other call this project
+  makes into the engine had its convention taken from a decompile first; this one did not, and it
+  faulted.
+
+The mode-2 rect remains UNMEASURED. Reading it safely needs the existing SDK -- `PlayerMgr::local_player()`
+gives `Player.object` and its holder at `object + 252` -- rather than another raw call, and it should
+be READ and reported before anything writes it.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
