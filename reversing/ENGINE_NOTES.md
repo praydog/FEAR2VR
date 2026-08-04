@@ -3276,6 +3276,35 @@ The second symptom (scene RT wrong on a SECOND world load, black down the right 
 still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
 instrumentation now emits on every transition.
 
+**ROOT CAUSE of the second-world 2560x1440 scene target: our OWN HudScreenDims override.**
+The creation probe named it -- `CreateRenderTarget 1024x576 flags=0xFC8 creator=gameclient.dll+0x8DC65`
+-- and `sub_1008DB40` shows the whole thing:
+
+    *(this + 2480) = 4040;                 // 4040 == 0xFC8, exactly the flags we log
+    HUD_ComputeLayoutRect(this + 616);     // v4 = the layout rect
+    ...
+    if (!*v3) {                            // cached: allocated once, then reused
+        renderer->CreateRenderTarget(v4[2] - v4[0],   // width  = right - left
+                                     v4[3] - v4[1],   // height = bottom - top
+                                     *(this + 2480),  // 0xFC8
+                                     v3);
+    }
+
+So this virtual target is sized from HUD_ComputeLayoutRect -- the same function from the HUD hunt.
+And `HudScreenDims` makes ILTClient's GetScreenDims report 2560x1440 whenever supersampling is
+active, which is precisely what that rect is computed from. Hence 16:9 every time, 3953x2224 (a 16:9
+fit of our 2224 buffer height) before the override is in play, and 2560x1440 once it is.
+
+The HUD fix and this bug are the same mechanism seen from two ends: reporting a smaller screen makes
+the interface lay out correctly AND makes the game allocate a scene target that size. The override
+has to be scoped to the interface path rather than applied to every GetScreenDims caller -- and
+`sub_1008DB40` is a concrete caller to exclude, since it consumes the rect as a render-target size
+rather than as a layout.
+
+NOTE: the target is CACHED (`if (!*v3)`), so it is allocated once and survives until something
+clears the handle. That is why the first world can be right and the second wrong: they are different
+allocations made under different reported dimensions.
+
 **The allocation site for the 2560x1440 target, found statically -- no more repros needed.**
 The bind caller FEAR2.exe+0x20BA33 is inside `CLTRenderer_BeginRenderTarget` (0x60B9E3), which only
 forwards a handle it was GIVEN; the instruction after its call to `SceneRenderer_BeginRenderTarget`

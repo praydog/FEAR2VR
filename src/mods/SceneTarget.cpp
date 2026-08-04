@@ -126,6 +126,80 @@ void note(uint32_t flags, uint32_t w, uint32_t h) {
 
 // __thiscall(this, handle, a3, a4, a5). Read-only: this is how we see what the engine actually
 // binds, which is the only reason the 0x800 behaviour was ever found.
+// ---- WHO CREATES THE RENDER TARGETS ------------------------------------------------------------
+//
+// CLTRenderer::CreateRenderTarget, FEAR2.exe 0x0060B6D1. The IDB annotation on its implementation
+// (Renderer_CreateRenderTarget_Impl, 0x611129) records that this is the ONLY entry point through
+// which render targets are created in this engine.
+//
+// CONVENTION READ FROM THE DISASSEMBLY, not from the decompiler: the epilogue is `retn 10h`, so
+// four callee-cleaned stack arguments and no `this` -- __stdcall(width, height, flags, &out). ECX
+// is loaded with a value that is forwarded to the implementation, not an object pointer.
+//
+// This exists to answer one question: who creates the 2560x1440 target on the second world load?
+// The bind site could never say -- it only ever sees a handle it was handed, which is why every
+// size reported the identical caller.
+constexpr uintptr_t kCreateRenderTargetRva = 0x20B6D1;
+constexpr const char* kCreateRTHookName = "CLTRenderer_CreateRenderTarget";
+std::atomic<bool> g_crt_hooked{false};
+
+char __stdcall create_render_target_detour(int width, int height, int flags, void** out) {
+    auto* hook = Hooks::get().find(kCreateRTHookName);
+    if (hook == nullptr) {
+        return 0;
+    }
+    // Report only targets big enough to be the scene, and only once per distinct size, so the
+    // engine's many small auxiliary targets cannot crowd out the one that matters.
+    if (width >= 1024 && height >= 512) {
+        static std::atomic<uint32_t> seen[8]{};
+        const uint32_t key = (static_cast<uint32_t>(width) << 16) |
+                             (static_cast<uint32_t>(height) & 0xFFFFu);
+        bool fresh = true;
+        for (auto& slot : seen) {
+            const uint32_t had = slot.load(std::memory_order_relaxed);
+            if (had == key) { fresh = false; break; }
+            if (had == 0) {
+                uint32_t expect = 0;
+                if (slot.compare_exchange_strong(expect, key, std::memory_order_acq_rel)) break;
+                if (slot.load(std::memory_order_relaxed) == key) { fresh = false; break; }
+            }
+        }
+        if (fresh) {
+            const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+            const auto* gc = sdk::Modules::get().game_client();
+            const auto* exe = sdk::Modules::get().exe();
+            const char* where = "?";
+            uintptr_t rel = ret;
+            if (gc != nullptr && gc->base != 0 && ret >= gc->base && ret < gc->base + gc->size) {
+                where = "gameclient.dll"; rel = ret - gc->base;
+            } else if (exe != nullptr && exe->base != 0 && ret >= exe->base &&
+                       ret < exe->base + exe->size) {
+                where = "FEAR2.exe"; rel = ret - exe->base;
+            }
+            LOGX("[trace] CreateRenderTarget %dx%d flags=0x%X creator=%s+0x%IX", width, height,
+                 flags, where, rel);
+        }
+    }
+    return hook->original<char(__stdcall*)(int, int, int, void**)>()(width, height, flags, out);
+}
+
+void install_create_rt_probe() {
+    if (g_crt_hooked.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto* exe = sdk::Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return;
+    }
+    if (Hooks::get().install(kCreateRTHookName,
+                             reinterpret_cast<void*>(exe->base + kCreateRenderTargetRva),
+                             reinterpret_cast<void*>(&create_render_target_detour))) {
+        g_crt_hooked.store(true, std::memory_order_release);
+        LOGX("[trace] CreateRenderTarget probe installed at 0x%08IX",
+             exe->base + kCreateRenderTargetRva);
+    }
+}
+
 char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* handle, int a3, void* a4,
                                            int a5) {
     if (handle != nullptr) {
@@ -434,6 +508,9 @@ std::optional<std::string> SceneTarget::on_initialize() {
                               reinterpret_cast<void*>(&set_presentation_params_detour))) {
         return "could not hook Renderer_SetPresentationParams";
     }
+    // Read-only probe: names whoever creates each distinct scene-sized render target.
+    install_create_rt_probe();
+
     if (!Hooks::get().install(kInitRenderHookName, reinterpret_cast<void*>(exe->base + kInitRender),
                               reinterpret_cast<void*>(&init_render_detour))) {
         return "could not hook r_InitRender";
