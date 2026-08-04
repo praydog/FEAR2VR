@@ -2635,6 +2635,18 @@ calls -- the `/render/ui` caller list already separates them by return address
 (Screen2D_IssuePass_Shared vs _Streaming vs _ScreenEffects) -- so the next step is to split that
 caller list by element and trap the arc pass's own geometry, not the interface's inputs.
 
+**And the arc geometry names its own bug.** Across 2560x1440 -> 4320x2224:
+
+    arc height   1332 -> 1328 px   CONSTANT, across a 1.544x change in screen height
+    arc width    2428 -> 3760 px   x1.548 -- which is the screen HEIGHT ratio (1.544),
+                                   not the screen WIDTH ratio (1.6875)
+
+A quad whose width tracks the screen's HEIGHT and whose height tracks nothing is a screen-space quad
+built on the wrong axis. At 16:9 that is invisible, because width and height scale together and the
+error cancels; a 1.94-aspect buffer separates them and exposes it. This is why every 16:9 test looked
+fine at 2560x1440 and every wide one failed, and why no input override could ever have fixed it --
+the inputs were right and the geometry consuming them is not.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
