@@ -144,15 +144,7 @@ constexpr uintptr_t kCreateRenderTargetRva = 0x20B6D1;
 // Dedupe is PER GENERATION and cleared on every transition. Keyed on (size, creator) alone and kept
 // globally, a second identical creation by the same function -- exactly the "was the world target
 // recreated on the second load?" question -- produces the same tuple and stays hidden forever.
-std::atomic<uint64_t> g_crt_seen[16]{};
-std::atomic<uint32_t> g_crt_gen{0};
-
-void reset_create_rt_reports() {
-    for (auto& slot : g_crt_seen) {
-        slot.store(0, std::memory_order_relaxed);
-    }
-    g_crt_gen.fetch_add(1, std::memory_order_relaxed);
-}
+std::atomic<uint64_t> g_crt_seq{0};
 constexpr const char* kCreateRTHookName = "CLTRenderer_CreateRenderTarget";
 std::atomic<bool> g_crt_hooked{false};
 
@@ -163,28 +155,15 @@ char __stdcall create_render_target_detour(int width, int height, int flags, voi
     }
     // Report only targets big enough to be the scene, and only once per distinct size, so the
     // engine's many small auxiliary targets cannot crowd out the one that matters.
-    if (width >= 1024 && height >= 512) {
-        // KEYED ON CREATOR TOO, not just size. Two different functions allocate these
-        // (gameclient.dll+0xE463D makes the correct full-size world target, +0x8DC65 the
-        // HUD-layout-rect one), and a size-only key hides a RE-creation by the other creator --
-        // which is exactly the question: on the second world load, does the world target get
-        // recreated at all, or does the stale menu-sized one simply stay bound?
-        auto& seen = g_crt_seen;
-        const auto ret_key = reinterpret_cast<uintptr_t>(_ReturnAddress());
-        const uint64_t key = (static_cast<uint64_t>(width) << 48) |
-                             (static_cast<uint64_t>(height & 0xFFFF) << 32) |
-                             static_cast<uint64_t>(ret_key & 0xFFFFFFFFu);
-        bool fresh = true;
-        for (auto& slot : seen) {
-            const uint64_t had = slot.load(std::memory_order_relaxed);
-            if (had == key) { fresh = false; break; }
-            if (had == 0) {
-                uint64_t expect = 0;
-                if (slot.compare_exchange_strong(expect, key, std::memory_order_acq_rel)) break;
-                if (slot.load(std::memory_order_relaxed) == key) { fresh = false; break; }
-            }
-        }
-        if (fresh) {
+    // EVERY virtual (0xFC8) creation, in order, bounded. No dedupe at all here on purpose: the
+    // question is create-vs-select on the second world load, and any dedupe -- by size, by creator,
+    // or per "generation" -- can hide a second identical creation. Generations were worse than
+    // useless for this: they only advance on a transition, and the bad 2560x1440 creation was
+    // measured to have NO SetPresentationParams or InitRender before it, so the counter would not
+    // have moved between the two world loads.
+    if (flags == 0xFC8 && width >= 256 && height >= 256) {
+        const auto seq = g_crt_seq.fetch_add(1, std::memory_order_relaxed);
+        if (seq < 64) {
             const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
             const auto* gc = sdk::Modules::get().game_client();
             const auto* exe = sdk::Modules::get().exe();
@@ -196,13 +175,11 @@ char __stdcall create_render_target_detour(int width, int height, int flags, voi
                        ret < exe->base + exe->size) {
                 where = "FEAR2.exe"; rel = ret - exe->base;
             }
-            // AFTER the original, so the handle exists. Logging `out` beforehand reported the
-            // address of the caller's output VARIABLE, which can never be matched against a bind.
+            // After the original, so *out is the created handle rather than the caller's variable.
             const char r = hook->original<char(__stdcall*)(int, int, int, void**)>()(width, height,
                                                                                      flags, out);
-            LOGX("[trace] gen%u CreateRenderTarget %dx%d flags=0x%X creator=%s+0x%IX -> handle=%p "
-                 "ok=%d",
-                 g_crt_gen.load(std::memory_order_relaxed), width, height, flags, where, rel,
+            LOGX("[trace] #%llu CreateRenderTarget %dx%d creator=%s+0x%IX -> handle=%p ok=%d",
+                 static_cast<unsigned long long>(seq), width, height, where, rel,
                  (out != nullptr) ? *out : nullptr, static_cast<int>(r));
             return r;
         }
@@ -588,7 +565,6 @@ float SceneTarget::scale() const { return load_scale(); }
 uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_relaxed); }
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
 void SceneTarget::note_transition(const char* why) {
-    reset_create_rt_reports();
     const auto n = g_transition.fetch_add(1, std::memory_order_relaxed) + 1;
     strncpy_s(g_trace_why, why, _TRUNCATE);
     g_trace_pending.store(true, std::memory_order_release);
