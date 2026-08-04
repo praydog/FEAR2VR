@@ -2413,6 +2413,21 @@ hardware: at these resolutions it is CPU-bound, and the fill was free all along.
 one scene is not a benchmark, and a fill-heavy view may still cost -- but the earlier claim that the
 numbers were meaningless is now itself retracted, for the right reason: the instrument was fixed.
 
+### Auto-arm raced its own handler table, and only on re-inject
+
+`armed 0 of 19`, every step reporting "no handler", with VR simply dead and nothing else wrong. The
+handlers arming invokes are assigned at the END of `Framework::initialize()`, but the frame hook goes
+live in the middle of it. Injecting at the menu hides this completely -- arming waits for a local
+player, and by the time a world loads the table is long since populated. Re-injecting into a game
+that is ALREADY in a world puts a player in front of the very first frame, inside that window.
+
+That is the iteration path, not an edge case: unload, rebuild, re-inject, without restarting the game.
+
+Two fixes, because either alone still fails. Arming now waits on a readiness flag published after the
+table is assigned; and it latches `g_armed` only when ALL nineteen steps take, so a partial arm is
+retried on the next frame instead of being remembered as done. A half-armed session is the failure
+that looks like a working one.
+
 ### The frame rate is capped whenever the window is not focused
 
 Two readings of 101 fps that agreed across completely different render configurations were the first

@@ -139,7 +139,14 @@ void service_object_walk_request() {
 // call it.
 std::atomic<bool> g_auto_arm{true};
 std::atomic<bool> g_armed{false};
-void arm_vr_now();
+// The handlers arming invokes are assigned at the END of Framework::initialize(), but the frame
+// hook goes live in the middle of it. Re-injecting into a game that is ALREADY in a world put a
+// local player in front of the very first frame and armed against a table of null handlers --
+// "armed 0 of 19", no error, VR silently dead. The first inject never hit it because the menu has
+// no player to find.
+std::atomic<bool> g_handlers_ready{false};
+// True only when EVERY step took, so a partial or total failure is retried rather than latched.
+bool arm_vr_now();
 
 int __fastcall frame_tick_detour(void* _this, void* edx) {
     Framework* fw = Framework::get();
@@ -159,10 +166,14 @@ int __fastcall frame_tick_detour(void* _this, void* edx) {
     // right. Deferred to a frame with a LOCAL PLAYER rather than done at injection, because half
     // the sequence addresses the player -- hiding the body, anchoring the gun, recentring -- and at
     // the main menu there is nobody to address. It costs one pointer read per frame until then.
-    if (g_auto_arm.load(std::memory_order_relaxed) && !g_armed.load(std::memory_order_relaxed)) {
+    if (g_auto_arm.load(std::memory_order_relaxed) && !g_armed.load(std::memory_order_relaxed) &&
+        g_handlers_ready.load(std::memory_order_acquire)) {
         if (sdk::PlayerMgr::local_player().has_value()) {
-            g_armed.store(true, std::memory_order_relaxed);
-            arm_vr_now();
+            // Latch only on a CLEAN arm. Anything less stays unarmed and is retried next frame,
+            // because a half-armed session is the failure that looks like a working one.
+            if (arm_vr_now()) {
+                g_armed.store(true, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -10663,7 +10674,7 @@ bool arm_dispatch(const char* target) {
     return false;
 }
 
-void arm_vr_now() {
+bool arm_vr_now() {
     size_t ok = 0;
     for (const char* target : kArmSequence) {
         if (arm_dispatch(target)) {
@@ -10673,6 +10684,7 @@ void arm_vr_now() {
         }
     }
     LOGX("[arm] armed %zu of %zu steps", ok, std::size(kArmSequence));
+    return ok == std::size(kArmSequence);
 }
 
 } // namespace
@@ -12296,6 +12308,7 @@ bool Framework::initialize() {
     // sequence, free to drift from the one people actually exercise. Invoking the handlers by the
     // same target strings means there is one implementation and one place a step can be wrong.
     g_handlers = handlers;
+    g_handlers_ready.store(true, std::memory_order_release);
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);
         return false;
