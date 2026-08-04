@@ -2366,6 +2366,52 @@ the driver hands back write-combined pages, and that has not been measured here.
 free of CPU time but not of PCIe: 66 MB out and 66 MB back per frame at 90 Hz is ~12 GB/s sustained,
 which contends with the compositor's own traffic.
 
+### Supersampling, landed: the main view is a VIRTUAL target and that was the whole obstacle
+
+The scene is not drawn into a render target of the engine's choosing. It is drawn into the BACK
+BUFFER, through a viewport sub-rect, by a target whose flags carry bit `0x800`
+(`Renderer_SetRenderTargetSurface` 0x6131C6). Measured live, the main view is `2560x1440 flags
+0xFC8`. That path REFUSES to bind anything larger than the back buffer -- `x + width <=
+BackBufferWidth` at 0x61329A -- which is why every attempt to ask for a bigger picture achieved
+nothing, and why resizing the back buffer looked like the only lever. It was not.
+
+`RTHandle_Create` (0x613549) masks the incoming flags with `~0x7` whenever `0x800` is present, so
+requesting the same target WITHOUT that bit resolves to exactly `0x7C8`: a real offscreen colour
+texture with its own depth-stencil, sized verbatim, with no clamp anywhere in the path. Width and
+height are the caller's, untouched by shift or mask, and the scene renderer reads its own extent
+back out of the handle (`SceneRenderer_BeginRenderTarget` stores `RT_GetWidth/Height` into
+`this[93]/[94]`), so the viewport and frustum follow the target automatically. Nothing had to be
+taught about the new size.
+
+Three things had to be fixed to make it a picture rather than a black screen:
+
+1. **The mirror has to be produced deliberately.** With `0x800` gone the back buffer never receives
+   the scene -- it was the destination, not a copy of it. `RTHandle_Unbind` restores the back buffer
+   as the target on the non-virtual path and the HUD is drawn after that, which makes the moment
+   just after it the one correct seam: `StretchRect` the target down, before the HUD, never after.
+
+2. **`RTHandle_GetRenderSurface` does not return a surface.** It takes an out-parameter on the STACK
+   and returns a bool. Calling it as though it returned the surface put the flags word `0x7C8` into
+   `ECX` as a `this` pointer and crashed reading `0x7D0`. The colour texture is reachable by field
+   read instead -- `[[handle+0x10]+0x14]` -- and `GetSurfaceLevel` gives a surface whose refcount is
+   ours to release. That crash was mine, not an engine invariant; the distinction cost a session.
+
+3. **Anything that recognised the main view by its SIZE stops working.** `CameraPassHook` compared
+   the bound target against `BackBufferWidth/Height`, which silently stopped matching the moment the
+   scene moved off the back buffer -- so stereo simply never fired and the frame went mono with no
+   error anywhere. Once the scene has its own target, the back buffer's size describes the WINDOW
+   and nothing else.
+
+Verified live at `4320x2224` -- larger than the 2560x1440 window -- with correct stereo parallax and
+a working desktop mirror.
+
+**What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
+the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a
+real quality win, and free anti-aliasing) rather than the full 2160x2224 per eye. Reading the scene
+target directly is the remaining step, and it is gated on transport: 4320x2224 is 38.4 MB a slot
+against a `kSharedFrameMaxBytes` of 14.7 MB, in a 32-bit address space that has already failed to
+map 58 MB contiguously. Per-eye slots halve the contiguous requirement and are the way in.
+
 ### Getting supersampling inside the budget
 
 The corrected numbers make the CPU bridge viable, but viable is the wrong target for a machine whose

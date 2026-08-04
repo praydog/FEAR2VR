@@ -10,6 +10,7 @@
 #include "sdk/SceneCamera.hpp"
 
 #include "Hooks.hpp"
+#include "SceneTarget.hpp"
 #include "FrameCapture.hpp"
 #include "RenderHook.hpp"
 #include "Log.hpp"
@@ -335,7 +336,13 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
     if (const auto ts = sdk::SceneCamera::current_target_size()) {
         g_target_size[0].store((*ts)[0], std::memory_order_relaxed);
         g_target_size[1].store((*ts)[1], std::memory_order_relaxed);
-        if (const auto pp = sdk::Render::present_params()) {
+        int32_t mw = 0;
+        int32_t mh = 0;
+        if (SceneTarget::main_view_size(mw, mh)) {
+            // Supersampling moved the scene off the back buffer, so the back buffer's size no
+            // longer describes it.
+            is_main_view = (*ts)[0] == mw && (*ts)[1] == mh;
+        } else if (const auto pp = sdk::Render::present_params()) {
             is_main_view = (*ts)[0] == static_cast<int32_t>(pp->BackBufferWidth) &&
                            (*ts)[1] == static_cast<int32_t>(pp->BackBufferHeight);
         }
@@ -589,6 +596,11 @@ char __stdcall draw_scene_detour(void* a1, void* a2) {
         if (const auto pp = sdk::Render::present_params()) {
             draw_is_main = (*ts)[0] == static_cast<int32_t>(pp->BackBufferWidth) &&
                            (*ts)[1] == static_cast<int32_t>(pp->BackBufferHeight);
+            int32_t dw = 0;
+            int32_t dh = 0;
+            if (SceneTarget::main_view_size(dw, dh)) {
+                draw_is_main = (*ts)[0] == dw && (*ts)[1] == dh;
+            }
         }
     }
     if (draw_is_main && !g_pristine_main.load(std::memory_order_relaxed)) {

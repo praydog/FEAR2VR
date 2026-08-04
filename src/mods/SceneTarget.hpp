@@ -77,6 +77,12 @@ public:
     uint32_t target_w() const;
     uint32_t target_h() const;
     uint64_t overrides() const;
+    // The size the main view is actually rendering at, when the override is active. Everything that
+    // recognised the main view by comparing against the BACK BUFFER has to ask this instead: once
+    // the scene draws into its own target, the back buffer's size stops describing the scene at all
+    // and the stereo path silently stops firing.
+    static bool main_view_size(int32_t& w, int32_t& h);
+
     uint64_t composites() const;
     uint64_t composite_failures() const;
 

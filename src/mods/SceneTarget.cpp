@@ -31,8 +31,13 @@ constexpr const char* kCreateHookName = "RTHandle_Create";
 constexpr uintptr_t kRTHandleUnbind = 0x2130D9;
 constexpr const char* kUnbindHookName = "RTHandle_Unbind";
 
-// RTHandle_GetRenderSurface(handle) -> IDirect3DSurface9*, __thiscall.
-constexpr uintptr_t kGetRenderSurface = 0x212EDA;
+// The handle's colour texture, by field read rather than by call. RTHandle_GetColourTexture0
+// (0x612E60) is exactly `[[this+0x10]+0x14]`, and reading it directly avoids the engine's
+// GetRenderSurface wrapper -- which takes an out-parameter on the STACK and returns a bool, not the
+// surface. Calling that one as though it returned the surface is what dereferenced the flags word
+// as an object and crashed the game.
+constexpr size_t kHandleColourTarget = 0x10;
+constexpr size_t kColourTargetTexture = 0x14;
 
 // g_pBackBufferColourSurface, cached by Renderer_CacheBackBufferSurfaces at device creation.
 constexpr uintptr_t kBackBufferSurface = 0x32EC4C;
@@ -67,6 +72,8 @@ std::atomic<uint64_t> g_overrides{0};
 std::atomic<uintptr_t> g_main_handle{0};  // the one handle we enlarged, so only it is composited
 std::atomic<uint64_t> g_composites{0};
 std::atomic<uint64_t> g_composite_failures{0};
+std::atomic<uint32_t> g_forced_w{0};   // the size the main view is ACTUALLY rendering at
+std::atomic<uint32_t> g_forced_h{0};
 
 float load_scale() {
     const uint32_t bits = g_scale_bits.load(std::memory_order_relaxed);
@@ -100,14 +107,25 @@ char __fastcall rt_handle_unbind_detour(void* self, void* /*edx*/, void* a2, cha
         auto* dev = sdk::Render::device();
         const auto* exe = sdk::Modules::get().exe();
         if (dev != nullptr && exe != nullptr && exe->base != 0) {
-            using GetSurfaceFn = IDirect3DSurface9*(__fastcall*)(void*, void*);
-            auto* const src = reinterpret_cast<GetSurfaceFn>(exe->base + kGetRenderSurface)(self,
-                                                                                            nullptr);
+            const auto h = reinterpret_cast<uintptr_t>(self);
+            const auto target = *reinterpret_cast<uintptr_t*>(h + kHandleColourTarget);
+            auto* const tex =
+                target != 0
+                    ? *reinterpret_cast<IDirect3DTexture9**>(target + kColourTargetTexture)
+                    : nullptr;
             auto* const back =
                 *reinterpret_cast<IDirect3DSurface9**>(exe->base + kBackBufferSurface);
-            if (src != nullptr && back != nullptr &&
-                SUCCEEDED(dev->StretchRect(src, nullptr, back, nullptr, D3DTEXF_LINEAR))) {
-                g_composites.fetch_add(1, std::memory_order_relaxed);
+
+            IDirect3DSurface9* src = nullptr;
+            if (tex != nullptr && back != nullptr && SUCCEEDED(tex->GetSurfaceLevel(0, &src))) {
+                // GetSurfaceLevel adds a reference. Releasing it is not optional at this call
+                // rate -- a missed Release here is a leaked surface every single frame.
+                if (SUCCEEDED(dev->StretchRect(src, nullptr, back, nullptr, D3DTEXF_LINEAR))) {
+                    g_composites.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    g_composite_failures.fetch_add(1, std::memory_order_relaxed);
+                }
+                src->Release();
             } else {
                 g_composite_failures.fetch_add(1, std::memory_order_relaxed);
             }
@@ -155,6 +173,8 @@ char __fastcall rt_handle_create_detour(void* self, void* /*edx*/, int width, in
             // `self` IS the handle being constructed. Remembering it is what lets the unbind hook
             // composite exactly this target and leave every other offscreen target alone.
             g_main_handle.store(reinterpret_cast<uintptr_t>(self), std::memory_order_release);
+            g_forced_w.store(static_cast<uint32_t>(w), std::memory_order_release);
+            g_forced_h.store(static_cast<uint32_t>(hgt), std::memory_order_release);
         }
     }
 
@@ -330,4 +350,15 @@ uint64_t SceneTarget::overrides() const { return g_overrides.load(std::memory_or
 uint64_t SceneTarget::composites() const { return g_composites.load(std::memory_order_relaxed); }
 uint64_t SceneTarget::composite_failures() const {
     return g_composite_failures.load(std::memory_order_relaxed);
+}
+
+bool SceneTarget::main_view_size(int32_t& w, int32_t& h) {
+    const uint32_t fw = g_forced_w.load(std::memory_order_acquire);
+    const uint32_t fh = g_forced_h.load(std::memory_order_acquire);
+    if (fw == 0 || fh == 0) {
+        return false;
+    }
+    w = static_cast<int32_t>(fw);
+    h = static_cast<int32_t>(fh);
+    return true;
 }
