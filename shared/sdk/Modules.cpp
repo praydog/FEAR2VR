@@ -78,11 +78,20 @@ bool Modules::initialize() {
     m_modules[3] = {"gamedatabase.dll", nullptr, 0, 0, true};
     m_modules[4] = {"ltmemory.dll", nullptr, 0, 0, true};
 
+    // THE MAIN IMAGE IS NEVER LOOKED UP BY NAME. It is whatever the process was created from, and
+    // that is not always "FEAR2.exe": the 4 GB launcher runs the game from an LAA copy called
+    // FEAR2_laa.exe, and a basename lookup then fails for every exe pattern in the SDK -- which
+    // surfaces as "FEAR2.exe module unresolved" for the whole engine rather than as a naming
+    // problem. utility::get_executable() is the process image by definition, whatever it is called.
+    m_modules[0].handle = utility::get_executable();
+
     bool all_required = true;
     for (auto& m : m_modules) {
-        // kananlib utility::get_module resolves by basename inside the already-
-        // loaded process (we are injected into FEAR2.exe); never loads anything.
-        m.handle = utility::get_module(m.name);
+        // DLL entries only: kananlib utility::get_module resolves by basename inside the
+        // already-loaded process and never loads anything. The exe is resolved above.
+        if (m.handle == nullptr) {
+            m.handle = utility::get_module(m.name);
+        }
         if (m.handle == nullptr) {
             if (m.required) {
                 all_required = false;
