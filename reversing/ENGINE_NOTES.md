@@ -2700,6 +2700,37 @@ The unexamined call is the element's real draw: `0x0046F715` ends in
 `(*(this[1] vtable + 116))(this[1])`, which is what submits the geometry. Nothing indirect remains
 between that and the vertices, so it is where the next session starts.
 
+**The submitted geometry, and the exact divergence.** The element's real draw resolves at RUNTIME
+through `elem+4` -> that object's vtable +116 -> **FEAR2.exe 0x0057BA90**. (The element's own vtable
++116 is a different function: `this[1]` is a different object, so reading 0x678640+116 statically
+gives the wrong answer -- that mistake was made and caught here.) Inside it, four floats are handed
+to a vtable +20 call as the destination rect, alongside `+108`.
+
+Measured at both resolutions, same scene:
+
+| buffer | +108 | submitted rect | viewport |
+|---|---|---|---|
+| 2560x1440 (16:9) | **2.00** | (0, 0, 25600, 14400) | 25600 x 14400, the pristine canvas |
+| 4320x2224 (1.94) | **3.09** | (-1185.61, 0, 26785.61, 14400) | 27971.22 x 14400, aspect 1.942 |
+
+Everything the engine computes is RIGHT:
+
+* the authoring canvas is 25600 x 14400 (16:9), confirmed by the control reading exactly that;
+* at a wider buffer the viewport widens to match the screen's aspect at a fixed 14400 height, and
+  the canvas is centred in it -- `left = (25600 - 27971.22) / 2 = -1185.61`, exact;
+* `+108` is `screenH / 720` (1440/720 = 2.00, 2224/720 = 3.089) and is correct at native.
+
+And yet the rendered content is a CONSTANT ~1330 screen pixels at both -- 1332 px at 1440, 1328 px at
+2224 -- which is what a scale of 2.00 produces. In the canvas's own units that reads as the height
+collapsing 13320 -> 8598 while the width holds at ~24300, so the "stretched horizontally" reading
+from earlier rounds was an artefact of measuring in screen pixels rather than in the space the
+geometry is submitted in. The width never stretched; the height stopped following the scale.
+
+**So the divergence is isolated: `+108` says 3.09 and the content draws as though it were 2.00.**
+Nothing upstream is wrong. The next step is `sub_5E2400` -- the call that consumes `+108` together
+with `this+152` -- and whether the geometry it builds is cached from an earlier value rather than
+rebuilt when the scale changes.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

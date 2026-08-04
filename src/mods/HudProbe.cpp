@@ -105,9 +105,33 @@ char __fastcall issue_pass_detour(uint32_t* self, void* /*edx*/) {
                     std::memcpy(&scale_global, &bits, sizeof(scale_global));
                 }
             }
-            LOGX("[hudprobe] slot%zu type=%u elem=0x%08X vtbl=0x%08X draw=0x%08X screen=%ux%u "
-                 "scale_global=%.4f",
-                 i, type, elem, vtbl, draw, sw, sh, scale_global);
+            // The draw wrapper ends in (*(this[1] vtable + 116))(this[1]). this[1] is a DIFFERENT
+            // object from the element, so its vtable is NOT the element's -- it has to be resolved
+            // at runtime, which is the whole reason this is logged rather than read out of IDA.
+            uint32_t inner = 0;
+            uint32_t inner_vtbl = 0;
+            uint32_t submit = 0;
+            if (elem != 0 && read_dword(elem + 4, &inner) && inner != 0 &&
+                read_dword(inner, &inner_vtbl) && inner_vtbl != 0) {
+                read_dword(inner_vtbl + 116, &submit);
+            }
+            // Inside the submit (FEAR2.exe 0x57BA90) four floats off `inner` are handed to a
+            // vtable +20 call as the destination rect: +136, +144, +140, +148, with +108 alongside.
+            // These ARE the submitted geometry -- the thing every earlier round inferred from a
+            // bounding box instead of reading.
+            float g[5]{};
+            if (inner != 0) {
+                const uint32_t off[5] = {108, 136, 140, 144, 148};
+                for (int j = 0; j < 5; ++j) {
+                    uint32_t bits = 0;
+                    if (read_dword(inner + off[j], &bits)) {
+                        std::memcpy(&g[j], &bits, sizeof(float));
+                    }
+                }
+            }
+            LOGX("[hudprobe] slot%zu submit=0x%08X screen=%ux%u  +108=%.2f rect(+136=%.2f "
+                 "+140=%.2f +144=%.2f +148=%.2f)",
+                 i, submit, sw, sh, g[0], g[1], g[2], g[3], g[4]);
         }
     }
     auto* hook = Hooks::get().find(kPassHookName);
