@@ -7,5 +7,9 @@ out/
 *.suo
 *.log
 CMakeLists.txt
+# ...except the host's, which is HAND-WRITTEN. The rule above exists because cmkr generates the
+# root CMakeLists.txt from cmake.toml; tools/xr64 is a separate 64-bit build that cmkr never sees,
+# and ignoring it meant a fresh clone could not build the OpenXR host at all.
+!tools/xr64/CMakeLists.txt
 # reload copies made by the injector sit next to the built DLL
 fear2vr.*.dll

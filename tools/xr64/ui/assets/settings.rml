@@ -1,0 +1,57 @@
+<rml>
+<head>
+	<title>FEAR2VR Settings</title>
+	<link type="text/rcss" href="settings.rcss"/>
+</head>
+<body id="settings-body">
+	<div id="panel">
+		<h1>VR SETTINGS</h1>
+		<span id="mod-status">mod: --</span>
+
+		<div class="row">
+			<div class="row-head">
+				<span class="row-title">Supersampling</span>
+				<span id="ss-value" class="row-value">1.00x</span>
+			</div>
+			<input id="ss-slider" type="range" min="0.5" max="2.0" step="0.05" value="1.0"/>
+			<span id="ss-status" class="hint"></span>
+		</div>
+
+		<div class="row toggle-row">
+			<input id="snap-toggle" type="checkbox" checked="checked"/>
+			<span class="row-title">Snap Turn</span>
+		</div>
+
+		<div class="row">
+			<div class="row-head">
+				<span class="row-title">Snap Angle</span>
+				<span id="snap-value" class="row-value">30 deg</span>
+			</div>
+			<input id="snap-slider" type="range" min="5" max="90" step="5" value="30"/>
+		</div>
+
+		<div class="row toggle-row">
+			<input id="comfort-toggle" type="checkbox"/>
+			<span class="row-title">Comfort (suppress camera bob)</span>
+		</div>
+
+		<div class="row">
+			<div class="row-head">
+				<span class="row-title">HUD Distance</span>
+				<span id="hud-value" class="row-value">1.80 m</span>
+			</div>
+			<input id="hud-slider" type="range" min="0.5" max="4.0" step="0.1" value="1.8"/>
+		</div>
+
+		<div class="row">
+			<div class="row-head">
+				<span class="row-title">IPD Offset</span>
+				<span id="ipd-value" class="row-value">3.20</span>
+			</div>
+			<input id="ipd-slider" type="range" min="0.0" max="6.0" step="0.1" value="3.2"/>
+		</div>
+
+		<div class="footer">press Menu to close</div>
+	</div>
+</body>
+</rml>

@@ -37,6 +37,12 @@
 
 #include "xr/SharedFrame.hpp"
 
+// All real logic for the in-headset settings panel lives under ui/ -- this is the include, and
+// the only other touches in this file are one construction+init call, one per-frame call that
+// returns a layer to submit, and one shutdown call. See ui/SettingsUi.hpp for why it owns its
+// own OpenXR swapchain rather than reusing ui_swapchain below.
+#include "ui/SettingsUi.hpp"
+
 namespace {
 
 volatile bool g_stop = false;
@@ -863,6 +869,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- THE SETTINGS PANEL ----------------------------------------------------------------
+    //
+    // One-time init, right where every dependency it borrows (the D3D11 device, the session, the
+    // view-locked space, the resolved swapchain format, the menu/trigger actions and aim spaces,
+    // and --ui-distance) is already in scope and nothing later reassigns any of it. A failed init
+    // (font missing, D3D11 or swapchain create failed) disables the panel rather than the host --
+    // see SettingsUi::update()'s own null check.
+    xrui::SettingsUi settings_ui;
+    settings_ui.init(device, ctx, g_instance, session, view_space, screen_format, menu_click_action,
+                     trigger_action, aim_space, hand_path, &ui_distance_m);
+
     // Created rather than opened: the host is normally up first, and CreateEvent returns the
     // existing object if the game got there before us.
     HANDLE tick_event = CreateEventA(nullptr, FALSE, FALSE, xr::kFrameTickEventName);
@@ -1126,7 +1143,7 @@ int main(int argc, char** argv) {
 
         std::vector<XrCompositionLayerProjectionView> layer_views(view_count);
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        const XrCompositionLayerBaseHeader* layers[3]{};
+        const XrCompositionLayerBaseHeader* layers[4]{};  // projection/2-quad-fallback/test-pattern + UI + settings
         uint32_t layer_count = 0;
 
         // Pull the newest complete frame the game has published, if any.
@@ -1452,6 +1469,11 @@ int main(int argc, char** argv) {
 
             hands_bound_log = profile_bound;
         }
+
+        // One call, every frame regardless of whether the block above ran: the settings panel's
+        // own menu-button/aim-ray polling must not depend on the mod publishing hands, since a
+        // wearer must be able to open Settings before (or without) the mod running at all.
+        const XrCompositionLayerQuad* settings_quad = settings_ui.update(fs.predictedDisplayTime);
 
         XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},
                                           {XR_TYPE_COMPOSITION_LAYER_QUAD}};
@@ -1851,6 +1873,13 @@ int main(int argc, char** argv) {
             layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ui_quad);
         }
 
+        // The settings panel's own quad, independent of ui_enabled/ui_present_now above -- it is
+        // not the mod's HUD, so it must stay available even when that HUD is off. nullptr while
+        // hidden (menu button not pressed) or not yet initialised, so nothing is appended then.
+        if (settings_quad != nullptr) {
+            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(settings_quad);
+        }
+
         XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
         fei.displayTime = fs.predictedDisplayTime;
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -1924,6 +1953,10 @@ int main(int argc, char** argv) {
     std::printf("[host] stopping: %llu frames, %llu submitted, final state %s\n",
                 static_cast<unsigned long long>(frames),
                 static_cast<unsigned long long>(submitted), state_name(state));
+
+    // Before xrEndSession/xrDestroySession: shutdown() destroys this panel's own swapchain and its
+    // D3D11 resources, both of which need `session`/`device`/`ctx` still alive to release cleanly.
+    settings_ui.shutdown();
 
     if (running) {
         xrEndSession(session);

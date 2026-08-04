@@ -44,6 +44,7 @@
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
+#include "mods/SceneTarget.hpp"
 #include "mods/VR.hpp"
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
 #include "mods/Comfort.hpp"
@@ -9935,6 +9936,49 @@ std::string build_render_json(const std::string& request_target) {
         return out;
     }
 
+    if (route == "/render/supersample") {
+        auto& st = SceneTarget::get();
+        // PER EYE, because that is the number the runtime reports and the number a person tuning
+        // this thinks in. Doubling for the side-by-side layout is the mod's business, not the
+        // caller's. scale is a multiplier on it: 1.0 draws exactly what the headset asked for.
+        if (q.find("w") != q.end() && q.find("h") != q.end()) {
+            st.set_recommended(static_cast<uint32_t>(webapi_query_int(q, "w", 0)),
+                               static_cast<uint32_t>(webapi_query_int(q, "h", 0)));
+        }
+        if (q.find("scale") != q.end()) {
+            // Clamped: below a half there is no reason to prefer this over the engine's own path,
+            // and above two the target exceeds what any current headset asks for by enough that it
+            // is more likely a typo than an intent.
+            float s = static_cast<float>(webapi_query_double(q, "scale", 0.0));
+            if (s != 0.0f) {
+                s = s < 0.5f ? 0.5f : (s > 2.0f ? 2.0f : s);
+            }
+            st.set_scale(s);
+        }
+        const auto rep = st.report();
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", rep.hooked)
+              .f("scale", st.scale(), 3)
+              .u("rec_w", st.target_w())
+              .u("rec_h", st.target_h())
+              .u("overrides", static_cast<size_t>(st.overrides()))
+              .u("binds", static_cast<size_t>(rep.binds))
+              .u("distinct", rep.distinct);
+            for (size_t i = 0; i < rep.distinct && i < SceneTarget::kMaxSeen; ++i) {
+                const auto& s = rep.seen[i];
+                char key[32];
+                snprintf(key, sizeof(key), "seen%zu", i);
+                char val[64];
+                snprintf(val, sizeof(val), "%ux%u/0x%X x%llu", s.width, s.height, s.flags,
+                         static_cast<unsigned long long>(s.binds));
+                jf.s(key, val);
+            }
+        }
+        return out;
+    }
+
     if (route == "/render/ui") {
         auto& ui = UICapture::get();
         if (q.find("on") != q.end()) {
@@ -10709,6 +10753,7 @@ bool Framework::initialize() {
     Mods::get().add(&ConsoleRunner::get());
     // Owns the VR runtime and pushes its poses into the engine. Added before Watchpoints so its
     // on_frame runs in the same order every session.
+    Mods::get().add(&SceneTarget::get());
     Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());
     // Before mods initialize, so a fault during their setup is reported rather than silent.

@@ -1,6 +1,6 @@
 # FEAR2VR
 
-A VR mod for F.E.A.R. 2: Project Origin
+VR mod for F.E.A.R. 2: Project Origin
 
 ## Features
 
@@ -22,7 +22,9 @@ I directed the project, made the architectural decisions, defined the testing an
 
 There were cases where AI was going down a wrong/naive path and I had to bring it back and point it in the right direction. 
 
-An example being:
+Some examples being:
+
+#### Camera judder
 
 * I had an issue with there being camera judder in some areas, that I thought we had solved
 * I gave the AI several symptoms, game looked okay, headset rotation was only jittery in some scenarios
@@ -34,3 +36,9 @@ An example being:
     * How is that rotation then being consumed by the XR side?
 * It found that we were simply passing a sequence number corresponding to pose histories
 * I then made the decision to simply pass the pose directly instead of a desynchronized index which fixed the issue
+
+### Naive approach to camera movement
+
+* The AI constructed an enormous pipeline for directing camera movement via injecting mouse inputs with the right sensitivity to perform head tracking
+* I noticed this and pointed it towards modifying the render/aim camera directly
+* It quickly pivoted and correctly solved the issue
