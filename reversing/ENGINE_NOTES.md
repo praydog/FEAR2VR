@@ -2906,11 +2906,30 @@ to **1** = `SM_ShowAll` (0 NoScale, 1 ShowAll, 2 ExactFit, 3 NoBorder), and Show
 behaviour the affine shows: `min(vpW/stageW, vpH/stageH)`, measured 0.1 at 2560x1440 and 0.15444 at
 4320x2224.
 
-**SetViewport was NOT found.** Ruled out by decompile: slots 2, 11, 12, 22, 25, 27. Searching near
-Display was the wrong instinct -- with SetVariable at 11 the viewport methods should sit earlier, in
-the low slots, and the ones checked there so far are forwarders and small accessors. The remaining
-unchecked low slots are 3, 4, 6, 7, 8, 9, 10, 14, 15, 16, 17, and a GViewport setter should be
-visibly larger than the accessors around it.
+**SetViewport FOUND, by using slot 22 as a local anchor.** GFx groups the view methods together, so
+the setter sits beside the scale mode rather than near Display:
+
+| slot | +off | address | method |
+|---|---|---|---|
+| **20** | **80** | **0x0057E7B0** | **SetViewport(const GViewport*)** |
+| 21 | 84 | 0x00577230 | GetViewport -- `qmemcpy(out, this+56, 0x34)` |
+| 22 | 88 | 0x005797F0 | SetViewScaleMode -- `this[32] = mode` |
+
+SetViewport is unmistakable: `qmemcpy(this + 56, a2, 0x34)` copies a 52-byte GViewport in, then
+`sub_578F80(this)` recomputes, then it consults `this[128]` (the scale mode) and the saved
+`+72/+76/+96/+100` to decide whether the change warrants firing a resize event. So the GViewport
+lives at **this+56..+107**, immediately before the `+108` scale, and the affine at `+152` is
+DERIVED -- which is why the watchpoint on it saw zero writes in steady play.
+
+**`sub_578F80` is the affine writer.** Both SetViewport and SetViewScaleMode call it, and it is the
+recompute the whole hunt was trying to trap. It needs no watchpoint now; it has an address.
+
+**The fix is now mechanical.** Call slot 20 with a 1280x720 GViewport before the HUD's pass and
+restore the previous one after (GetViewport at slot 21 gives the saved copy), paired with a
+UICapture target of the same 1280x720. That is the movie's AUTHORED stage size, where ShowAll is the
+identity case, so the interface lays out exactly as it does at a supported resolution while the
+scene stays at 4320x2224. Call the methods; do not write the fields -- writing them directly is the
+mistake already reverted once, and it would skip `sub_578F80` and leave the affine stale.
 
 **Why that method is the goal.** The HUD is a separate OpenXR quad, so it does not need the scene's
 resolution. Giving the movie a 1280x720 viewport for its own pass -- its AUTHORED stage size, where
