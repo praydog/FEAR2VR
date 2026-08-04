@@ -2968,6 +2968,34 @@ rebuilt the render target every frame. Clamp before comparing, if this is picked
 lays out**, i.e. at movie construction (FEAR2.exe 0x00581EB0) or at world load, rather than at first
 draw. That is the one thing left between here and native with a correct HUD.
 
+**The viewport is not enough, at any timing.** Applied a 1280x720 GViewport (buffer, view AND
+scissor together -- view alone leaves the HUD 359x127 in a corner) paired with a matching 1280x720
+UICapture target, at three different moments:
+
+| when | width fraction | height fraction |
+|---|---|---|
+| control, 2560x1440 | 0.949 | 0.925 |
+| per-pass set + restore | 0.948 | 0.597 |
+| persistent, set at first pass | 0.948 | 0.597 |
+| at `Advance` (slot 28, 0x00580790) | **0.949** | 0.597 |
+
+The WIDTH is exactly right in every case -- the viewport pairing demonstrably works. The height never
+moves. Advance is where the ActionScript runs, so if a resize could re-flow the layout it would have
+happened there; it did not. The content's height is settled when the movie LOADS, earlier than any
+of these.
+
+Scoping note worth keeping: the Advance hook must match the ONE movie the HUD pass identified, not
+`vtbl == g_vtbl_GFxMovie`. That vtable is shared by every GFxMovieView in the process -- it matched
+2235 instances when used as a filter -- so a vtable-only test would resize menus, loading screens and
+subtitles too.
+
+Reverted. The clamp was gated above 2560x1440 to spare the known-good 1440 path, but a change that
+half-fixes native while adding two hooks is not worth carrying.
+
+**So the requirement is now exact: the viewport has to be right when the movie LOADS**, before its
+ActionScript first runs -- at construction (0x00581EB0) or wherever the HUD movie is created and
+handed its initial viewport -- not at Advance and not at Display.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
