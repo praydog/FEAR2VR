@@ -83,8 +83,6 @@ public:
     // and the stereo path silently stops firing.
     static bool main_view_size(int32_t& w, int32_t& h);
 
-    uint64_t composites() const;
-    uint64_t composite_failures() const;
 
 private:
     SceneTarget() = default;

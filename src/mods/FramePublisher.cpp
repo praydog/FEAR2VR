@@ -45,7 +45,7 @@ FramePublisher& FramePublisher::get() {
 }
 
 bool FramePublisher::open() {
-    if (m_base != nullptr) {
+    if (m_control_base != nullptr) {
         return true;
     }
 
@@ -62,15 +62,64 @@ bool FramePublisher::open() {
         return false;
     }
 
-    void* base = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, total);
+    // THE CONTROL BLOCK -- header, HostState, HandsState, UiFrameHeader -- is small and always
+    // needed, so it gets its own view at file offset 0 (trivially aligned) covering the first
+    // kPayloadOffset bytes.
+    void* control_base = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, xr::kPayloadOffset);
 
-    if (base == nullptr) {
-        m_error = "MapViewOfFile failed (" + std::to_string(::GetLastError()) + ")";
+    if (control_base == nullptr) {
+        m_error = "MapViewOfFile(control) failed (" + std::to_string(::GetLastError()) + ")";
         ::CloseHandle(mapping);
         return false;
     }
 
-    auto* header = static_cast<xr::SharedFrameHeader*>(base);
+    // Every frame and UI slot gets its OWN view too, at its own aligned offset -- see the class
+    // comment on m_control_base for why. Collected locally first and only published to the member
+    // arrays once every single one has succeeded: a publisher missing one slot would write through
+    // a null pointer the first time the writer's round-robin reached it, which is worse than simply
+    // staying closed and leaving the caller to retry open() on a later frame.
+    void* frame_base[xr::kFrameSlots]{};
+    void* ui_base[xr::kUiSlots]{};
+    bool all_mapped = true;
+
+    for (uint32_t i = 0; all_mapped && i < xr::kFrameSlots; ++i) {
+        frame_base[i] = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, xr::slot_offset(i),
+                                        xr::kSharedFrameMaxBytes);
+        if (frame_base[i] == nullptr) {
+            m_error = "MapViewOfFile(frame slot " + std::to_string(i) + ") failed (" +
+                      std::to_string(::GetLastError()) + ")";
+            all_mapped = false;
+        }
+    }
+
+    for (uint32_t i = 0; all_mapped && i < xr::kUiSlots; ++i) {
+        ui_base[i] = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, xr::ui_slot_offset(i),
+                                     xr::kUiMaxBytes);
+        if (ui_base[i] == nullptr) {
+            m_error = "MapViewOfFile(ui slot " + std::to_string(i) + ") failed (" +
+                      std::to_string(::GetLastError()) + ")";
+            all_mapped = false;
+        }
+    }
+
+    if (!all_mapped) {
+        LOGX("[publish] %s -- leaving the publisher inactive", m_error.c_str());
+        for (uint32_t i = 0; i < xr::kFrameSlots; ++i) {
+            if (frame_base[i] != nullptr) {
+                ::UnmapViewOfFile(frame_base[i]);
+            }
+        }
+        for (uint32_t i = 0; i < xr::kUiSlots; ++i) {
+            if (ui_base[i] != nullptr) {
+                ::UnmapViewOfFile(ui_base[i]);
+            }
+        }
+        ::UnmapViewOfFile(control_base);
+        ::CloseHandle(mapping);
+        return false;
+    }
+
+    auto* header = static_cast<xr::SharedFrameHeader*>(control_base);
 
     // Reusing an existing section is normal -- the mod is injected and unloaded repeatedly while
     // the host keeps running -- so the frame counter is preserved rather than reset, and only the
@@ -85,19 +134,41 @@ bool FramePublisher::open() {
     header->writer_pid = ::GetCurrentProcessId();
 
     m_mapping = mapping;
-    m_base = base;
-    LOGX("[publish] shared frame section open (%u bytes)", total);
+    m_control_base = control_base;
+    for (uint32_t i = 0; i < xr::kFrameSlots; ++i) {
+        m_frame_base[i] = frame_base[i];
+    }
+    for (uint32_t i = 0; i < xr::kUiSlots; ++i) {
+        m_ui_base[i] = ui_base[i];
+    }
+
+    LOGX("[publish] shared frame section open (%u bytes across %u views)", total,
+        1u + xr::kFrameSlots + xr::kUiSlots);
     return true;
 }
 
 void FramePublisher::close() {
-    if (m_base != nullptr) {
+    if (m_control_base != nullptr) {
         // Leave the sequence EVEN. A reader that arrives after the mod unloads should see the last
         // complete frame rather than a half-written one it will wait on forever.
-        auto* header = static_cast<xr::SharedFrameHeader*>(m_base);
+        auto* header = static_cast<xr::SharedFrameHeader*>(m_control_base);
         header->sequence = (header->sequence + 1u) & ~1u;
-        ::UnmapViewOfFile(m_base);
-        m_base = nullptr;
+        ::UnmapViewOfFile(m_control_base);
+        m_control_base = nullptr;
+    }
+
+    for (uint32_t i = 0; i < xr::kFrameSlots; ++i) {
+        if (m_frame_base[i] != nullptr) {
+            ::UnmapViewOfFile(m_frame_base[i]);
+            m_frame_base[i] = nullptr;
+        }
+    }
+
+    for (uint32_t i = 0; i < xr::kUiSlots; ++i) {
+        if (m_ui_base[i] != nullptr) {
+            ::UnmapViewOfFile(m_ui_base[i]);
+            m_ui_base[i] = nullptr;
+        }
     }
 
     if (m_mapping != nullptr) {
@@ -121,17 +192,18 @@ void FramePublisher::set_flat(bool on) {
     //
     // A lone aligned uint32 needs no sequence protocol: x86 will not tear it, and the host reads it
     // outside the pixel seqlock for the same reason.
-    if (m_base != nullptr) {
-        static_cast<xr::SharedFrameHeader*>(m_base)->flat = on ? 1u : 0u;
+    if (m_control_base != nullptr) {
+        static_cast<xr::SharedFrameHeader*>(m_control_base)->flat = on ? 1u : 0u;
     }
 }
 
 bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
                                 bool bgra, bool premultiplied, bool derive_alpha) {
-    if (m_base == nullptr) {
+    if (m_control_base == nullptr) {
         return false;
     }
-    auto* ui = reinterpret_cast<xr::UiFrameHeader*>(static_cast<uint8_t*>(m_base) + xr::kUiStateOffset);
+    auto* ui =
+        reinterpret_cast<xr::UiFrameHeader*>(static_cast<uint8_t*>(m_control_base) + xr::kUiStateOffset);
 
     // A NULL PAYLOAD RETIRES THE LAYER. The mod is armed and disarmed at runtime, and without this
     // the host would keep showing the last HUD it was given forever -- a frozen ammo counter is a
@@ -152,7 +224,7 @@ bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width
     }
 
     const uint32_t write_slot = (ui->slot + 1u) % xr::kUiSlots;
-    auto* payload = static_cast<uint8_t*>(m_base) + xr::ui_slot_offset(write_slot);
+    auto* payload = static_cast<uint8_t*>(m_ui_base[write_slot]);
 
     ui->sequence |= 1u;  // odd: the pixels are in flux
     ::MemoryBarrier();
@@ -180,7 +252,7 @@ bool FramePublisher::publish_ui(const void* bits, uint32_t pitch, uint32_t width
 bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, uint32_t height,
                              bool bgra, uint32_t layout, uint32_t host_sequence,
                              const float* rendered_orientation) {
-    if (m_base == nullptr || bits == nullptr || width == 0 || height == 0) {
+    if (m_control_base == nullptr || bits == nullptr || width == 0 || height == 0) {
         return false;
     }
 
@@ -191,12 +263,12 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
         return false;
     }
 
-    auto* header = static_cast<xr::SharedFrameHeader*>(m_base);
+    auto* header = static_cast<xr::SharedFrameHeader*>(m_control_base);
 
     // WRITE INTO A BUFFER THE READER IS NOT USING. The published slot is the one it may be reading,
     // so anything but that is safe; advancing by one cycles through all three.
     const uint32_t write_slot = (header->slot + 1u) % xr::kFrameSlots;
-    auto* payload = static_cast<uint8_t*>(m_base) + xr::slot_offset(write_slot);
+    auto* payload = static_cast<uint8_t*>(m_frame_base[write_slot]);
     const int64_t t0 = now_ticks();
 
     // ODD while the pixels are in flux. A reader that samples mid-copy sees an odd sequence and
@@ -270,20 +342,20 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
 }
 
 const xr::HostState* FramePublisher::host_state() const {
-    if (m_base == nullptr) {
+    if (m_control_base == nullptr) {
         return nullptr;
     }
 
-    return reinterpret_cast<const xr::HostState*>(static_cast<uint8_t*>(m_base) +
+    return reinterpret_cast<const xr::HostState*>(static_cast<uint8_t*>(m_control_base) +
                                                   xr::kHostStateOffset);
 }
 
 const xr::HandsState* FramePublisher::hands_state() const {
-    if (m_base == nullptr) {
+    if (m_control_base == nullptr) {
         return nullptr;
     }
 
-    return reinterpret_cast<const xr::HandsState*>(static_cast<uint8_t*>(m_base) +
+    return reinterpret_cast<const xr::HandsState*>(static_cast<uint8_t*>(m_control_base) +
                                                    xr::kHandsStateOffset);
 }
 
@@ -444,7 +516,8 @@ bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
 }
 
 uint32_t FramePublisher::frames() const {
-    return m_base == nullptr ? 0u : static_cast<xr::SharedFrameHeader*>(m_base)->frames_written;
+    return m_control_base == nullptr ? 0u
+                                      : static_cast<xr::SharedFrameHeader*>(m_control_base)->frames_written;
 }
 
 double FramePublisher::last_publish_ms() const {

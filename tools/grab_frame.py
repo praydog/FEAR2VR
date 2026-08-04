@@ -22,14 +22,43 @@ import sys
 
 FILE_MAP_READ = 0x0004
 
-# shared/xr/SharedFrame.hpp
+# shared/xr/SharedFrame.hpp -- restated, not shared, because this tool must keep working when the
+# mod does not. MapViewOfFile's offset argument has to land on a 64 KiB allocation-granularity
+# boundary (kViewGranularity in the C++ header), which is why PAYLOAD_OFFSET and the per-slot
+# strides below are rounded up rather than packed tight against the header sizes -- get this wrong
+# and the payload read comes from the wrong slot instead of refusing outright.
 MAGIC = 0x32524546  # 'FER2'
 HEADER_BYTES = 128
 HOST_STATE_BYTES = 64
 HANDS_STATE_BYTES = 256
-PAYLOAD_OFFSET = HEADER_BYTES + HOST_STATE_BYTES + HANDS_STATE_BYTES
-MAX_BYTES = 2560 * 1440 * 4
+UI_HEADER_BYTES = 64
+VIEW_GRANULARITY = 64 * 1024
+
+
+def _align_up(value, granularity):
+    return (value + granularity - 1) // granularity * granularity
+
+
+# Native per-eye back buffer capacity -- 4320x2224 rounded up to a height of 2240 for headroom,
+# same as kFrameCapacityWidth/Height. The UI layer is HALF that in each dimension: UICapture reads
+# the HUD off the same back buffer at half its size, same as kUiMaxBytes.
+FRAME_CAPACITY_WIDTH = 4320
+FRAME_CAPACITY_HEIGHT = 2240
+MAX_BYTES = FRAME_CAPACITY_WIDTH * FRAME_CAPACITY_HEIGHT * 4
+UI_MAX_BYTES = (FRAME_CAPACITY_WIDTH // 2) * (FRAME_CAPACITY_HEIGHT // 2) * 4
 SLOTS = 3
+UI_SLOTS = 2
+
+PAYLOAD_OFFSET = _align_up(HEADER_BYTES + HOST_STATE_BYTES + HANDS_STATE_BYTES + UI_HEADER_BYTES,
+                           VIEW_GRANULARITY)
+# The STRIDE between slots, not a slot's own byte count -- kSlotStride in the C++ header. Padded up
+# so every slot boundary is still a valid MapViewOfFile offset, which is what the mod and the host
+# actually need; this tool maps the whole section in one view and only cares about getting the same
+# addresses they'd compute.
+SLOT_STRIDE = _align_up(MAX_BYTES, VIEW_GRANULARITY)
+UI_PAYLOAD_OFFSET = _align_up(PAYLOAD_OFFSET + SLOTS * SLOT_STRIDE, VIEW_GRANULARITY)
+UI_SLOT_STRIDE = _align_up(UI_MAX_BYTES, VIEW_GRANULARITY)
+TOTAL_BYTES = UI_PAYLOAD_OFFSET + UI_SLOTS * UI_SLOT_STRIDE  # kSharedFrameTotalBytes: frame AND UI slots
 NAME = "Local\\fear2vr_frame"
 
 k32 = ctypes.windll.kernel32
@@ -43,7 +72,11 @@ def read_frame():
     if not h:
         raise SystemExit("mapping '%s' not open -- is the mod injected and publishing?" % NAME)
 
-    total = PAYLOAD_OFFSET + SLOTS * MAX_BYTES
+    # The WHOLE section, including the UI slots -- kSharedFrameTotalBytes, not just the header and
+    # frame slots. The mod and the 64-bit host split this into one view per slot because a 32-bit
+    # process can struggle to find ~130 MB contiguous; this tool has no such constraint (a 64-bit
+    # python.exe maps it in one call) and no reason to duplicate that machinery.
+    total = TOTAL_BYTES
     base = k32.MapViewOfFile(h, FILE_MAP_READ, 0, 0, total)
     if not base:
         raise SystemExit("MapViewOfFile failed: %d" % ctypes.get_last_error())
@@ -61,7 +94,7 @@ def read_frame():
     if width == 0 or height == 0 or nbytes == 0:
         raise SystemExit("header reports no frame yet (%dx%d)" % (width, height))
 
-    off = PAYLOAD_OFFSET + (slot % SLOTS) * MAX_BYTES
+    off = PAYLOAD_OFFSET + (slot % SLOTS) * SLOT_STRIDE
     payload = ctypes.string_at(base + off, min(nbytes, MAX_BYTES))
 
     return {

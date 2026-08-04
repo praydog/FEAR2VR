@@ -89,11 +89,48 @@ struct SharedReader {
     const xr::SharedFrameHeader* header = nullptr;
     xr::HostState* host = nullptr;
     xr::HandsState* hands = nullptr;
-    const uint8_t* base_bytes = nullptr;
-    uint32_t last_sequence = 0;
     const xr::UiFrameHeader* ui = nullptr;
+
+    // ---- ONE VIEW PER SLOT, mirroring the writer (see FramePublisher::open) ---------------------
+    //
+    // At native resolution the section is well over 100 MB, more than a 32-bit-friendly single
+    // view can rely on finding as one contiguous reservation -- see xr::kViewGranularity in
+    // SharedFrame.hpp for the failure this avoids. The control block (header through UiFrameHeader)
+    // is small enough to stay one view; every frame and UI slot gets its own.
+    void* control_base = nullptr;
+    void* frame_base[xr::kFrameSlots] = {};
+    void* ui_base[xr::kUiSlots] = {};
+
+    uint32_t last_sequence = 0;
     uint32_t last_ui_sequence = 0;
     bool logged_version_mismatch = false;
+
+    // Unmaps every view this reader currently holds and clears the pointers into them. Shared by
+    // the two failure paths below (a slot view that would not map, and a version mismatch) so
+    // neither can leave a partial mapping that the next poll() would read through a dangling or
+    // null pointer.
+    void unmap_all() {
+        for (uint32_t i = 0; i < xr::kFrameSlots; ++i) {
+            if (frame_base[i] != nullptr) {
+                UnmapViewOfFile(frame_base[i]);
+                frame_base[i] = nullptr;
+            }
+        }
+        for (uint32_t i = 0; i < xr::kUiSlots; ++i) {
+            if (ui_base[i] != nullptr) {
+                UnmapViewOfFile(ui_base[i]);
+                ui_base[i] = nullptr;
+            }
+        }
+        if (control_base != nullptr) {
+            UnmapViewOfFile(control_base);
+            control_base = nullptr;
+        }
+        header = nullptr;
+        host = nullptr;
+        hands = nullptr;
+        ui = nullptr;
+    }
 
     bool open() {
         if (header != nullptr) {
@@ -106,7 +143,7 @@ struct SharedReader {
             return false;
         }
 
-        void* base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, xr::kSharedFrameTotalBytes);
+        void* base = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, xr::kPayloadOffset);
 
         if (base == nullptr) {
             CloseHandle(mapping);
@@ -114,14 +151,45 @@ struct SharedReader {
             return false;
         }
 
-        header = static_cast<const xr::SharedFrameHeader*>(base);
-        host = reinterpret_cast<xr::HostState*>(static_cast<uint8_t*>(base) +
+        control_base = base;
+
+        // Collected into the member arrays as each succeeds rather than staged locally first: a
+        // failure partway through still needs unmap_all() to know exactly which of these are real
+        // views, and the member arrays already default-initialise to null for the ones it never
+        // reaches.
+        bool all_mapped = true;
+
+        for (uint32_t i = 0; all_mapped && i < xr::kFrameSlots; ++i) {
+            frame_base[i] = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, xr::slot_offset(i),
+                                          xr::kSharedFrameMaxBytes);
+            all_mapped = frame_base[i] != nullptr;
+        }
+
+        for (uint32_t i = 0; all_mapped && i < xr::kUiSlots; ++i) {
+            ui_base[i] = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, xr::ui_slot_offset(i),
+                                       xr::kUiMaxBytes);
+            all_mapped = ui_base[i] != nullptr;
+        }
+
+        if (!all_mapped) {
+            // Same posture as the version gate below: a reader missing one slot's view would read
+            // through a null pointer the moment the writer's round-robin reached it, so this
+            // refuses the mapping entirely rather than serving a partial one.
+            std::printf("[host] shared frame mapping incomplete -- a per-slot view failed to map "
+                        "(GetLastError %lu), refusing it\n", GetLastError());
+            unmap_all();
+            CloseHandle(mapping);
+            mapping = nullptr;
+            return false;
+        }
+
+        header = static_cast<const xr::SharedFrameHeader*>(control_base);
+        host = reinterpret_cast<xr::HostState*>(static_cast<uint8_t*>(control_base) +
                                                 xr::kHostStateOffset);
-        hands = reinterpret_cast<xr::HandsState*>(static_cast<uint8_t*>(base) +
+        hands = reinterpret_cast<xr::HandsState*>(static_cast<uint8_t*>(control_base) +
                                                   xr::kHandsStateOffset);
-        ui = reinterpret_cast<const xr::UiFrameHeader*>(static_cast<uint8_t*>(base) +
+        ui = reinterpret_cast<const xr::UiFrameHeader*>(static_cast<uint8_t*>(control_base) +
                                                          xr::kUiStateOffset);
-        base_bytes = static_cast<const uint8_t*>(base);
 
         // Fresh committed memory reads as zero already, but the mapping outlives a crashed host --
         // a prior run could have left `sequence` odd (torn) or the hand data mid-write. Zeroing
@@ -130,9 +198,10 @@ struct SharedReader {
         std::memset(hands, 0, sizeof(xr::HandsState));
 
         // VERSION GATE, checked once here rather than on every poll(): the layout MOVED in
-        // version 2 (the UI block was inserted before the frame slots), so a mapping stamped by
-        // an old writer -- or a new writer read by an old host -- would have every offset below
-        // this point computed wrong. That reads as garbage pixels, not a crash, which is why this
+        // version 2 (the UI block was inserted before the frame slots) and again in version 5
+        // (each slot became its own view at its own aligned offset), so a mapping stamped by an
+        // old writer -- or a new writer read by an old host -- would have every offset below this
+        // point computed wrong. That reads as garbage pixels, not a crash, which is why this
         // refuses the mapping outright instead of trusting it. Magic is a prerequisite: version is
         // meaningless (and may still be zero) before the writer has stamped the header at all.
         if (header->magic == xr::kSharedFrameMagic && header->version != xr::kSharedFrameVersion) {
@@ -143,14 +212,9 @@ struct SharedReader {
                 logged_version_mismatch = true;
             }
 
-            UnmapViewOfFile(base);
+            unmap_all();
             CloseHandle(mapping);
             mapping = nullptr;
-            header = nullptr;
-            host = nullptr;
-            hands = nullptr;
-            ui = nullptr;
-            base_bytes = nullptr;
             return false;
         }
 
@@ -191,10 +255,12 @@ struct SharedReader {
         h = header->height;
         pitch = header->pitch;
 
-        // FROM THE PUBLISHED SLOT, not a fixed offset. The writer is already filling a different
-        // one, which is what makes it safe to upload straight out of shared memory instead of
-        // copying it somewhere private first.
-        bits = base_bytes + xr::slot_offset(header->slot);
+        // FROM THE PUBLISHED SLOT'S OWN VIEW, not a fixed offset into one big one. The writer is
+        // already filling a different slot, which is what makes it safe to upload straight out of
+        // shared memory instead of copying it somewhere private first. `% kFrameSlots` matches the
+        // masking slot_offset() used to do, so a torn or stale slot value still can't index past
+        // the array of views.
+        bits = static_cast<const uint8_t*>(frame_base[header->slot % xr::kFrameSlots]);
 
         if (w == 0 || h == 0 || pitch == 0) {
             return false;
@@ -236,7 +302,7 @@ struct SharedReader {
         pitch = ui->pitch;
         derive_alpha = ui->derive_alpha;
         const uint32_t bytes = ui->bytes;
-        bits = base_bytes + xr::ui_slot_offset(ui->slot);
+        bits = static_cast<const uint8_t*>(ui_base[ui->slot % xr::kUiSlots]);
 
         if (w == 0 || h == 0 || bytes == 0 || bytes > xr::kUiMaxBytes) {
             return false;

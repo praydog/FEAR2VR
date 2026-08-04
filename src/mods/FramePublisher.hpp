@@ -29,7 +29,7 @@ public:
     // host opens the section, never the other way round, so publishing works with nobody listening.
     bool open();
     void close();
-    bool active() const { return m_base != nullptr; }
+    bool active() const { return m_control_base != nullptr; }
 
     // Copy one frame in and mark it complete. `pitch` is the source's own row stride, which is not
     // width * 4 -- a locked D3D surface is padded, and assuming otherwise shears the image.
@@ -164,7 +164,18 @@ private:
     uint64_t m_tick_waits{0};
     uint64_t m_tick_timeouts{0};
     uint32_t m_consecutive_timeouts{0};
-    void* m_base{nullptr};
+
+    // ---- ONE SECTION, MANY VIEWS -----------------------------------------------------------------
+    //
+    // At native resolution the section is well over 100 MB, and a 32-bit process cannot always find
+    // that much contiguous address space for a SINGLE view over it (a 58 MB one already has, with
+    // MapViewOfFile ERROR_NOT_ENOUGH_MEMORY -- see xr::kViewGranularity in SharedFrame.hpp). So the
+    // section is one CreateFileMapping, mapped as one small control-block view plus one view per
+    // frame slot and per UI slot, each sized to just that block. open() either has all of them or
+    // none -- see its comment for why a partial mapping is worse than staying closed.
+    void* m_control_base{nullptr};  // header + HostState + HandsState + UiFrameHeader
+    void* m_frame_base[xr::kFrameSlots]{};
+    void* m_ui_base[xr::kUiSlots]{};
     std::string m_error;
 
     // Whether the next published frames should be presented FLAT. Read on the render thread inside

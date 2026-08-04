@@ -23,24 +23,31 @@ namespace xr {
 constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // 3 adds the `flat` flag. The host VALIDATES this: a mismatched pair would otherwise read the
 // pixels at the wrong offset and show garbage rather than refusing.
-constexpr uint32_t kSharedFrameVersion = 4u;  // 4 adds the rendered pose
+// 5 moves the frame and UI slots to native per-eye resolution and maps each slot as its OWN VIEW
+// (see kViewGranularity below) instead of one view over the whole section -- both the strides and
+// every offset past the control block move, so a host and mod built against different versions of
+// this file must refuse each other rather than read pixels at the wrong address.
+constexpr uint32_t kSharedFrameVersion = 5u;  // 4 added the rendered pose
 
-// Sized for the game's own back buffer at 2560x1440 BGRA. Deliberately NOT sized for a supersampled
-// future: the section is committed memory in both processes, and the resolution question is settled
-// by measurement later rather than by reserving for it now.
-constexpr uint32_t kSharedFrameMaxBytes = 2560u * 1440u * 4u;
+// Sized for the game's native per-eye back buffer: 4320x2224 (2160x2224 per eye, side by side),
+// rounded up to a height of 2240 for headroom. Width and height are named rather than folded
+// straight into the byte count because kUiMaxBytes below is stated as a fraction of THESE, not as
+// an independently chosen pair that could quietly fall out of sync with them again.
+constexpr uint32_t kFrameCapacityWidth = 4320u;
+constexpr uint32_t kFrameCapacityHeight = 2240u;
+constexpr uint32_t kSharedFrameMaxBytes = kFrameCapacityWidth * kFrameCapacityHeight * 4u;
 
 // ---- WHY THERE IS MORE THAN ONE PIXEL BUFFER ----------------------------------------------------
 //
-// A sequence number protects the HEADER. It does not protect fourteen megabytes of pixels that the
-// reader is still uploading: the host's copy out of the section takes ~2.5 ms and the game
-// republishes every ~15 ms, so with a single buffer roughly one frame in six is caught mid-write
-// and uploaded TORN -- part of the previous frame, part of the next. Reported from the headset as
-// "70% of frames are correct" with the rest looking stale or mismatched, which is exactly what a
-// torn frame looks like when the two halves came from different head poses.
+// A sequence number protects the HEADER. It does not protect ~37 MB of pixels that the reader is
+// still uploading: the host's copy out of the section takes ~2.5 ms and the game republishes every
+// ~15 ms, so with a single buffer roughly one frame in six is caught mid-write and uploaded TORN --
+// part of the previous frame, part of the next. Reported from the headset as "70% of frames are
+// correct" with the rest looking stale or mismatched, which is exactly what a torn frame looks like
+// when the two halves came from different head poses.
 //
 // Three buffers, not two: two is sufficient only while the reader always finishes inside one frame
-// period, and the reader is a separate process that can be descheduled. The third costs 14 MB and
+// period, and the reader is a separate process that can be descheduled. The third costs ~37 MB and
 // removes the assumption.
 constexpr uint32_t kFrameSlots = 3u;
 
@@ -235,10 +242,13 @@ static_assert(sizeof(HandsState) == 256, "HandsState must be byte-identical in b
 // width, asserted size, odd/even sequence, and its own slots so a reader is never inside a buffer
 // the writer is filling.
 //
-// SMALLER THAN THE WORLD, on purpose. The UI is flat, sparse and read at a fixed apparent size on a
-// quad, so it does not need the back buffer's resolution -- and the cost here is a per-frame GPU
-// downscale plus a readback that is paid on the game's render thread.
-constexpr uint32_t kUiMaxBytes = 1920u * 1080u * 4u;
+// SMALLER THAN THE WORLD, on purpose -- and no longer a chosen pair of its own. UICapture reads the
+// HUD off the same back buffer at HALF its dimensions (measured live: a 2560x1440 back buffer
+// produced a 1280x720 layer), so this is derived from kFrameCapacityWidth/Height rather than stated
+// independently -- an independent pair is exactly what went silently stale when the frame capacity
+// above changed and this did not. The cost here is a per-frame GPU downscale plus a readback that is
+// paid on the game's render thread.
+constexpr uint32_t kUiMaxBytes = (kFrameCapacityWidth / 2u) * (kFrameCapacityHeight / 2u) * 4u;
 
 // Two is enough where the frame needs three: the UI is a quarter of the bytes, so the host is never
 // inside one for anything like a frame period.
@@ -284,6 +294,24 @@ struct alignas(64) UiFrameHeader {
 
 static_assert(sizeof(UiFrameHeader) == 64, "UiFrameHeader must be byte-identical in both bitnesses");
 
+// ---- EACH SLOT IS ITS OWN VIEW, NOT A SLICE OF ONE ------------------------------------------------
+//
+// At native per-eye resolution the whole section is over 120 MB, and a 32-bit process cannot always
+// find that much CONTIGUOUS address space to map it as a single view -- a single 58 MB view has
+// already failed here with MapViewOfFile ERROR_NOT_ENOUGH_MEMORY, logged as "[capture] cannot
+// publish: MapViewOfFile failed (8)". Mapping each slot as its own view bounds the largest single
+// reservation to one slot instead of the whole mapping, which is the actual constraint: the section
+// itself (one CreateFileMapping call) is unaffected, only how much of it any one view has to cover.
+//
+// MapViewOfFile's offset argument must be a multiple of the system's allocation granularity (64 KiB
+// on every Windows target this runs on, not the 4 KiB page size) -- so every per-slot offset below
+// is rounded up to it, not just the section's total size.
+constexpr uint32_t kViewGranularity = 64u * 1024u;
+
+constexpr uint32_t align_up(uint32_t value, uint32_t granularity) {
+    return (value + granularity - 1u) / granularity * granularity;
+}
+
 // Layout of the mapping:
 //   [SharedFrameHeader][HostState][HandsState][UiFrameHeader][frame slots x3][ui slots x2]
 //
@@ -292,7 +320,11 @@ static_assert(sizeof(UiFrameHeader) == 64, "UiFrameHeader must be byte-identical
 constexpr uint32_t kUiStateOffset =
     static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState) + sizeof(HandsState));
 
-constexpr uint32_t kPayloadOffset = kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader));
+// Rounded up to the granularity: this is now also a MapViewOfFile offset, since the first frame
+// slot's view starts here. The control block above it (header through UiFrameHeader) is small
+// enough to stay a single view mapped at offset 0, which needs no rounding.
+constexpr uint32_t kPayloadOffset =
+    align_up(kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader)), kViewGranularity);
 
 // Where each block sits, named rather than recomputed at every call site -- the head block's offset
 // was open-coded as sizeof(header) in three places before the hands existed.
@@ -300,22 +332,30 @@ constexpr uint32_t kHostStateOffset = static_cast<uint32_t>(sizeof(SharedFrameHe
 constexpr uint32_t kHandsStateOffset =
     static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState));
 
-// Where a given buffer starts. Slots are padded to the maximum so the offset never depends on the
+// The STRIDE between slots -- not kSharedFrameMaxBytes itself, which is the pixel capacity a frame
+// is checked against. Padding it up to the granularity keeps every slot's own view offset
+// (kPayloadOffset + N * kSlotStride) valid to hand to MapViewOfFile.
+constexpr uint32_t kSlotStride = align_up(kSharedFrameMaxBytes, kViewGranularity);
+
+// Where a given buffer starts. Slots are padded to the stride so the offset never depends on the
 // resolution in flight -- a reader must be able to find a slot without knowing what is in it.
 constexpr uint32_t slot_offset(uint32_t slot) {
-    return kPayloadOffset + (slot % kFrameSlots) * kSharedFrameMaxBytes;
+    return kPayloadOffset + (slot % kFrameSlots) * kSlotStride;
 }
 
-constexpr uint32_t kUiPayloadOffset = kPayloadOffset + kFrameSlots * kSharedFrameMaxBytes;
+constexpr uint32_t kUiPayloadOffset =
+    align_up(kPayloadOffset + kFrameSlots * kSlotStride, kViewGranularity);
+
+constexpr uint32_t kUiSlotStride = align_up(kUiMaxBytes, kViewGranularity);
 
 constexpr uint32_t ui_slot_offset(uint32_t slot) {
-    return kUiPayloadOffset + (slot % kUiSlots) * kUiMaxBytes;
+    return kUiPayloadOffset + (slot % kUiSlots) * kUiSlotStride;
 }
 
 // THE WHOLE MAPPING. Named because both sides must agree on it: the writer creates the section this
-// big and the reader maps exactly this much, and a disagreement is an access violation in whichever
-// process guessed low.
-constexpr uint32_t kSharedFrameTotalBytes = kUiPayloadOffset + kUiSlots * kUiMaxBytes;
+// big and every view on either side must fit inside it, and a disagreement is an access violation
+// in whichever process guessed low.
+constexpr uint32_t kSharedFrameTotalBytes = kUiPayloadOffset + kUiSlots * kUiSlotStride;
 
 constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 

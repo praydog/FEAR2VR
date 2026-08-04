@@ -2467,6 +2467,46 @@ started with no host at all. So xr64.exe writes the runtime's recommended per-ey
 before the game, so the file is always there first. `fear2vr.ini` beside the DLL overrides both the
 size and the multiplier for anyone who wants to.
 
+### Native per-eye, by enlarging the BACK BUFFER and leaving the engine alone
+
+The offscreen-target attempt was the wrong lever, and the right one had been dismissed early on a
+misreading. **A bigger back buffer is not a bigger window.** Windowed presentation here uses
+D3DSWAPEFFECT_COPY, which permits a back buffer larger than the client area and stretches on
+Present. So the desktop keeps showing 2560x1440 while the whole engine -- scene, post chain, HUD,
+the virtual `0x800` targets and their resolves -- runs at 4320x2224 with every invariant intact.
+Nothing inside the renderer has to be understood, redirected, or fought.
+
+Two writes make it work, and BOTH are needed:
+
+1. **`Renderer_SetPresentationParams`** (0x60DBD4), at device creation. Not through `SetRenderMode`:
+   the first attempt drove a mode change after startup with the override still armed while the
+   engine tried to restore its previous mode, so the restore was sabotaged too and the renderer came
+   down with `LT_UNABLETORESTOREVIDEO`. Injection happens BEFORE the renderer builds its device --
+   verified, `present params 2560x1440 windowed=1` is logged after injection -- so the first device
+   can simply be the right size and no mode change is needed at all.
+
+2. **The engine's own belief about the screen**, or the buffer is bigger and nothing uses it. With
+   only the back buffer enlarged, the engine laid out a 2560x1440 view in the corner of a 4320x2224
+   surface and the rest stayed black; the main view's render target is sized from the screen dims,
+   never from D3DPRESENT_PARAMETERS. `r_InitRender` (0x469595) is where those are published: it
+   hands the requested mode to the renderer, gets back a record of the mode ACTUALLY used, and from
+   that record's +132/+136 writes the `ScreenWidth`/`ScreenHeight` console variables and copies the
+   whole thing into `g_RMode`. Correcting it on the way OUT of that function is the one point where
+   every consumer is still downstream. Reading `g_RMode` during device creation had shown a stale
+   `1024x768` -- it had not been written yet, which is exactly why the guard that refused to write
+   it was worth having.
+
+Measured after: the main view binds `4320x2224 flags 0xFC8` -- still VIRTUAL, still drawing into the
+back buffer, the `x + width <= BackBufferWidth` clamp passing because the buffer grew with it. The
+published frame is `4320x2224` side-by-side, **2160x2224 per eye, exactly the runtime's
+recommendation**, fully post-processed, while the window client rect stays 2560x1431.
+
+The transport had to grow with it: a frame is 38.4 MB against the old 14.7 MB slot, and the fit check
+was silently dropping every one. Slots are now sized for 4320x2240, UI slots derived as half of that
+(the HUD is captured at half the back buffer), and every slot is mapped as its OWN 64 KiB-aligned
+view -- so the largest single reservation is ~36.9 MB rather than one 129 MB block that a fragmented
+32-bit address space will refuse. Layout version 5.
+
 ### Why the offscreen main view produced THREE panels -- the invariant 0x800 exists to hold
 
 Shipped on, the supersampled path put a raw pre-post scene across the left half of the back buffer

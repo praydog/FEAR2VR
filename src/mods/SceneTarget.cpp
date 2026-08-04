@@ -19,33 +19,27 @@ namespace {
 constexpr uintptr_t kBeginRenderTarget = 0x210727;
 constexpr const char* kHookName = "SceneRenderer_BeginRenderTarget";
 
-// RTHandle_Create -- the single funnel every render target in the process passes through.
-// __thiscall(handle, width, height, flags), width and height used verbatim.
-constexpr uintptr_t kRTHandleCreate = 0x213549;
-constexpr const char* kCreateHookName = "RTHandle_Create";
+constexpr uintptr_t kPresentParams = 0x20DBD4;
 
-// RTHandle_Unbind. On the NON-virtual path it restores the back buffer as the render target and
-// depth surface, and the HUD is drawn after that -- which makes the moment just after it the one
-// correct place to put the scene on screen. Earlier and the engine would overwrite it; later and we
-// would paint over the HUD.
-constexpr uintptr_t kRTHandleUnbind = 0x2130D9;
-constexpr const char* kUnbindHookName = "RTHandle_Unbind";
+// The engine's OWN belief about how big the screen is. The back buffer alone is not enough: with
+// only the buffer enlarged, the engine kept laying out a 2560x1440 view in the corner of a
+// 4320x2224 surface and the rest stayed black. The main view's render target, the viewport and the
+// HUD all size themselves from here, never from D3DPRESENT_PARAMETERS.
+//
+// r_InitRender is where it is decided. It hands the requested mode to the renderer, gets back a
+// record of the mode ACTUALLY used, and from that record's +132/+136 writes the ScreenWidth and
+// ScreenHeight console variables and copies the whole thing into g_RMode. Correcting it on the way
+// out of that function is the one point where every consumer is still downstream -- and it is why
+// reading g_RMode during device creation showed a stale 1024x768: it had not been written yet.
+constexpr uintptr_t kInitRender = 0x069595;
+constexpr const char* kInitRenderHookName = "r_InitRender";
+constexpr uintptr_t kRMode = 0x2F7540;
+constexpr size_t kRModeWidth = 132;
+constexpr size_t kRModeHeight = 136;
+constexpr uintptr_t kConVarSetFloat = 0x010CF6;
+constexpr uintptr_t kConVarTable = 0x2ED4A0;
+constexpr const char* kPresentParamsHookName = "Renderer_SetPresentationParams";
 
-// The handle's colour texture, by field read rather than by call. RTHandle_GetColourTexture0
-// (0x612E60) is exactly `[[this+0x10]+0x14]`, and reading it directly avoids the engine's
-// GetRenderSurface wrapper -- which takes an out-parameter on the STACK and returns a bool, not the
-// surface. Calling that one as though it returned the surface is what dereferenced the flags word
-// as an object and crashed the game.
-constexpr size_t kHandleColourTarget = 0x10;
-constexpr size_t kColourTargetTexture = 0x14;
-
-// g_pBackBufferColourSurface, cached by Renderer_CacheBackBufferSurfaces at device creation.
-constexpr uintptr_t kBackBufferSurface = 0x32EC4C;
-
-// Set on the main view. Its meaning is what makes supersampling impossible while it is on -- see
-// the header. Also masks the low three flag bits when present, which is why removing it is exact.
-constexpr uint32_t kFlagVirtual = 0x800u;
-constexpr uint32_t kFlagsMaskedByVirtual = 0x7u;
 
 // Inside the render-target handle (0x1C bytes, RTHandle_Create 0x613549).
 constexpr size_t kHandleFlags = 0x00;
@@ -69,11 +63,6 @@ std::atomic<uint32_t> g_scale_bits{0};   // float bits; 0.0f means "leave the en
 std::atomic<uint32_t> g_rec_w{0};
 std::atomic<uint32_t> g_rec_h{0};
 std::atomic<uint64_t> g_overrides{0};
-std::atomic<uintptr_t> g_main_handle{0};  // the one handle we enlarged, so only it is composited
-std::atomic<uint64_t> g_composites{0};
-std::atomic<uint64_t> g_composite_failures{0};
-std::atomic<uint32_t> g_forced_w{0};   // the size the main view is ACTUALLY rendering at
-std::atomic<uint32_t> g_forced_h{0};
 
 float load_scale() {
     const uint32_t bits = g_scale_bits.load(std::memory_order_relaxed);
@@ -83,108 +72,22 @@ float load_scale() {
     return f;
 }
 
-// __thiscall(handle, a2, a3).
-char __fastcall rt_handle_unbind_detour(void* self, void* /*edx*/, void* a2, char a3) {
-    auto* hook = Hooks::get().find(kUnbindHookName);
-    if (hook == nullptr) {
-        return 0;
-    }
-    // ORIGINAL FIRST. On the non-virtual path it is what re-binds the back buffer, and the blit
-    // below needs that to have already happened.
-    const char r =
-        hook->original<char(__fastcall*)(void*, void*, void*, char)>()(self, nullptr, a2, a3);
-
-    if (reinterpret_cast<uintptr_t>(self) == g_main_handle.load(std::memory_order_acquire)) {
-        // ---- THE MIRROR -----------------------------------------------------------------------
-        //
-        // Taking the scene off the 0x800 path means the back buffer no longer receives it -- the
-        // window went black the first time, because in the virtual design the back buffer WAS the
-        // destination. The desktop copy has to be produced deliberately now, and StretchRect is
-        // what turns the supersampled target back into a window-sized picture.
-        //
-        // LINEAR, because this is a downscale by construction and a point filter would alias the
-        // mirror badly. The VR path does not go through here: it reads the full-resolution surface.
-        auto* dev = sdk::Render::device();
-        const auto* exe = sdk::Modules::get().exe();
-        if (dev != nullptr && exe != nullptr && exe->base != 0) {
-            const auto h = reinterpret_cast<uintptr_t>(self);
-            const auto target = *reinterpret_cast<uintptr_t*>(h + kHandleColourTarget);
-            auto* const tex =
-                target != 0
-                    ? *reinterpret_cast<IDirect3DTexture9**>(target + kColourTargetTexture)
-                    : nullptr;
-            auto* const back =
-                *reinterpret_cast<IDirect3DSurface9**>(exe->base + kBackBufferSurface);
-
-            IDirect3DSurface9* src = nullptr;
-            if (tex != nullptr && back != nullptr && SUCCEEDED(tex->GetSurfaceLevel(0, &src))) {
-                // GetSurfaceLevel adds a reference. Releasing it is not optional at this call
-                // rate -- a missed Release here is a leaked surface every single frame.
-                if (SUCCEEDED(dev->StretchRect(src, nullptr, back, nullptr, D3DTEXF_LINEAR))) {
-                    g_composites.fetch_add(1, std::memory_order_relaxed);
-                } else {
-                    g_composite_failures.fetch_add(1, std::memory_order_relaxed);
-                }
-                src->Release();
-            } else {
-                g_composite_failures.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-    }
-    return r;
-}
-
-// __thiscall(handle, width, height, flags).
-char __fastcall rt_handle_create_detour(void* self, void* /*edx*/, int width, int height,
-                                        int flags) {
-    // Every creation, bounded. Which targets exist and WHEN they are made is the thing that
-    // decides whether an override can ever apply -- a target built before the mod arms is a target
-    // the mod cannot change without forcing it to be rebuilt.
-    static std::atomic<uint32_t> s_creates{0};
-    const uint32_t n = s_creates.fetch_add(1, std::memory_order_relaxed);
-    if (n < 24) {
-        LOGX("[scenetarget] create #%u %dx%d flags 0x%X", n, width, height, flags);
-    }
-
-    const float scale = load_scale();
-    const uint32_t rw = g_rec_w.load(std::memory_order_relaxed);
-    const uint32_t rh = g_rec_h.load(std::memory_order_relaxed);
-
-    // ONLY THE MAIN VIEW. Other virtual targets exist -- a 1024x576 one was observed in the same
-    // frame -- and enlarging those would cost fill rate for pixels nobody sees. The main view is
-    // identified by being the virtual target whose size IS the back buffer, which is precisely what
-    // the 0x800 path means.
-    if (scale > 0.0f && rw != 0 && rh != 0 && (static_cast<uint32_t>(flags) & kFlagVirtual) != 0) {
-        const auto pp = sdk::Render::present_params();
-        if (pp.has_value() && static_cast<uint32_t>(width) == pp->BackBufferWidth &&
-            static_cast<uint32_t>(height) == pp->BackBufferHeight) {
-            // Both eyes share one target, side by side, so the width is doubled and the height is
-            // not. Rounded to even so the split lands on a whole pixel column.
-            const auto w = static_cast<int>((static_cast<float>(rw) * scale) * 2.0f) & ~1;
-            const auto hgt = static_cast<int>(static_cast<float>(rh) * scale) & ~1;
-            const int f = static_cast<int>(static_cast<uint32_t>(flags) &
-                                           ~(kFlagVirtual | kFlagsMaskedByVirtual));
-            LOGX("[scenetarget] main view %dx%d flags 0x%X -> %dx%d flags 0x%X (offscreen)", width,
-                 height, flags, w, hgt, f);
-            width = w;
-            height = hgt;
-            flags = f;
-            g_overrides.fetch_add(1, std::memory_order_relaxed);
-            // `self` IS the handle being constructed. Remembering it is what lets the unbind hook
-            // composite exactly this target and leave every other offscreen target alone.
-            g_main_handle.store(reinterpret_cast<uintptr_t>(self), std::memory_order_release);
-            g_forced_w.store(static_cast<uint32_t>(w), std::memory_order_release);
-            g_forced_h.store(static_cast<uint32_t>(hgt), std::memory_order_release);
-        }
-    }
-
-    auto* hook = Hooks::get().find(kCreateHookName);
-    if (hook == nullptr) {
-        return 0;
-    }
-    return hook->original<char(__fastcall*)(void*, void*, int, int, int)>()(self, nullptr, width,
-                                                                           height, flags);
-}
+// Renderer_SetPresentationParams(renderer, width, height, windowed). THE one place the back buffer
+// size is decided -- it writes BackBufferWidth/Height straight into the D3DPRESENT_PARAMETERS the
+// engine hands to CreateDevice.
+//
+// A BIGGER BACK BUFFER IS NOT A BIGGER WINDOW. Windowed presentation here uses D3DSWAPEFFECT_COPY
+// (params[92] = 3, confirmed live), and COPY permits a back buffer larger than the client area:
+// Present stretches it down. So the desktop keeps showing 2560x1440 while everything the engine
+// draws -- scene, post chain, HUD, all of it -- happens at the larger size, with every internal
+// invariant untouched. That is the opposite of the offscreen-target attempt, which kept the engine
+// small and tried to enlarge one stage inside it.
+//
+// Applied at DEVICE CREATION, never through SetRenderMode. The earlier attempt drove a mode change
+// after startup, and the override was still armed while the engine tried to restore its previous
+// mode -- so the restore was sabotaged too and the renderer came down with
+// LT_UNABLETORESTOREVIDEO. Injection happens before the renderer builds its device, so there is
+// nothing to change: the first device can simply be the right size.
 std::atomic<uint32_t> g_distinct{0};
 
 void note(uint32_t flags, uint32_t w, uint32_t h) {
@@ -198,8 +101,6 @@ void note(uint32_t flags, uint32_t w, uint32_t h) {
             }
             continue;
         }
-        // First writer wins the slot. A race here would at worst duplicate one triple in the
-        // report, which is not worth a lock on a per-pass path.
         bool expected = false;
         if (s.used.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             s.flags.store(flags, std::memory_order_relaxed);
@@ -207,15 +108,15 @@ void note(uint32_t flags, uint32_t w, uint32_t h) {
             s.height.store(h, std::memory_order_relaxed);
             s.binds.store(1, std::memory_order_relaxed);
             g_distinct.fetch_add(1, std::memory_order_relaxed);
-            LOGX("[scenetarget] %ux%u flags 0x%X (%s)", w, h, flags,
-                 (flags & 0x800u) != 0 ? "VIRTUAL -- draws into the back buffer, size clamped to it"
-                                       : "real offscreen surface -- size is free");
+            LOGX("[scenetarget] binds %ux%u flags 0x%X (%s)", w, h, flags,
+                 (flags & 0x800u) != 0 ? "virtual -- draws into the back buffer" : "offscreen");
             return;
         }
     }
 }
 
-// __thiscall(this, handle, a3, a4, a5) -- `this` in ECX, four stack arguments.
+// __thiscall(this, handle, a3, a4, a5). Read-only: this is how we see what the engine actually
+// binds, which is the only reason the 0x800 behaviour was ever found.
 char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* handle, int a3, void* a4,
                                            int a5) {
     if (handle != nullptr) {
@@ -235,6 +136,73 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
     }
     return hook->original<char(__fastcall*)(void*, void*, void*, int, void*, int)>()(
         self, nullptr, handle, a3, a4, a5);
+}
+
+// __cdecl(const void* requested_mode) -> 0 on success. Everything that asks the engine how big the
+// screen is reads what this function publishes.
+int __cdecl init_render_detour(const void* mode) {
+    auto* hook = Hooks::get().find(kInitRenderHookName);
+    if (hook == nullptr) {
+        return 48;
+    }
+    const int r = hook->original<int(__cdecl*)(const void*)>()(mode);
+
+    const float scale = load_scale();
+    const uint32_t rw = g_rec_w.load(std::memory_order_relaxed);
+    const uint32_t rh = g_rec_h.load(std::memory_order_relaxed);
+    const auto* exe = sdk::Modules::get().exe();
+    if (r == 0 && scale > 0.0f && rw != 0 && rh != 0 && exe != nullptr && exe->base != 0) {
+        const auto w = static_cast<uint32_t>((static_cast<float>(rw) * scale) * 2.0f) & ~1u;
+        const auto h = static_cast<uint32_t>(static_cast<float>(rh) * scale) & ~1u;
+
+        auto* const mw = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeWidth);
+        auto* const mh = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeHeight);
+        LOGX("[scenetarget] engine believed %ux%u -> %ux%u", *mw, *mh, w, h);
+        *mw = w;
+        *mh = h;
+
+        // The console variables are the same numbers by another route, and code that reads them
+        // rather than g_RMode would otherwise disagree with code that does.
+        using SetFloatFn = void(__cdecl*)(void*, const char*, float);
+        auto* const set_float = reinterpret_cast<SetFloatFn>(exe->base + kConVarSetFloat);
+        auto* const table = reinterpret_cast<void*>(exe->base + kConVarTable);
+        set_float(table, "ScreenWidth", static_cast<float>(w));
+        set_float(table, "ScreenHeight", static_cast<float>(h));
+    }
+    return r;
+}
+
+char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int width, int height,
+                                               unsigned char windowed) {
+    const float scale = load_scale();
+    const uint32_t rw = g_rec_w.load(std::memory_order_relaxed);
+    const uint32_t rh = g_rec_h.load(std::memory_order_relaxed);
+
+    LOGX("[scenetarget] present params %dx%d windowed=%d", width, height, windowed);
+
+    if (scale > 0.0f && rw != 0 && rh != 0) {
+        if (windowed != 0) {
+            // Both eyes side by side in one buffer, so double the width and not the height.
+            const int w = static_cast<int>((static_cast<float>(rw) * scale) * 2.0f) & ~1;
+            const int h = static_cast<int>(static_cast<float>(rh) * scale) & ~1;
+            LOGX("[scenetarget] back buffer %dx%d -> %dx%d (window unchanged)", width, height, w, h);
+
+            width = w;
+            height = h;
+            g_overrides.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            // Fullscreen uses DISCARD and must name a real display mode, so an off-display size
+            // would fail device creation outright and take the renderer with it.
+            LOGX("[scenetarget] FULLSCREEN device -- refusing to resize (DISCARD needs a real mode)");
+        }
+    }
+
+    auto* hook = Hooks::get().find(kPresentParamsHookName);
+    if (hook == nullptr) {
+        return 0;
+    }
+    return hook->original<char(__fastcall*)(void*, void*, int, int, unsigned char)>()(
+        self, nullptr, width, height, windowed);
 }
 
 }  // namespace
@@ -290,9 +258,13 @@ void load_settings() {
     // composite below blits the scene target BEFORE the engine's post chain has run, and the engine
     // then draws its own result over part of it. Until that is understood, this stays off.
     const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 0, path);
-    if (w == 0 || h == 0 || permille == 0) {
-        LOGX("[scenetarget] no per-eye size known (is xr64.exe running?) -- drawing at the back "
-             "buffer");
+    if (permille == 0) {
+        LOGX("[scenetarget] supersampling off (set supersample_permille in %s) -- back buffer as-is",
+             path);
+        return;
+    }
+    if (w == 0 || h == 0) {
+        LOGX("[scenetarget] no per-eye size known -- is xr64.exe running? back buffer as-is");
         return;
     }
     g_rec_w.store(w, std::memory_order_relaxed);
@@ -320,13 +292,14 @@ std::optional<std::string> SceneTarget::on_initialize() {
                               reinterpret_cast<void*>(&begin_render_target_detour))) {
         return "could not hook SceneRenderer_BeginRenderTarget";
     }
-    if (!Hooks::get().install(kCreateHookName, reinterpret_cast<void*>(exe->base + kRTHandleCreate),
-                              reinterpret_cast<void*>(&rt_handle_create_detour))) {
-        return "could not hook RTHandle_Create";
+    if (!Hooks::get().install(kPresentParamsHookName,
+                              reinterpret_cast<void*>(exe->base + kPresentParams),
+                              reinterpret_cast<void*>(&set_presentation_params_detour))) {
+        return "could not hook Renderer_SetPresentationParams";
     }
-    if (!Hooks::get().install(kUnbindHookName, reinterpret_cast<void*>(exe->base + kRTHandleUnbind),
-                              reinterpret_cast<void*>(&rt_handle_unbind_detour))) {
-        return "could not hook RTHandle_Unbind";
+    if (!Hooks::get().install(kInitRenderHookName, reinterpret_cast<void*>(exe->base + kInitRender),
+                              reinterpret_cast<void*>(&init_render_detour))) {
+        return "could not hook r_InitRender";
     }
 
     // ---- ARMED AT INIT, BECAUSE THE MAIN VIEW IS BUILT ONCE ------------------------------------
@@ -375,18 +348,12 @@ uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_r
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
 uint64_t SceneTarget::overrides() const { return g_overrides.load(std::memory_order_relaxed); }
 
-uint64_t SceneTarget::composites() const { return g_composites.load(std::memory_order_relaxed); }
-uint64_t SceneTarget::composite_failures() const {
-    return g_composite_failures.load(std::memory_order_relaxed);
-}
 
 bool SceneTarget::main_view_size(int32_t& w, int32_t& h) {
-    const uint32_t fw = g_forced_w.load(std::memory_order_acquire);
-    const uint32_t fh = g_forced_h.load(std::memory_order_acquire);
-    if (fw == 0 || fh == 0) {
-        return false;
-    }
-    w = static_cast<int32_t>(fw);
-    h = static_cast<int32_t>(fh);
-    return true;
+    // Nothing to override any more. Enlarging the BACK BUFFER keeps the engine's own main-view test
+    // -- target size equals back buffer size -- true by construction, which is most of why it is the
+    // better lever than enlarging one target inside a small engine.
+    (void)w;
+    (void)h;
+    return false;
 }
