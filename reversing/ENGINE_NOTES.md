@@ -3458,6 +3458,33 @@ allocation site is what has to be found, either by tracing the render-target cre
 produces the handle or by walking back statically from the shared bind consumer. That consumer,
 FEAR2.exe+0x20BA33, is identical for every size observed and is never the writer.
 
+**FIXED: movies and main menu rendering small.** Cause was ours and the log said so all along:
+
+    [scenetarget] back buffer 640x480 -> 4320x2224 (window unchanged)
+
+We inflate the BACK BUFFER and leave the window alone. In world that is invisible because the scene
+target is explicitly sized to the buffer; before a world it is not, so the opening movies and the
+menu draw at the window's 640x480 and land in the top-left corner of a 4320x2224 buffer.
+
+The constraint is that the SCENE is native, not the menu. So the buffer is left alone until a
+session exists, keyed on gameserver.dll -- this project's existing session signal, absent at the
+menu and resolved late when a world starts. That it stays mapped after returning to the menu is
+correct rather than a leak: the user reports menu-after-world already renders fine with the override
+active, which is exactly what this preserves.
+
+    [scenetarget] no session yet -- leaving the back buffer at 640x480 so the movies and menu fill
+                  the window
+
+RULED OUT BY EXPERIMENT, not argument: g_RMode. Written at present-params, re-asserted every frame,
+and re-asserted inside both the create and bind detours -- the menu still created and bound a
+640x480 target, because the pre-world path never reads it. Reverted.
+
+REMAINING DESIGN BUG (user's observation, and correct): we launch the game SUSPENDED and hold it at
+a gate with the loader initialised and the entry point not yet run. That is the ideal injection
+point, and we do not use it -- we resume, wait for gameclient.dll, and only then inject. Anything
+the engine creates during startup is therefore built before our hooks exist. Injecting at the
+existing stub gate would remove that whole class of problem.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

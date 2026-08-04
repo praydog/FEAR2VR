@@ -425,7 +425,33 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
     LOGX("[scenetarget] present params %dx%d windowed=%d", width, height, windowed);
     SceneTarget::get().note_transition("SetPresentationParams");
 
-    if (scale > 0.0f && rw != 0 && rh != 0) {
+    // ---- ONLY ONCE THERE IS A WORLD -----------------------------------------------------------
+    //
+    // We inflate the BACK BUFFER and leave the window alone. In world that is invisible, because
+    // the scene target is explicitly sized to the buffer. Before a world it is not: the opening
+    // movies and the main menu draw at the window's 640x480 and land in the top-left corner of a
+    // 4320x2224 buffer. That is the reported regression, and it started exactly when the scene was
+    // forced to native.
+    //
+    // The constraint is that the SCENE renders native -- not the menu. So leave the buffer alone
+    // until a session exists and let the movies and menu fill the window they were built for.
+    // gameserver.dll is this project's existing session signal: absent at the menu, resolved late
+    // when a world starts (see Modules::resolve_lazy_module and the "session started" log).
+    //
+    // Tried and rejected first: holding g_RMode at the forced size. It was re-asserted at
+    // present-params, every frame, and inside both the create and bind detours; the menu still
+    // created a 640x480 target, because the pre-world path never reads it.
+    const bool in_session = sdk::Modules::get().game_server() != nullptr &&
+                            sdk::Modules::get().game_server()->handle != nullptr;
+    if (!in_session) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true, std::memory_order_relaxed)) {
+            LOGX("[scenetarget] no session yet -- leaving the back buffer at %dx%d so the movies "
+                 "and menu fill the window", width, height);
+        }
+    }
+
+    if (in_session && scale > 0.0f && rw != 0 && rh != 0) {
         if (windowed != 0) {
             // Both eyes side by side in one buffer, so double the width and not the height.
             const int w = static_cast<int>((static_cast<float>(rw) * scale) * 2.0f) & ~1;
