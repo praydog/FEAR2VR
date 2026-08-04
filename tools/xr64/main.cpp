@@ -973,7 +973,7 @@ int main(int argc, char** argv) {
     // (font missing, D3D11 or swapchain create failed) disables the panel rather than the host --
     // see SettingsUi::update()'s own null check.
     xrui::SettingsUi settings_ui;
-    settings_ui.init(device, ctx, g_instance, session, view_space, screen_format, menu_click_action,
+    settings_ui.init(device, ctx, g_instance, session, view_space, screen_format,
                      trigger_action, aim_space, hand_path, &ui_distance_m);
 
     // Created rather than opened: the host is normally up first, and CreateEvent returns the
@@ -1548,7 +1548,47 @@ int main(int argc, char** argv) {
                 buttons |= get_bool(x_click_action) ? xr::kHandButtonX : 0u;
                 buttons |= get_bool(y_click_action) ? xr::kHandButtonY : 0u;
                 buttons |= get_bool(thumbstick_click_action) ? xr::kHandButtonThumbstick : 0u;
-                buttons |= get_bool(menu_click_action) ? xr::kHandButtonMenu : 0u;
+
+                // ---- MENU IS SHARED WITH THE GAME'S PAUSE BUTTON ------------------------------
+                //
+                // Right-hand Menu does not exist: the OpenXR `oculus/touch_controller` profile
+                // defines menu/click on the LEFT hand only, and the right-hand system button
+                // belongs to the runtime. So the panel has to share the pause button, and a
+                // long-press is what separates them.
+                //
+                // The bit is WITHHELD on press rather than masked after the hold completes --
+                // masking would be too late, the game would already have paused. On an early
+                // release it is replayed as a synthetic tap so pause still works; if the hold
+                // reaches the threshold the panel opens and the bit is consumed outright.
+                //
+                // Cost: pause is delayed by up to the threshold. That is the price of one button
+                // doing two jobs, and it is only paid on the button that opens a settings panel.
+                static constexpr int64_t kMenuHoldNs = 400'000'000; // 0.4s
+                static constexpr int kReplayFrames = 2;             // the game polls per frame
+                static XrTime menu_down_at[2] = {0, 0};
+                static bool menu_consumed[2] = {false, false};
+                static int menu_replay[2] = {0, 0};
+
+                const bool menu_now = get_bool(menu_click_action);
+                if (menu_now) {
+                    if (menu_down_at[h] == 0) {
+                        menu_down_at[h] = fs.predictedDisplayTime;
+                        menu_consumed[h] = false;
+                    } else if (!menu_consumed[h] &&
+                               fs.predictedDisplayTime - menu_down_at[h] >= kMenuHoldNs) {
+                        settings_ui.toggle();
+                        menu_consumed[h] = true;
+                    }
+                } else {
+                    if (menu_down_at[h] != 0 && !menu_consumed[h]) {
+                        menu_replay[h] = kReplayFrames; // a tap: hand it to the game now
+                    }
+                    menu_down_at[h] = 0;
+                }
+                if (menu_replay[h] > 0) {
+                    --menu_replay[h];
+                    buttons |= xr::kHandButtonMenu;
+                }
                 hi.buttons = buttons;
 
                 hand_active_log[h] = hi.active != 0;

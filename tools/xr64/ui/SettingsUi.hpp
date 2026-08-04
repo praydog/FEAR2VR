@@ -30,7 +30,7 @@ public:
     // One-time setup, called once after the D3D11 device, the OpenXR session and its action set
     // are attached. Everything here is BORROWED, never owned:
     //   - `swapchain_format` is main.cpp's already-resolved `screen_format` -- reused so this
-    //   - `menu_click_action`/`trigger_action`/`aim_space`/`hand_path` are actions, spaces and
+    //   - `trigger_action`/`aim_space`/`hand_path` are actions, spaces and
     //     paths main.cpp already created, suggested bindings for, and attached -- read-only here,
     //     so there is exactly one owner of controller input in the process. `hand_path` is needed
     //     alongside `aim_space` because reading a per-hand float action (the trigger) requires an
@@ -40,7 +40,7 @@ public:
     //     side -- it is host process state, so the settings panel edits it directly rather than
     //     round-tripping through a socket to itself.
     bool init(ID3D11Device* device, ID3D11DeviceContext* context, XrInstance instance, XrSession session,
-              XrSpace view_space, int64_t swapchain_format, XrAction menu_click_action, XrAction trigger_action,
+              XrSpace view_space, int64_t swapchain_format, XrAction trigger_action,
               const XrSpace aim_space[2], const XrPath hand_path[2], float* hud_distance_m);
 
     // One call per frame. Advances the RmlUi clock, polls the menu button (open/close) and, while
@@ -54,6 +54,10 @@ public:
     void shutdown();
 
     bool visible() const;
+
+    // Driven by main.cpp's Menu latch: a short tap must still reach the game as pause, so the
+    // decision cannot live inside the panel.
+    void toggle();
 
     // Pointer/click injection entry points. update()'s own aim-ray hit test drives these, but they
     // are public so a caller with a different idea of "where the pointer is" (a different input

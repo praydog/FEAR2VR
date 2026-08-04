@@ -116,7 +116,6 @@ struct SettingsUi::Impl {
     XrSession session = XR_NULL_HANDLE;
     XrSpace view_space = XR_NULL_HANDLE;
     int64_t swapchain_format = 0;
-    XrAction menu_click_action = XR_NULL_HANDLE;
     XrAction trigger_action = XR_NULL_HANDLE;
     XrSpace aim_space[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
     XrPath hand_path[2] = {XR_NULL_PATH, XR_NULL_PATH};
@@ -135,8 +134,12 @@ struct SettingsUi::Impl {
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 
     // ---- open/close + pointer state -------------------------------------------------------------
-    bool visible = false;
-    bool last_menu_down = false;
+    // Written by main.cpp's Menu latch on the frame thread, read by the poll thread.
+    std::atomic<bool> visible{false};
+    // The aim point, in panel pixels, shared with the render side for the cursor dot.
+    std::atomic<int> cursor_x{0};
+    std::atomic<int> cursor_y{0};
+    std::atomic<bool> cursor_on{false};
     bool last_trigger_down = false;
 
     // ---- the mod link ----------------------------------------------------------------------------
@@ -163,6 +166,7 @@ struct SettingsUi::Impl {
     void fireModRequest(const std::string& path);
     void onControlChanged(Rml::Event& event);
     void onPointerMove(int x, int y);
+    void updateCursorElement();
     void onPointerButton(bool down);
 
     void setLabel(const char* id, const std::string& text);
@@ -468,18 +472,10 @@ void SettingsUi::Impl::pollThreadMain() {
 }
 
 void SettingsUi::Impl::pollInputAndInject(XrTime time) {
-    XrActionStateGetInfo menu_gi{XR_TYPE_ACTION_STATE_GET_INFO};
-    menu_gi.action = menu_click_action;
-    XrActionStateBoolean menu_state{XR_TYPE_ACTION_STATE_BOOLEAN};
-    const bool menu_ok = XR_SUCCEEDED(xrGetActionStateBoolean(session, &menu_gi, &menu_state));
-    const bool menu_down = menu_ok && menu_state.isActive != XR_FALSE && menu_state.currentState != XR_FALSE;
-    if (menu_down && !last_menu_down) {
-        visible = !visible;
-        std::printf("[host] [ui] settings panel %s\n", visible ? "opened" : "closed");
-    }
-    last_menu_down = menu_down;
-
-    if (!visible) {
+    // Visibility is driven by main.cpp via toggle(). It cannot be decided here: Menu is also the
+    // game's pause button, so the bit has to be withheld from game input while we wait to see
+    // whether this is a tap or a hold, and only main.cpp writes that input.
+    if (!visible.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -526,6 +522,11 @@ void SettingsUi::Impl::pollInputAndInject(XrTime time) {
         onPointerMove(static_cast<int>(clampf(u, 0.0f, 1.0f) * static_cast<float>(kPanelPxW - 1)),
                      static_cast<int>(clampf(v, 0.0f, 1.0f) * static_cast<float>(kPanelPxH - 1)));
         hit_any = true;
+        cursor_x.store(static_cast<int>(u * static_cast<float>(kPanelPxW)),
+                       std::memory_order_relaxed);
+        cursor_y.store(static_cast<int>(v * static_cast<float>(kPanelPxH)),
+                       std::memory_order_relaxed);
+        cursor_on.store(true, std::memory_order_relaxed);
 
         XrActionStateGetInfo trig_gi{XR_TYPE_ACTION_STATE_GET_INFO};
         trig_gi.action = trigger_action;
@@ -540,6 +541,7 @@ void SettingsUi::Impl::pollInputAndInject(XrTime time) {
     }
 
     if (!hit_any) {
+        cursor_on.store(false, std::memory_order_relaxed);
         rml_context->ProcessMouseLeave();
         if (last_trigger_down) {
             onPointerButton(false);
@@ -600,8 +602,7 @@ SettingsUi::~SettingsUi() {
 }
 
 bool SettingsUi::init(ID3D11Device* device, ID3D11DeviceContext* context, XrInstance instance, XrSession session,
-                      XrSpace view_space, int64_t swapchain_format, XrAction menu_click_action,
-                      XrAction trigger_action, const XrSpace aim_space[2], const XrPath hand_path[2],
+                      XrSpace view_space, int64_t swapchain_format, XrAction trigger_action, const XrSpace aim_space[2], const XrPath hand_path[2],
                       float* hud_distance_m) {
     m_impl->device = device;
     m_impl->d3d_context = context;
@@ -609,7 +610,6 @@ bool SettingsUi::init(ID3D11Device* device, ID3D11DeviceContext* context, XrInst
     m_impl->session = session;
     m_impl->view_space = view_space;
     m_impl->swapchain_format = swapchain_format;
-    m_impl->menu_click_action = menu_click_action;
     m_impl->trigger_action = trigger_action;
     m_impl->aim_space[0] = aim_space[0];
     m_impl->aim_space[1] = aim_space[1];
@@ -675,6 +675,7 @@ const XrCompositionLayerQuad* SettingsUi::update(XrTime predicted_display_time) 
     }
     m_impl->pollInputAndInject(predicted_display_time);
     m_impl->applySyncIfDue();
+    m_impl->updateCursorElement();
     m_impl->rml_context->Update();
     if (!m_impl->visible) {
         return nullptr;
@@ -701,7 +702,16 @@ void SettingsUi::shutdown() {
 }
 
 bool SettingsUi::visible() const {
-    return m_impl->visible;
+    return m_impl->visible.load(std::memory_order_acquire);
+}
+
+void SettingsUi::toggle() {
+    const bool now = !m_impl->visible.load(std::memory_order_acquire);
+    m_impl->visible.store(now, std::memory_order_release);
+    if (!now) {
+        m_impl->cursor_on.store(false, std::memory_order_relaxed);
+    }
+    std::printf("[host] [ui] settings panel %s\n", now ? "opened" : "closed");
 }
 
 void SettingsUi::onPointerMove(int x, int y) {
@@ -716,6 +726,26 @@ void SettingsUi::Impl::onPointerMove(int x, int y) {
     if (rml_context != nullptr) {
         rml_context->ProcessMouseMove(x, y, 0);
     }
+}
+
+// The dot lives in the document so it costs no new rendering, and it is placed from the same hit
+// point that feeds ProcessMouseMove -- so what you see and what RmlUi thinks you are pointing at
+// cannot drift apart.
+void SettingsUi::Impl::updateCursorElement() {
+    if (document == nullptr) {
+        return;
+    }
+    auto* dot = document->GetElementById("aim-cursor");
+    if (dot == nullptr) {
+        return;
+    }
+    if (!cursor_on.load(std::memory_order_relaxed)) {
+        dot->SetProperty("visibility", "hidden");
+        return;
+    }
+    dot->SetProperty("visibility", "visible");
+    dot->SetProperty("left", std::to_string(cursor_x.load(std::memory_order_relaxed)) + "px");
+    dot->SetProperty("top", std::to_string(cursor_y.load(std::memory_order_relaxed)) + "px");
 }
 
 void SettingsUi::Impl::onPointerButton(bool down) {

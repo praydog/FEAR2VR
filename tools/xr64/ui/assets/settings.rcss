@@ -132,3 +132,23 @@ input.range sliderbar:hover, input.range sliderbar:active {
 input.range sliderarrowdec, input.range sliderarrowinc {
 	display: none;
 }
+
+/* The aim cursor. Positioned in panel pixels from the controller ray, above everything, and never
+   a hit-test target itself -- it must not eat the click it is showing you. */
+#aim-cursor
+{
+	position: absolute;
+	z-index: 1000;
+	/* Sits exactly under the hit point and above everything, so without this it would swallow every
+	   hover and click it is meant to be showing you. Registered by RmlUi 6.2 as `none, auto`. */
+	pointer-events: none;
+	width: 18px;
+	height: 18px;
+	margin-left: -9px;
+	margin-top: -9px;
+	border-radius: 9px;
+	background-color: #7fd4ffdd;
+	border-width: 2px;
+	border-color: #ffffffee;
+	visibility: hidden;
+}

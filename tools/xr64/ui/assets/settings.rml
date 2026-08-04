@@ -4,6 +4,8 @@
 	<link type="text/rcss" href="settings.rcss"/>
 </head>
 <body id="settings-body">
+	<!-- Where the controller is pointing. RmlUi draws no pointer of its own. -->
+	<div id="aim-cursor"></div>
 	<div id="panel">
 		<h1>VR SETTINGS</h1>
 		<span id="mod-status">mod: --</span>
@@ -51,7 +53,7 @@
 			<input id="ipd-slider" type="range" min="0.0" max="6.0" step="0.1" value="3.2"/>
 		</div>
 
-		<div class="footer">press Menu to close</div>
+		<div class="footer">hold Menu to close &nbsp;&middot;&nbsp; tap Menu = pause</div>
 	</div>
 </body>
 </rml>
