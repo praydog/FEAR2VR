@@ -3510,7 +3510,21 @@ Verified by log order:
 with no `back buffer ... ->` and no virtual binds anywhere above -- the device did not yet exist
 when the hooks went in. Previously both appeared before the DLL had even loaded.
 
-KNOWN GAP: this is a race, not an ordering guarantee. Once the gate is released the primary thread
+REVERTED, and the reason is the useful part: with the DLL loaded at the gate, the hooks DID go in
+before the device existed -- and `Renderer_SetPresentationParams` then never fired at all, the scene
+reported 0x0, and nothing was forced. The patch had been written into a region SteamStub had not
+finished decrypting and was silently discarded when it was.
+
+So the plaintext probe is not sufficient as written: sub_46F715 is decrypted EARLIER than the
+renderer's code, so it reports "safe" while other regions are still ciphertext. Decryption is
+evidently not a single atomic step.
+
+Doing this properly needs either a per-region readiness check (probe a known plaintext byte in each
+function about to be hooked, and defer that hook until it matches) or a second gate at the decrypted
+OEP -- hold the main thread once the image is fully plaintext, install hooks, then resume. The
+second is simpler to reason about and matches what the launcher already does once.
+
+ORIGINAL GAP, still true of any version of this: it is a race, not an ordering guarantee. Once the gate is released the primary thread
 and our supervisor thread run concurrently, and the engine could in principle create the device
 before the poll succeeds. Making it deterministic needs a second gate at the decrypted OEP -- hold
 the main thread once plaintext is available, install hooks, then resume.
