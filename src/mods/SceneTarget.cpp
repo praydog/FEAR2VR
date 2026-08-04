@@ -145,6 +145,7 @@ constexpr uintptr_t kCreateRenderTargetRva = 0x20B6D1;
 // globally, a second identical creation by the same function -- exactly the "was the world target
 // recreated on the second load?" question -- produces the same tuple and stays hidden forever.
 std::atomic<uint64_t> g_crt_seq{0};
+std::atomic<uint64_t> g_bind_seq{0};
 constexpr const char* kCreateRTHookName = "CLTRenderer_CreateRenderTarget";
 std::atomic<bool> g_crt_hooked{false};
 
@@ -229,6 +230,37 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
             //
             // Blanket-forcing every 0x800 bind would be wrong anyway: legitimate ones appear at
             // other sizes (3953x2224 early on).
+            // EVERY virtual bind, in order, with the real handle. The mismatch-only report below
+            // cannot answer create-vs-select: a correctly sized world target could be created AND
+            // bound before the bad one and never appear, because it matches the forced size. Only
+            // an unfiltered sequence interleaved with the creation sequence shows whether the world
+            // target was never selected or was selected and then replaced.
+            // flags == 0xFC8 exactly, so this stream covers the same population as the creation
+            // probe. And only when the bound target CHANGES: these rebind every frame, so logging
+            // each one spends the whole budget on repeats before a world ever loads. Run-length
+            // compression keeps the full chronology of SELECTIONS, which is the actual question.
+            if (flags == 0xFC8) {
+                static std::atomic<uintptr_t> last_handle{0};
+                static std::atomic<uint32_t> last_size{0};
+                const uint32_t size_key = (pw << 16) | (ph & 0xFFFFu);
+                // BOTH exchanges unconditionally, THEN compare. Written as
+                // `a.exchange(..) != x || b.exchange(..) != y` the || short-circuits whenever the
+                // handle changed, so the size exchange never ran and last_size stayed stale --
+                // making the very next identical bind look like another change.
+                const uintptr_t old_handle = last_handle.exchange(h, std::memory_order_relaxed);
+                const uint32_t old_size = last_size.exchange(size_key, std::memory_order_relaxed);
+                const bool changed = (old_handle != h) || (old_size != size_key);
+                if (changed) {
+                    const auto bseq = g_bind_seq.fetch_add(1, std::memory_order_relaxed);
+                    if (bseq < 64) {
+                        LOGX("[trace] bind #%llu %ux%u handle=0x%08IX (creations so far: %llu)",
+                             static_cast<unsigned long long>(bseq), pw, ph, h,
+                             static_cast<unsigned long long>(
+                                 g_crt_seq.load(std::memory_order_relaxed)));
+                    }
+                }
+            }
+
             if ((flags & 0x800u) != 0 && g_overrides.load(std::memory_order_relaxed) != 0) {
                 // ONE LINE PER DISTINCT (size, pooled object), NOT per bind. A flat budget of
                 // eight was spent entirely on the menu's 640x480 target repeating at startup, and
