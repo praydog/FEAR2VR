@@ -3119,7 +3119,44 @@ Verified by forcing eleven ring rebuilds at sizes from 1080x556 to the full 4320
 `/xr/capture?divisor=N`: zero crashes. NOT verified: the failure branch itself, since no allocation
 actually failed during the test -- the fix for it is reasoned from the code, not exercised.
 
-**The 2 GB wall, and why LARGE_ADDRESS_AWARE cannot be used to get past it.**
+**SOLVED: 4 GB address space without touching the DRM.** I called this a hard constraint. It is
+not, and the method below is proven:
+
+    allocations succeeded above 2 GB at 0x90000000, 0xA0000000, 0xC0000000
+    committed 768.2 MB | free 3044.2 MB | LARGEST FREE BLOCK 2046.3 MB
+    (the 2 GB build measured 1635.4 / 73.4 / 10.9)
+
+The LAA bit is read by the KERNEL at process creation; SteamStub validates later. Owning process
+creation puts a window between the two that is not a race:
+
+  1. Set LAA on FEAR2.exe.
+  2. CreateProcess it SUSPENDED with:
+       - PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = steam.exe  (without this: "load error 5:0000065434")
+       - the environment Steam gives the game -- SteamAppUser/SteamUser/STEAMID/SteamPath and ~320
+         more; the game keys its PROFILE off the Steam user, so a partial set silently loses the
+         player's settings
+       - the command line Steam passes, which carries the user's launch options (`+windowed 1`)
+     Both are read out of a Steam-launched instance's PEB -> ProcessParameters (32-bit layout:
+     ImagePathName +0x38, CommandLine +0x40, Environment +0x48; PEB32 via
+     NtQueryInformationProcess(ProcessWow64Information)).
+  3. Restore the pristine exe on disk (rename the patched one aside -- legal on a running image).
+  4. Restore Characteristics in the MAPPED header via WriteProcessMemory.
+  5. Resume.
+
+By the first instruction the kernel has already granted 4 GB while both the file and the mapped
+image are byte-for-byte original. No DRM is broken, unpacked or redistributed -- the shipped binary
+runs, and it validates because there is nothing left to find.
+
+RETRACTED, and worth keeping as a lesson: I earlier reported this as "definitively an on-disk check,
+no runtime spoof possible". That was wrong twice over. I had attached at 0.75 s -- long after the
+stub could have run -- so the negative proved nothing about timing, and I never spoofed the PEB.
+
+NOT YET DONE, and required before release: the original exe is patched transiently, so a crash or
+power loss between steps 1 and 3 leaves it modified and Steam broken. The safe form is an
+LAA-patched COPY, launched with the PEB image path and command line spoofed back to the original.
+Never persist the captured environment: it contains STEAMID and STEAMVIDEOTOKEN.
+
+**The 2 GB wall, and why LARGE_ADDRESS_AWARE was first thought to be unusable.**
 
 Measured on a live native session: committed 1635.4 MB, free 73.4 MB, LARGEST FREE BLOCK 10.9 MB.
 At that point any allocation over ~11 MB fails, and the readback ring alone wants two 36.7 MB
