@@ -54,7 +54,7 @@ public:
 
     std::optional<std::string> on_initialize() override;
     void on_frame() override {}
-    void on_shutdown() override {}
+    void on_shutdown() override;
 
     // Start or stop refusing focus-loss pauses. Idempotent. Off by default: this changes engine behaviour, and
     // AGENTS.md's rule is that a mutation is opt-in and visible.
@@ -69,6 +69,7 @@ public:
         uint64_t passed_through{};    // those honoured, i.e. a real in-game pause
         bool window_active{};         // the engine's own flag, unmodified
         bool lost_focus{};            // the latch this decision reads
+        bool rate_patch{};            // the unfocused Sleep(5) has been branched over
     };
 
     State state() const;

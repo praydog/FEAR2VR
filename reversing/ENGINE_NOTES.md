@@ -2405,29 +2405,45 @@ Three things had to be fixed to make it a picture rather than a black screen:
 Verified live at `4320x2224` -- larger than the 2560x1440 window -- with correct stereo parallax and
 a working desktop mirror.
 
-**The cost is UNMEASURED, and the reading that said otherwise was worthless.** 101.5 fps
-supersampled against 101.2 baseline looked like 2.6x the pixels for free. Both samples were taken
-with the game ALT-TABBED, because the harness drives it from a terminal -- and the engine caps its
-frame rate when it does not have focus. 101 was the cap. Neither number describes rendering, the
-agreement between them was the cap agreeing with itself, and the 143 outlier was most likely the one
-moment the window did have focus.
+**The cost, measured once the cap was gone: none that this scene can resolve.** Three four-second
+samples each, same checkpoint, same harness, both unfocused with the throttle patched out --
+baseline 132.5 / 133.0 / 126.0, supersampled 124.2 / 133.0 / 132.8. The ranges overlap; 2.6x the
+pixels does not move the frame rate. Which says the thing worth knowing about this engine on modern
+hardware: at these resolutions it is CPU-bound, and the fill was free all along. One static camera in
+one scene is not a benchmark, and a fill-heavy view may still cost -- but the earlier claim that the
+numbers were meaningless is now itself retracted, for the right reason: the instrument was fixed.
 
-`FocusKeeper` keeps the game RUNNING when unfocused; it does not lift the rate cap, which is a
-different mechanism. This matters well beyond measurement: a wearer in a headset is by definition
-not looking at the desktop window.
+### The frame rate is capped whenever the window is not focused
 
-Repeated with the window FORCED TO THE FOREGROUND, the cap lifts and the numbers move -- 138 fps
-supersampled, 117 baseline. Which is still supersampling coming out AHEAD, and that is the tell:
-2.6x the pixels does not get cheaper, so the comparison is measuring something other than the thing
-it names. The two configurations cannot be toggled inside one session (the main view's target is
-built once at startup), so each number comes from a separate launch, and nothing holds the scene
-identical across them.
+Two readings of 101 fps that agreed across completely different render configurations were the first
+sign, and the cause is one branch at the top of WinMain's frame loop (0x466F8D):
 
-**No cost figure for supersampling is recorded here, in either direction.** There is a plausible
-mechanism for it being genuinely cheaper -- the virtual path StretchRects the back buffer into the
-handle's texture on EVERY unbind, and taking the main view offscreen skips that resolve entirely,
-possibly several times a frame -- but plausible is not measured. Settling it needs a fixed camera
-and a repeatable scene, and the honest answer for now is the headset.
+```
+0x4671C4   cmp  g_ClientGlob_bLostFocus, 0
+0x4671CA   jz   short skip                    74 08
+0x4671CC   push 5
+0x4671CE   call Sleep                         <-- every iteration, while unfocused
+skip:      call CClientMgr::Update
+```
+
+`timeBeginPeriod(1)` at startup makes that a real ~5 ms rather than a rounded scheduler tick, and on
+top of a ~4-5 ms frame it pins the client near 100 fps. It is the ONLY branch in the binary that
+makes a timing decision from a focus flag: the message pump is a pure `PeekMessageW` drain (GetMessage
+and WaitMessage are not even imported), and both `MaxFPS` (0x6EE900) and `ClientSleepMS` (0x6EE93C)
+exist but default to 0 and are not focus-conditioned.
+
+`FocusKeeper` defeats the alt-tab PAUSE and never touched this. **For a VR mod it is not an edge
+case -- a wearer is never looking at the desktop window, so the throttled path is the normal one.**
+
+Patched by turning `0x74` into `0xEB`, and restored on unload. NOT by writing the flag: LTClient_WndProc
+treats `g_ClientGlob_bLostFocus` as a transition latch and takes its restore path only `if (lostFocus)`
+-- the path that sets `bClientActive` and calls `LTRender_InitRender`. Forcing the flag to zero would
+make a later minimise/restore skip the renderer restore entirely. The branch patch changes timing and
+nothing else.
+
+A guard checks the byte is `0x74` before writing and refuses otherwise, which is how a wrong address
+was caught on the first attempt rather than by corrupting an instruction: the RVA had been computed as
+`0x2671CA` when `0x4671CA - 0x400000` is `0x0671CA`.
 
 **What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
 the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a
