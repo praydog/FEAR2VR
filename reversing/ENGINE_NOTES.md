@@ -2467,6 +2467,24 @@ started with no host at all. So xr64.exe writes the runtime's recommended per-ey
 before the game, so the file is always there first. `fear2vr.ini` beside the DLL overrides both the
 size and the multiplier for anyone who wants to.
 
+### Two ways the supersampled back buffer is still wrong
+
+**The HUD stops being captured.** With the back buffer at 4320x2224 the UI target is created at the
+right size and the HUD passes are still seen -- the caller list in `/render/ui` is populated -- but
+the published layer comes back empty: alpha max 0, mean luma 0.1, sequence still advancing. Tried at
+4320x2430 as well, on the theory that the game's UI is laid out for 16:9 and 1.94 was an aspect it
+had never seen; identical result, so aspect is NOT the cause and that theory is dead. The break is
+size-related somewhere in UICapture's redirect, and it is unproven beyond that.
+
+**Writing ScreenWidth/ScreenHeight PERSISTS.** They looked like the same numbers as g_RMode by
+another route. They are not: the game saves them. A supersampled value meant the next launch asked
+for a resolution no adapter enumerates, the mode match fell through to its default, and the game came
+up at 640x480 -- with the mod not even loaded, and nothing on screen to explain why. A mod that
+changes a setting the user cannot see, and that outlives the mod, is a trap. Only g_RMode is written
+now; it is what the renderer reads while running and it dies with the process. Repairing an already
+clobbered setting has to be done from the game's own video options -- the console cannot do it,
+because ScreenWidth is a variable and not in the command registry.
+
 ### Native per-eye, by enlarging the BACK BUFFER and leaving the engine alone
 
 The offscreen-target attempt was the wrong lever, and the right one had been dismissed early on a

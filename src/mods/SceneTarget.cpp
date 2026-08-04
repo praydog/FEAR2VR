@@ -161,13 +161,16 @@ int __cdecl init_render_detour(const void* mode) {
         *mw = w;
         *mh = h;
 
-        // The console variables are the same numbers by another route, and code that reads them
-        // rather than g_RMode would otherwise disagree with code that does.
-        using SetFloatFn = void(__cdecl*)(void*, const char*, float);
-        auto* const set_float = reinterpret_cast<SetFloatFn>(exe->base + kConVarSetFloat);
-        auto* const table = reinterpret_cast<void*>(exe->base + kConVarTable);
-        set_float(table, "ScreenWidth", static_cast<float>(w));
-        set_float(table, "ScreenHeight", static_cast<float>(h));
+        // ---- NOT THE CONSOLE VARIABLES ---------------------------------------------------------
+        //
+        // Writing ScreenWidth/ScreenHeight looked like the same numbers by another route. It is not:
+        // the game PERSISTS them. Setting them to a supersampled size meant the next launch asked
+        // for a resolution no adapter enumerates, the mode match fell through to its default, and
+        // the game came up at 640x480 -- with the mod uninstalled and nothing to explain it. A mod
+        // that changes a setting the user cannot see and that outlives the mod is a trap.
+        //
+        // g_RMode above is enough. It is what the renderer reads while it is running, and it dies
+        // with the process.
     }
     return r;
 }
