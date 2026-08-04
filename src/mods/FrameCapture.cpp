@@ -465,7 +465,21 @@ void FrameCapture::service_continuous() {
     const uint32_t w = desc.Width / (div < 1 ? 1 : div);
     const uint32_t h = desc.Height / (div < 1 ? 1 : div);
 
-    if (m_pipe[0] == nullptr || m_pipe_w != w || m_pipe_h != h) {
+    // EVERY slot, not just the first. Testing only m_pipe[0] was a crash: a partial allocation
+    // failure leaves slot 0 valid and a later slot null, so this test then reports "nothing to do",
+    // the ring runs half-built, and service_continuous dereferences the null slot. These are
+    // D3DPOOL_SYSTEMMEM surfaces in a 32-bit process, so failing part-way through is a real case at
+    // supersampled sizes -- the same address-space limit that made a 36.7 MB readback fail
+    // elsewhere in this project.
+    bool pipe_missing = false;
+    for (const auto& p : m_pipe) {
+        if (p == nullptr) {
+            pipe_missing = true;
+            break;
+        }
+    }
+
+    if (pipe_missing || m_pipe_w != w || m_pipe_h != h) {
         for (auto& p : m_pipe) {
             if (p != nullptr) {
                 static_cast<IDirect3DSurface9*>(p)->Release();
@@ -485,8 +499,26 @@ void FrameCapture::service_continuous() {
         }
         m_pipe_w = w;
         m_pipe_h = h;
+
+        // The per-slot state describes surfaces that no longer exist. Clearing it with the ring
+        // keeps "a frame was issued here" from outliving the surface it referred to.
         m_pipe_primed = false;
+        for (size_t i = 0; i < std::size(m_pipe); ++i) {
+            m_pipe_ok[i] = false;
+            m_pipe_seq[i] = 0;
+            m_pipe_pose_ok[i] = false;
+        }
+
         if (!ok) {
+            // ALL OR NOTHING. Handing back a ring with holes is what crashed; a fully empty ring is
+            // retried cleanly by the check above on the next frame.
+            for (auto& p : m_pipe) {
+                if (p != nullptr) {
+                    static_cast<IDirect3DSurface9*>(p)->Release();
+                    p = nullptr;
+                }
+            }
+            LOGX("[framecap] pipe allocation failed at %ux%u -- ring released, will retry", w, h);
             back->Release();
             return;
         }
@@ -531,6 +563,10 @@ void FrameCapture::service_continuous() {
     // publish that slot stamped with the CURRENT pose. A stale image wearing a fresh pose, which is
     // indistinguishable from a pose/frame mis-association and is exactly what "it judders to a
     // stale frame" looks like.
+    if (m_pipe[issue] == nullptr) {
+        back->Release();
+        return;
+    }
     const HRESULT grtd = device->GetRenderTargetData(source, static_cast<IDirect3DSurface9*>(m_pipe[issue]));
     m_pipe_ok[issue] = SUCCEEDED(grtd);
     if (!m_pipe_ok[issue]) {
@@ -730,7 +766,9 @@ void FrameCapture::service_continuous() {
     m_pipe_seq[issue] = stamped;
     back->Release();
 
-    if (m_pipe_primed) {
+    // m_pipe_primed says a frame was issued; it does not say the surface still exists. Both must
+    // hold -- asserting only the first is exactly the crash fixed above.
+    if (m_pipe_primed && m_pipe[ready] != nullptr) {
         D3DLOCKED_RECT lr{};
         const int64_t l0 = now_ticks();
         const HRESULT hr = static_cast<IDirect3DSurface9*>(m_pipe[ready])

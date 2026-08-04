@@ -3092,6 +3092,33 @@ before patching it: an earlier wrong RVA for `g_pILTClient` (0x1CF170 instead of
 inside the string "Coul" and got a junk address hooked. `try_install()` now refuses anything outside
 FEAR2.exe.
 
+**A crash worth recording, because the guard looked correct.** FrameCapture's readback ring is two
+D3DPOOL_SYSTEMMEM surfaces. The reallocation test was `m_pipe[0] == nullptr || size changed`, and
+the allocation loop did `ok = false; break` on failure. Allocate slot 0, fail slot 1, and the ring
+is `{valid, null}` PERMANENTLY: slot 0 is non-null and the size is unchanged, so the test reports
+nothing to do on every subsequent frame, and `m_pipe_primed` is then set to true by the normal path.
+The next present dereferences the null slot.
+
+    [crash] code 0xC0000005 -- READ 0x00000000, ESI 0x00000000
+    #00 fear2vr.dll+0x6763A  FrameCapture::service_continuous  FrameCapture.cpp:736
+    #01 fear2vr.dll+0x65E9B  FrameCapture::on_present          FrameCapture.cpp:144
+
+Symbolized with `llvm-symbolizer --obj=build/bin/fear2vr.dll --relative-address`, which resolves our
+own frames directly and is much faster than pasting offsets into an IDB.
+
+Why an allocation would fail at all is already documented here: SYSTEMMEM surfaces at supersampled
+sizes in a 32-bit address space, the same limit that made a 36.7 MB readback fail. At 4320x2224
+these are 36.7 MB EACH.
+
+Fixed by making the ring all-or-nothing: the test checks every slot, a partial failure releases what
+did allocate, and the per-slot state (`m_pipe_ok`, `m_pipe_seq`, `m_pipe_pose_ok`) is cleared with
+the surfaces so "a frame was issued here" cannot outlive the surface it referred to. Both
+dereference sites are null-checked as well.
+
+Verified by forcing eleven ring rebuilds at sizes from 1080x556 to the full 4320x2224 via
+`/xr/capture?divisor=N`: zero crashes. NOT verified: the failure branch itself, since no allocation
+actually failed during the test -- the fix for it is reasoned from the code, not exercised.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
