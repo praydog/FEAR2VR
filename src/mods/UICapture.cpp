@@ -1,5 +1,4 @@
 #include "UICapture.hpp"
-#include "Hooks.hpp"
 
 #include "SceneTarget.hpp"
 
@@ -233,86 +232,7 @@ bool UICapture::request_shot(const std::string& path, bool backbuffer) {
     return true;
 }
 
-namespace {
-
-// ---- THE PRE-WORLD MENU DRAWS OUTSIDE THE SCREEN2D PASS ----------------------------------------
-//
-// Measured: at the initial main menu the Screen2D pass is never issued (on_pass entered zero times)
-// even though both pass hooks are installed, so UICapture never gets a bracket and there is no
-// quad. The menu IS drawn -- by sub_46F715, the type-1 Scaleform draw wrapper, the SAME function
-// that draws the in-world HUD. Only the context differs, and the menu fails two gates at once: no
-// Screen2D bracket exists, and the caller is FEAR2.exe rather than gameclient.dll so `from_game`
-// would reject it regardless.
-//
-// So give UICapture a second bracket source. Opened on the FIRST such draw in a frame and closed at
-// present, not around each element: these fire once per element and per-element brackets would
-// publish many times a frame.
-//
-// Convention read from the DISASSEMBLY: `fldz / push esi / mov esi, ecx`, frame carries three float
-// locals plus the return address -- __thiscall(void*), NO stack arguments.
-constexpr uintptr_t kTypeOneDrawRva = 0x6F715;
-constexpr const char* kMenuDrawHook = "Scaleform_TypeOneDraw";
-
-std::atomic<bool> g_menu_hooked{false};
-std::atomic<bool> g_menu_bracket_open{false};
-
-void __fastcall type_one_draw_detour(void* self, void* /*edx*/) {
-    auto* hook = Hooks::get().find(kMenuDrawHook);
-    if (hook == nullptr) {
-        return;
-    }
-    auto& ui = UICapture::get();
-    // ONLY when the engine's own bracket is absent. In world the Screen2D pass owns the swap, and a
-    // second one here would double-swap and leave the wrong target bound.
-    if (!g_menu_bracket_open.load(std::memory_order_acquire) && !ui.bracket_active() &&
-        SceneTarget::get().overrides() != 0) {
-        auto* dev = sdk::Render::device();
-        if (dev != nullptr) {
-            IDirect3DSurface9* bb = nullptr;
-            D3DSURFACE_DESC bd{};
-            if (SUCCEEDED(dev->GetRenderTarget(0, &bb)) && bb != nullptr) {
-                bb->GetDesc(&bd);
-                bb->Release();
-                if (bd.Width != 0 && bd.Height != 0) {
-                    ui.on_bracket(true, static_cast<int32_t>(bd.Width),
-                                  static_cast<int32_t>(bd.Height), 0);
-                    g_menu_bracket_open.store(true, std::memory_order_release);
-                }
-            }
-        }
-    }
-    hook->original<void(__fastcall*)(void*, void*)>()(self, nullptr);
-}
-
-void install_menu_draw_hook() {
-    if (g_menu_hooked.load(std::memory_order_acquire)) {
-        return;
-    }
-    const auto* exe = sdk::Modules::get().exe();
-    if (exe == nullptr || exe->base == 0) {
-        return;
-    }
-    if (Hooks::get().install(kMenuDrawHook, reinterpret_cast<void*>(exe->base + kTypeOneDrawRva),
-                             reinterpret_cast<void*>(&type_one_draw_detour))) {
-        g_menu_hooked.store(true, std::memory_order_release);
-        LOGX("[uicap] menu bracket source installed at 0x%08IX", exe->base + kTypeOneDrawRva);
-    }
-}
-
-// Closed on the render thread, where the swap was made.
-void close_menu_bracket_if_open() {
-    if (!g_menu_bracket_open.exchange(false, std::memory_order_acq_rel)) {
-        return;
-    }
-    UICapture::get().on_bracket(false, 0, 0, 0);
-}
-
-} // namespace
-
 void UICapture::on_present() {
-    install_menu_draw_hook();
-    close_menu_bracket_if_open();
-
     // Teardown runs HERE, on the thread that owns the device. See on_shutdown().
     if (m_release_requested.load(std::memory_order_acquire)) {
         free_device_resources();
