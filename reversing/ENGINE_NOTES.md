@@ -2405,6 +2405,13 @@ Three things had to be fixed to make it a picture rather than a black screen:
 Verified live at `4320x2224` -- larger than the 2560x1440 window -- with correct stereo parallax and
 a working desktop mirror.
 
+**It costs nothing measurable.** 101.5 fps supersampled against 101.2 baseline, same checkpoint,
+six-second samples -- 2.6x the pixels for no frame time. Which says the thing worth knowing about
+this engine: at 2560x1440 it is CPU-bound, not fill-bound, so the pixels were free all along. (A
+first reading of 143 fps was an artifact of sampling before the world settled, and repeating it is
+the only reason it is not in this file as a result. One sample of a frame rate is not a
+measurement.)
+
 **What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
 the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a
 real quality win, and free anti-aliasing) rather than the full 2160x2224 per eye. Reading the scene
