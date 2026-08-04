@@ -3213,6 +3213,29 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
+**Issue 1's real cause, CONFIRMED by experiment: the m_seen_fullscreen gate.** UICapture::on_pass
+ends with
+
+    // A gameclient pass BEFORE any full-screen work is part of building the frame, not the HUD:
+    // borrowing the target there blackened the presented image.
+    if (!m_seen_fullscreen) return;
+
+The pre-world menu renders no scene, so no engine full-screen pass ever runs, the flag never becomes
+true, and every gameclient pass returns before swap_target(). Measured at the menu: seen=5160,
+swaps=0.
+
+Relaxing that gate took swaps from 0 to 1766 in one run, which confirms the cause outright. It is
+NOT a finished fix and was reverted for two reasons:
+
+  - publishes stayed 0 and `failures` tracked `swaps` almost exactly 1:1, so every swap fails
+    somewhere downstream. Note `m_failures` is incremented from creation, screenshot, publish,
+    readback, swap AND restore sites, so it must be split per-site before it means anything.
+  - the version tried keyed off whether the PREVIOUS frame did full-screen work, which is unsafe
+    across menu -> world: the first world frame inherits "no fullscreen", bypasses the guard, and
+    captures exactly the early gameclient pass the comment says blackened presentation. An explicit
+    world/menu signal is needed instead -- PlayerMgr's local player is already used elsewhere in
+    this project and would do.
+
 **RETRACTED: "the Screen2D pass is never issued at the menu". It is, thousands of times.**
 That finding came from a harness fault, not the game. `UICapture::m_enabled` defaults to FALSE and
 is only ever set by the HTTP route `/render/ui?on=1`; my menu runs never called it, so `on_pass()`
