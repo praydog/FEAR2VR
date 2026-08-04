@@ -3021,6 +3021,20 @@ Reverted. Nine mechanisms are now ruled out by measurement, and the width being 
 exactly right while the height never moves is the strongest remaining clue: the two are computed
 from DIFFERENT sources, and only the horizontal one follows the viewport.
 
+**SetVariable is reachable safely, and the first look says the HUD's AS inputs are not geometry.**
+The decompiler types slot 11 as `__userpurge` with a `dil` argument, which is not something to hook
+on. The prologue settles it: `mov esi, ecx` and `retn 0Ch` -- `__thiscall(this, path, value,
+setType)`, three callee-cleaned stack args. VERIFIED, not inferred, and worth doing before hooking
+anything given a guessed convention has already crashed this game once.
+
+Instrumented read-only at native: 129 distinct variables, every one a `_global.g_bMonolith*` option
+flag -- crosshairs, gore, subtitles, invert-Y, head bob. Nothing describing a stage, a safe area, an
+aspect or a height. The intended 2560x1440 control captured ZERO in the same window, so the DIFF was
+never obtained and this is a first look rather than a result.
+
+Reverted: a hot-path hook on the interface's variable setter is not something to leave in for an
+inconclusive experiment.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
