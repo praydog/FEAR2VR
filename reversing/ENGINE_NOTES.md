@@ -2937,6 +2937,37 @@ ShowAll is the identity case -- paired with a UICapture target of the same size,
 resolution from scene resolution rather than fighting the movie's layout. Call the method; do not
 write the fields, which is the mistake that already had to be reverted once.
 
+**GViewport layout, confirmed by dumping the engine's own bytes** (via slot 21 into a 52-byte
+buffer, logged before anything was changed):
+
+    4320 2224 | 0 0 | 4320 2224 | 0 0 4320 2224 | 1.0f 1.0f | 4
+    [0][1] buffer   [2][3] origin   [4][5] view   [6..9] scissor   [10][11] scale/aspect   [12] flags
+
+**Tried, and it is not sufficient.** Giving the movie a 1280x720 viewport through slot 20 -- moving
+buffer, view AND scissor together, since changing view alone left the HUD 359x127 in the corner --
+paired with a 1280x720 UICapture target:
+
+    width  fraction 0.948 of the target, against the control's 0.949  -- CORRECT
+    height fraction 0.597, against the control's 0.925                -- unchanged
+
+The width is now right, which confirms the viewport pairing works as intended. The height does not
+move, per-pass or persistent. The reason is timing: the movie's ActionScript lays out at WORLD LOAD,
+and the earliest this code sees the movie is its first pass, which is after that. SetViewport raises
+the resize event but Advance runs later, so a per-pass set-and-restore never gives it a settled size
+to re-flow against -- and a persistent set still arrives after the layout is baked.
+
+Reverted, and for a reason worth recording: the clamp trips at 2560x1440 too, so leaving it in would
+have changed the KNOWN-GOOD 1440 configuration to chase a native one that still does not work. A
+partial fix that breaks the working fallback is worse than no fix.
+
+Also fixed and reverted with it: the clamp initially sat AFTER `on_bracket`'s size comparison, so
+every bracket compared an incoming 4320x2224 against a stored 1280x720, called it a change, and
+rebuilt the render target every frame. Clamp before comparing, if this is picked up again.
+
+**So the remaining requirement is sharp: the viewport must be set BEFORE the movie's ActionScript
+lays out**, i.e. at movie construction (FEAR2.exe 0x00581EB0) or at world load, rather than at first
+draw. That is the one thing left between here and native with a correct HUD.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
