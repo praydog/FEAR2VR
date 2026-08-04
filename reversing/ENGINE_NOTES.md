@@ -2806,6 +2806,27 @@ remaining explanation is the Scaleform movie's own ActionScript layout re-flowin
 dimensions -- and the way to see that is the movie's stage/scale-mode configuration, not another
 hook in the C++ path.
 
+**Substituting the known-good geometry fails too, and draw time is too late.** The last idea with
+evidence behind it: hook the type-1 draw wrapper (FEAR2.exe 0x0046F715), save the inner object's
+eleven geometry floats, write the values MEASURED at 2560x1440 where the HUD is correct (+108 = 2.0,
+rect 0,0,25600,14400, uniform 0.1 affine), let it draw, restore -- with UICapture's target sized to
+2560x1440 to match. The hook fired and the target was created.
+
+The HUD collapsed to a 262x220 blob at (949,447), with the crosshair displaced right. Worse than
+untouched. The reason is timing as much as content: by the time this wrapper runs, the Scaleform
+movie has ALREADY reflowed its ActionScript layout for the wide stage, so handing the draw a
+correct-looking transform cannot un-reflow what the movie already positioned.
+
+Removed rather than left in the tree. A save/substitute/restore across engine per-frame state is a
+real hazard -- a write failing partway through the eleven leaves the geometry corrupted with nothing
+to restore from -- and it bought nothing. The `/render/hudscale` route and the whole HudProbe unit go
+with it, since the scale path was proven irrelevant earlier. Sixth mechanism ruled out.
+
+**Where that points.** Every intervention tried so far acts at or after the draw. The movie reflows
+earlier, when it is told its stage size, so the only remaining lever is the stage/viewport
+CONFIGURATION -- `GFxMovieView::SetViewport` / `SetViewScaleMode` and the dimensions the AS is given
+-- applied before the reflow rather than after it.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

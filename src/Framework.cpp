@@ -44,7 +44,6 @@
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
-#include "mods/HudProbe.hpp"
 #include "mods/SceneTarget.hpp"
 #include "mods/VR.hpp"
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
@@ -9991,19 +9990,6 @@ std::string build_render_json(const std::string& request_target) {
         return out;
     }
 
-    if (route == "/render/hudscale") {
-        auto& hp = HudProbe::get();
-        if (q.find("v") != q.end()) {
-            hp.set_scale(static_cast<float>(webapi_query_double(q, "v", -1.0)));
-        }
-        std::string out;
-        {
-            JsonFields jf(out);
-            jf.b("ok", true).f("scale", hp.scale(), 4);
-        }
-        return out;
-    }
-
     if (route == "/render/ui") {
         auto& ui = UICapture::get();
         if (q.find("on") != q.end()) {
@@ -10779,7 +10765,6 @@ bool Framework::initialize() {
     Mods::get().add(&ConsoleRunner::get());
     // Owns the VR runtime and pushes its poses into the engine. Added before Watchpoints so its
     // on_frame runs in the same order every session.
-    Mods::get().add(&HudProbe::get());
     Mods::get().add(&SceneTarget::get());
     Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());
