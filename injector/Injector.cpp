@@ -525,7 +525,7 @@ std::wstring game_exe_path() {
     return {};
 }
 
-uint32_t launch_with_laa(const std::wstring& exe) {
+uint32_t launch_with_laa(const Config& cfg, const std::wstring& exe) {
     const std::wstring copy = fs::path(exe).parent_path().wstring() + L"\\" +
                               fs::path(exe).stem().wstring() + kCopySuffix;
 
@@ -717,6 +717,28 @@ uint32_t launch_with_laa(const std::wstring& exe) {
         return give_up("the spoof did not verify");
     }
 
+    // ---- INJECT WHILE THE PROCESS IS STILL PARKED ---------------------------------------------
+    //
+    // The stub is holding the primary thread at the entry point with the loader fully initialised.
+    // That is the earliest moment a DLL can be loaded, and until now it was wasted: we resumed,
+    // waited for gameclient.dll and only then injected, so everything the engine builds during
+    // startup already existed before any of our hooks did.
+    //
+    // Wait ONLY for the module to appear. Waiting for the mod to be ready would deadlock: the
+    // framework waits for the exe to be decrypted, and SteamStub cannot decrypt anything until this
+    // gate is released.
+    if (!cfg.dll.empty()) {
+        if (do_inject_pid(cfg, pi.dwProcessId, /*allow_resident=*/false)) {
+            for (int i = 0; i < 100 && !module_loaded(pi.dwProcessId, "fear2vr.dll"); ++i) {
+                Sleep(50);
+            }
+            printf("[laa] injected at the entry point, before the engine starts\n");
+        } else {
+            printf("[laa] early injection failed; continuing -- the game still runs, and --inject "
+                   "can be used once it is up\n");
+        }
+    }
+
     FlushInstructionCache(pi.hProcess, reinterpret_cast<LPCVOID>(ep), 5);
     const uint32_t go = 1;
     if (!wpm(pi.hProcess, gate, &go, 4)) return give_up("could not release the gate");
@@ -826,7 +848,7 @@ bool do_launch(const Config& cfg, bool start_game, int32_t wait_seconds) {
     if (pid == 0 && start_game) {
         std::wstring exe = game_exe_path();
         if (!exe.empty()) {
-            pid = launch_with_laa(exe);
+            pid = launch_with_laa(cfg, exe);
         }
         if (pid == 0) {
             // NO SILENT FALLBACK. Launching through Steam here would start the game in the 2 GB

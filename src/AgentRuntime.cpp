@@ -12,6 +12,28 @@
 #include "Log.hpp"
 #include "ipc/CommandServer.hpp"
 
+// FEAR2.exe is SteamStub-wrapped: .text is ciphertext until the stub decrypts it in memory, and the
+// launcher can inject before that happens. A hook written then patches bytes the stub is about to
+// overwrite.
+//
+// The plaintext is the signal. sub_46F715 begins `fldz; push esi` = D9 EE 56, known from the
+// FEAR2_dump.exe IDB. Separate function because MSVC rejects __try in anything requiring unwinding.
+static bool exe_is_decrypted() {
+    constexpr uintptr_t kProbeRva = 0x6F715;
+    constexpr uint8_t kProbe[3] = {0xD9, 0xEE, 0x56};
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base == 0) {
+        return false;
+    }
+    __try {
+        const auto* p = reinterpret_cast<const uint8_t*>(base + kProbeRva);
+        return p[0] == kProbe[0] && p[1] == kProbe[1] && p[2] == kProbe[2];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+
 namespace runtime {
 
 void run_supervisor(void* self_raw, int32_t ipc_port) {
@@ -49,6 +71,22 @@ void run_supervisor(void* self_raw, int32_t ipc_port) {
     // g_framework is assigned exactly once here and deliberately NEVER reset:
     // after a clean unmap the whole image goes away; on the dormant path the
     // object must stay for any straggler. Destruction never runs in-process.
+    // Runs on THIS supervisor thread, never on the launcher's. The launcher releases the entry
+    // point as soon as LoadLibrary returns; if it waited for us instead, SteamStub could never run
+    // and the wait below would never finish -- the stub is what decrypts the image.
+    {
+        bool decrypted = false;
+        for (int i = 0; i < 2000 && !decrypted; ++i) {  // up to ~20s
+            decrypted = exe_is_decrypted();
+            if (!decrypted) {
+                Sleep(10);
+            }
+        }
+        LOGX("[main] exe %s", decrypted ? "decrypted -- safe to install hooks"
+                                        : "NEVER matched its plaintext signature (hooks may be "
+                                          "written into ciphertext)");
+    }
+
     g_framework = std::make_unique<Framework>(self, ipc_port);
     bool ipc_up = g_framework->initialize();
 

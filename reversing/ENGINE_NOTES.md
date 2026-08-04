@@ -3485,6 +3485,36 @@ point, and we do not use it -- we resume, wait for gameclient.dll, and only then
 the engine creates during startup is therefore built before our hooks exist. Injecting at the
 existing stub gate would remove that whole class of problem.
 
+**Injection now happens BEFORE the engine starts, which was a design bug the user called out.**
+The launcher already parks the process at the entry point with the loader initialised -- the ideal
+moment to load a DLL -- and we were throwing it away: resume, wait for gameclient.dll, then inject,
+by which time the device and every startup allocation already existed.
+
+Two constraints made this non-obvious, and both are handled:
+
+  - FEAR2.exe is SteamStub-wrapped, so at the gate the exe is still CIPHERTEXT. Hooks written then
+    would patch bytes the stub is about to overwrite. The readiness signal is the plaintext itself:
+    sub_46F715 begins `fldz; push esi` = D9 EE 56 (from the FEAR2_dump.exe IDB), polled by the DLL's
+    own supervisor thread.
+  - That poll must NOT be waited on by the launcher. SteamStub cannot decrypt until the gate is
+    released, so a launcher-side wait for framework-ready would deadlock. The launcher waits only
+    for the module to appear, then releases.
+
+Verified by log order:
+
+    1: [main] supervisor thread start
+    2: [main] exe decrypted -- safe to install hooks
+   34: [hooks] installed Renderer_SetPresentationParams
+   42: [framework] initialized
+
+with no `back buffer ... ->` and no virtual binds anywhere above -- the device did not yet exist
+when the hooks went in. Previously both appeared before the DLL had even loaded.
+
+KNOWN GAP: this is a race, not an ordering guarantee. Once the gate is released the primary thread
+and our supervisor thread run concurrently, and the engine could in principle create the device
+before the poll succeeds. Making it deterministic needs a second gate at the decrypted OEP -- hold
+the main thread once plaintext is available, install hooks, then resume.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
