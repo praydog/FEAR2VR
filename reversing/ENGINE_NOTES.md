@@ -2551,6 +2551,32 @@ Two things were then measured live, and both kill the obvious fix:
 So the interface cannot be relocated by telling it a different screen size. Whatever fixes this has
 to change how the elements are SCALED, and that scale is not derived from these dims.
 
+### And rewriting the layout rect does not work either
+
+Third attempt on the same problem, also measured dead. If the interface cannot be told a bigger
+screen, give it a SMALLER one: hook `HUD_ComputeLayoutRect` and return a centred 2560x1440 rect --
+exactly the geometry it demonstrably lays out correctly in -- inside the 4320x2224 buffer.
+
+Getting it to fire at all took moving the hook from `on_frame` to `on_initialize`: the rect is
+computed ONCE, before the first frame tick, and a hook installed a few frames later reports itself
+healthy while rewriting nothing. Worth remembering for anything else in this path -- "hooked" and
+"applied" are different claims, and only the second one is evidence.
+
+Once firing (`engine (0,0)-(640,480) -> (880,392)-(3440,1832)`, and note the engine's own answer was
+the 640x480 FALLBACK, so GetScreenDims fails at that point in startup) the HUD came back unclipped
+and structurally WRONG: fragments of arc left of centre, the crosshair displaced into the bottom
+right, nothing coherent. bbox `(499,196)-(1157,627)`, aspect 1.53.
+
+So the rect is not a container the elements are drawn into. They anchor against it inconsistently,
+and moving it desynchronises them from each other. Three mechanisms are now ruled out by
+measurement: the reported screen dims, the per-frame clamp, and the layout rect.
+
+What is left is the ELEMENT SCALE itself, which none of the three touches. The way in is
+MAPPING_WORKFLOW Phase 1b, not another guess at an input: arm a data watch on a HUD element's
+on-screen position or scale while the buffer is supersampled, read what writes it, and walk UP the
+stack to the function that DECIDES it. That is the loop this project already has, and every attempt
+so far has skipped it in favour of reasoning about plausible inputs.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
