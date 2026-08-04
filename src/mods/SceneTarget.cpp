@@ -170,6 +170,18 @@ int __cdecl init_render_detour(const void* mode) {
         auto* const mw = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeWidth);
         auto* const mh = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeHeight);
         LOGX("[scenetarget] engine believed %ux%u -> %ux%u", *mw, *mh, w, h);
+
+        // SAVE BEFORE OVERWRITING, AND ONLY ONCE. This used to store *mw/*mh AFTER assigning the
+        // override to them, so the "saved originals" were the supersampled values -- restoring them
+        // put the override back rather than undoing it. The once-only guard matters just as much:
+        // this runs again on every world load, and a second pass would capture our own override as
+        // the original even with the ordering fixed.
+        if (!g_screen_saved.load(std::memory_order_acquire)) {
+            g_saved_screen_w.store(*mw, std::memory_order_relaxed);
+            g_saved_screen_h.store(*mh, std::memory_order_relaxed);
+            g_screen_saved.store(true, std::memory_order_release);
+        }
+
         *mw = w;
         *mh = h;
 
@@ -186,9 +198,6 @@ int __cdecl init_render_detour(const void* mode) {
         // the next launch ask for a resolution no adapter enumerates, fall through to the default,
         // and come up at 640x480 with the mod not even loaded. So the originals are kept and put
         // back on unload -- the game only writes its config at exit, and by then ours are gone.
-        g_saved_screen_w.store(*mw, std::memory_order_relaxed);
-        g_saved_screen_h.store(*mh, std::memory_order_relaxed);
-        g_screen_saved.store(true, std::memory_order_release);
         set_screen_cvars(exe->base, static_cast<float>(w), static_cast<float>(h));
     }
     return r;
