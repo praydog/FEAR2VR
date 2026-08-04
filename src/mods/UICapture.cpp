@@ -277,16 +277,6 @@ void UICapture::on_present() {
         }
     }
 
-    {
-        IDirect3DSurface9* bb = nullptr;
-        D3DSURFACE_DESC bd{};
-        if (SUCCEEDED(dev->GetRenderTarget(0, &bb)) && bb != nullptr) {
-            bb->GetDesc(&bd);
-            bb->Release();
-            SceneTarget::get().check_session_buffer(bd.Width, bd.Height);
-        }
-    }
-
     publish_layer(dev);
 
     if (!m_shot_pending.load(std::memory_order_acquire)) {

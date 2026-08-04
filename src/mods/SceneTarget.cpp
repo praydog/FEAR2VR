@@ -425,33 +425,12 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
     LOGX("[scenetarget] present params %dx%d windowed=%d", width, height, windowed);
     SceneTarget::get().note_transition("SetPresentationParams");
 
-    // ---- ONLY ONCE THERE IS A WORLD -----------------------------------------------------------
-    //
-    // We inflate the BACK BUFFER and leave the window alone. In world that is invisible, because
-    // the scene target is explicitly sized to the buffer. Before a world it is not: the opening
-    // movies and the main menu draw at the window's 640x480 and land in the top-left corner of a
-    // 4320x2224 buffer. That is the reported regression, and it started exactly when the scene was
-    // forced to native.
-    //
-    // The constraint is that the SCENE renders native -- not the menu. So leave the buffer alone
-    // until a session exists and let the movies and menu fill the window they were built for.
-    // gameserver.dll is this project's existing session signal: absent at the menu, resolved late
-    // when a world starts (see Modules::resolve_lazy_module and the "session started" log).
-    //
-    // Tried and rejected first: holding g_RMode at the forced size. It was re-asserted at
-    // present-params, every frame, and inside both the create and bind detours; the menu still
-    // created a 640x480 target, because the pre-world path never reads it.
-    const bool in_session = sdk::Modules::get().game_server() != nullptr &&
-                            sdk::Modules::get().game_server()->handle != nullptr;
-    if (!in_session) {
-        static std::atomic<bool> said{false};
-        if (!said.exchange(true, std::memory_order_relaxed)) {
-            LOGX("[scenetarget] no session yet -- leaving the back buffer at %dx%d so the movies "
-                 "and menu fill the window", width, height);
-        }
-    }
-
-    if (in_session && scale > 0.0f && rw != 0 && rh != 0) {
+    // NOTE: deferring this until a session exists DOES fix the movies and the menu (they draw at
+    // the window's size, and inflating only the buffer strands them in a corner). It was reverted
+    // because it can only be safe if the engine re-asks for presentation parameters on world load,
+    // and that is unverified -- if it does not, the first world renders at the menu's size and
+    // loses native rendering, which is the one constraint that must hold. See ENGINE_NOTES.
+    if (scale > 0.0f && rw != 0 && rh != 0) {
         if (windowed != 0) {
             // Both eyes side by side in one buffer, so double the width and not the height.
             const int w = static_cast<int>((static_cast<float>(rw) * scale) * 2.0f) & ~1;
@@ -650,29 +629,6 @@ void SceneTarget::set_recommended(uint32_t per_eye_w, uint32_t per_eye_h) {
 float SceneTarget::scale() const { return load_scale(); }
 uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_relaxed); }
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
-// The gate above defers the override until a session exists. That is only safe if the engine asks
-// for presentation parameters AGAIN on world load -- if it does not, the first world would render
-// at the menu's size, which breaks the one constraint that matters. Rather than assume either way,
-// say so the moment it happens: a session with a buffer that is not ours is exactly the failure.
-void SceneTarget::check_session_buffer(uint32_t back_w, uint32_t back_h) {
-    const auto* gs = sdk::Modules::get().game_server();
-    const bool in_session = gs != nullptr && gs->handle != nullptr;
-    if (!in_session) {
-        return;
-    }
-    const uint32_t w = g_last_forced_w.load(std::memory_order_relaxed);
-    if (w != 0 && back_w == w) {
-        return;  // the world got its native buffer
-    }
-    static std::atomic<bool> warned{false};
-    if (!warned.exchange(true, std::memory_order_relaxed)) {
-        LOGX("[scenetarget] SESSION ACTIVE BUT BUFFER IS %ux%u -- the engine never re-asked for "
-             "presentation params, so the deferred override never applied. The scene is NOT "
-             "native.",
-             back_w, back_h);
-    }
-}
-
 void SceneTarget::note_transition(const char* why) {
     const auto n = g_transition.fetch_add(1, std::memory_order_relaxed) + 1;
     strncpy_s(g_trace_why, why, _TRUNCATE);
