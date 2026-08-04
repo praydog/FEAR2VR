@@ -3213,6 +3213,22 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
+**Issue 1 needs TWO fixes, both now located.** With the gate relaxed for diagnosis:
+
+    seen=13188  swaps=1884  publishes=0  failures=1883   target=640x480 layer=1280x960
+
+  1. The `m_seen_fullscreen` gate (below) stops every menu pass reaching swap_target.
+  2. With it relaxed the swap SUCCEEDS -- `m_swaps` only increments after both GetRenderTarget and
+     SetRenderTarget return S_OK -- but `restore_target()` then fails on every single one. Its only
+     failure path is `SetRenderTarget(0, saved)` returning a failure HRESULT, and `failures` tracks
+     `swaps` 1:1 which matches exactly. publish_layer is NOT involved: per-site logging added around
+     StretchRect/GetRenderTargetData never fired, and it runs once per frame rather than per swap.
+
+Why the restore fails is the open question. Likely shape: at the menu the engine target is 640x480
+while our capture surface is created at the bracket size, and D3D9 refuses a SetRenderTarget whose
+surface is smaller than the bound depth-stencil. That is a guess and must be confirmed by logging
+the HRESULT and both surface descriptions before anything is changed.
+
 **Issue 1's real cause, CONFIRMED by experiment: the m_seen_fullscreen gate.** UICapture::on_pass
 ends with
 
