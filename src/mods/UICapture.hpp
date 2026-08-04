@@ -77,7 +77,8 @@ public:
 
     // Write the captured surface to a BMP. Serviced on the render thread at the next
     // frame boundary, because reading a render target means a device call.
-    bool request_shot(const std::string& path);
+    // `backbuffer` takes the real post-HUD back buffer instead of our redirected target.
+    bool request_shot(const std::string& path, bool backbuffer = false);
 
     bool have_surface() const { return m_surface.load(std::memory_order_relaxed) != nullptr; }
     int32_t width() const { return m_width.load(std::memory_order_relaxed); }
@@ -177,5 +178,6 @@ private:
     std::atomic<bool> m_release_requested{false};
     std::atomic<bool> m_released{false};
     std::atomic<bool> m_shot_pending{false};
+    std::atomic<bool> m_shot_backbuffer{false};
     std::string m_shot_path;  // guarded by m_shot_pending's release/acquire
 };

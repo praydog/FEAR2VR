@@ -220,11 +220,12 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
     }
 }
 
-bool UICapture::request_shot(const std::string& path) {
+bool UICapture::request_shot(const std::string& path, bool backbuffer) {
     if (path.empty() || m_shot_pending.load(std::memory_order_acquire)) {
         return false;
     }
     m_shot_path = path;
+    m_shot_backbuffer.store(backbuffer, std::memory_order_release);
     m_shot_pending.store(true, std::memory_order_release);
     return true;
 }
@@ -256,23 +257,53 @@ void UICapture::on_present() {
     if (!m_shot_pending.load(std::memory_order_acquire)) {
         return;
     }
-    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
-    const int32_t w = m_width.load(std::memory_order_relaxed);
-    const int32_t h = m_height.load(std::memory_order_relaxed);
-    if (surf == nullptr || w <= 0 || h <= 0) {
+    // ---- DOWN THE GPU FIRST, THEN READ BACK SMALL ----------------------------------------------
+    //
+    // This used to allocate a SYSTEMMEM surface the size of the capture target and read the whole
+    // thing back. At a supersampled 4320x2224 that is 36.7 MB in a 32-bit process, and it FAILS --
+    // the route answered shot_accepted:true, no file appeared, and `failures` ticked once per
+    // attempt. The shot was silently unavailable exactly at the resolution worth inspecting.
+    //
+    // The publish path already solves this: scale on the GPU into m_scaled and read back the
+    // layer-sized m_stage instead, ~3.4 MB. Reusing those two means the shot costs what a published
+    // frame costs and works at any buffer size.
+    //
+    // `source=backbuffer` grabs the real post-HUD back buffer rather than our redirected target,
+    // which is what distinguishes "our pass selection dropped elements" from "the HUD really is
+    // drawn this way".
+    const bool from_backbuffer = m_shot_backbuffer.load(std::memory_order_acquire);
+    IDirect3DSurface9* src = nullptr;
+    IDirect3DSurface9* back = nullptr;
+    if (from_backbuffer) {
+        if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) || back == nullptr) {
+            m_shot_pending.store(false, std::memory_order_release);
+            m_failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        src = back;
+    } else {
+        src = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+    }
+    auto* scaled = static_cast<IDirect3DSurface9*>(m_scaled.load(std::memory_order_relaxed));
+    auto* sys = static_cast<IDirect3DSurface9*>(m_stage.load(std::memory_order_relaxed));
+    const int32_t w = m_layer_w.load(std::memory_order_relaxed);
+    const int32_t h = m_layer_h.load(std::memory_order_relaxed);
+    if (src == nullptr || scaled == nullptr || sys == nullptr || w <= 0 || h <= 0) {
+        if (back != nullptr) { back->Release(); }
         m_shot_pending.store(false, std::memory_order_release);
         return;
     }
-
-    IDirect3DSurface9* sys = nullptr;
-    if (FAILED(dev->CreateOffscreenPlainSurface(static_cast<UINT>(w), static_cast<UINT>(h),
-                                                D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr)) ||
-        sys == nullptr) {
+    if (FAILED(dev->StretchRect(src, nullptr, scaled, nullptr, D3DTEXF_LINEAR))) {
+        if (back != nullptr) { back->Release(); }
         m_shot_pending.store(false, std::memory_order_release);
         m_failures.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (SUCCEEDED(dev->GetRenderTargetData(surf, sys))) {
+    if (back != nullptr) {
+        back->Release();
+        back = nullptr;
+    }
+    if (SUCCEEDED(dev->GetRenderTargetData(scaled, sys))) {
         D3DLOCKED_RECT lr{};
         if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
             auto* base = static_cast<uint8_t*>(lr.pBits);
@@ -314,7 +345,9 @@ void UICapture::on_present() {
     } else {
         m_failures.fetch_add(1, std::memory_order_relaxed);
     }
-    sys->Release();
+    // sys is m_stage, BORROWED from the publish path. Releasing it here would leave m_stage holding
+    // a freed surface and fault on the next publish.
+    m_shot_backbuffer.store(false, std::memory_order_release);
     m_shot_pending.store(false, std::memory_order_release);
 }
 
@@ -394,6 +427,12 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
         // borrowing the target, give it back for the duration -- interleaving is handled rather
         // than assumed away, because "the effects are contiguous" is exactly the kind of thing that
         // holds until some weapon or vehicle proves it does not.
+        //
+        // TESTED AND REJECTED: treating exe-issued passes AFTER the boundary as HUD, on the theory
+        // that Scaleform's type-1 draw comes from FEAR2.exe and was being handed back. It changed
+        // the captured layer by nothing at all -- 1113x393, aspect 2.83, still clipped -- so pass
+        // selection is not what drops the HUD, and the positional rule would only have captured
+        // scope and vehicle effects for free.
         m_seen_fullscreen = true;
         restore_target(dev);
         return;

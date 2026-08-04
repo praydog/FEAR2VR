@@ -10020,7 +10020,7 @@ std::string build_render_json(const std::string& request_target) {
         }
         bool shot_accepted = false;
         if (const std::string path = webapi_query_string(q, "path"); !path.empty()) {
-            shot_accepted = ui.request_shot(path);
+            shot_accepted = ui.request_shot(path, webapi_query_string(q, "source") == "backbuffer");
         }
         // Who issued each 2D pass last frame, classified. This is the view that says where the
         // engine's own full-screen work ends and the game's HUD begins.

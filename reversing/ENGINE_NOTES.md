@@ -2784,6 +2784,28 @@ That is where this stops being an engine-hooking problem and becomes a Scaleform
 is the movie's stage/scale-mode configuration (`GFxMovieView::SetViewport` / `SetViewScaleMode`) and
 what stage dimensions the AS is told, not another transform in the C++ path.
 
+**The shot diagnostic now works at any resolution**, which it did not before. It allocated a
+SYSTEMMEM surface the size of the capture target -- 36.7 MB at 4320x2224 -- and that fails in a
+32-bit process: the route answered `shot_accepted:true`, no file appeared, and `failures` ticked once
+per attempt. It was silently unavailable at exactly the resolution worth inspecting. It now scales on
+the GPU into the publish path's existing `m_scaled` and reads back the layer-sized `m_stage` instead,
+~3.4 MB. `m_stage` is BORROWED and must not be released; the old code released it, which would have
+left the publish path holding a freed surface. `?source=backbuffer` takes the real back buffer.
+
+**Pass selection is NOT what drops the HUD.** The module discriminator in `on_pass` -- engine
+full-screen work from outside gameclient.dll, HUD from inside -- looked like a strong suspect once
+the type-1 Scaleform draw was traced to FEAR2.exe (0x0046F715, submitting at 0x0057BA90), because a
+HUD pass issued from the exe would be classified as engine work and handed back. Tested by treating
+exe passes arriving AFTER the full-screen boundary as HUD: the captured layer came back **identical**
+-- 1113x393, aspect 2.83, still clipped. Reverted; the positional rule would have captured scope and
+vehicle effects for nothing.
+
+So capture is clean on every axis now measured: viewport across the re-bind, whole-surface downscale,
+and pass selection. Combined with the engine submitting a correct uniform ShowAll matrix, the
+remaining explanation is the Scaleform movie's own ActionScript layout re-flowing against stage
+dimensions -- and the way to see that is the movie's stage/scale-mode configuration, not another
+hook in the C++ path.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
