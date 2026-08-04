@@ -3119,6 +3119,43 @@ Verified by forcing eleven ring rebuilds at sizes from 1080x556 to the full 4320
 `/xr/capture?divisor=N`: zero crashes. NOT verified: the failure branch itself, since no allocation
 actually failed during the test -- the fix for it is reasoned from the code, not exercised.
 
+**The 2 GB wall, and why LARGE_ADDRESS_AWARE cannot be used to get past it.**
+
+Measured on a live native session: committed 1635.4 MB, free 73.4 MB, LARGEST FREE BLOCK 10.9 MB.
+At that point any allocation over ~11 MB fails, and the readback ring alone wants two 36.7 MB
+SYSTEMMEM surfaces. Two crashes came out of this and neither looked like memory: a null dereference
+in our own ring (an allocation that failed), and an access violation inside XAudio2_3.dll on a menu
+transition with no frame of ours on the stack. Whoever allocates next without checking is who
+appears to be at fault.
+
+FEAR2.exe ships without the PE LARGE_ADDRESS_AWARE bit, so it is capped at 2 GB. Setting that bit
+works -- and Steam then refuses to run the game: "Application load error 3:0000065432". The binary
+is SteamStub-wrapped: a `.bind` section with the entry point INSIDE it (0x003742ED), which is also
+why this project reverse-engineers FEAR2_dump.exe rather than the shipped file.
+
+Four things were tested, each restoring the pristine exe afterwards (sha256-verified):
+
+  1. LAA bit alone                      -> rejected
+  2. LAA + recomputed PE checksum       -> rejected. (The shipped file DOES carry a valid checksum,
+     0x0038FD2A, so this was worth eliminating -- but it is not what is being validated.)
+  3. LAA on disk, then the mapped header restored IN MEMORY. Deterministic, not a race: the process
+     was SUSPENDED 0.75 s after creation, image base taken from the PEB (Toolhelp is unreliable
+     before loader init), MZ/PE verified, characteristics read back as 0x0102 after the write.
+     -> STILL rejected ~10 s later. So it is NOT a check of the mapped PE header.
+  4. LAA on disk, then the file swapped back under the running process (rename is legal on a running
+     image) 1.03 s after creation, on-disk sha256 confirmed identical to the original.
+     -> rejected, and the error code CHANGED to 3:0000065438.
+
+Conclusion: the validation reads the FILE, and Steam does it at launch -- at or before process
+creation, outside any window we can reach. "Application load error" does not appear anywhere in the
+binary, encrypted or otherwise, which fits: the stub asks the Steam client and the CLIENT produces
+the dialog. There is no runtime spoof for this, and the automatic LAA patch was removed from the
+injector rather than shipped.
+
+So the 2 GB budget is a hard constraint and the footprint has to fit inside it. The clearest targets
+are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
+for a quarter of the memory per step) and the per-slot transport.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
