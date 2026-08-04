@@ -3276,6 +3276,29 @@ The second symptom (scene RT wrong on a SECOND world load, black down the right 
 still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
 instrumentation now emits on every transition.
 
+**Second world load renders into a 2560x1440 box: g_RMode is NOT the source.** Measured across
+menu -> world -> menu -> world, reading the engine's own dimensions at each mismatched virtual
+(0x800) bind:
+
+    virtual target 3953x2224 != forced 4320x2224   g_RMode 4320x2224   <- first world, correct
+    virtual target  640x480  != forced 4320x2224   g_RMode  640x480    <- startup, pre-override
+    virtual target 2560x1440 != forced 4320x2224   g_RMode 4320x2224   <- SECOND world, BROKEN
+
+At the bad bind the engine's own dimensions are exactly what we forced, so re-asserting g_RMode
+cannot fix it -- and patching the pooled width/height at bind time would be worse, leaving metadata
+disagreeing with a surface that is already allocated.
+
+The shape of the numbers is the live clue: 2224 * 16/9 = 3953, so the first world's target is a 16:9
+box fitted to our buffer HEIGHT, and 2560x1440 is 16:9 as well. This target is always a 16:9 box
+sized from something that is not g_RMode and that changed between the two world loads.
+
+Also established, and it constrains the method: each world allocates a NEW pooled object
+(0x04AC2BF8, 0x04AC2C70, 0x3E602988), already initialised before we ever see it. A hardware write
+watch on a bad one is therefore both too late for that cycle and invalid for the next -- the
+allocation site is what has to be found, either by tracing the render-target creation call that
+produces the handle or by walking back statically from the shared bind consumer. That consumer,
+FEAR2.exe+0x20BA33, is identical for every size observed and is never the writer.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
