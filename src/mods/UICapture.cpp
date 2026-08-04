@@ -4,6 +4,7 @@
 
 #include <d3d9.h>
 
+#include <cmath>
 #include <cstdio>
 
 #include "Log.hpp"
@@ -153,6 +154,7 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
     if (begin) {
         // The bracket only PREPARES. Which passes inside it are the HUD is decided per pass, by
         // who issued them -- see on_pass().
+        m_prev_frame_had_fullscreen.store(m_seen_fullscreen, std::memory_order_relaxed);
         m_seen_fullscreen = false;
         m_cleared_this_frame = false;
         m_pass_seen = 0;
@@ -187,9 +189,40 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
         //
         // Width stays the budget (it is what the readback costs); the height is whatever keeps the
         // pixels square.
-        const int32_t lw_fixed = m_layer_w.load(std::memory_order_relaxed);
-        const auto lh_fit = static_cast<int32_t>(
+        int32_t lw_fixed = m_layer_w.load(std::memory_order_relaxed);
+        auto lh_fit = static_cast<int32_t>(
             (static_cast<int64_t>(lw_fixed) * height + width / 2) / width) & ~1;
+
+        // THE LAYER HAS TO FIT ITS TRANSPORT SLOT. Height follows the source aspect, so a 4:3
+        // source -- which is what the pre-world menu runs at, 640x480 -- asks for 1280x960 =
+        // 4.92 MB against 1280x720 = 3.69 MB in world. publish_ui() then rejects it every frame
+        // with "UI layer does not fit its slot", which reads as a capture failure and is not one:
+        // the swap, the downscale and the readback all succeeded. Measured at the menu as
+        // swaps=5351 with publishes=0.
+        //
+        // BOTH axes scale by the same factor. Clamping the height alone would fit the budget and
+        // silently turn a 4:3 menu into 16:9 -- a distorted picture is worse than a smaller one.
+        {
+            const int64_t max_px = static_cast<int64_t>(xr::kUiMaxBytes) / 4;
+            const int64_t want_px = static_cast<int64_t>(lw_fixed) * lh_fit;
+            if (want_px > max_px && want_px > 0) {
+                const double s = std::sqrt(static_cast<double>(max_px) /
+                                           static_cast<double>(want_px));
+                const int32_t cw = static_cast<int32_t>(lw_fixed * s) & ~1;
+                const int32_t ch = static_cast<int32_t>(lh_fit * s) & ~1;
+                if (cw > 0 && ch > 0) {
+                    LOGX("[uicap] layer %dx%d exceeds the %u-byte slot -- scaling to %dx%d",
+                         lw_fixed, lh_fit, static_cast<unsigned>(xr::kUiMaxBytes), cw, ch);
+                    lw_fixed = cw;
+                    lh_fit = ch;
+                }
+            }
+        }
+        // Width as well as height: the slot clamp above can scale BOTH, and storing only the
+        // height would leave the two disagreeing.
+        if (lw_fixed > 0) {
+            m_layer_w.store(lw_fixed, std::memory_order_relaxed);
+        }
         if (lh_fit > 0 && lh_fit != m_layer_h.load(std::memory_order_relaxed)) {
             m_layer_h.store(lh_fit, std::memory_order_relaxed);
             // The downscale surfaces are sized from the layer, so they have to go with it.
@@ -490,7 +523,9 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
 
     // A gameclient pass BEFORE any full-screen work is part of building the frame, not the HUD:
     // borrowing the target there blackened the presented image.
-    if (!m_seen_fullscreen) {
+    // DIAGNOSTIC ONLY -- previous-frame history is unsafe across menu -> world. Present solely to
+    // reach the swap/restore pair at the menu so the restore's HRESULT can be captured.
+    if (!m_seen_fullscreen && m_prev_frame_had_fullscreen.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -565,6 +600,14 @@ void UICapture::publish_layer(IDirect3DDevice9* dev) {
         m_published.store(true, std::memory_order_release);
         m_publishes.fetch_add(1, std::memory_order_relaxed);
     } else {
+        // Report WHY rather than inferring it. Three guesses at this failure were wrong -- the
+        // restore path, the readback path, and the slot budget -- and FramePublisher has recorded
+        // the reason all along.
+        static std::atomic<uint32_t> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 3) {
+            LOGX("[uicap] publish_ui rejected %dx%d pitch=%ld: %s", lw, lh,
+                 static_cast<long>(lr.Pitch), pub.last_error().c_str());
+        }
         m_failures.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -627,7 +670,29 @@ void UICapture::restore_target(IDirect3DDevice9* dev) {
     if (saved == nullptr) {
         return;
     }
-    if (SUCCEEDED(dev->SetRenderTarget(0, saved))) {
+    const HRESULT hr_restore = dev->SetRenderTarget(0, saved);
+    if (FAILED(hr_restore)) {
+        static std::atomic<uint32_t> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 3) {
+            D3DSURFACE_DESC sd{};
+            static_cast<IDirect3DSurface9*>(saved)->GetDesc(&sd);
+            D3DSURFACE_DESC od{};
+            auto* ours = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+            if (ours != nullptr) { ours->GetDesc(&od); }
+            IDirect3DSurface9* ds = nullptr;
+            D3DSURFACE_DESC dd{};
+            const HRESULT hr_ds = dev->GetDepthStencilSurface(&ds);
+            if (SUCCEEDED(hr_ds) && ds != nullptr) { ds->GetDesc(&dd); ds->Release(); }
+            LOGX("[uicap] restore FAILED hr=0x%08lX | saved %ux%u fmt=%d ms=%d | ours %ux%u fmt=%d "
+                 "ms=%d | depth %ux%u fmt=%d ms=%d (hr_ds=0x%08lX)",
+                 static_cast<unsigned long>(hr_restore), sd.Width, sd.Height,
+                 static_cast<int>(sd.Format), static_cast<int>(sd.MultiSampleType), od.Width,
+                 od.Height, static_cast<int>(od.Format), static_cast<int>(od.MultiSampleType),
+                 dd.Width, dd.Height, static_cast<int>(dd.Format),
+                 static_cast<int>(dd.MultiSampleType), static_cast<unsigned long>(hr_ds));
+        }
+    }
+    if (SUCCEEDED(hr_restore)) {
         m_restores.fetch_add(1, std::memory_order_relaxed);
     } else {
         m_failures.fetch_add(1, std::memory_order_relaxed);

@@ -42,3 +42,11 @@ Some examples being:
 * The AI constructed an enormous pipeline for directing camera movement via injecting mouse inputs with the right sensitivity to perform head tracking
 * I noticed this and pointed it towards modifying the render/aim camera directly
 * It quickly pivoted and correctly solved the issue
+
+### Interesting implementation details
+
+F.E.A.R. 2 normally runs with a 2 GB user-mode address-space limit, which became unstable with the VR mod loaded.
+
+The launcher creates an LAA-enabled copy of the executable in a suspended state. Before SteamStub begins validation, it restores the process-visible executable identity and mapped PE characteristics to those of the original executable.
+
+This gives the game a 4 GB address space without modifying the shipped executable on disk.
