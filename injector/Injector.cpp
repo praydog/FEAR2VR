@@ -27,6 +27,8 @@
 #include <vector>
 
 #include <windows.h>
+
+#include <shellapi.h>
 #include <tlhelp32.h>
 
 #include "HttpClient.hpp"
@@ -279,21 +281,140 @@ void do_status(const Config& cfg) {
     }
 }
 
+// ---- ONE STEP -----------------------------------------------------------
+//
+// Everything a person has to do to play, in a single action: bring up the OpenXR host, ask Steam
+// for the game, wait for it to appear, inject. The mod arms itself once there is a world, so there
+// is nothing after this -- no script, no HTTP, no ordering to get right.
+//
+// Waiting for the process rather than launching FEAR2.exe directly is deliberate: Steam wants to
+// start its own game (DRM, overlay, cloud saves), and hunting for the install path is a guess that
+// breaks on every library layout that isn't this machine's.
+
+// F.E.A.R. 2: Project Origin. Steam's own id -- the launcher does not need to know where the game
+// is installed, only who to ask for it.
+constexpr const char* kSteamAppId = "16450";
+
+// The host, looked for beside the injector first (release layout), then in the build tree.
+fs::path find_host(const fs::path& self_dir) {
+    const fs::path candidates[] = {
+        self_dir / "xr64.exe",
+        self_dir / ".." / ".." / "build64" / "RelWithDebInfo" / "xr64.exe",
+        self_dir / ".." / ".." / "build64" / "Release" / "xr64.exe",
+    };
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::exists(c, ec)) return fs::canonical(c, ec);
+    }
+    return {};
+}
+
+bool start_host(const fs::path& self_dir) {
+    if (find_pid("xr64.exe") != 0) {
+        printf("[launch] host already running\n");
+        return true;
+    }
+    const fs::path host = find_host(self_dir);
+    if (host.empty()) {
+        printf("[launch] xr64.exe not found next to the injector -- start it yourself\n");
+        return false;
+    }
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = host.wstring();
+    // Its own console: the host's frame loop logs continuously and would bury the launcher's output.
+    const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE,
+                                   nullptr, host.parent_path().c_str(), &si, &pi);
+    if (!ok) {
+        printf("[launch] could not start %ls (error %lu)\n", host.c_str(), GetLastError());
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    printf("[launch] host started: %ls\n", host.c_str());
+    return true;
+}
+
+bool do_launch(const Config& cfg, bool start_game, int32_t wait_seconds) {
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    const fs::path self_dir = fs::path(self).parent_path();
+
+    start_host(self_dir);
+
+    if (find_pid(cfg.process.c_str()) == 0 && start_game) {
+        const std::string url = std::string("steam://rungameid/") + kSteamAppId;
+        printf("[launch] asking Steam for the game (%s)\n", url.c_str());
+        const std::wstring wurl(url.begin(), url.end());
+        ShellExecuteW(nullptr, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    printf("[launch] waiting for %s", cfg.process.c_str());
+    uint32_t pid = 0;
+    for (int32_t elapsed = 0; elapsed < wait_seconds; ++elapsed) {
+        pid = find_pid(cfg.process.c_str());
+        if (pid != 0) break;
+        printf(".");
+        fflush(stdout);
+        Sleep(1000);
+    }
+    printf("\n");
+    if (pid == 0) {
+        printf("[launch] %s never appeared after %ds -- start it and run this again\n",
+               cfg.process.c_str(), wait_seconds);
+        return false;
+    }
+
+    // WAIT FOR gameclient.dll, NOT FOR THE PROCESS. Injecting the moment FEAR2.exe exists produces a
+    // mod that loads, hooks d3d9 and runs frames while every SDK scan fails with "gameclient.dll
+    // module unresolved" -- the game is playable, nothing reports an error, and VR never arms.
+    // gameserver.dll has a late-resolve path and recovers; gameclient.dll does not, so its absence
+    // at injection is permanent for the session. It is the module the SDK is built on, which makes
+    // it the only honest readiness signal here.
+    printf("[launch] found pid %u, waiting for gameclient.dll\n", pid);
+    bool client_up = false;
+    for (int32_t elapsed = 0; elapsed < 180; ++elapsed) {
+        if (module_loaded(pid, "gameclient.dll")) {
+            client_up = true;
+            break;
+        }
+        Sleep(1000);
+    }
+    if (!client_up) {
+        // Injecting anyway rather than refusing: a layout this check does not understand should
+        // degrade to the old behaviour, not to a launcher that will not launch. Loud, because a
+        // session that starts here is the broken one described above.
+        printf("[launch] gameclient.dll never appeared -- injecting anyway, but SDK scans will "
+               "likely fail and VR will not arm\n");
+    }
+
+    return do_inject(cfg);
+}
+
 void print_usage() {
-    printf("usage: injector.exe <--inject|--unload|--reload|--status> [--process FEAR2.exe] "
-           "[--dll path\\to\\fear2vr.dll] [--port 8798]\n");
+    printf("usage: injector.exe [--launch|--inject|--unload|--reload|--status]\n");
+    printf("  --launch   start the host, ask Steam for the game, inject when it appears (default)\n");
+    printf("  options: [--process FEAR2.exe] [--dll path\\to\\fear2vr.dll] [--port 8798]\n");
+    printf("           [--no-game] do not ask Steam to start the game, just wait for it\n");
+    printf("           [--wait N] seconds to wait for the game (default 300)\n");
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     Config cfg;
-    enum class Action { None, Inject, Unload, Reload, Status } action = Action::None;
+    enum class Action { None, Inject, Unload, Reload, Status, Launch } action = Action::None;
+    bool start_game = true;
+    int32_t wait_seconds = 300;
 
     for (int32_t i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--inject") action = Action::Inject;
+        else if (a == "--launch") action = Action::Launch;
+        else if (a == "--no-game") start_game = false;
+        else if (a == "--wait") wait_seconds = atoi(next().c_str());
         else if (a == "--unload") action = Action::Unload;
         else if (a == "--reload") action = Action::Reload;
         else if (a == "--status") action = Action::Status;
@@ -313,10 +434,9 @@ int main(int argc, char** argv) {
         cfg.dll = fs::path(self).parent_path() / "fear2vr.dll";
     }
 
-    if (action == Action::None) {
-        print_usage();
-        return 2;
-    }
+    // NO ARGUMENTS MEANS PLAY. Double-clicking the injector is the shortest path there is, and it
+    // is the one a release note can describe in a single sentence.
+    if (action == Action::None) action = Action::Launch;
 
     bool ok = false;
     switch (action) {
@@ -324,6 +444,7 @@ int main(int argc, char** argv) {
         case Action::Unload: ok = do_unload(cfg); break;
         case Action::Reload: ok = do_reload(cfg); break;
         case Action::Status: do_status(cfg); return 0;
+        case Action::Launch: ok = do_launch(cfg, start_game, wait_seconds); break;
         default: break;
     }
     return ok ? 0 : 1;

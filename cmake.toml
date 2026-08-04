@@ -114,7 +114,7 @@ sources = ["injector/Injector.cpp"]
 include-directories = ["shared"]
 compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-link-libraries = ["ws2_32"]
+link-libraries = ["ws2_32", "shell32"]
 
 [target.injector.properties]
 OUTPUT_NAME = "injector"

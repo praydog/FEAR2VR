@@ -131,6 +131,15 @@ void service_object_walk_request() {
     g_object_walk_generation.fetch_add(1, std::memory_order_release);
 }
 
+// ---- AUTO-ARM STATE, DECLARED HERE BECAUSE THE FRAME DETOUR IS ABOVE ITS DEFINITION ------------
+//
+// The sequence itself lives beside the IPC handlers it invokes, ten thousand lines down, because
+// that is where the thing it depends on is built. The frame detour only needs to know whether to
+// call it.
+std::atomic<bool> g_auto_arm{true};
+std::atomic<bool> g_armed{false};
+void arm_vr_now();
+
 int __fastcall frame_tick_detour(void* _this, void* edx) {
     Framework* fw = Framework::get();
     if (fw != nullptr) {
@@ -142,6 +151,19 @@ int __fastcall frame_tick_detour(void* _this, void* edx) {
     // ours is periodically displaced -- which is why an access violation inside our own DLL was
     // reported by WER with nothing in our log. One call per frame, and it self-heals.
     exception_handler::reassert();
+
+    // ---- ARM ITSELF, ONCE, WHEN THERE IS A WORLD TO ARM AGAINST -------------------------------
+    //
+    // Injecting is the whole interaction now: no script, no HTTP, no ordering for the user to get
+    // right. Deferred to a frame with a LOCAL PLAYER rather than done at injection, because half
+    // the sequence addresses the player -- hiding the body, anchoring the gun, recentring -- and at
+    // the main menu there is nobody to address. It costs one pointer read per frame until then.
+    if (g_auto_arm.load(std::memory_order_relaxed) && !g_armed.load(std::memory_order_relaxed)) {
+        if (sdk::PlayerMgr::local_player().has_value()) {
+            g_armed.store(true, std::memory_order_relaxed);
+            arm_vr_now();
+        }
+    }
 
     Mods::get().on_frame();
 
@@ -10538,6 +10560,77 @@ std::string build_api_json(const std::string& request_target) {
     return "{\"ok\":false,\"error\":\"unknown /api endpoint\"}";
 }
 
+// ---- ARMING, IN ONE PLACE ----------------------------------------------------------------------
+//
+// The nineteen steps tools/arm_vr.py drives, moved into the mod so that INJECTING IS ENOUGH. A
+// release cannot ask its users to run a Python script against an HTTP port, and every extra step is
+// somewhere a first run goes wrong.
+//
+// Kept as target strings rather than direct setter calls on purpose: the handlers already implement
+// every one of these, and a second C++ copy of the sequence would be free to drift from the one
+// people exercise by hand. One implementation, one place a step can be wrong.
+//
+// ORDER MATTERS and is the script's: stereo and publishing first, because the host can show nothing
+// until frames arrive, and everything after only shapes frames that already exist.
+cmdsrv::Handlers g_handlers;
+
+const char* const kArmSequence[] = {
+    "/stereo/eye?both=1&split=1&centre_x=0&centre_y=0&half_ipd=3.2",
+    "/xr/capture?stage=second_eye&divisor=1&publish=1",
+    "/xr/capture?host_pose=1",
+    "/xr/capture?paced=1",
+    "/xr/capture?level_aim=1",
+    "/xr/capture?pin_eye=1",
+    "/xr/capture?roomscale=1",
+    "/xr/capture?roomscale_body=1",
+    "/xr/hands?on=1",
+    "/vr/viewmodel?on=1",
+    "/xr/capture?gun=1",
+    "/xr/capture?locomotion=1",
+    "/xr/trigger?on=1",
+    "/xr/fire-muzzle?on=1",
+    "/xr/accuracy?scale=0.25",
+    "/render/ui?on=1",
+    "/xr/capture?hide_body=1",
+    "/xr/enable?on=1",
+    "/xr/capture?recenter=1",
+};
+
+// Routes the target the way the IPC server would, by prefix. Only the families arming uses are
+// handled; anything else is a programming error in the list above rather than a runtime condition.
+bool arm_dispatch(const char* target) {
+    const std::string t = target;
+    if (t.rfind("/stereo/", 0) == 0 && g_handlers.stereo) {
+        g_handlers.stereo(t);
+        return true;
+    }
+    if (t.rfind("/xr/", 0) == 0 && g_handlers.xr) {
+        g_handlers.xr(t);
+        return true;
+    }
+    if (t.rfind("/vr/viewmodel", 0) == 0 && g_handlers.viewmodel) {
+        g_handlers.viewmodel(t);
+        return true;
+    }
+    if (t.rfind("/render/", 0) == 0 && g_handlers.render) {
+        g_handlers.render(t);
+        return true;
+    }
+    return false;
+}
+
+void arm_vr_now() {
+    size_t ok = 0;
+    for (const char* target : kArmSequence) {
+        if (arm_dispatch(target)) {
+            ++ok;
+        } else {
+            LOGX("[arm] no handler for %s -- the sequence names a route that does not exist", target);
+        }
+    }
+    LOGX("[arm] armed %zu of %zu steps", ok, std::size(kArmSequence));
+}
+
 } // namespace
 
 Framework::Framework(void* self_module, int32_t ipc_port) : m_self(self_module), m_ipc_port(ipc_port) {}
@@ -12152,6 +12245,12 @@ bool Framework::initialize() {
     };
     handlers.engine_hook = build_engine_hook_json;
     handlers.api = build_api_json;
+    // ---- KEPT, SO ARMING CAN USE THE SAME CODE PATH AS THE IPC ------------------------------
+    //
+    // Auto-arming by re-implementing the nineteen steps in C++ would be a second copy of the
+    // sequence, free to drift from the one people actually exercise. Invoking the handlers by the
+    // same target strings means there is one implementation and one place a step can be wrong.
+    g_handlers = handlers;
     if (!cmdsrv::start(m_ipc_port, std::move(handlers))) {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);
         return false;
