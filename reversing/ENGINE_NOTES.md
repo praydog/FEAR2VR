@@ -2481,7 +2481,25 @@ Ruled out along the way: aspect ratio (tried an exact 16:9 4320x2430 -- identica
 ScreenWidth/ScreenHeight console variables (written after r_InitRender, with the originals restored
 on unload -- no change, still 0.10).
 
-What that leaves, and the next thing to try: the interface is laid out ONCE and never told the
+Measured on the published layer, with the quad photographed both ways:
+
+| | content bbox | size |
+|---|---|---|
+| normal | (24,5)-(1250,713) | 1226x708 inside 1280x720, margins all round |
+| supersampled | (75,0)-(1198,720) | 1123x720, CLIPPED at y=0 and y=720 |
+
+Two separate faults, and the smaller one was masking the shape of the larger.
+
+**Fixed: the layer did not follow the source's aspect.** It was a hardcoded 1280x720, correct only
+while the screen is 16:9. A 4320x2224 source is 1.94, and squeezing that into 1.78 compressed the HUD
+horizontally by exactly 1.778/1.942 -- predicted 0.9155, measured 1123/1226 = 0.916. The layer height
+is now derived from the source so the pixels stay square (1280x658 at this resolution).
+
+**Not fixed: the HUD is drawn larger than the buffer.** With the aspect corrected the content still
+spans the full height and clips top and bottom, so health and ammo in the bottom corners fall
+outside. The interface is laid out once and never told the screen grew.
+
+The next thing to try: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
 as announcing them.

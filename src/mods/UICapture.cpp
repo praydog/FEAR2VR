@@ -174,6 +174,33 @@ void UICapture::on_bracket(bool begin, int32_t width, int32_t height, uint32_t i
         m_surface.store(created, std::memory_order_release);
         m_width.store(width, std::memory_order_relaxed);
         m_height.store(height, std::memory_order_relaxed);
+
+        // ---- THE LAYER FOLLOWS THE SOURCE'S SHAPE ---------------------------------------------
+        //
+        // The layer height was fixed at 720 against a fixed 1280, which is only correct while the
+        // screen happens to be 16:9. Supersampling makes it 4320x2224 -- 1.94 -- and squeezing that
+        // into 1.78 compressed the HUD horizontally by 1.778/1.942. Measured on the published
+        // layer, not inferred: content 1226 px wide became 1123, a ratio of 0.916 against a
+        // predicted 0.9155.
+        //
+        // Width stays the budget (it is what the readback costs); the height is whatever keeps the
+        // pixels square.
+        const int32_t lw_fixed = m_layer_w.load(std::memory_order_relaxed);
+        const auto lh_fit = static_cast<int32_t>(
+            (static_cast<int64_t>(lw_fixed) * height + width / 2) / width) & ~1;
+        if (lh_fit > 0 && lh_fit != m_layer_h.load(std::memory_order_relaxed)) {
+            m_layer_h.store(lh_fit, std::memory_order_relaxed);
+            // The downscale surfaces are sized from the layer, so they have to go with it.
+            if (auto* s = static_cast<IDirect3DSurface9*>(
+                    m_scaled.exchange(nullptr, std::memory_order_acq_rel))) {
+                s->Release();
+            }
+            if (auto* g = static_cast<IDirect3DSurface9*>(
+                    m_stage.exchange(nullptr, std::memory_order_acq_rel))) {
+                g->Release();
+            }
+            LOGX("[uicap] layer %dx%d to match a %dx%d source", lw_fixed, lh_fit, width, height);
+        }
         LOGX("[uicap] created a %dx%d A8R8G8B8 UI target", width, height);
         return;
     }
