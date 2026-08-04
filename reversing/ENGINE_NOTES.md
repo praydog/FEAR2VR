@@ -3276,6 +3276,26 @@ The second symptom (scene RT wrong on a SECOND world load, black down the right 
 still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
 instrumentation now emits on every transition.
 
+**The allocation site for the 2560x1440 target, found statically -- no more repros needed.**
+The bind caller FEAR2.exe+0x20BA33 is inside `CLTRenderer_BeginRenderTarget` (0x60B9E3), which only
+forwards a handle it was GIVEN; the instruction after its call to `SceneRenderer_BeginRenderTarget`
+is what we were logging. Creation is a separate chain:
+
+    CLTRenderer vtable slot 37 -> sub_60B6D1(width, height, flags, &out)   __stdcall, 4 args
+                               -> Renderer_CreateRenderTarget_Impl (0x611129)
+                               -> RTHandle_Create(handle, width, height, flags)
+
+The IDB's own annotation on 0x611129 states it is the ONLY entry point through which render targets
+are created in this engine -- every D3D9 render-target texture and depth-stencil surface traces back
+here -- and lists the engine-internal callers: 0x611739 (256x256 fill-rate benchmark), 0x6126A4
+(ortho capture), 0x6129C2 (cubic env map), 0x616497 / 0x6168CC (auxiliary targets sized from the
+parent RT).
+
+So the next step is exact: hook 0x60B6D1, log width/height/flags and the caller, and the creator of
+the 2560x1440 target names itself. VERIFY THE EPILOGUE FIRST -- the decompiler types it __stdcall
+with four arguments, which means `ret 10h`, but that has to be read from the disassembly before the
+hook goes in. Guessing a convention has crashed this game twice in one session.
+
 **Second world load renders into a 2560x1440 box: g_RMode is NOT the source.** Measured across
 menu -> world -> menu -> world, reading the engine's own dimensions at each mismatched virtual
 (0x800) bind:
