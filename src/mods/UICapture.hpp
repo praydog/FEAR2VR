@@ -154,7 +154,6 @@ private:
     uintptr_t m_pass_caller[kMaxPassRecord]{};
     uint32_t m_pass_seen{0};
     bool m_seen_fullscreen{false};   // an engine full-screen pass has run this frame
-    std::atomic<bool> m_prev_frame_had_fullscreen{false};  // diagnostic only
     bool m_cleared_this_frame{false};
     std::atomic<int32_t> m_width{0};
     std::atomic<int32_t> m_height{0};
