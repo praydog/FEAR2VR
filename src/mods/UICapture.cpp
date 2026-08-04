@@ -503,6 +503,26 @@ void UICapture::swap_target(IDirect3DDevice9* dev) {
     }
     m_saved.store(current, std::memory_order_release);
 
+    // ---- WHAT VIEWPORT DID THE RE-BIND LEAVE? -------------------------------------------------
+    //
+    // SetRenderTarget resets the D3D9 viewport to the new target's full extent, discarding whatever
+    // the engine had set for this pass. If Scaleform's geometry was built against a different
+    // viewport than the one it ends up drawing through, the content lands at the wrong size --
+    // which is the open question, since the matrix it submits is already known to be correct.
+    {
+        static std::atomic<uint32_t> s_vp_logged{0};
+        if (s_vp_logged.fetch_add(1, std::memory_order_relaxed) < 4) {
+            D3DVIEWPORT9 after{};
+            const bool got = SUCCEEDED(dev->GetViewport(&after));
+            LOGX("[uicap] rebind viewport before=(%lu,%lu %lux%lu) after=(%lu,%lu %lux%lu) got=%d "
+                 "target=%dx%d",
+                 m_saved_viewport.X, m_saved_viewport.Y, m_saved_viewport.Width,
+                 m_saved_viewport.Height, after.X, after.Y, after.Width, after.Height,
+                 got ? 1 : 0, m_width.load(std::memory_order_relaxed),
+                 m_height.load(std::memory_order_relaxed));
+        }
+    }
+
     // CLEARED ONCE PER FRAME, not once per swap. The target is handed back for every engine
     // full-screen pass and taken again afterwards, so clearing on each swap would wipe the HUD
     // elements drawn before the interruption.

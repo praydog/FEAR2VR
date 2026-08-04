@@ -2756,6 +2756,34 @@ Every earlier round of this hunt assumed the engine could not scale its HUD past
 assumption is now disproven by the engine's own numbers, and the next place to look is the capture
 path this project wrote, not the game.
 
+**UICapture is not the culprit -- both halves checked.** Two candidates, both eliminated:
+
+* *Does our re-bind disturb the viewport?* No. Logged `GetViewport` either side of
+  `swap_target`'s `SetRenderTarget` at 4320x2224: `before=(0,0 4320x2224) after=(0,0 4320x2224)`,
+  identical, and equal to the target's full extent.
+* *Does the downscale lose content?* It cannot. `publish_layer` does
+  `StretchRect(surf, nullptr, scaled, nullptr)` -- WHOLE surface to WHOLE surface -- so the layer is
+  a faithful reduction of the entire target, and content sitting at the layer's bottom edge is at
+  the surface's bottom edge too.
+
+So the content is genuinely drawn small INTO a correctly-sized, correctly-viewported target, by
+Scaleform, through a matrix already proven uniform and correct.
+
+That matrix is textbook `SM_ShowAll`: scale = min(vpW/stageW, vpH/stageH) against a 25600x14400
+stage. At 2560x1440 that is min(0.1, 0.1) = 0.1; at 4320x2224 it is min(0.16875, 0.15444) = 0.15444.
+Both match what was read. The stage therefore fills the height at native, and content occupying 92.5%
+of the stage should be ~2057 px. It is 1328.
+
+**The remaining suspect is the movie's own ActionScript layout.** FEAR2's interface is AS-driven --
+the `_global.g_nMonolith*` strings are all over gameclient -- and AS that positions against
+`Stage.width`/`Stage.height` will re-flow when the viewport aspect changes, independently of the
+ShowAll matrix. Measured in stage units the content's WIDTH is constant at ~24300 while its HEIGHT
+falls 13320 -> 8598, which is a re-flow signature, not a transform one.
+
+That is where this stops being an engine-hooking problem and becomes a Scaleform one: the next step
+is the movie's stage/scale-mode configuration (`GFxMovieView::SetViewport` / `SetViewScaleMode`) and
+what stage dimensions the AS is told, not another transform in the C++ path.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
