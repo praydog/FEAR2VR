@@ -45,6 +45,7 @@
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
 #include "mods/HudGeomProbe.hpp"
+#include "mods/HudScreenDims.hpp"
 #include "mods/SceneTarget.hpp"
 #include "mods/VR.hpp"
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
@@ -10768,6 +10769,7 @@ bool Framework::initialize() {
     // on_frame runs in the same order every session.
     Mods::get().add(&HudGeomProbe::get());
     Mods::get().add(&SceneTarget::get());
+    Mods::get().add(&HudScreenDims::get());
     Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());
     // Before mods initialize, so a fault during their setup is reported rather than silent.

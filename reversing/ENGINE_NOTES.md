@@ -3023,8 +3023,10 @@ from DIFFERENT sources, and only the horizontal one follows the viewport.
 
 **SetVariable is reachable safely, and the first look says the HUD's AS inputs are not geometry.**
 The decompiler types slot 11 as `__userpurge` with a `dil` argument, which is not something to hook
-on. The prologue settles it: `mov esi, ecx` and `retn 0Ch` -- `__thiscall(this, path, value,
-setType)`, three callee-cleaned stack args. VERIFIED, not inferred, and worth doing before hooking
+on. The prologue settles it: `mov esi, ecx` and `retn 0Ch` -- ECX is an object-like input and the callee cleans
+12 bytes of stack arguments, so THREE stack args -- that much is verified. Their names and types
+(`path, value, setType`) are INFERRED from the decompilation and call sites, not proven by the
+prologue. Enough to hook safely, and worth doing before hooking
 anything given a guessed convention has already crashed this game once.
 
 Instrumented read-only at native: 129 distinct variables, every one a `_global.g_bMonolith*` option
@@ -3034,6 +3036,52 @@ never obtained and this is a first look rather than a result.
 
 Reverted: a hot-path hook on the interface's variable setter is not something to leave in for an
 inconclusive experiment.
+
+**SOLVED: the interface lays out against `g_RMode`, and nothing else.**
+
+The measurement that cracked it was converting content size back into real buffer pixels:
+
+    control 2560x1440 : content 2428 x 1332
+    native  4320x2224 : content 4107 x 1328
+
+The width scales with the screen; the height is the SAME NUMBER. And 1332/0.925 == 1440. Rewriting
+the movie's own viewport to 2560x1440 -- with the write PROVEN by reading the object back at
+`this+56` -- moved the width to exactly right and left the height fraction at 0.597 in both a
+4320x2224 and a 2560x1440 stage. A fraction that does not move when the stage moves is not a
+function of the stage.
+
+The one thing still reporting native was the engine's screen size. `ILTClient+0x2C` is a FUNCTION
+POINTER FIELD (not a vtable slot) resolving to `0x00407806`:
+
+    sub_407806(out):  test edi,edi / jz -> return 0x3C
+                      mov esi, offset g_RMode / rep movsd (0x25 dwords) / xor eax,eax / RETN
+
+A plain `retn` -- so __cdecl(void* out), caller-cleanup, NOT __thiscall despite the caller loading
+ECX. Declaring it __fastcall would imbalance the stack on every call. The body is a 37-dword copy of
+the global `g_RMode` (0x6F7540), which independently corroborates the +132/+136 width/height pair
+already derived from HUD_ComputeLayoutRect's frame table.
+
+Overriding that to 2560x1440 while supersampling is active gives, at a native 4320x2224 scene:
+
+    aspect 1.82 (control 1.82) | wfrac 0.951 (0.949) | hfrac 0.926 (0.925) | clipped FALSE
+
+Complete HUD: frame arc on all four sides, centred crosshair, health, ammo, grenades. Stereo intact
+(mean|L-R| 4.77, non-zero so both eyes genuinely differ). NO other change is required -- the movie
+viewport rewrite and the capture-target clamp were both reverted and the HUD stayed correct.
+
+**Why every previous attempt failed.** Ten mechanisms were tried at the wrong layer: the movie
+viewport (four timings), the layout rect, the clamp rect, `flt_6E34F4`, the element scale setter,
+pass selection, draw-time geometry substitution, and element vtables. All of them act AFTER the
+interface has already decided its size from `g_RMode`. This was attempted once before but scoped to
+"inside the HUD bracket", where it never fired once: the dims are queried during game-logic and
+update, never during rendering. Session-scoped is the whole difference.
+
+**Two rules paid for twice over, and both applied here.** Verify a calling convention from the
+DISASSEMBLY (`retn` vs `retn N`) before hooking -- the decompiler called this `__cdecl(void*)` while
+the caller loads ECX, and guessing wrong imbalances the stack. And range-check a resolved pointer
+before patching it: an earlier wrong RVA for `g_pILTClient` (0x1CF170 instead of 0x1FC170) landed
+inside the string "Coul" and got a junk address hooked. `try_install()` now refuses anything outside
+FEAR2.exe.
 
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
