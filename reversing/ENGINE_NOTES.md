@@ -2996,6 +2996,31 @@ half-fixes native while adding two hooks is not worth carrying.
 ActionScript first runs -- at construction (0x00581EB0) or wherever the HUD movie is created and
 handed its initial viewport -- not at Advance and not at Display.
 
+**The engine sets the stage and then overwrites it -- and holding the stage still does not fix the
+height.** Tracing `GFxMovieView::SetViewport` (0x0057E7B0) read-only across a cold load shows every
+UI movie configured TWICE:
+
+    #2 self=0x367ED808  buf 1280x720   view 1280x720   scissor 0x0        <- authored stage
+    #3 self=0x367ED808  buf 4320x2224  view 4320x2224  scissor 4320x2224  <- resized to the buffer
+
+The HUD movie is `0x367ED808`, confirmed against the pass-scoped probe. So the second call was the
+obvious culprit: it hands the interface an aspect it was never laid out for, at LOAD, before the
+ActionScript runs -- exactly the timing every earlier attempt was too late for.
+
+Suppressing it (holding buffer, view and scissor at 1280x720 from the first set onward, with a
+matching 1280x720 capture target) gives:
+
+    width fraction 0.951  against the control's 0.949   -- correct
+    height fraction 0.597 against the control's 0.925   -- UNCHANGED
+
+So the height is not a function of the movie's viewport at any timing: not per-pass, not persistent,
+not at Advance, and not from the very first configuration before any layout has run. Four timings,
+one answer. Whatever sizes the interface vertically reads something other than the GViewport.
+
+Reverted. Nine mechanisms are now ruled out by measurement, and the width being repeatedly,
+exactly right while the height never moves is the strongest remaining clue: the two are computed
+from DIFFERENT sources, and only the horizontal one follows the viewport.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
