@@ -129,9 +129,21 @@ char __fastcall issue_pass_detour(uint32_t* self, void* /*edx*/) {
                     }
                 }
             }
-            LOGX("[hudprobe] slot%zu submit=0x%08X screen=%ux%u  +108=%.2f rect(+136=%.2f "
-                 "+140=%.2f +144=%.2f +148=%.2f)",
-                 i, submit, sw, sh, g[0], g[1], g[2], g[3], g[4]);
+            // sub_5E2400 copies SIX floats from inner+152 into a GMatrix2D -- this is Scaleform
+            // GFx, and those six are the 2x3 affine that actually places the content. If the scale
+            // at +108 is right and the content is still small, this is where it is lost.
+            float m[6]{};
+            if (inner != 0) {
+                for (int j = 0; j < 6; ++j) {
+                    uint32_t bits = 0;
+                    if (read_dword(inner + 152 + 4u * static_cast<uint32_t>(j), &bits)) {
+                        std::memcpy(&m[j], &bits, sizeof(float));
+                    }
+                }
+            }
+            LOGX("[hudprobe] screen=%ux%u +108=%.3f rect(%.1f,%.1f,%.1f,%.1f) "
+                 "mtx[%.5f %.5f %.5f %.5f %.5f %.5f]",
+                 sw, sh, g[0], g[1], g[2], g[3], g[4], m[0], m[1], m[2], m[3], m[4], m[5]);
         }
     }
     auto* hook = Hooks::get().find(kPassHookName);

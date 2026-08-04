@@ -2731,6 +2731,31 @@ Nothing upstream is wrong. The next step is `sub_5E2400` -- the call that consum
 with `this+152` -- and whether the geometry it builds is cached from an earlier value rather than
 rebuilt when the scale changes.
 
+**The HUD is Scaleform GFx, and everything the engine submits is CORRECT.** `sub_5E2400` (consumed
+by the draw at 0x0057BA90) calls `GMatrix2D::SetIdentity` and then copies SIX floats from
+`inner+152` into it -- a 2x3 affine. Read at both resolutions, same scene:
+
+| buffer | +108 | viewport rect | affine (sx, shy, tx, shx, sy, ty) |
+|---|---|---|---|
+| 2560x1440 | 2.000 | (0, 0, 25600, 14400) | 0.10000, 0, 0, 0, 0.10000, 0 |
+| 4320x2224 | 3.089 | (-1185.6, 0, 26785.6, 14400) | 0.15444, 0, 183.111, 0, **0.15444**, 0 |
+
+The scale is **uniform** -- sx and sy are both 0.15444, exactly 1.5444x the 16:9 value of 0.1, which
+is 2224/1440 -- with `tx = 183.111` for the centring the widened viewport requires. (A first reading
+printed sy as "0.2" and looked non-uniform; that was a `%.1f` format rounding 0.15444, not a finding.
+Print floats you intend to compare at full precision.)
+
+So every stage the engine owns is right: the 25600x14400 canvas, the aspect-correct widened viewport,
+`screenH / 720` at +108, and a uniform affine carrying the full 1.5444x. Content submitted through
+that should render ~1.5444x larger -- 1332 px becomes ~2057 -- and it measures 1328.
+
+**That places the defect downstream of submission, which means it is most likely OURS.** UICapture
+redirects these passes into its own render target and its `swap_target` re-binds the device, which
+resets the D3D9 viewport; Scaleform's own viewport state and that re-bind are the obvious suspects.
+Every earlier round of this hunt assumed the engine could not scale its HUD past a ceiling. That
+assumption is now disproven by the engine's own numbers, and the next place to look is the capture
+path this project wrote, not the game.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
