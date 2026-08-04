@@ -3276,6 +3276,26 @@ The second symptom (scene RT wrong on a SECOND world load, black down the right 
 still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
 instrumentation now emits on every transition.
 
+**TWO creators, and only one of them is ours to blame.** The creation probe across a full cycle:
+
+    CreateRenderTarget 1024x576   flags=0xFC8  creator=gameclient.dll+0x8DC65   menu
+    CreateRenderTarget 4320x2224  flags=0xFC8  creator=gameclient.dll+0xE463D   first world, CORRECT
+    CreateRenderTarget 2560x1440  flags=0xFC8  creator=gameclient.dll+0x8DC65   second world, BROKEN
+
+So the correct full-size target comes from a DIFFERENT function (+0xE463D) than the HUD-layout-rect
+one (+0x8DC65 = sub_1008DB40). Both allocate 0xFC8 virtual targets, and on the second world the
+HUD-rect one is what ends up bound.
+
+Do NOT try to fix this by filtering GetScreenDims on its return address: it is called from inside
+the shared HUD_ComputeLayoutRect, so the immediate caller is identical for the HUD layout and for
+this render-target sizing, and excluding it would undo the HUD fix globally. The seam to act on is
+the allocation itself, where creator and flags are both known.
+
+Still unresolved and needed before changing anything: what +0xE463D is, and whether both targets are
+live at once or one supersedes the other. The RT size and the layout rect are consumed TOGETHER by
+sub_100E7D60(*v3, v4), so forcing the allocation size without the matching rect would mis-scale the
+HUD -- which is the fix that currently works and must not regress.
+
 **ROOT CAUSE of the second-world 2560x1440 scene target: our OWN HudScreenDims override.**
 The creation probe named it -- `CreateRenderTarget 1024x576 flags=0xFC8 creator=gameclient.dll+0x8DC65`
 -- and `sub_1008DB40` shows the whole thing:
