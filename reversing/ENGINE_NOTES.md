@@ -2860,6 +2860,27 @@ The watch must be armed BEFORE that -- before the world loads -- or a reflow for
 armed. Arming it in steady state and waiting, which is what was done here, can only ever report
 zero.
 
+**`inner` is a GFxMovieView, and the stage is 1280x720.** Following xrefs to the inner vtable
+`0x00687DF8` reaches its constructor at FEAR2.exe `0x00581EB0`, which sets
+`*(_DWORD *)this = &g_vtbl_GFxMovie` -- the symbol was ALREADY named in the IDB. The same
+constructor does `*(float *)(this + 108) = 1.0` and `GMatrix2D::SetIdentity((GMatrix2D *)(this + 152))`,
+independently confirming both fields this hunt had identified empirically.
+
+That reframes everything, because the units finally make sense: Scaleform works in TWIPS, 20 per
+pixel, so the 25600 x 14400 canvas is a **1280 x 720 authored stage**. The ShowAll scale follows
+exactly -- 1440/14400 = 0.1 at 2560x1440, and min(4320/25600, 2224/14400) = 0.15444 at 4320x2224, so
+the movie fills the height at both. All measured, all correct.
+
+**Retraction:** the claim that the failed geometry substitution was "the right value applied too
+late" is not supported. A zero-hit watch during steady play says the affine is not REWRITTEN per
+frame; it says nothing about when the draw CONSUMES it, and draw-time geometry is consumed at draw
+time. The substitution failing is still unexplained rather than explained.
+
+What this does buy is the right API surface. The object is a stock GFxMovieView, so its viewport and
+scale mode are ordinary Scaleform state (`SetViewport`, `SetViewScaleMode`) reachable through
+`g_vtbl_GFxMovie` -- and the movie's own ActionScript, laying out against a 1280x720 stage whose
+viewport aspect changed, is the last unexamined thing in the path.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
