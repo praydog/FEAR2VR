@@ -2405,12 +2405,29 @@ Three things had to be fixed to make it a picture rather than a black screen:
 Verified live at `4320x2224` -- larger than the 2560x1440 window -- with correct stereo parallax and
 a working desktop mirror.
 
-**It costs nothing measurable.** 101.5 fps supersampled against 101.2 baseline, same checkpoint,
-six-second samples -- 2.6x the pixels for no frame time. Which says the thing worth knowing about
-this engine: at 2560x1440 it is CPU-bound, not fill-bound, so the pixels were free all along. (A
-first reading of 143 fps was an artifact of sampling before the world settled, and repeating it is
-the only reason it is not in this file as a result. One sample of a frame rate is not a
-measurement.)
+**The cost is UNMEASURED, and the reading that said otherwise was worthless.** 101.5 fps
+supersampled against 101.2 baseline looked like 2.6x the pixels for free. Both samples were taken
+with the game ALT-TABBED, because the harness drives it from a terminal -- and the engine caps its
+frame rate when it does not have focus. 101 was the cap. Neither number describes rendering, the
+agreement between them was the cap agreeing with itself, and the 143 outlier was most likely the one
+moment the window did have focus.
+
+`FocusKeeper` keeps the game RUNNING when unfocused; it does not lift the rate cap, which is a
+different mechanism. This matters well beyond measurement: a wearer in a headset is by definition
+not looking at the desktop window.
+
+Repeated with the window FORCED TO THE FOREGROUND, the cap lifts and the numbers move -- 138 fps
+supersampled, 117 baseline. Which is still supersampling coming out AHEAD, and that is the tell:
+2.6x the pixels does not get cheaper, so the comparison is measuring something other than the thing
+it names. The two configurations cannot be toggled inside one session (the main view's target is
+built once at startup), so each number comes from a separate launch, and nothing holds the scene
+identical across them.
+
+**No cost figure for supersampling is recorded here, in either direction.** There is a plausible
+mechanism for it being genuinely cheaper -- the virtual path StretchRects the back buffer into the
+handle's texture on EVERY unbind, and taking the main view offscreen skips that resolve entirely,
+possibly several times a frame -- but plausible is not measured. Settling it needs a fixed camera
+and a repeatable scene, and the honest answer for now is the headset.
 
 **What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
 the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a
