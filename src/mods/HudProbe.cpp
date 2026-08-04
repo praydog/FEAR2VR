@@ -3,10 +3,13 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstring>
 
 #include <d3d9.h>
 
+#include "Hooks.hpp"
 #include "Log.hpp"
+#include "sdk/Modules.hpp"
 #include "sdk/PlayerMgr.hpp"
 #include "sdk/Render.hpp"
 
@@ -39,6 +42,81 @@ bool read_rect(uintptr_t holder, int32_t out[4]) {
     }
 }
 
+
+// Screen2D_IssuePass_Shared. Its loop walks four element slots -- type at this[24] stepping 8, and
+// the element pointer at this[61] stepping 6, both read straight off the decompile. Type 1 means
+// the element draws ITSELF through its own vtable +24 and the pass builds no geometry, so whichever
+// slot is type 1 owns the arcs' geometry.
+//
+// ONE hook, on the pass, rather than four on the element vtables: the pass's convention is already
+// verified (__thiscall, no args) and hooking it reaches every element through the same object,
+// which is the smaller crash surface for the same information.
+constexpr uintptr_t kIssuePassSharedRva = 0x30E10;
+constexpr const char* kPassHookName = "Screen2D_IssuePass_Shared";
+constexpr size_t kTypeIndex = 24;
+constexpr size_t kTypeStride = 8;
+constexpr size_t kElemIndex = 61;
+constexpr size_t kElemStride = 6;
+constexpr uintptr_t kScaleGlobalRva = 0x2E34F4;  // flt_6E34F4 in FEAR2.exe
+
+std::atomic<bool> g_pass_hooked{false};
+std::atomic<uint32_t> g_pass_logged{0};
+
+// POD-only and SEH-guarded: engine pointers read off a live object mid-frame.
+bool read_dword(uintptr_t at, uint32_t* out) {
+    __try {
+        *out = *reinterpret_cast<const uint32_t*>(at);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+char __fastcall issue_pass_detour(uint32_t* self, void* /*edx*/) {
+    if (self != nullptr && g_pass_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+        uint32_t sw = 0;
+        uint32_t sh = 0;
+        if (const auto pp = sdk::Render::present_params()) {
+            sw = pp->BackBufferWidth;
+            sh = pp->BackBufferHeight;
+        }
+        for (size_t i = 0; i < 4; ++i) {
+            uint32_t type = 0;
+            uint32_t elem = 0;
+            if (!read_dword(reinterpret_cast<uintptr_t>(&self[kTypeIndex + i * kTypeStride]),
+                            &type) ||
+                !read_dword(reinterpret_cast<uintptr_t>(&self[kElemIndex + i * kElemStride]),
+                            &elem)) {
+                continue;
+            }
+            uint32_t vtbl = 0;
+            uint32_t draw = 0;
+            if (elem != 0 && read_dword(elem, &vtbl) && vtbl != 0) {
+                read_dword(vtbl + 24, &draw);
+            }
+            // flt_6E34F4 gates the element's own scale setter: the draw wrapper at FEAR2.exe
+            // 0x46F715 only pushes a scale through vtable +24 when this global is >= 0. So it is
+            // an override the engine already supports and normally leaves off.
+            float scale_global = -1.0f;
+            const auto* exe = sdk::Modules::get().exe();
+            if (exe != nullptr && exe->base != 0) {
+                uint32_t bits = 0;
+                if (read_dword(exe->base + kScaleGlobalRva, &bits)) {
+                    std::memcpy(&scale_global, &bits, sizeof(scale_global));
+                }
+            }
+            LOGX("[hudprobe] slot%zu type=%u elem=0x%08X vtbl=0x%08X draw=0x%08X screen=%ux%u "
+                 "scale_global=%.4f",
+                 i, type, elem, vtbl, draw, sw, sh, scale_global);
+        }
+    }
+    auto* hook = Hooks::get().find(kPassHookName);
+    if (hook == nullptr) {
+        return 1;
+    }
+    return hook->original<char(__fastcall*)(uint32_t*, void*)>()(self, nullptr);
+}
+
 }  // namespace
 
 HudProbe& HudProbe::get() {
@@ -52,6 +130,16 @@ void HudProbe::on_frame() {
     if ((g_tick.fetch_add(1, std::memory_order_relaxed) % 60u) != 0) {
         return;
     }
+    if (!g_pass_hooked.load(std::memory_order_acquire)) {
+        const auto* gc = sdk::Modules::get().game_client();
+        if (gc != nullptr && gc->base != 0 &&
+            Hooks::get().install(kPassHookName,
+                                 reinterpret_cast<void*>(gc->base + kIssuePassSharedRva),
+                                 reinterpret_cast<void*>(&issue_pass_detour))) {
+            g_pass_hooked.store(true, std::memory_order_release);
+        }
+    }
+
     const auto player = sdk::PlayerMgr::local_player();
     if (!player.has_value() || player->holder == 0) {
         return;
@@ -99,4 +187,29 @@ HudProbe::State HudProbe::state() const {
     s.screen_w = g_screen_w.load(std::memory_order_relaxed);
     s.screen_h = g_screen_h.load(std::memory_order_relaxed);
     return s;
+}
+
+void HudProbe::set_scale(float v) {
+    // Writes flt_6E34F4, which the HUD element's draw wrapper (FEAR2.exe 0x46F715) consults every
+    // frame: at >= 0 it pushes the value through the element's own scale setter (vtable +24), and
+    // below 0 it leaves the element alone. So this is the engine's OWN override, not a patch --
+    // -1 restores stock behaviour exactly.
+    const auto* exe = sdk::Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return;
+    }
+    uint32_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(bits));
+    *reinterpret_cast<uint32_t*>(exe->base + kScaleGlobalRva) = bits;
+    LOGX("[hudprobe] ui scale global -> %.4f", v);
+}
+
+float HudProbe::scale() const {
+    const auto* exe = sdk::Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return -1.0f;
+    }
+    float v = -1.0f;
+    std::memcpy(&v, reinterpret_cast<const void*>(exe->base + kScaleGlobalRva), sizeof(v));
+    return v;
 }

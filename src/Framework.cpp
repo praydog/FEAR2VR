@@ -9991,6 +9991,19 @@ std::string build_render_json(const std::string& request_target) {
         return out;
     }
 
+    if (route == "/render/hudscale") {
+        auto& hp = HudProbe::get();
+        if (q.find("v") != q.end()) {
+            hp.set_scale(static_cast<float>(webapi_query_double(q, "v", -1.0)));
+        }
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true).f("scale", hp.scale(), 4);
+        }
+        return out;
+    }
+
     if (route == "/render/ui") {
         auto& ui = UICapture::get();
         if (q.find("on") != q.end()) {

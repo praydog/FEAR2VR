@@ -2667,6 +2667,39 @@ quad each one submits at 2560x1440 and again at 4320x2224, and the one whose wid
 screen HEIGHT is the defect. That is a direct read of submitted geometry rather than an inference
 from a bounding box, which is what every earlier round got wrong.
 
+**The type-1 element, and what flt_6E34F4 actually is.** One read-only hook on
+`Screen2D_IssuePass_Shared`, walking its four slots rather than hooking four element vtables, at
+4320x2224:
+
+    slot0 type=1 elem=0x09B00A10 vtbl=0x00678640 draw=0x0046F715   <- the whole HUD
+    slot1..3 type=0, null
+
+ONE element draws the entire interface, and its draw is in FEAR2.exe (`0x0046F715`), not gameclient.
+That wrapper consults a global the engine already ships:
+
+    if (flt_6E34F4 >= 0.0) {                    // FEAR2.exe 0x6E34F4, reads -1.0 stock
+        if (!approx_equal(flt_6E34F4, vtbl[25]()))   // getter 0x0046F2E2
+            vtbl[24](this, flt_6E34F4);              // setter 0x0046F5B0
+    }
+
+The setter (`0x46F5B0` -> `sub_46D83A`) clamps between `flt_678180` = 1e-6 and `flt_678184` = 1e6 --
+effectively unbounded -- and stores the float at **element + 24** (`this[6]`).
+
+Do NOT call it a UI scale. Swept live through `/render/hudscale`, the behaviour is not a uniform
+scale at all: HEIGHT changes while WIDTH stays at ~1115 px throughout, which a scale cannot do.
+
+    -1.0 stock   natural size
+     0.45..1.0   393 px tall, identical at every value -- no growth anywhere below 1
+     2.0         126 px tall
+
+Height-only response, monotonically smaller as the value rises, with a floor at the natural size.
+That is the signature of a DEPTH or distance, not a magnification, and it means the field cannot
+enlarge an interface that is already too small for the buffer. Fifth mechanism ruled out.
+
+The unexamined call is the element's real draw: `0x0046F715` ends in
+`(*(this[1] vtable + 116))(this[1])`, which is what submits the geometry. Nothing indirect remains
+between that and the vertices, so it is where the next session starts.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

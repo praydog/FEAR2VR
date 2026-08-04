@@ -39,6 +39,10 @@ public:
     };
     State state() const;
 
+    // The engine's own opt-in UI scale override (flt_6E34F4). Negative restores stock behaviour.
+    void set_scale(float v);
+    float scale() const;
+
 private:
     HudProbe() = default;
 };
