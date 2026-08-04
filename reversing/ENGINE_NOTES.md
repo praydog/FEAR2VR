@@ -3213,7 +3213,40 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
-**Initial main menu has no VR quad: the Screen2D pass is never ISSUED, measured not inferred.**
+**Initial main menu: the menu and the HUD share ONE draw wrapper; only the bracket differs.**
+Runtime provenance, caught by logging the return address inside GFxMovieView::Display:
+
+    [trace] gfx Display #0 movie=0x1A404808 caller=FEAR2.exe+0x6F76A
+
+`0x0046F76A` is inside `sub_46F715` -- the type-1 Scaleform draw wrapper this project already
+mapped. Its tail confirms the whole chain statically:
+
+    46f762  mov ecx, [esi+4]          ; the inner object
+            mov eax, [ecx]            ; its vtable
+    46f767  call dword ptr [eax+74h]  ; 0x74/4 = slot 29 = Display
+    46f76a                            ; <- exactly the logged return address
+
+So the pre-world menu is drawn by the SAME function as the in-world HUD. Nothing about the drawing
+differs; what differs is context, and UICapture requires two things that are both absent at the
+menu:
+
+  1. a Screen2D pass bracket -- measured `seen=0`, the pass is never issued pre-world, and
+  2. a `gameclient.dll` caller for `from_game` -- but this caller is FEAR2.exe.
+
+Either alone would be enough to miss it. That is why the quad appears only after a world has
+existed, and keeps working when you return to the menu.
+
+The fix therefore is a second bracket source: treat `sub_46F715` as a UI bracket when no Screen2D
+pass is active. `sub_46F715` is `__thiscall(void* this)` with NO stack arguments (its frame carries
+only three float locals and the return address), and this project has hooked it safely before -- so
+this is not the hazardous path.
+
+WHAT COST ME A CRASH GETTING HERE: I hooked `Display` itself (0x0057BA90) as
+`__thiscall(this, arg)` without reading its epilogue, and it took the game down. The rule was
+already written in this file after the identical mistake with `sub_407806`, and I broke it anyway.
+The provenance above is worth having; the way I got it was not.
+
+
 Two candidate causes had to be separated, because they need opposite fixes: the pass is never
 issued, or it IS issued and UICapture's `from_game` classifier rejects every one (the menu being
 drawn from FEAR2.exe rather than gameclient.dll would do exactly that). `swaps=0` cannot tell them
