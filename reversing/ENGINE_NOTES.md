@@ -3063,7 +3063,16 @@ already derived from HUD_ComputeLayoutRect's frame table.
 
 Overriding that to 2560x1440 while supersampling is active gives, at a native 4320x2224 scene:
 
-    aspect 1.82 (control 1.82) | wfrac 0.951 (0.949) | hfrac 0.926 (0.925) | clipped FALSE
+    layer 1280x658 (1.945) | aspect 1.82 (control 1.82) | hfrac 0.927 (0.925) | clipped FALSE
+    wfrac 0.867 -- and that is NOT a shrink. If the HUD is unchanged and only the screen got
+    wider, the predicted width fraction is 0.949 * 1.778/1.942 = 0.869. Measured 0.867. Same
+    size, same shape, wider screen around it. Forcing occupancy back to 0.949 would stretch the
+    HUD horizontally by 9%. The layer is sized for square pixels (lh_fit = lw * h / w), so its
+    1.945 matches the scene's 1.942 and it composites undistorted.
+
+    (A 0.951 width fraction WAS measured during this work, but that was the three-change stack --
+    movie-viewport rewrite plus a 2560x1440 capture target -- not the committed single-hook fix.
+    Recorded here because it was briefly reported as the committed result and it was not.)
 
 Complete HUD: frame arc on all four sides, centred crosshair, health, ammo, grenades. Stereo intact
 (mean|L-R| 4.77, non-zero so both eyes genuinely differ). NO other change is required -- the movie
