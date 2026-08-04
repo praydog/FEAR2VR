@@ -282,10 +282,14 @@ void load_settings() {
     }
 
     // Permille rather than a float: GetPrivateProfileInt cannot read one, and a second parser for a
-    // single number is not worth writing. Defaulting to 1000 rather than 0 means a first run
-    // supersamples at exactly what the headset asked for, which is the point of the feature -- set
-    // it lower in fear2vr.ini if the frame time does not allow it.
-    const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 1000, path);
+    // single number is not worth writing.
+    //
+    // DEFAULT OFF. Shipping this on produced a back buffer with THREE panels -- a raw pre-post scene
+    // across the left half, and the engine's post-processed pair squeezed into the right -- so the
+    // host's 50% slice handed one raw image to the left eye and two small ones to the right. The
+    // composite below blits the scene target BEFORE the engine's post chain has run, and the engine
+    // then draws its own result over part of it. Until that is understood, this stays off.
+    const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 0, path);
     if (w == 0 || h == 0 || permille == 0) {
         LOGX("[scenetarget] no per-eye size known (is xr64.exe running?) -- drawing at the back "
              "buffer");

@@ -2467,6 +2467,33 @@ started with no host at all. So xr64.exe writes the runtime's recommended per-ey
 before the game, so the file is always there first. `fear2vr.ini` beside the DLL overrides both the
 size and the multiplier for anyone who wants to.
 
+### Why the offscreen main view produced THREE panels -- the invariant 0x800 exists to hold
+
+Shipped on, the supersampled path put a raw pre-post scene across the left half of the back buffer
+and the engine's post-processed pair squeezed into the right, so the host's 50% slice handed one raw
+image to the left eye and two small ones to the right. Reverting to the back buffer restored a
+correct picture AND correct timewarp.
+
+The layout names the cause exactly. `RTHandle_ResolveBackBufferRectToTexture0` -- the thing the
+virtual path does on unbind -- copies **only the pass's own sub-rect** out of the back buffer into
+the handle's texture. So under `0x800` every pass's texture contains EXACTLY THAT PASS'S PIXELS, and
+a post pass that samples the whole texture is sampling one eye. That is what the bit is for.
+
+Clearing it broke that. One shared target holding a side-by-side pair means the handle's texture now
+contains BOTH eyes, so the post pass -- which samples the entire texture and draws it into the pass
+viewport -- rendered a squeezed `[L|R]` into the right-half viewport of the second eye, on top of the
+raw full-width blit this mod had already put there. Three panels, and both halves wrong in different
+ways.
+
+The consequence for the design: **a shared side-by-side scene target is not compatible with this
+engine's post chain.** Each pass needs a target containing only its own eye, which is the per-eye
+capture the plan above already called for and the reason it called for it.
+
+Still open, and the reason per-eye targets alone are not obviously sufficient: the post pass DRAWS
+INTO the back buffer, so the final composited image is back-buffer sized no matter how large the
+scene target was. Supersampling the scene alone buys anti-aliasing, not native per-eye resolution.
+Where the post chain writes, and what decides its size, is the next thing to establish.
+
 **What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
 the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a
 real quality win, and free anti-aliasing) rather than the full 2160x2224 per eye. Reading the scene
