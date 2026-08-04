@@ -203,6 +203,27 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
                          "pooled=0x%08IX watch=/watch/arm?addr=0x%08IX&size=4&type=write "
                          "bind_caller=%s+0x%IX",
                          pw, ph, want_w, want_h, h, pooled, pooled + kPooledWidth, where, rel);
+
+                    // Each world allocates a NEW pooled object -- 0x04A62C70 at startup versus
+                    // 0x3AC6D420 on the second world -- so a watch armed on the bad one is always
+                    // too late for the next cycle, and its address dies with the process.
+                    //
+                    // Cheaper discriminator first: does the engine's OWN dimension source still
+                    // hold our override at this moment? g_RMode is what init_render_detour rewrote,
+                    // and 2560x1440 looks far more like a configured resolution being re-read than
+                    // anything derived from a 4320x2224 buffer. If g_RMode still reads 4320x2224
+                    // here then the size comes from somewhere else and only a write watch will find
+                    // it; if it reads 2560x1440 then something put it back and re-asserting it is
+                    // the fix.
+                    const auto* exe_m = sdk::Modules::get().exe();
+                    if (exe_m != nullptr && exe_m->base != 0) {
+                        const auto rm_w =
+                            *reinterpret_cast<const uint32_t*>(exe_m->base + kRMode + kRModeWidth);
+                        const auto rm_h =
+                            *reinterpret_cast<const uint32_t*>(exe_m->base + kRMode + kRModeHeight);
+                        LOGX("[trace]   g_RMode says %ux%u at this bind (we forced %ux%u)", rm_w,
+                             rm_h, want_w, want_h);
+                    }
                 }
             }
 
