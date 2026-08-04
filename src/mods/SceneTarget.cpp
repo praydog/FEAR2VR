@@ -64,6 +64,11 @@ std::atomic<uint32_t> g_rec_w{0};
 std::atomic<uint32_t> g_rec_h{0};
 std::atomic<uint64_t> g_overrides{0};
 
+// Set by anything that reshapes the device; consumed by the next frame that has one.
+std::atomic<bool> g_trace_pending{false};
+std::atomic<uint64_t> g_transition{0};
+char g_trace_why[64]{};
+
 float load_scale() {
     const uint32_t bits = g_scale_bits.load(std::memory_order_relaxed);
     float f = 0.0f;
@@ -170,6 +175,7 @@ int __cdecl init_render_detour(const void* mode) {
         auto* const mw = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeWidth);
         auto* const mh = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeHeight);
         LOGX("[scenetarget] engine believed %ux%u -> %ux%u", *mw, *mh, w, h);
+        SceneTarget::get().note_transition("InitRender");
 
         // SAVE BEFORE OVERWRITING, AND ONLY ONCE. This used to store *mw/*mh AFTER assigning the
         // override to them, so the "saved originals" were the supersampled values -- restoring them
@@ -210,6 +216,7 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
     const uint32_t rh = g_rec_h.load(std::memory_order_relaxed);
 
     LOGX("[scenetarget] present params %dx%d windowed=%d", width, height, windowed);
+    SceneTarget::get().note_transition("SetPresentationParams");
 
     if (scale > 0.0f && rw != 0 && rh != 0) {
         if (windowed != 0) {
@@ -377,6 +384,39 @@ void SceneTarget::set_recommended(uint32_t per_eye_w, uint32_t per_eye_h) {
 float SceneTarget::scale() const { return load_scale(); }
 uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_relaxed); }
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
+void SceneTarget::note_transition(const char* why) {
+    const auto n = g_transition.fetch_add(1, std::memory_order_relaxed) + 1;
+    strncpy_s(g_trace_why, why, _TRUNCATE);
+    g_trace_pending.store(true, std::memory_order_release);
+    LOGX("[trace] transition #%llu via %s", static_cast<unsigned long long>(n), why);
+}
+
+// Reports what the device ACTUALLY has, rather than what we asked for. The two symptoms both look
+// like a disagreement between the buffer and what is drawn into it, and only the live values can
+// show that.
+void SceneTarget::trace_if_pending(void* d3d9_device) {
+    if (!g_trace_pending.exchange(false, std::memory_order_acq_rel) || d3d9_device == nullptr) {
+        return;
+    }
+    auto* dev = static_cast<IDirect3DDevice9*>(d3d9_device);
+    IDirect3DSurface9* bb = nullptr;
+    D3DSURFACE_DESC bd{};
+    if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb != nullptr) {
+        bb->GetDesc(&bd);
+        bb->Release();
+    }
+    D3DVIEWPORT9 vp{};
+    dev->GetViewport(&vp);
+    IDirect3DSurface9* rt = nullptr;
+    D3DSURFACE_DESC rd{};
+    if (SUCCEEDED(dev->GetRenderTarget(0, &rt)) && rt != nullptr) {
+        rt->GetDesc(&rd);
+        rt->Release();
+    }
+    LOGX("[trace] after %s: backbuffer %ux%u | rendertarget %ux%u | viewport %ux%u at (%u,%u)",
+         g_trace_why, bd.Width, bd.Height, rd.Width, rd.Height, vp.Width, vp.Height, vp.X, vp.Y);
+}
+
 uint64_t SceneTarget::overrides() const { return g_overrides.load(std::memory_order_relaxed); }
 
 

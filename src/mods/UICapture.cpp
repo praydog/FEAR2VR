@@ -1,5 +1,7 @@
 #include "UICapture.hpp"
 
+#include "SceneTarget.hpp"
+
 #include <d3d9.h>
 
 #include <cstdio>
@@ -250,6 +252,28 @@ void UICapture::on_present() {
         free_device_resources();
         m_device_lost.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+
+    // Live device geometry after any reshape -- what the buffer/RT/viewport ACTUALLY are.
+    SceneTarget::get().trace_if_pending(dev);
+
+    // ---- IS THE MENU EVEN BEING CAPTURED? --------------------------------------------------
+    // "No quad at the initial main menu, but a working one after returning from a world" has two
+    // very different explanations: the UI is never captured, or it is captured and never
+    // published. A viewport trace cannot tell them apart, so report both counters -- once a
+    // second, so a whole session stays readable.
+    {
+        static std::atomic<uint64_t> last_report{0};
+        const auto now = static_cast<uint64_t>(GetTickCount64() / 1000);
+        if (last_report.exchange(now, std::memory_order_relaxed) != now) {
+            LOGX("[trace] ui: swaps=%llu publishes=%llu failures=%llu layer=%dx%d target=%dx%d",
+                 static_cast<unsigned long long>(m_swaps.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(m_publishes.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(m_failures.load(std::memory_order_relaxed)),
+                 layer_width(), layer_height(),
+                 m_width.load(std::memory_order_relaxed),
+                 m_height.load(std::memory_order_relaxed));
+        }
     }
 
     publish_layer(dev);

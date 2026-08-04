@@ -78,6 +78,18 @@ public:
     uint32_t target_w() const;
     uint32_t target_h() const;
     uint64_t overrides() const;
+
+    // ---- TRANSITION TRACING ---------------------------------------------------------------
+    // Two symptoms need evidence rather than theory: no VR quad at the INITIAL main menu (but a
+    // working one after returning from a world), and a scene render target that comes back the
+    // wrong size on a SECOND world load -- black down the right and bottom, i.e. content drawn
+    // smaller than the surface holding it.
+    //
+    // Every device-shaping call marks a transition; the next frame with a device in hand reports
+    // the LIVE back buffer and viewport. Bounded to a handful of lines per transition so a play
+    // session stays readable.
+    void note_transition(const char* why);
+    void trace_if_pending(void* d3d9_device);
     // The size the main view is actually rendering at, when the override is active. Everything that
     // recognised the main view by comparing against the BACK BUFFER has to ask this instead: once
     // the scene draws into its own target, the back buffer's size stops describing the scene at all

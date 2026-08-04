@@ -3213,6 +3213,23 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
+**Initial main menu has no VR quad: the UI bracket never begins, and sizing is NOT involved.**
+Traced at the initial menu, before any world:
+
+    [trace] after InitRender: backbuffer 4320x2224 | rendertarget 4320x2224 | viewport 4320x2224 at (0,0)
+    [trace] ui: swaps=0 publishes=0 failures=0 layer=1280x720 target=0x0
+
+SceneTarget is armed and every dimension agrees, so the override is not the problem. On the UI side
+`failures=0` with `swaps=0` and a `0x0` target rules out the two obvious stories: nothing is erroring
+and nothing is being captured-then-dropped. The pass bracket is simply never entered before a world
+exists -- so whatever drives it (the Screen2D pass hook) either is not installed yet or the menu is
+drawn through a path that does not reach it. That is the next thing to read, and it is a question
+about the hook's installation timing rather than about geometry.
+
+The second symptom (scene RT wrong on a SECOND world load, black down the right and bottom) is
+still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
+instrumentation now emits on every transition.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
