@@ -2647,6 +2647,26 @@ error cancels; a 1.94-aspect buffer separates them and exposes it. This is why e
 fine at 2560x1440 and every wide one failed, and why no input override could ever have fixed it --
 the inputs were right and the geometry consuming them is not.
 
+**Where the geometry is actually built.** `Screen2D_IssuePass_Shared` (gameclient.dll 0x10030E10)
+walks four element slots and branches on the element's type:
+
+    type 3 -> builds a quad ITSELF, and does so CORRECTLY:
+        ILTClient+52 fills (screenW, screenH)
+        h = screenW * imgH / imgW              // fit to width
+        if (h > screenH) { h = screenH; w = screenH * imgW / imgH; }   // else fit to height
+        quad at ((screenW-w)/2, (screenH-h)/2, w, h)   // centred, aspect preserved
+    type 1 -> calls the ELEMENT'S OWN draw, vtable +24, and builds no geometry here
+
+That type-3 path is a textbook aspect-preserving letterbox fit and cannot produce the observed
+stretch. So the frame arcs are NOT drawn by it -- they are type 1, drawing themselves through their
+own vtable +24, and their geometry lives in the element, not in the pass.
+
+That is the trap target, and it is now a specific one: the element vtables reached from this pass are
+already recorded above (0x101C9A1C, 0x101D25F0, 0x101DBF04, 0x101DC75C). Hook +24 on each, log the
+quad each one submits at 2560x1440 and again at 4320x2224, and the one whose width follows the
+screen HEIGHT is the defect. That is a direct read of submitted geometry rather than an inference
+from a bounding box, which is what every earlier round got wrong.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
