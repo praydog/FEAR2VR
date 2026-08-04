@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <d3d9.h>
+#include <intrin.h>
 
 #include "Hooks.hpp"
 #include "Log.hpp"
@@ -66,6 +67,9 @@ std::atomic<uint64_t> g_overrides{0};
 
 // Set by anything that reshapes the device; consumed by the next frame that has one.
 std::atomic<bool> g_trace_pending{false};
+// What we last forced the back buffer to, so a virtual target that disagrees can be spotted.
+std::atomic<uint32_t> g_last_forced_w{0};
+std::atomic<uint32_t> g_last_forced_h{0};
 std::atomic<uint64_t> g_transition{0};
 char g_trace_why[64]{};
 
@@ -129,8 +133,49 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
         const uint32_t flags = *reinterpret_cast<const uint32_t*>(h + kHandleFlags);
         const auto pooled = *reinterpret_cast<const uintptr_t*>(h + kHandlePooled);
         if (pooled != 0) {
-            note(flags, *reinterpret_cast<const uint16_t*>(pooled + kPooledWidth),
-                 *reinterpret_cast<const uint16_t*>(pooled + kPooledHeight));
+            const uint32_t pw = *reinterpret_cast<const uint16_t*>(pooled + kPooledWidth);
+            const uint32_t ph = *reinterpret_cast<const uint16_t*>(pooled + kPooledHeight);
+
+            // ---- WHO REBUILDS THE VIRTUAL TARGET, AND AT WHAT SIZE -----------------------------
+            //
+            // Measured across menu -> world -> menu -> world: the first world binds a virtual
+            // (0x800) target at 4320x2224 and looks right; the SECOND binds one at 2560x1440, with
+            // no SetPresentationParams or InitRender transition anywhere near it. A 2560x1440
+            // extent inside a 4320x2224 back buffer is 59% of the width and 65% of the height --
+            // black down the right and bottom, on screen and in the headset.
+            //
+            // This point is READ-ONLY on purpose. By the time a bind happens the surface behind the
+            // handle is already allocated, so rewriting the dimensions here would only falsify the
+            // metadata and invite out-of-bounds rendering. What is needed is the ALLOCATION site,
+            // so log the caller and the handle identity and go find it.
+            //
+            // Blanket-forcing every 0x800 bind would be wrong anyway: legitimate ones appear at
+            // other sizes (3953x2224 early on).
+            if ((flags & 0x800u) != 0 && g_overrides.load(std::memory_order_relaxed) != 0) {
+                static std::atomic<uint64_t> reported{0};
+                const uint32_t want_w = g_last_forced_w.load(std::memory_order_relaxed);
+                const uint32_t want_h = g_last_forced_h.load(std::memory_order_relaxed);
+                if (want_w != 0 && (pw != want_w || ph != want_h) &&
+                    reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                    const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+                    const auto* gc = sdk::Modules::get().game_client();
+                    const auto* exe = sdk::Modules::get().exe();
+                    const char* where = "?";
+                    uintptr_t rel = ret;
+                    if (gc != nullptr && gc->base != 0 && ret >= gc->base &&
+                        ret < gc->base + gc->size) {
+                        where = "gameclient.dll"; rel = ret - gc->base;
+                    } else if (exe != nullptr && exe->base != 0 && ret >= exe->base &&
+                               ret < exe->base + exe->size) {
+                        where = "FEAR2.exe"; rel = ret - exe->base;
+                    }
+                    LOGX("[trace] virtual target %ux%u != forced %ux%u | handle=0x%08IX "
+                         "pooled=0x%08IX caller=%s+0x%IX",
+                         pw, ph, want_w, want_h, h, pooled, where, rel);
+                }
+            }
+
+            note(flags, pw, ph);
             g_binds.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -227,6 +272,8 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
 
             width = w;
             height = h;
+            g_last_forced_w.store(static_cast<uint32_t>(w), std::memory_order_relaxed);
+            g_last_forced_h.store(static_cast<uint32_t>(h), std::memory_order_relaxed);
             g_overrides.fetch_add(1, std::memory_order_relaxed);
         } else {
             // Fullscreen uses DISCARD and must name a real display mode, so an off-display size
