@@ -3213,6 +3213,26 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
+**RETRACTED: "the Screen2D pass is never issued at the menu". It is, thousands of times.**
+That finding came from a harness fault, not the game. `UICapture::m_enabled` defaults to FALSE and
+is only ever set by the HTTP route `/render/ui?on=1`; my menu runs never called it, so `on_pass()`
+returned at its first line and `on_bracket()` at its first check. Every "seen=0 / target=0x0"
+measurement was of a disabled module.
+
+With capture actually enabled, at the initial menu:
+
+    seen=5160  swaps=0  publishes=0  failures=859  layer=1280x960  target=640x480
+
+and `/render/ui` reports the pass callers as gameclient.dll. So the pass IS issued pre-world, the
+`from_game` classifier is NOT rejecting it, and a target IS created. The real signal is swaps=0
+alongside a failures count climbing in step with the passes -- a swap that fails every time, most
+likely in `swap_target()` itself.
+
+This invalidates the menu-bracket work built on top of it: a second bracket source on sub_46F715 was
+solving a problem that does not exist. The remaining lesson is procedural -- three commits asserted
+"measured, not inferred" about a module that was switched off, and the counters that would have
+caught it (failures, target size) were in the same log line the whole time.
+
 **Initial main menu: the menu and the HUD share ONE draw wrapper; only the bracket differs.**
 Runtime provenance, caught by logging the return address inside GFxMovieView::Display:
 
