@@ -2881,6 +2881,43 @@ scale mode are ordinary Scaleform state (`SetViewport`, `SetViewScaleMode`) reac
 `g_vtbl_GFxMovie` -- and the movie's own ActionScript, laying out against a 1280x720 stage whose
 viewport aspect changed, is the last unexamined thing in the path.
 
+**The GFxMovieView vtable, partially mapped.** `g_vtbl_GFxMovie` at FEAR2.exe `0x00687DF8`, 45
+slots, DWORD-indexed. Verified by decompile:
+
+| slot | +off | address | what |
+|---|---|---|---|
+| 2 | 8 | 0x5773E0 | forwards to `this[9]` vtable +252 |
+| 5 | 20 | 0x579C60 | GotoLabeledFrame (already named) |
+| 11 | 44 | 0x5817A0 | SetVariable (already named) |
+| 12 | 48 | 0x57BDD0 | a variable GET by path |
+| 13 | 52 | 0x5818B0 | SetVariableArray (already named) |
+| 18 | 72 | 0x57DE90 | Invoke (already named) |
+| 22 | 88 | 0x5797F0 | **SetViewScaleMode** -- `this[32] = a2` |
+| 25 | 100 | 0x582240 | getter, `return this[33]` |
+| 27 | 108 | 0x5815E0 | Restart |
+| 28 | 112 | 0x580790 | Advance (already named) |
+| 29 | 116 | 0x57BA90 | **Display** -- the submit this hunt traced to |
+
+Slot 29 being Display anchors the indexing: it is the address reached at runtime through `elem[1]`'s
+vtable +116.
+
+Slot 22 is confirmed twice over. It writes `this[32]` (+128), the constructor initialises that field
+to **1** = `SM_ShowAll` (0 NoScale, 1 ShowAll, 2 ExactFit, 3 NoBorder), and ShowAll is exactly the
+behaviour the affine shows: `min(vpW/stageW, vpH/stageH)`, measured 0.1 at 2560x1440 and 0.15444 at
+4320x2224.
+
+**SetViewport was NOT found.** Ruled out by decompile: slots 2, 11, 12, 22, 25, 27. Searching near
+Display was the wrong instinct -- with SetVariable at 11 the viewport methods should sit earlier, in
+the low slots, and the ones checked there so far are forwarders and small accessors. The remaining
+unchecked low slots are 3, 4, 6, 7, 8, 9, 10, 14, 15, 16, 17, and a GViewport setter should be
+visibly larger than the accessors around it.
+
+**Why that method is the goal.** The HUD is a separate OpenXR quad, so it does not need the scene's
+resolution. Giving the movie a 1280x720 viewport for its own pass -- its AUTHORED stage size, where
+ShowAll is the identity case -- paired with a UICapture target of the same size, decouples HUD
+resolution from scene resolution rather than fighting the movie's layout. Call the method; do not
+write the fields, which is the mistake that already had to be reverted once.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
