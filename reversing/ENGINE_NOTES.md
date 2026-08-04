@@ -3276,6 +3276,37 @@ The second symptom (scene RT wrong on a SECOND world load, black down the right 
 still unmeasured: it needs the same trace captured across menu -> world -> menu -> world, which the
 instrumentation now emits on every transition.
 
+**Issue 2 is a RECREATION/lifecycle failure, and both "creators" are the same pattern.**
+Full interleaved chronology across menu -> world -> menu -> world:
+
+    #0 Create 1024x576  +0x8DC65 -> handle=049F2BD0    menu
+    #1 Create  640x480  +0x8DC65 -> handle=049F2BD0    menu, rebuilt in place
+    #2 Create 4320x2224 +0xE463D -> handle=049F2BD0    FIRST WORLD, correct
+    #3 Create 2560x1440 +0x8DC65 -> handle=3D9D6F28    second world, NEW handle, and BOUND
+
++0xE463D does not run again on the second load: there is no #4 and no bind ever returns to a
+4320x2224 target. (What is NOT established: whether 049F2BD0 is still alive. A different address at
+#3 only means the allocator chose elsewhere; it may well have been freed while a stale non-null
+cache suppresses recreation. Do not assume it survives.)
+
+`sub_100E4510` (+0xE463D) and `sub_1008DB40` (+0x8DC65) are the SAME pattern -- two instances of a
+UI/HUD element that each want a render target sized to their own rect:
+
+    if (!this[48]) {                     // cache guard: whole body skipped once set
+        this[57] = 4040;                 // 0xFC8
+        if (... && dword_101FE2F4) {     // adopt a SHARED target when one exists
+            if (sub_1008DAD0(this+49) && (dword_101FE308 & this[57]) == this[57])
+                this[48] = dword_101FE2F4;
+        }
+        if (!this[48])                   // else allocate from its own rect
+            CreateRenderTarget(this[51]-this[49], this[52]-this[50], this[57], this+48);
+        sub_100E7D60(this[48], this+49); // handle and rect consumed TOGETHER
+    }
+
+So the fix belongs at `this[48]` / `dword_101FE2F4` -- either the cache is not cleared on world
+teardown, or the shared target is adopted stale. Note `sub_100E7D60` takes the handle and the rect
+together, which is why forcing an allocation size in isolation would mis-scale the HUD.
+
 **TWO creators, and only one of them is ours to blame.** The creation probe across a full cycle:
 
     CreateRenderTarget 1024x576   flags=0xFC8  creator=gameclient.dll+0x8DC65   menu
