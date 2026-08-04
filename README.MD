@@ -42,11 +42,14 @@ Some examples being:
 * The AI constructed an enormous pipeline for directing camera movement via injecting mouse inputs with the right sensitivity to perform head tracking
 * I noticed this and pointed it towards modifying the render/aim camera directly
 * It quickly pivoted and correctly solved the issue
+## Interesting implementation details
 
-### Interesting implementation details
+### 4 GB address space
 
-F.E.A.R. 2 normally runs with a 2 GB user-mode address-space limit, which became unstable with the VR mod loaded.
+F.E.A.R. 2 is a 32-bit game that normally runs without the `LARGE_ADDRESS_AWARE` flag, limiting it to roughly 2 GB of user-mode virtual address space. With the VR mod loaded, the process approached that limit during normal play. Memory fragmentation left very little contiguous address space available, causing allocations to fail and producing misleading crashes in otherwise unrelated systems, including rendering and audio.
 
-The launcher creates an LAA-enabled copy of the executable in a suspended state. Before SteamStub begins validation, it restores the process-visible executable identity and mapped PE characteristics to those of the original executable.
+Simply enabling the flag on `FEAR2.exe` was not sufficient because SteamStub validates the executable and rejects a modified image.
 
-This gives the game a 4 GB address space without modifying the shipped executable on disk.
+To work around this, the launcher creates an LAA-enabled copy of the executable and starts it suspended. Windows observes the flag during process creation and grants the game a 4 GB address space. Before SteamStub begins validation, a temporary entry-point stub restores the process-visible executable path, module identity, and mapped PE characteristics to those of the original executable.
+
+The launcher verifies that the restoration succeeded before allowing execution to continue, then restores the original entry-point bytes. This gives the game the additional address space required by the VR mod without modifying the shipped executable on disk.

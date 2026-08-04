@@ -437,6 +437,34 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
             g_last_forced_w.store(static_cast<uint32_t>(w), std::memory_order_relaxed);
             g_last_forced_h.store(static_cast<uint32_t>(h), std::memory_order_relaxed);
             g_overrides.fetch_add(1, std::memory_order_relaxed);
+
+            // ---- TELL THE GAME NOW, NOT AT r_InitRender -----------------------------------------
+            //
+            // The buffer is forced HERE, but g_RMode and the screen cvars were only written in
+            // init_render_detour -- which runs after the main menu is already up. In between, the
+            // buffer is 4320x2224 while the game still believes the screen is 640x480, so the menu
+            // draws at 640x480 into the corner of a much larger buffer. Caught in the trace as
+            // "g_RMode says 640x480 at this bind (we forced 4320x2224)", and visible as a tiny
+            // interface in the top-left at startup -- a regression introduced by forcing the RT,
+            // not by anything the menu does.
+            //
+            // The in-world HUD was fine because by then InitRender had run. This is the same fix,
+            // applied at the moment the buffer actually changes.
+            const auto* exe_now = sdk::Modules::get().exe();
+            if (exe_now != nullptr && exe_now->base != 0) {
+                auto* const mw = reinterpret_cast<uint32_t*>(exe_now->base + kRMode + kRModeWidth);
+                auto* const mh = reinterpret_cast<uint32_t*>(exe_now->base + kRMode + kRModeHeight);
+                if (!g_screen_saved.load(std::memory_order_acquire)) {
+                    g_saved_screen_w.store(*mw, std::memory_order_relaxed);
+                    g_saved_screen_h.store(*mh, std::memory_order_relaxed);
+                    g_screen_saved.store(true, std::memory_order_release);
+                }
+                LOGX("[scenetarget] engine believed %ux%u -> %ux%u (at present-params)", *mw, *mh,
+                     static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+                *mw = static_cast<uint32_t>(w);
+                *mh = static_cast<uint32_t>(h);
+                set_screen_cvars(exe_now->base, static_cast<float>(w), static_cast<float>(h));
+            }
         } else {
             // Fullscreen uses DISCARD and must name a real display mode, so an off-display size
             // would fail device creation outright and take the renderer with it.
