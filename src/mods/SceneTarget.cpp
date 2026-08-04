@@ -151,15 +151,22 @@ char __stdcall create_render_target_detour(int width, int height, int flags, voi
     // Report only targets big enough to be the scene, and only once per distinct size, so the
     // engine's many small auxiliary targets cannot crowd out the one that matters.
     if (width >= 1024 && height >= 512) {
-        static std::atomic<uint32_t> seen[8]{};
-        const uint32_t key = (static_cast<uint32_t>(width) << 16) |
-                             (static_cast<uint32_t>(height) & 0xFFFFu);
+        // KEYED ON CREATOR TOO, not just size. Two different functions allocate these
+        // (gameclient.dll+0xE463D makes the correct full-size world target, +0x8DC65 the
+        // HUD-layout-rect one), and a size-only key hides a RE-creation by the other creator --
+        // which is exactly the question: on the second world load, does the world target get
+        // recreated at all, or does the stale menu-sized one simply stay bound?
+        static std::atomic<uint64_t> seen[16]{};
+        const auto ret_key = reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const uint64_t key = (static_cast<uint64_t>(width) << 48) |
+                             (static_cast<uint64_t>(height & 0xFFFF) << 32) |
+                             static_cast<uint64_t>(ret_key & 0xFFFFFFFFu);
         bool fresh = true;
         for (auto& slot : seen) {
-            const uint32_t had = slot.load(std::memory_order_relaxed);
+            const uint64_t had = slot.load(std::memory_order_relaxed);
             if (had == key) { fresh = false; break; }
             if (had == 0) {
-                uint32_t expect = 0;
+                uint64_t expect = 0;
                 if (slot.compare_exchange_strong(expect, key, std::memory_order_acq_rel)) break;
                 if (slot.load(std::memory_order_relaxed) == key) { fresh = false; break; }
             }
@@ -176,8 +183,8 @@ char __stdcall create_render_target_detour(int width, int height, int flags, voi
                        ret < exe->base + exe->size) {
                 where = "FEAR2.exe"; rel = ret - exe->base;
             }
-            LOGX("[trace] CreateRenderTarget %dx%d flags=0x%X creator=%s+0x%IX", width, height,
-                 flags, where, rel);
+            LOGX("[trace] CreateRenderTarget %dx%d flags=0x%X creator=%s+0x%IX out=%p", width,
+                 height, flags, where, rel, static_cast<void*>(out));
         }
     }
     return hook->original<char(__stdcall*)(int, int, int, void**)>()(width, height, flags, out);
