@@ -2469,12 +2469,22 @@ size and the multiplier for anyone who wants to.
 
 ### Two ways the supersampled back buffer is still wrong
 
-**The HUD stops being captured.** With the back buffer at 4320x2224 the UI target is created at the
-right size and the HUD passes are still seen -- the caller list in `/render/ui` is populated -- but
-the published layer comes back empty: alpha max 0, mean luma 0.1, sequence still advancing. Tried at
-4320x2430 as well, on the theory that the game's UI is laid out for 16:9 and 1.94 was an aspect it
-had never seen; identical result, so aspect is NOT the cause and that theory is dead. The break is
-size-related somewhere in UICapture's redirect, and it is unproven beyond that.
+**The HUD is drawn at the OLD screen size into the new buffer.** Not, as first reported here, a
+capture failure: the UI target is created at 4320x2224, the redirect runs (175 swaps and 176
+publishes in two seconds, zero failures, ten passes), and the layer carries content. The measurement
+that said "empty" was junk -- it keyed on alpha, and a CONTROL at normal resolution reads alpha max 0
+as well. The real signal is mean luma: **1.01 normal against 0.10 supersampled**. The HUD is present
+and about a tenth of the pixels it should cover, drawn small into a corner, which is exactly what
+"cut off" looks like after the layer is downscaled onto a quad.
+
+Ruled out along the way: aspect ratio (tried an exact 16:9 4320x2430 -- identical), and the
+ScreenWidth/ScreenHeight console variables (written after r_InitRender, with the originals restored
+on unload -- no change, still 0.10).
+
+What that leaves, and the next thing to try: the interface is laid out ONCE and never told the
+screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
+notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
+as announcing them.
 
 **Writing ScreenWidth/ScreenHeight PERSISTS.** They looked like the same numbers as g_RMode by
 another route. They are not: the game saves them. A supersampled value meant the next launch asked

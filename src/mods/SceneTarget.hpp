@@ -40,6 +40,7 @@ public:
 
     std::string_view get_name() const override { return "SceneTarget"; }
     std::optional<std::string> on_initialize() override;
+    void on_shutdown() override;
 
     // One distinct (flags, width, height) triple seen at a scene-target bind, with how often.
     struct Seen {

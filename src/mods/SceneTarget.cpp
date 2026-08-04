@@ -138,6 +138,18 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
         self, nullptr, handle, a3, a4, a5);
 }
 
+std::atomic<uint32_t> g_saved_screen_w{0};
+std::atomic<uint32_t> g_saved_screen_h{0};
+std::atomic<bool> g_screen_saved{false};
+
+void set_screen_cvars(uintptr_t exe_base, float w, float h) {
+    using SetFloatFn = void(__cdecl*)(void*, const char*, float);
+    auto* const set_float = reinterpret_cast<SetFloatFn>(exe_base + kConVarSetFloat);
+    auto* const table = reinterpret_cast<void*>(exe_base + kConVarTable);
+    set_float(table, "ScreenWidth", w);
+    set_float(table, "ScreenHeight", h);
+}
+
 // __cdecl(const void* requested_mode) -> 0 on success. Everything that asks the engine how big the
 // screen is reads what this function publishes.
 int __cdecl init_render_detour(const void* mode) {
@@ -161,16 +173,21 @@ int __cdecl init_render_detour(const void* mode) {
         *mw = w;
         *mh = h;
 
-        // ---- NOT THE CONSOLE VARIABLES ---------------------------------------------------------
+        // ---- THE CONSOLE VARIABLES, WHICH THE HUD LAYS OUT FROM --------------------------------
         //
-        // Writing ScreenWidth/ScreenHeight looked like the same numbers by another route. It is not:
-        // the game PERSISTS them. Setting them to a supersampled size meant the next launch asked
-        // for a resolution no adapter enumerates, the mode match fell through to its default, and
-        // the game came up at 640x480 -- with the mod uninstalled and nothing to explain it. A mod
-        // that changes a setting the user cannot see and that outlives the mod is a trap.
+        // g_RMode alone is NOT enough. The interface sizes itself from these, so leaving them at
+        // the old resolution drew the whole HUD at 640x480 scale into the corner of a 4320x2224
+        // buffer -- present, but a tenth of the pixels it should cover, which is what "cut off"
+        // looks like once the layer is downscaled onto a quad.
         //
-        // g_RMode above is enough. It is what the renderer reads while it is running, and it dies
-        // with the process.
+        // They are also PERSISTED, which is the trap: a supersampled value saved to the config made
+        // the next launch ask for a resolution no adapter enumerates, fall through to the default,
+        // and come up at 640x480 with the mod not even loaded. So the originals are kept and put
+        // back on unload -- the game only writes its config at exit, and by then ours are gone.
+        g_saved_screen_w.store(*mw, std::memory_order_relaxed);
+        g_saved_screen_h.store(*mh, std::memory_order_relaxed);
+        g_screen_saved.store(true, std::memory_order_release);
+        set_screen_cvars(exe->base, static_cast<float>(w), static_cast<float>(h));
     }
     return r;
 }
@@ -359,4 +376,24 @@ bool SceneTarget::main_view_size(int32_t& w, int32_t& h) {
     (void)w;
     (void)h;
     return false;
+}
+
+void SceneTarget::on_shutdown() {
+    // Put the resolution back before the game can save ours. Without this the mod leaves behind a
+    // config the game cannot start from, long after the mod is gone -- see the note in the detour.
+    if (!g_screen_saved.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+    const auto* exe = sdk::Modules::get().exe();
+    if (exe == nullptr || exe->base == 0) {
+        return;
+    }
+    const auto w = g_saved_screen_w.load(std::memory_order_relaxed);
+    const auto h = g_saved_screen_h.load(std::memory_order_relaxed);
+    auto* const mw = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeWidth);
+    auto* const mh = reinterpret_cast<uint32_t*>(exe->base + kRMode + kRModeHeight);
+    *mw = w;
+    *mh = h;
+    set_screen_cvars(exe->base, static_cast<float>(w), static_cast<float>(h));
+    LOGX("[scenetarget] restored the engine's resolution to %ux%u", w, h);
 }
