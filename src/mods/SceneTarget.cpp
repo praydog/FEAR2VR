@@ -152,11 +152,38 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
             // Blanket-forcing every 0x800 bind would be wrong anyway: legitimate ones appear at
             // other sizes (3953x2224 early on).
             if ((flags & 0x800u) != 0 && g_overrides.load(std::memory_order_relaxed) != 0) {
-                static std::atomic<uint64_t> reported{0};
+                // ONE LINE PER DISTINCT (size, pooled object), NOT per bind. A flat budget of
+                // eight was spent entirely on the menu's 640x480 target repeating at startup, and
+                // the 2560x1440 rebuild -- the only one that matters -- never printed.
+                static std::atomic<uint64_t> seen_keys[12]{};
                 const uint32_t want_w = g_last_forced_w.load(std::memory_order_relaxed);
                 const uint32_t want_h = g_last_forced_h.load(std::memory_order_relaxed);
-                if (want_w != 0 && (pw != want_w || ph != want_h) &&
-                    reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                const uint64_t key = (static_cast<uint64_t>(pw) << 48) |
+                                     (static_cast<uint64_t>(ph & 0xFFFFu) << 32) |
+                                     static_cast<uint64_t>(pooled & 0xFFFFFFFFu);
+                bool fresh = false;
+                if (want_w != 0 && (pw != want_w || ph != want_h)) {
+                    fresh = true;
+                    for (auto& slot : seen_keys) {
+                        const uint64_t had = slot.load(std::memory_order_relaxed);
+                        if (had == key) {
+                            fresh = false;
+                            break;
+                        }
+                        if (had == 0) {
+                            uint64_t expect = 0;
+                            if (slot.compare_exchange_strong(expect, key,
+                                                             std::memory_order_acq_rel)) {
+                                break;
+                            }
+                            if (slot.load(std::memory_order_relaxed) == key) {
+                                fresh = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (fresh) {
                     const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
                     const auto* gc = sdk::Modules::get().game_client();
                     const auto* exe = sdk::Modules::get().exe();
@@ -169,9 +196,13 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
                                ret < exe->base + exe->size) {
                         where = "FEAR2.exe"; rel = ret - exe->base;
                     }
+                    // NOTE: this caller is whoever BINDS the target, which is a common consumer
+                    // and not necessarily whoever sized it. `pooled` is the address to point a
+                    // hardware write watch at -- see /watch/arm -- to catch the actual writer.
                     LOGX("[trace] virtual target %ux%u != forced %ux%u | handle=0x%08IX "
-                         "pooled=0x%08IX caller=%s+0x%IX",
-                         pw, ph, want_w, want_h, h, pooled, where, rel);
+                         "pooled=0x%08IX watch=/watch/arm?addr=0x%08IX&size=4&type=write "
+                         "bind_caller=%s+0x%IX",
+                         pw, ph, want_w, want_h, h, pooled, pooled + kPooledWidth, where, rel);
                 }
             }
 
