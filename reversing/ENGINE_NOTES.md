@@ -2403,7 +2403,7 @@ Three things had to be fixed to make it a picture rather than a black screen:
    and nothing else.
 
 Verified live at `4320x2224` -- larger than the 2560x1440 window -- with correct stereo parallax and
-a working desktop mirror.
+a working desktop mirror, reached from a cold `injector.exe` with no configuration file present.
 
 **The cost, measured once the cap was gone: none that this scene can resolve.** Three four-second
 samples each, same checkpoint, same harness, both unfocused with the throttle patched out --
@@ -2459,6 +2459,13 @@ nothing else.
 A guard checks the byte is `0x74` before writing and refuses otherwise, which is how a wrong address
 was caught on the first attempt rather than by corrupting an instruction: the RVA had been computed as
 `0x2671CA` when `0x4671CA - 0x400000` is `0x0671CA`.
+
+**No configuration.** The size cannot be fetched when it is needed -- the scene target is built
+seconds after injection, before a socket could answer, and the mod may be injected into a game that
+started with no host at all. So xr64.exe writes the runtime's recommended per-eye size to
+`%LOCALAPPDATA%\fear2vr\runtime.ini` the moment it learns it, and the launcher starts the host
+before the game, so the file is always there first. `fear2vr.ini` beside the DLL overrides both the
+size and the multiplier for anyone who wants to.
 
 **What is still on the back buffer:** capture. `FrameCapture` reads `GetBackBuffer`, so what reaches
 the headset is the 2560x1440 composite, and the wearer currently gets supersampled DOWNSAMPLING (a

@@ -491,6 +491,36 @@ int main(int argc, char** argv) {
                                       XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
                                       &view_count, config_views.data());
 
+    // ---- TELL THE MOD WHAT THE HEADSET ASKED FOR ------------------------------------------------
+    //
+    // The 32-bit mod has to size the engine's scene target BEFORE the renderer builds it, which is
+    // seconds after injection and long before this process could answer an HTTP request -- and the
+    // mod may be injected into a game that started without a host at all. So the number is left on
+    // disk rather than served: the launcher starts this process first, and by the time the game is
+    // up the file is already there.
+    //
+    // LOCALAPPDATA because it is the one directory both bitnesses can name without either knowing
+    // where the other is installed.
+    if (view_count > 0) {
+        if (const char* local = std::getenv("LOCALAPPDATA")) {
+            char dir[MAX_PATH];
+            std::snprintf(dir, sizeof(dir), "%s\\fear2vr", local);
+            CreateDirectoryA(dir, nullptr);
+            char path[MAX_PATH];
+            std::snprintf(path, sizeof(path), "%s\\runtime.ini", dir);
+            if (FILE* fp = std::fopen(path, "w")) {
+                std::fprintf(fp,
+                             "; Written by xr64.exe. The per-eye size THIS headset and runtime ask\n"
+                             "; for. The mod reads it to size the engine's scene target.\n"
+                             "[render]\nper_eye_width=%u\nper_eye_height=%u\n",
+                             config_views[0].recommendedImageRectWidth,
+                             config_views[0].recommendedImageRectHeight);
+                std::fclose(fp);
+                std::printf("[host] published recommended size to %s\n", path);
+            }
+        }
+    }
+
     for (uint32_t i = 0; i < view_count; ++i) {
         std::printf("[host] view %u recommended %ux%u (max %ux%u), %u sample(s)\n", i,
                     config_views[i].recommendedImageRectWidth,

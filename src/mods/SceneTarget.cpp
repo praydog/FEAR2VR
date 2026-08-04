@@ -258,13 +258,37 @@ void load_settings() {
     }
     strcpy_s(slash + 1, MAX_PATH - (slash + 1 - path), "fear2vr.ini");
 
-    const uint32_t w = GetPrivateProfileIntA("render", "per_eye_width", 0, path);
-    const uint32_t h = GetPrivateProfileIntA("render", "per_eye_height", 0, path);
+    uint32_t w = GetPrivateProfileIntA("render", "per_eye_width", 0, path);
+    uint32_t h = GetPrivateProfileIntA("render", "per_eye_height", 0, path);
+
+    // ---- WHAT THE HEADSET ASKED FOR, WITHOUT BEING TOLD ----------------------------------------
+    //
+    // xr64.exe writes the runtime's recommended per-eye size to LOCALAPPDATA as soon as it starts,
+    // and the launcher starts it before the game -- so by the time this runs the number is already
+    // on disk. Asking the host directly is not an option: this decision happens seconds after
+    // injection, before the renderer builds the target, and the mod cannot wait on a socket for it.
+    //
+    // A size in the local file still wins, because someone who wrote one down meant it.
+    if (w == 0 || h == 0) {
+        char shared[MAX_PATH]{};
+        if (GetEnvironmentVariableA("LOCALAPPDATA", shared, MAX_PATH) != 0) {
+            strcat_s(shared, MAX_PATH, "\\fear2vr\\runtime.ini");
+            w = GetPrivateProfileIntA("render", "per_eye_width", 0, shared);
+            h = GetPrivateProfileIntA("render", "per_eye_height", 0, shared);
+            if (w != 0 && h != 0) {
+                LOGX("[scenetarget] headset asks for %ux%u per eye (from %s)", w, h, shared);
+            }
+        }
+    }
+
     // Permille rather than a float: GetPrivateProfileInt cannot read one, and a second parser for a
-    // single number is not worth writing.
-    const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 0, path);
+    // single number is not worth writing. Defaulting to 1000 rather than 0 means a first run
+    // supersamples at exactly what the headset asked for, which is the point of the feature -- set
+    // it lower in fear2vr.ini if the frame time does not allow it.
+    const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 1000, path);
     if (w == 0 || h == 0 || permille == 0) {
-        LOGX("[scenetarget] no supersample settings in %s -- drawing at the back buffer", path);
+        LOGX("[scenetarget] no per-eye size known (is xr64.exe running?) -- drawing at the back "
+             "buffer");
         return;
     }
     g_rec_w.store(w, std::memory_order_relaxed);
