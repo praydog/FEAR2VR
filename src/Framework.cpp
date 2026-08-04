@@ -44,6 +44,7 @@
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
+#include "mods/HudGeomProbe.hpp"
 #include "mods/SceneTarget.hpp"
 #include "mods/VR.hpp"
 #include "mods/vr/runtimes/SimulatedRuntime.hpp"
@@ -10765,6 +10766,7 @@ bool Framework::initialize() {
     Mods::get().add(&ConsoleRunner::get());
     // Owns the VR runtime and pushes its poses into the engine. Added before Watchpoints so its
     // on_frame runs in the same order every session.
+    Mods::get().add(&HudGeomProbe::get());
     Mods::get().add(&SceneTarget::get());
     Mods::get().add(&VR::get());
     Mods::get().add(&Watchpoints::get());

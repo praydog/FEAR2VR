@@ -2827,6 +2827,17 @@ earlier, when it is told its stage size, so the only remaining lever is the stag
 CONFIGURATION -- `GFxMovieView::SetViewport` / `SetViewScaleMode` and the dimensions the AS is given
 -- applied before the reflow rather than after it.
 
+**And the element vtables do not identify the HUD.** `HudGeomProbe` (read-only, kept) hooks the
+type-1 draw wrapper and reports `elem`, `inner`, and `inner + 152` -- the address a `/watch/arm`
+would need to trap the affine's writer. Filtering on BOTH measured vtables (`*elem == 0x00678640`,
+`*inner == 0x00687DF8`) still matches **2235 distinct instances in one session**, some in
+gameserver.dll's range. Those vtables are a Scaleform element CLASS, not the interface, so arming a
+hardware watch on whichever came through last would trap unrelated module data.
+
+So the trap is set up and pointed at nothing yet: narrowing to the HUD instance is the prerequisite,
+and the obvious discriminator is which instance is live during the HUD's own 2D pass bracket rather
+than which one drew most recently.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
