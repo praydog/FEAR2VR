@@ -2838,6 +2838,28 @@ So the trap is set up and pointed at nothing yet: narrowing to the HUD instance 
 and the obvious discriminator is which instance is live during the HUD's own 2D pass bracket rather
 than which one drew most recently.
 
+**The HUD instance IS identifiable, and the affine is not written per frame.** Hooking the type-1
+DRAW matched 2235 objects because the element vtables name a Scaleform class. Hooking the PASS --
+`Screen2D_IssuePass_Shared`, gameclient RVA 0x30E10, walking type at `this[24]` stride 8 and element
+at `this[61]` stride 6 -- gives the HUD's own context by construction. Scoped that way the probe
+reports exactly **two** instances in a whole session: one at startup and one after the world loads.
+That is the discriminator; `HudGeomProbe` now uses it.
+
+Armed a hardware write watch on the live instance's `inner + 152` (the affine), 200-hit budget,
+applied across 121 threads:
+
+    total_hits: 0, distinct_accessors: 0
+
+**Nothing writes it during steady play.** The affine -- and by extension the layout it belongs to --
+is computed ONCE and left alone. That is the same shape as HUD_ComputeLayoutRect's once-per-level
+caching, and it explains cleanly why every intervention so far failed: all of them acted per frame,
+at or after the draw, on state that had already been settled.
+
+So the writer has to be caught at the moment the layout is established, not while it is being used.
+The watch must be armed BEFORE that -- before the world loads -- or a reflow forced with it already
+armed. Arming it in steady state and waiting, which is what was done here, can only ever report
+zero.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
