@@ -115,6 +115,9 @@ public:
     // Called from the bracket callback and the frame boundary; public for the free functions
     // in the .cpp's anonymous namespace.
     void on_bracket(bool begin, int32_t width, int32_t height, uint32_t index);
+
+    // True while a capture bracket is open, so a second source cannot double-swap.
+    bool bracket_active() const { return m_saved.load(std::memory_order_acquire) != nullptr; }
     void on_pass(uint32_t ordinal, uintptr_t caller);
     void on_present();
     void free_device_resources();
