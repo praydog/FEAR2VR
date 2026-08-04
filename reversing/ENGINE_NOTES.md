@@ -3213,7 +3213,20 @@ So the 2 GB budget is a hard constraint and the footprint has to fit inside it. 
 are the two 36.7 MB SYSTEMMEM readback surfaces (`/xr/capture?divisor=N` already trades resolution
 for a quarter of the memory per step) and the per-slot transport.
 
-**Initial main menu has no VR quad: the UI bracket never begins, and sizing is NOT involved.**
+**Initial main menu has no VR quad: the Screen2D pass is never ISSUED, measured not inferred.**
+Two candidate causes had to be separated, because they need opposite fixes: the pass is never
+issued, or it IS issued and UICapture's `from_game` classifier rejects every one (the menu being
+drawn from FEAR2.exe rather than gameclient.dll would do exactly that). `swaps=0` cannot tell them
+apart. Counting entries to `on_pass()` itself can:
+
+    [trace] ui: seen=0 swaps=0 publishes=0 failures=0 layer=1280x720 target=0x0
+
+`seen=0`, and not one `[trace] pass` line, with both hooks confirmed installed
+(slot 16 at 0x0060B560, slot 17 at 0x0060B5A0) and zero mod init failures. So the classifier is
+exonerated -- nothing reaches it -- and this is not an installation or timing problem either. The
+pre-world menu is drawn through a path that never issues a Screen2D pass at all.
+
+
 Traced at the initial menu, before any world:
 
     [trace] after InitRender: backbuffer 4320x2224 | rendertarget 4320x2224 | viewport 4320x2224 at (0,0)

@@ -266,7 +266,8 @@ void UICapture::on_present() {
         static std::atomic<uint64_t> last_report{0};
         const auto now = static_cast<uint64_t>(GetTickCount64() / 1000);
         if (last_report.exchange(now, std::memory_order_relaxed) != now) {
-            LOGX("[trace] ui: swaps=%llu publishes=%llu failures=%llu layer=%dx%d target=%dx%d",
+            LOGX("[trace] ui: seen=%llu swaps=%llu publishes=%llu failures=%llu layer=%dx%d target=%dx%d",
+                 static_cast<unsigned long long>(m_pass_calls.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_swaps.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_publishes.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_failures.load(std::memory_order_relaxed)),
@@ -445,6 +446,31 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
     const auto* gc = sdk::Modules::get().game_client();
     const bool from_game =
         gc != nullptr && gc->base != 0 && caller >= gc->base && caller < gc->base + gc->size;
+
+    // ---- WHO IS ISSUING THESE, AND FROM WHERE ----------------------------------------------
+    // "Installed hooks and swaps=0" has two explanations and they need different fixes: the pass
+    // is never issued at all, or it IS issued and this classifier rejects every one of them.
+    // Counting the passes we SEE and naming the caller's module separates them. Bounded to the
+    // first handful so a session stays readable.
+    {
+        const auto n = m_pass_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 12) {
+            const auto* exe = sdk::Modules::get().exe();
+            const char* where = "?";
+            uintptr_t rel = caller;
+            if (gc != nullptr && gc->base != 0 && caller >= gc->base && caller < gc->base + gc->size) {
+                where = "gameclient.dll";
+                rel = caller - gc->base;
+            } else if (exe != nullptr && exe->base != 0 && caller >= exe->base &&
+                       caller < exe->base + exe->size) {
+                where = "FEAR2.exe";
+                rel = caller - exe->base;
+            }
+            LOGX("[trace] pass #%llu ordinal=%u caller=0x%08X (%s+0x%IX) from_game=%d gc_loaded=%d",
+                 static_cast<unsigned long long>(n), ordinal, static_cast<unsigned>(caller), where,
+                 rel, from_game ? 1 : 0, (gc != nullptr && gc->base != 0) ? 1 : 0);
+        }
+    }
 
     if (!from_game) {
         // An engine full-screen pass. It belongs on the back buffer, so if we are currently

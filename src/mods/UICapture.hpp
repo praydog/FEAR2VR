@@ -157,6 +157,7 @@ private:
     bool m_cleared_this_frame{false};
     std::atomic<int32_t> m_width{0};
     std::atomic<int32_t> m_height{0};
+    std::atomic<uint64_t> m_pass_calls{0};  // times on_pass() was entered at all
     std::atomic<uint64_t> m_swaps{0};
     std::atomic<uint64_t> m_restores{0};
     std::atomic<uint64_t> m_failures{0};
