@@ -3119,6 +3119,26 @@ Verified by forcing eleven ring rebuilds at sizes from 1080x556 to the full 4320
 `/xr/capture?divisor=N`: zero crashes. NOT verified: the failure branch itself, since no allocation
 actually failed during the test -- the fix for it is reasoned from the code, not exercised.
 
+**Shipped in the injector** as `launch_with_laa()`. The shipped exe is never written; the game runs
+from an LAA copy that is made to look like the original before SteamStub executes.
+
+Three things found porting it out of the harness, each worth remembering:
+
+  - The stub writes Characteristics back ITSELF and the PE header page is mapped READ-ONLY.
+    Unprotecting only for writes issued from the injector side is not enough. Symptom was exit
+    0xC0000005 with the entry point correctly hooked and the stub bytes verified intact -- it reads
+    like broken shellcode and is not. Needs an explicit VirtualProtectEx on base+chars_rva.
+  - The 4 GB session runs from the COPY, so its image name is FEAR2_laa.exe. Every by-name lookup
+    has to accept both names or --inject/--status/--unload miss it and a second --launch starts a
+    duplicate. Injection takes the PID the launcher already verified.
+  - Both pages have to go back to their original protections once the stub has restored the entry
+    point, or the "pristine" image still carries writable header and code pages. Confirmed after the
+    fact: header page reads back PAGE_READONLY (0x2).
+
+Fails closed everywhere: unreadable PEB, stub silent, spoof not verifying, entry point not restored,
+or protections not restorable all terminate the suspended process and delete the copy. There is no
+Steam fallback -- silently starting the 2 GB session would reintroduce the crashes this prevents.
+
 **SOLVED: 4 GB address space without touching the DRM.** I called this a hard constraint. It is
 not, and the method below is proven:
 
