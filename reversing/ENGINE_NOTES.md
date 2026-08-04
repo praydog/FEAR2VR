@@ -2526,6 +2526,31 @@ Two theories died getting here, both worth not repeating:
 **The working configuration is therefore a buffer no taller than ~1440.** At 2560x1440 the HUD is
 correct with margins on all sides (content 1214x666 of a 1280x720 layer, nothing touching an edge).
 
+### Spoofing the HUD's screen dims: measured, and it does not work
+
+The HUD reads its screen size through a FUNCTION POINTER FIELD, not a vtable slot.
+`HUD_ComputeLayoutRect` calls `(*(int(__cdecl**)(void*))(g_pILTClient + 44))(out)` -- that is the
+interface pointer PLUS 44, a plain field, resolved at runtime to FEAR2.exe `0x00407806`. Chasing it
+as `CLTClient_vftable+0x2C` (0x66F258+0x2C) leads to `0x00407F4C`, which parses "%d.%d.%d.%d" with
+sscanf: networking, not dimensions. The out-struct carries width at +132 and height at +136 -- the
+same pair `g_RMode` uses, which is the corroboration that they are the right fields.
+
+Two things were then measured live, and both kill the obvious fix:
+
+1. **`HUD_ComputeLayoutRect` accounts for 0 of 3531 dim queries in steady play.** It runs once per
+   level and caches. Scoping an override to it changes nothing after load -- `applies` stayed 0
+   across a full world load with the hook demonstrably armed beforehand.
+
+2. **The dominant caller is a CLAMP, not a scale.** All of those calls come from
+   `HUD_ClampElementPos` (gameclient.dll `0x1008EF70`), which reads the same +132/+136 and compares
+   the width against a rect before clamping an element's coordinates. Extending the override to it
+   makes `applies` climb to 819/822 -- and collapses the entire HUD to a 240x220 blob in the corner
+   (measured bbox `(960,447)-(1200,667)` in a 1280x720 layer). Lying to a clamp changes which branch
+   it takes; it does not rescale anything.
+
+So the interface cannot be relocated by telling it a different screen size. Whatever fixes this has
+to change how the elements are SCALED, and that scale is not derived from these dims.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
