@@ -2600,6 +2600,41 @@ The mode-2 rect remains UNMEASURED. Reading it safely needs the existing SDK -- 
 gives `Player.object` and its holder at `object + 252` -- rather than another raw call, and it should
 be READ and reported before anything writes it.
 
+### Measured properly: every INPUT is correct, and the reticle already scales
+
+Read through the SDK's `PlayerMgr::local_player()` -- `Player::holder` IS the engine's
+`object + 252` that HUD_ClampElementPos's mode-2 branch walks to -- with an SEH guard and no engine
+call. At a 4320x2224 back buffer the mode-2 rect is:
+
+    [hudprobe] mode-2 rect (0,0)-(4320,2224) = 4320x2224, back buffer 4320x2224
+
+So the clamp rect is CORRECT, and the earlier `(0,0)-(640,480)` was the mode-1 field the engine
+never consulted. That retires the last of the four candidate inputs: reported screen dims, the
+layout rect, and now the clamp rect are all right at native. Nothing is lying to the HUD.
+
+The discriminating measurement is per-element. Crosshair extent in SOURCE pixels against screen
+height:
+
+| buffer | crosshair | ratio to height |
+|---|---|---|
+| 640x480 | 82x71 | 0.148 |
+| 2560x1440 | 310x284 | 0.197 |
+| 4320x2224 | 479x429 | 0.193 |
+
+**The reticle scales correctly at native** -- 0.197 to 0.193 is flat. Over the same range the whole
+HUD's height ratio collapses from 0.925 to 0.597. So this is NOT a global interface scale that caps:
+one element family scales and another does not.
+
+That kills the "the HUD stops scaling past ~1440 lines" framing recorded above -- it was measured on
+the bbox, which the frame arcs dominate, so it described the arcs and not the interface. The
+crosshair was scaling correctly the whole time.
+
+The remaining question is therefore narrow and specific: what sizes the FRAME/ARC elements, given
+the reticle in the same pass sizes itself correctly from the same screen. They are separate draw
+calls -- the `/render/ui` caller list already separates them by return address
+(Screen2D_IssuePass_Shared vs _Streaming vs _ScreenEffects) -- so the next step is to split that
+caller list by element and trap the arc pass's own geometry, not the interface's inputs.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
