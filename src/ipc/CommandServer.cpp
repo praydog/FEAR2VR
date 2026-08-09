@@ -165,6 +165,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/vr/haptic", 0) == 0) {
+        if (!g_handlers.haptic) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no haptic handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.haptic(path));
+        return;
+    }
+
     if (path.rfind("/vr/turn", 0) == 0) {
         if (!g_handlers.turn) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no turn handler registered\"}");

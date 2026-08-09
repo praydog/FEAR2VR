@@ -62,9 +62,9 @@ bool FramePublisher::open() {
         return false;
     }
 
-    // THE CONTROL BLOCK -- header, HostState, HandsState, UiFrameHeader -- is small and always
-    // needed, so it gets its own view at file offset 0 (trivially aligned) covering the first
-    // kPayloadOffset bytes.
+    // THE CONTROL BLOCK -- header, HostState, HandsState, HapticsState, UiFrameHeader -- is small
+    // and always needed, so it gets its own view at file offset 0 (trivially aligned) covering the
+    // first kPayloadOffset bytes.
     void* control_base = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, xr::kPayloadOffset);
 
     if (control_base == nullptr) {
@@ -357,6 +357,83 @@ const xr::HandsState* FramePublisher::hands_state() const {
 
     return reinterpret_cast<const xr::HandsState*>(static_cast<uint8_t*>(m_control_base) +
                                                    xr::kHandsStateOffset);
+}
+
+xr::HapticsState* FramePublisher::haptics_state() {
+    if (m_control_base == nullptr) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<xr::HapticsState*>(static_cast<uint8_t*>(m_control_base) +
+                                               xr::kHapticsStateOffset);
+}
+
+uint32_t FramePublisher::haptics_queued() const {
+    if (m_control_base == nullptr) {
+        return 0u;
+    }
+
+    return reinterpret_cast<const xr::HapticsState*>(static_cast<uint8_t*>(m_control_base) +
+                                                     xr::kHapticsStateOffset)
+        ->write_index;
+}
+
+bool FramePublisher::queue_haptic(uint32_t hand, int64_t duration_ns, float frequency_hz,
+                                  float amplitude, bool stop) {
+    auto* haptics = haptics_state();
+
+    if (haptics == nullptr || (hand != xr::kHandLeft && hand != xr::kHandRight)) {
+        return false;
+    }
+
+    // TICKETS ARE 1-BASED: the Nth pulse ever queued is ticket N and lives in slot (N-1) mod the
+    // ring. Single producer -- everything reaching here is the game -- so the next ticket is one
+    // past the newest published index and needs no compare-exchange to claim.
+    const uint32_t ticket = haptics->write_index + 1u;
+    xr::HapticPulse* pulse = &haptics->slot[(ticket - 1u) % xr::kHapticSlots];
+
+    // NO ODD/EVEN SEQUENCE HERE, unlike every other block in the mapping. A monotonic index
+    // published after its payload already is one, and the per-slot commit stamp covers what the
+    // index cannot: the host can be halfway through copying this very slot when we lap the ring,
+    // and a block-wide sequence would have gone even again long before that mattered. Cleared
+    // first, stamped last -- a reader that does not see its own ticket on BOTH sides of its copy
+    // discards the entry rather than firing half of the old pulse and half of this one.
+    pulse->commit = 0u;
+    ::MemoryBarrier();
+
+    pulse->duration_ns = duration_ns;
+    pulse->frequency_hz = frequency_hz;
+    // CLAMPED HERE rather than trusted. A runtime is entitled to reject an amplitude outside
+    // [0,1], and the split across this boundary is that the mod owns policy while the host passes
+    // values straight through. Written as "greater than zero" rather than "less than zero" so a
+    // NaN from a caller's own arithmetic lands on 0 instead of surviving every comparison.
+    pulse->amplitude = amplitude > 0.0f ? (amplitude < 1.0f ? amplitude : 1.0f) : 0.0f;
+    pulse->hand = hand;
+    pulse->stop = stop ? 1u : 0u;
+
+    ::MemoryBarrier();
+    pulse->commit = ticket;
+    ::MemoryBarrier();
+
+    haptics->write_qpc = now_ticks();
+
+    // PUBLISHED LAST, and interlocked rather than plain: this index is the release the host reads
+    // against, and it must not become visible before the slot it names. Never decremented.
+    ::InterlockedExchange(reinterpret_cast<volatile LONG*>(&haptics->write_index),
+                          static_cast<LONG>(ticket));
+    return true;
+}
+
+bool FramePublisher::request_haptic(uint32_t hand, int64_t duration_ns, float frequency_hz,
+                                    float amplitude) {
+    return queue_haptic(hand, duration_ns, frequency_hz, amplitude, false);
+}
+
+bool FramePublisher::stop_haptic(uint32_t hand) {
+    // The remaining fields are ignored by the host on a stop, but they are written all the same:
+    // a slot carries whatever the last pulse left in it otherwise, and a diagnostic reading the
+    // ring back should not see a stop wearing an old pulse's amplitude.
+    return queue_haptic(hand, 0, 0.0f, 0.0f, true);
 }
 
 bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {

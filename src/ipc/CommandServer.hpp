@@ -181,6 +181,11 @@ using TurnFn = std::function<std::string(const std::string& request_target)>;
 // this DLL, so the mod captures the originals and restores them on release and on shutdown.
 using ComfortFn = std::function<std::string(const std::string& request_target)>;
 
+// CONTROLLER HAPTICS -- /vr/haptic. MUTATES nothing in the game: it queues a pulse into the shared
+// mapping for the 64-bit host to fire, because only the host holds the XrSession that
+// xrApplyHapticFeedback needs.
+using HapticFn = std::function<std::string(const std::string& request_target)>;
+
 // THE LOCAL PLAYER'S SKELETON -- /sdk/skeleton. Read-only: the node and socket names a mod has to
 // pick from when it wants to drive "the right hand" rather than "node 37".
 using XrFn = std::function<std::string(const std::string& request_target)>;
@@ -221,6 +226,7 @@ struct Handlers {
     ViewmodelFn viewmodel{};         // optional; /vr/viewmodel 404s without it -- MUTATES the rig
     TurnFn turn{};                   // optional; /vr/turn 404s without it -- MUTATES the heading
     ComfortFn comfort{};             // optional; /vr/comfort 404s without it -- MUTATES engine cvars
+    HapticFn haptic{};               // optional; /vr/haptic 404s without it -- queues a host pulse
     XrFn xr{};                       // optional; /xr/* 404s without it -- MUTATES the simulated runtime
     SpawnsFn spawns{};               // optional; /sdk/spawns 404s without it -- read-only
     WeaponsFn weapons{};             // optional; /sdk/weapons 404s without it -- read-only
