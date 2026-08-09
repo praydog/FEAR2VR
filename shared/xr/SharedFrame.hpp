@@ -27,7 +27,10 @@ constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // (see kViewGranularity below) instead of one view over the whole section -- both the strides and
 // every offset past the control block move, so a host and mod built against different versions of
 // this file must refuse each other rather than read pixels at the wrong address.
-constexpr uint32_t kSharedFrameVersion = 5u;  // 4 added the rendered pose
+// 6 adds the HapticsState block (game -> host), which moves kPayloadOffset and therefore every
+// pixel slot. Both sides refuse a mismatched partner rather than reading pixels at the wrong
+// address, so a mod and host from different versions fail loudly instead of showing garbage.
+constexpr uint32_t kSharedFrameVersion = 6u;  // 4 added the rendered pose, 5 the per-slot views
 
 // Sized for the game's native per-eye back buffer: 4320x2224 (2160x2224 per eye, side by side),
 // rounded up to a height of 2240 for headroom. Width and height are named rather than folded
@@ -234,6 +237,83 @@ struct alignas(64) HandsState {
 
 static_assert(sizeof(HandsState) == 256, "HandsState must be byte-identical in both bitnesses");
 
+// ---- THE OTHER OTHER DIRECTION: HAPTICS -----------------------------------------------------
+//
+// Game -> host, unlike HostState and HandsState. The mod decides a controller should buzz (a hit,
+// a shot, a pickup); only the host holds the XrSession and can call xrApplyHapticFeedback.
+//
+// A RING, NOT A SLOT, and the reason is the difference between rumble and events. The first
+// version of this block was one pulse per hand plus a serial the host fired on when it changed.
+// That silently COALESCES: two shots landing between two host reads become one buzz, because the
+// second overwrote the first before anyone looked. For a continuous rumble level last-write-wins
+// is exactly right; for the discrete events this actually carries it is a dropped pulse, and a
+// dropped pulse is indistinguishable from a bug in the weapon code.
+//
+// So: a single-producer single-consumer ring. The game fills slot[(ticket - 1) % kHapticSlots],
+// stamps that slot with its ticket LAST, and only then publishes the ticket as `write_index`.
+// The host keeps its own read cursor and consumes everything between the two.
+//
+// THE INDEX ALONE IS NOT ENOUGH, which is the subtle part. A consumer that snapshots
+// `write_index` and then copies entries can still be lapped MID-COPY by a producer that wraps
+// all the way round -- the snapshot was taken before the overwrite, so the backlog check cannot
+// see it, and the consumer walks a slot whose payload is now half old and half new. That is a
+// torn read, and it would surface as a haptic pulse with a garbage duration.
+//
+// Hence the per-slot `commit` stamp: the consumer reads it, copies the payload, reads it again,
+// and accepts the entry only if BOTH reads equal the ticket it expected. A lap during the copy
+// changes the stamp and the entry is dropped and counted instead of fired. This is the same
+// discipline as the frame seqlock above, applied per ring slot rather than per block.
+//
+// ORDERING IS EXPLICIT, NOT `volatile`. MSVC's volatile happens to imply acquire/release under
+// /volatile:ms, but that is a compiler setting and this block is read across a PROCESS boundary
+// by a separately-compiled binary. The producer uses MemoryBarrier() between payload and stamp
+// and InterlockedExchange to publish the index; the consumer barriers around its copy.
+//
+// OVERRUN IS COUNTED, NOT HIDDEN. If the game queues more than kHapticSlots between two host
+// reads the oldest entries are genuinely gone -- the host detects it (write_index - read_index >
+// kHapticSlots), skips to the newest full window and reports the drop.
+//
+// THE BACKLOG AT CONNECT IS DROPPED ON PURPOSE. The host seeds its read cursor from the first
+// write_index it observes, so pulses queued before it was watching never fire. That is a real
+// drop and it is the behaviour we want: a rumble for a shot fired before the compositor existed
+// would arrive arbitrarily late, attached to nothing the wearer is doing.
+//
+// Values are OpenXR's own, so the host passes them straight through without a policy of its own:
+// `duration_ns` is an XrDuration (XR_MIN_HAPTIC_DURATION, -1, asks for the shortest pulse the
+// runtime can produce), `frequency_hz` of 0 is XR_FREQUENCY_UNSPECIFIED, and `amplitude` is [0,1].
+constexpr uint32_t kHapticSlots = 16u;
+
+struct HapticPulse {
+    int64_t duration_ns;   // XrDuration; -1 (XR_MIN_HAPTIC_DURATION) = shortest the runtime can do
+    float frequency_hz;    // 0 (XR_FREQUENCY_UNSPECIFIED) = the runtime chooses
+    float amplitude;       // [0,1]
+    uint32_t hand;         // kHandLeft or kHandRight -- carried per entry, not per ring
+    uint32_t stop;         // non-zero: xrStopHapticFeedback instead of applying a pulse
+
+    // The ticket this entry was written for, stamped AFTER the payload and cleared to 0 before
+    // it. A consumer that sees anything other than the ticket it expected -- on either side of
+    // its copy -- was lapped and must discard the entry rather than fire it.
+    volatile uint32_t commit;
+    uint32_t reserved;
+};
+
+static_assert(sizeof(HapticPulse) == 32, "HapticPulse must be byte-identical in both bitnesses");
+
+struct alignas(64) HapticsState {
+    int64_t write_qpc;
+
+    // Total pulses ever queued, and the ticket of the newest. The game only ever INCREMENTS this,
+    // via InterlockedExchange, and only after the slot it names carries its commit stamp. The
+    // host diffs it against its own cursor with UNSIGNED subtraction, so the 2^32 wrap is free.
+    volatile uint32_t write_index;
+    uint32_t reserved[13];
+
+    HapticPulse slot[kHapticSlots];
+};
+
+static_assert(sizeof(HapticsState) == 576,
+              "HapticsState must be byte-identical in both bitnesses");
+
 // ---- THE UI LAYER, WHICH IS A SECOND IMAGE ------------------------------------------------------
 //
 // The HUD is captured on its own transparent surface (src/mods/UICapture.hpp) and travels
@@ -313,24 +393,27 @@ constexpr uint32_t align_up(uint32_t value, uint32_t granularity) {
 }
 
 // Layout of the mapping:
-//   [SharedFrameHeader][HostState][HandsState][UiFrameHeader][frame slots x3][ui slots x2]
+//   [SharedFrameHeader][HostState][HandsState][HapticsState][UiFrameHeader][frames x3][ui x2]
 //
 // The UI header sits with the other headers rather than beside its pixels, so every fixed-size
 // block stays in one contiguous run and only the payloads are resolution-sized.
+//
+// Each offset is stated as the sum of everything BEFORE it rather than as a literal, so inserting
+// a block (HapticsState was inserted here, ahead of the UI header) moves everything after it by
+// construction instead of by remembering to update a number.
+constexpr uint32_t kHostStateOffset = static_cast<uint32_t>(sizeof(SharedFrameHeader));
+constexpr uint32_t kHandsStateOffset =
+    kHostStateOffset + static_cast<uint32_t>(sizeof(HostState));
+constexpr uint32_t kHapticsStateOffset =
+    kHandsStateOffset + static_cast<uint32_t>(sizeof(HandsState));
 constexpr uint32_t kUiStateOffset =
-    static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState) + sizeof(HandsState));
+    kHapticsStateOffset + static_cast<uint32_t>(sizeof(HapticsState));
 
 // Rounded up to the granularity: this is now also a MapViewOfFile offset, since the first frame
 // slot's view starts here. The control block above it (header through UiFrameHeader) is small
 // enough to stay a single view mapped at offset 0, which needs no rounding.
 constexpr uint32_t kPayloadOffset =
     align_up(kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader)), kViewGranularity);
-
-// Where each block sits, named rather than recomputed at every call site -- the head block's offset
-// was open-coded as sizeof(header) in three places before the hands existed.
-constexpr uint32_t kHostStateOffset = static_cast<uint32_t>(sizeof(SharedFrameHeader));
-constexpr uint32_t kHandsStateOffset =
-    static_cast<uint32_t>(sizeof(SharedFrameHeader) + sizeof(HostState));
 
 // The STRIDE between slots -- not kSharedFrameMaxBytes itself, which is the pixel capacity a frame
 // is checked against. Padding it up to the granularity keeps every slot's own view offset

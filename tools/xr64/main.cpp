@@ -79,6 +79,51 @@ const char* state_name(XrSessionState s) {
     }
 }
 
+// ---- HOW MANY COMPOSITION LAYERS THIS HOST CAN SUBMIT -------------------------------------------
+//
+// The worst case today is four: the two-quad fallback, the mod's HUD quad and the settings panel.
+// The array used to be exactly four with nothing comparing the count against it, so the next layer
+// type anyone added would have written past the end of a stack array in silence. Sized with room,
+// and every append is bounds-checked anyway.
+constexpr uint32_t kMaxLayers = 8u;
+static_assert(kMaxLayers >= 4, "two quads plus the mod's HUD plus the settings panel");
+
+// ---- TANGENTS THAT STAY FINITE ------------------------------------------------------------------
+//
+// The crop maths maps angles to pixels through tan(), which is exactly right and which blows up as
+// a half-angle approaches pi/2. At Quest FOVs (~50 degrees a side) that is invisible; on a wide
+// Pimax mode a per-eye half-angle gets close enough that tanf returns something enormous, the
+// computed rectangle collapses, and the eye sees a sliver. Clamping just under the asymptote keeps
+// the mapping finite and changes nothing on any headset that was never near it.
+constexpr float kMaxHalfAngleRad = 1.56206968f;  // 89.5 degrees
+
+float tan_half_angle(float radians) {
+    return tanf((std::max)(-kMaxHalfAngleRad, (std::min)(kMaxHalfAngleRad, radians)));
+}
+
+const char* blend_mode_name(XrEnvironmentBlendMode m) {
+    switch (m) {
+    case XR_ENVIRONMENT_BLEND_MODE_OPAQUE: return "OPAQUE";
+    case XR_ENVIRONMENT_BLEND_MODE_ADDITIVE: return "ADDITIVE";
+    case XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND: return "ALPHA_BLEND";
+    default: return "UNKNOWN";
+    }
+}
+
+const char* view_config_name(XrViewConfigurationType t) {
+    switch (t) {
+    case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO: return "PRIMARY_MONO";
+    case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO: return "PRIMARY_STEREO";
+    // Also XR_VIEW_CONFIGURATION_TYPE_PRIMARY_QUAD_VARJO, which openxr.h defines as an alias of
+    // this same value rather than a distinct one -- naming both here would be a duplicate case.
+    case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_WITH_FOVEATED_INSET:
+        return "PRIMARY_STEREO_WITH_FOVEATED_INSET";
+    case XR_VIEW_CONFIGURATION_TYPE_SECONDARY_MONO_FIRST_PERSON_OBSERVER_MSFT:
+        return "SECONDARY_MONO_FIRST_PERSON_OBSERVER_MSFT";
+    default: return "UNKNOWN";
+    }
+}
+
 // ---- THE GAME'S FRAME ---------------------------------------------------------------------------
 //
 // A seqlock reader: take the sequence, read, take it again, and only believe the frame if it was
@@ -89,6 +134,10 @@ struct SharedReader {
     const xr::SharedFrameHeader* header = nullptr;
     xr::HostState* host = nullptr;
     xr::HandsState* hands = nullptr;
+
+    // GAME -> HOST, the only block in this mapping that travels that way. Never zeroed on open
+    // (see below) and never written here: this reader consumes the ring the mod fills.
+    xr::HapticsState* haptics = nullptr;
     const xr::UiFrameHeader* ui = nullptr;
 
     // ---- ONE VIEW PER SLOT, mirroring the writer (see FramePublisher::open) ---------------------
@@ -129,6 +178,7 @@ struct SharedReader {
         header = nullptr;
         host = nullptr;
         hands = nullptr;
+        haptics = nullptr;
         ui = nullptr;
     }
 
@@ -188,6 +238,8 @@ struct SharedReader {
                                                 xr::kHostStateOffset);
         hands = reinterpret_cast<xr::HandsState*>(static_cast<uint8_t*>(control_base) +
                                                   xr::kHandsStateOffset);
+        haptics = reinterpret_cast<xr::HapticsState*>(static_cast<uint8_t*>(control_base) +
+                                                      xr::kHapticsStateOffset);
         ui = reinterpret_cast<const xr::UiFrameHeader*>(static_cast<uint8_t*>(control_base) +
                                                          xr::kUiStateOffset);
 
@@ -196,6 +248,11 @@ struct SharedReader {
         // once here, before the game or the frame loop can observe it, guarantees a reader always
         // finds an even sequence and all-invalid poses rather than whatever a dead process left.
         std::memset(hands, 0, sizeof(xr::HandsState));
+
+        // NOT the haptics block, and that is the point of saying so. It is written by the GAME,
+        // so zeroing it here would erase a ring the mod may already be filling. A stale mapping is
+        // handled instead by the host seeding its read cursor from the first write_index it
+        // observes, which touches nothing the other side owns.
 
         // VERSION GATE, checked once here rather than on every poll(): the layout MOVED in
         // version 2 (the UI block was inserted before the frame slots) and again in version 5
@@ -511,14 +568,67 @@ int main(int argc, char** argv) {
         }
     }
 
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    // ---- ASK WHAT THE RUNTIME HAS BEFORE NAMING IT ----------------------------------------------
+    //
+    // xrCreateInstance fails OUTRIGHT with XR_ERROR_EXTENSION_NOT_PRESENT if any name in the list
+    // is one the runtime does not have -- so an optional extension cannot simply be listed and
+    // hoped for. Naming XR_KHR_generic_controller on a runtime without it would cost the entire
+    // session rather than one interaction profile.
+    uint32_t ext_count = 0;
+    XrResult ext_r = xrEnumerateInstanceExtensionProperties(nullptr, 0, &ext_count, nullptr);
+    std::vector<XrExtensionProperties> exts(ext_count, {XR_TYPE_EXTENSION_PROPERTIES});
+
+    if (XR_SUCCEEDED(ext_r) && ext_count > 0) {
+        ext_r = xrEnumerateInstanceExtensionProperties(nullptr, ext_count, &ext_count, exts.data());
+    }
+
+    if (XR_FAILED(ext_r)) {
+        // Not fatal: the D3D11 extension below is not optional and its absence will be reported by
+        // xrCreateInstance itself. Everything else degrades to "not available".
+        std::printf("[host] xrEnumerateInstanceExtensionProperties -> %s -- optional extensions "
+                    "treated as absent\n", rs(ext_r));
+        exts.clear();
+    }
+
+    auto have_extension = [&](const char* name) {
+        for (const auto& e : exts) {
+            if (std::strcmp(e.extensionName, name) == 0) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    // Both are interaction-profile extensions and nothing else -- they add no functions and no
+    // structs, only the right to suggest bindings for a profile this host would otherwise have to
+    // watch fall back to khr/simple_controller. See the suggest_bindings block for what each one
+    // buys.
+    const bool have_generic_controller = have_extension(XR_KHR_GENERIC_CONTROLLER_EXTENSION_NAME);
+    const bool have_bytedance_controller =
+        have_extension(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
+
+    std::vector<const char*> enabled;
+    enabled.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
+
+    if (have_generic_controller) {
+        enabled.push_back(XR_KHR_GENERIC_CONTROLLER_EXTENSION_NAME);
+    }
+
+    if (have_bytedance_controller) {
+        enabled.push_back(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
+    }
+
+    std::printf("[host] %u extension(s) offered; generic controller %s, bytedance controller %s\n",
+                ext_count, have_generic_controller ? "yes" : "no",
+                have_bytedance_controller ? "yes" : "no");
 
     XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
     std::snprintf(ici.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "FEAR2VR");
     std::snprintf(ici.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, "LithTech Jupiter EX");
     ici.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 34);
-    ici.enabledExtensionCount = 1;
-    ici.enabledExtensionNames = enabled;
+    ici.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
+    ici.enabledExtensionNames = enabled.data();
 
     XrResult r = xrCreateInstance(&ici, &g_instance);
     std::printf("[host] xrCreateInstance -> %s\n", rs(r));
@@ -528,11 +638,20 @@ int main(int argc, char** argv) {
     }
 
     XrInstanceProperties props{XR_TYPE_INSTANCE_PROPERTIES};
-    xrGetInstanceProperties(g_instance, &props);
-    std::printf("[host] runtime '%s' %llu.%llu.%llu\n", props.runtimeName,
-                static_cast<unsigned long long>(XR_VERSION_MAJOR(props.runtimeVersion)),
-                static_cast<unsigned long long>(XR_VERSION_MINOR(props.runtimeVersion)),
-                static_cast<unsigned long long>(XR_VERSION_PATCH(props.runtimeVersion)));
+    const XrResult props_r = xrGetInstanceProperties(g_instance, &props);
+
+    // `props` is value-initialised, so an unchecked failure prints an empty runtime name at
+    // version 0.0.0 -- a line that looks like a real answer and sends whoever reads the log
+    // hunting for a runtime that does not exist. Not fatal: nothing below depends on the name.
+    if (XR_SUCCEEDED(props_r)) {
+        std::printf("[host] runtime '%s' %llu.%llu.%llu\n", props.runtimeName,
+                    static_cast<unsigned long long>(XR_VERSION_MAJOR(props.runtimeVersion)),
+                    static_cast<unsigned long long>(XR_VERSION_MINOR(props.runtimeVersion)),
+                    static_cast<unsigned long long>(XR_VERSION_PATCH(props.runtimeVersion)));
+    } else {
+        std::printf("[host] xrGetInstanceProperties -> %s (runtime name and version unknown)\n",
+                    rs(props_r));
+    }
 
     XrSystemGetInfo sgi{XR_TYPE_SYSTEM_GET_INFO};
     sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -545,17 +664,113 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- WHICH VIEW CONFIGURATIONS THIS SYSTEM ACTUALLY HAS -------------------------------------
+    //
+    // PRIMARY_STEREO was assumed. The spec promises only that "for any supported form factor, a
+    // system will support one or more primary view configurations" -- not that stereo is among
+    // them. On a system without it every enumerate and locate below returns zero views and this
+    // host runs on with view_count == 0: no swapchains, no layers, no error, nothing on screen.
+    //
+    // Stereo stays the ONLY configuration driven here, because the whole loop is two-eyed. What
+    // changes is that "not supported" is now a named failure listing what the system does offer,
+    // instead of a silent zero.
+    uint32_t view_config_count = 0;
+    XrResult vc_r =
+        xrEnumerateViewConfigurations(g_instance, system, 0, &view_config_count, nullptr);
+    std::vector<XrViewConfigurationType> view_configs(view_config_count);
+
+    if (XR_SUCCEEDED(vc_r) && view_config_count > 0) {
+        vc_r = xrEnumerateViewConfigurations(g_instance, system, view_config_count,
+                                             &view_config_count, view_configs.data());
+    }
+
+    if (XR_FAILED(vc_r)) {
+        std::printf("[host] xrEnumerateViewConfigurations -> %s\n", rs(vc_r));
+        return 1;
+    }
+
+    bool have_stereo = false;
+
+    for (XrViewConfigurationType t : view_configs) {
+        std::printf("[host] view configuration %s\n", view_config_name(t));
+        have_stereo = have_stereo || t == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    }
+
+    if (!have_stereo) {
+        std::printf("[host] this system offers %u view configuration(s), none of them\n"
+                    "[host] PRIMARY_STEREO -- which is the only one this host drives\n",
+                    view_config_count);
+        return 1;
+    }
+
+    // ---- WHAT THE COMPOSITOR WILL ACCEPT AT xrEndFrame ------------------------------------------
+    //
+    // OPAQUE was hardcoded and never enumerated. "XR_ERROR_ENVIRONMENT_BLEND_MODE_UNSUPPORTED must
+    // be returned if and only if the XrFrameEndInfo::environmentBlendMode was not enumerated by
+    // xrEnumerateEnvironmentBlendModes for the XrInstance and XrSystemId used to create session"
+    // -- so on an additive-only or alpha-blend-only system, which is what passthrough-first
+    // hardware reports, EVERY xrEndFrame failed and nothing was ever presented.
+    //
+    // OPAQUE is still the PREFERENCE: this is a fully-rendered game, and the runtime's own first
+    // choice is not necessarily the one that hides the room.
+    XrEnvironmentBlendMode blend_mode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    uint32_t blend_count = 0;
+    XrResult blend_r = xrEnumerateEnvironmentBlendModes(
+        g_instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &blend_count, nullptr);
+    std::vector<XrEnvironmentBlendMode> blend_modes(blend_count);
+
+    if (XR_SUCCEEDED(blend_r) && blend_count > 0) {
+        blend_r = xrEnumerateEnvironmentBlendModes(g_instance, system,
+                                                   XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                   blend_count, &blend_count, blend_modes.data());
+    }
+
+    if (XR_FAILED(blend_r) || blend_modes.empty()) {
+        std::printf("[host] xrEnumerateEnvironmentBlendModes -> %s (%u) -- submitting OPAQUE "
+                    "unverified\n", rs(blend_r), blend_count);
+    } else {
+        bool have_opaque = false;
+
+        for (XrEnvironmentBlendMode m : blend_modes) {
+            have_opaque = have_opaque || m == XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        }
+
+        // Element 0 is the runtime's own preference order, which is the right thing to fall back
+        // on when the mode we want is simply not offered.
+        blend_mode = have_opaque ? XR_ENVIRONMENT_BLEND_MODE_OPAQUE : blend_modes[0];
+    }
+
+    std::printf("[host] environment blend mode %s, from %u offered:\n", blend_mode_name(blend_mode),
+                blend_count);
+
+    for (XrEnvironmentBlendMode m : blend_modes) {
+        std::printf("[host]   %s\n", blend_mode_name(m));
+    }
+
     // What the runtime wants each eye rendered at. Reported rather than chosen: this is the number a
     // supersampling multiplier would later scale.
     uint32_t view_count = 0;
-    xrEnumerateViewConfigurationViews(g_instance, system,
-                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count,
-                                      nullptr);
+    XrResult vcv_r = xrEnumerateViewConfigurationViews(
+        g_instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count, nullptr);
     std::vector<XrViewConfigurationView> config_views(view_count,
                                                       {XR_TYPE_VIEW_CONFIGURATION_VIEW});
-    xrEnumerateViewConfigurationViews(g_instance, system,
-                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
-                                      &view_count, config_views.data());
+
+    if (XR_SUCCEEDED(vcv_r) && view_count > 0) {
+        vcv_r = xrEnumerateViewConfigurationViews(g_instance, system,
+                                                  XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                  view_count, &view_count, config_views.data());
+    }
+
+    // EXACTLY TWO, checked rather than assumed. Everything downstream is stereo-shaped -- hv[0]
+    // and hv[1], screen[2], proj_views[2], the IPD taken as the distance between the two -- so any
+    // other count is an out-of-range read, not a degraded mode worth limping along in. Unchecked,
+    // a failed enumerate left view_count at 0 and the host carried on with no swapchains, no
+    // layers and no complaint.
+    if (XR_FAILED(vcv_r) || view_count != 2) {
+        std::printf("[host] xrEnumerateViewConfigurationViews -> %s, %u view(s) -- PRIMARY_STEREO "
+                    "must report exactly 2\n", rs(vcv_r), view_count);
+        return 1;
+    }
 
     // ---- TELL THE MOD WHAT THE HEADSET ASKED FOR ------------------------------------------------
     //
@@ -596,11 +811,31 @@ int main(int argc, char** argv) {
     }
 
     PFN_xrGetD3D11GraphicsRequirementsKHR get_reqs = nullptr;
-    xrGetInstanceProcAddr(g_instance, "xrGetD3D11GraphicsRequirementsKHR",
-                          reinterpret_cast<PFN_xrVoidFunction*>(&get_reqs));
+    const XrResult proc_r =
+        xrGetInstanceProcAddr(g_instance, "xrGetD3D11GraphicsRequirementsKHR",
+                              reinterpret_cast<PFN_xrVoidFunction*>(&get_reqs));
+
+    // BOTH the result AND the pointer. An extension entry point that did not resolve leaves this
+    // null and the call below was made through it unconditionally -- a call through a null
+    // function pointer, which faults at address zero instead of returning an error anyone could
+    // read. XR_KHR_D3D11_enable is what makes this host possible at all, so a miss is fatal.
+    if (XR_FAILED(proc_r) || get_reqs == nullptr) {
+        std::printf("[host] xrGetInstanceProcAddr xrGetD3D11GraphicsRequirementsKHR -> %s%s -- the "
+                    "D3D11 extension did not take\n", rs(proc_r),
+                    get_reqs == nullptr ? " (null pointer)" : "");
+        return 1;
+    }
+
     XrGraphicsRequirementsD3D11KHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
     r = get_reqs(g_instance, system, &reqs);
     std::printf("[host] graphics requirements -> %s\n", rs(r));
+
+    // `reqs` is value-initialised, so a failure means an all-zero adapter LUID -- which
+    // create_device_on() below would match against no adapter at all, reporting nothing but
+    // "d3d11 device 0000000000000000" for a cause that is three calls upstream.
+    if (XR_FAILED(r)) {
+        return 1;
+    }
 
     ID3D11DeviceContext* ctx = nullptr;
     ID3D11Device* device = create_device_on(reqs.adapterLuid, reqs.minFeatureLevel, &ctx);
@@ -612,6 +847,24 @@ int main(int argc, char** argv) {
 
     if (probe_only) {
         std::printf("[host] probe only -- not creating a session\n");
+
+        // Release what this function created. The probe builds a D3D11 device to prove the
+        // runtime's LUID and feature level are satisfiable, then leaves; these were simply leaked
+        // before, which is harmless for a process about to exit but is still this function's mess.
+        //
+        // NOT a fix for anything. The runtime never receives this device -- it is only ever handed
+        // over through XrGraphicsBindingD3D11KHR at xrCreateSession, which the probe skips, and
+        // xrGetD3D11GraphicsRequirementsKHR reports a LUID without taking a reference. So this
+        // ordering cannot affect xrDestroyInstance, and if the probe still fails to exit (the Meta
+        // XR Simulator did, after printing everything below), the cause is elsewhere.
+        if (ctx != nullptr) {
+            ctx->Release();
+        }
+        device->Release();
+
+        // Result ignored, like every other destroy in this file: the only failures xrDestroy*
+        // can report are an invalid handle or a lost instance, and the process is exiting in
+        // either case. There is nothing a caller could do differently.
         xrDestroyInstance(g_instance);
         return 0;
     }
@@ -634,13 +887,25 @@ int main(int argc, char** argv) {
     // Format negotiation: take the first of our preferences the runtime offers, rather than assuming
     // one. A mismatch here is rejected at swapchain creation with an error that names nothing useful.
     uint32_t format_count = 0;
-    xrEnumerateSwapchainFormats(session, 0, &format_count, nullptr);
+    XrResult fmt_r = xrEnumerateSwapchainFormats(session, 0, &format_count, nullptr);
     std::vector<int64_t> formats(format_count);
-    xrEnumerateSwapchainFormats(session, format_count, &format_count, formats.data());
+
+    if (XR_SUCCEEDED(fmt_r) && format_count > 0) {
+        fmt_r = xrEnumerateSwapchainFormats(session, format_count, &format_count, formats.data());
+    }
+
+    // An empty list means no swapchain can be created at all, and the preference walk below would
+    // otherwise settle on a `chosen_format` of 0 and hand that to xrCreateSwapchain as though it
+    // were a DXGI format.
+    if (XR_FAILED(fmt_r) || formats.empty()) {
+        std::printf("[host] xrEnumerateSwapchainFormats -> %s (%u) -- no swapchain is possible\n",
+                    rs(fmt_r), format_count);
+        return 1;
+    }
 
     const int64_t preferred[] = {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
                                  DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
-    int64_t chosen_format = formats.empty() ? 0 : formats[0];
+    int64_t chosen_format = formats[0];
 
     for (int64_t want : preferred) {
         bool found = false;
@@ -681,11 +946,25 @@ int main(int argc, char** argv) {
         }
 
         uint32_t image_count = 0;
-        xrEnumerateSwapchainImages(eyes[i].swapchain, 0, &image_count, nullptr);
+        XrResult eye_img_r =
+            xrEnumerateSwapchainImages(eyes[i].swapchain, 0, &image_count, nullptr);
         std::vector<XrSwapchainImageD3D11KHR> images(image_count,
                                                      {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-        xrEnumerateSwapchainImages(eyes[i].swapchain, image_count, &image_count,
-                                   reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+
+        if (XR_SUCCEEDED(eye_img_r) && image_count > 0) {
+            eye_img_r = xrEnumerateSwapchainImages(
+                eyes[i].swapchain, image_count, &image_count,
+                reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+        }
+
+        // The render target views built below are what the startup test pattern clears. With no
+        // images there is nothing to build them from, and that path indexed the empty vector
+        // regardless of how the enumeration went.
+        if (XR_FAILED(eye_img_r) || image_count == 0) {
+            std::printf("[host] eye %u swapchain images -> %s (%u)\n", i, rs(eye_img_r),
+                        image_count);
+            return 1;
+        }
 
         for (uint32_t k = 0; k < image_count; ++k) {
             ID3D11RenderTargetView* rtv = nullptr;
@@ -706,6 +985,15 @@ int main(int argc, char** argv) {
     r = xrCreateReferenceSpace(session, &rsci, &space);
     std::printf("[host] reference space -> %s\n", rs(r));
 
+    // FATAL, not merely reported. This handle flows into every xrLocateViews, every xrLocateSpace
+    // and every layer submitted below, so a null one is XR_ERROR_HANDLE_INVALID on each of them,
+    // ninety times a second, forever. The result used to be printed and then ignored -- which is
+    // the shape of failure that gets diagnosed as a rendering bug.
+    if (XR_FAILED(r) || space == XR_NULL_HANDLE) {
+        std::printf("[host] no LOCAL reference space -- nothing can be located or submitted\n");
+        return 1;
+    }
+
     // ---- A HEAD-LOCKED SPACE, FOR THE UI QUAD ONLY ------------------------------------------
     //
     // VIEW space is defined as the viewer's own frame, so a layer posed in it follows the head
@@ -722,6 +1010,15 @@ int main(int argc, char** argv) {
     r = xrCreateReferenceSpace(session, &vsci, &view_space);
     std::printf("[host] view (head-locked) space -> %s\n", rs(r));
 
+    // Fatal for the same reason: the head pose handed to the mod is an xrLocateSpace on THIS
+    // space (see the frame loop), and the settings panel poses its quad in it. A host that runs
+    // without it publishes no head orientation at all, which is worse than not starting.
+    if (XR_FAILED(r) || view_space == XR_NULL_HANDLE) {
+        std::printf("[host] no VIEW reference space -- the head pose and the settings panel both "
+                    "depend on it\n");
+        return 1;
+    }
+
     // ---- CONTROLLERS ------------------------------------------------------------------------
     //
     // One action set, created and attached once. Each action exists ONCE with both subaction
@@ -729,8 +1026,19 @@ int main(int argc, char** argv) {
     // input, on either hand", and it halves the bookkeeping below since xrGetActionState* takes
     // the hand as a parameter rather than needing a second action.
     XrPath hand_path[2] = {XR_NULL_PATH, XR_NULL_PATH};  // xr::kHandLeft, xr::kHandRight
-    xrStringToPath(g_instance, "/user/hand/left", &hand_path[xr::kHandLeft]);
-    xrStringToPath(g_instance, "/user/hand/right", &hand_path[xr::kHandRight]);
+    const XrResult left_hand_path_r =
+        xrStringToPath(g_instance, "/user/hand/left", &hand_path[xr::kHandLeft]);
+    const XrResult right_hand_path_r =
+        xrStringToPath(g_instance, "/user/hand/right", &hand_path[xr::kHandRight]);
+
+    // A null subaction path is XR_ERROR_PATH_INVALID on every xrCreateAction, every
+    // xrGetActionState* and every haptic call below -- hundreds of failures a second out of one
+    // silent miss here.
+    if (XR_FAILED(left_hand_path_r) || XR_FAILED(right_hand_path_r)) {
+        std::printf("[host] xrStringToPath /user/hand/{left,right} -> %s / %s -- no controller "
+                    "input is possible\n", rs(left_hand_path_r), rs(right_hand_path_r));
+        return 1;
+    }
 
     XrActionSet action_set = XR_NULL_HANDLE;
     {
@@ -753,6 +1061,11 @@ int main(int argc, char** argv) {
     XrAction y_click_action = XR_NULL_HANDLE;
     XrAction thumbstick_click_action = XR_NULL_HANDLE;
     XrAction menu_click_action = XR_NULL_HANDLE;
+
+    // OUTPUT, and the only action in this set that this process WRITES rather than reads. It is
+    // created here with the others so it is attached by the same xrAttachSessionActionSets:
+    // xrApplyHapticFeedback on an unattached action is XR_ERROR_ACTIONSET_NOT_ATTACHED.
+    XrAction haptic_action = XR_NULL_HANDLE;
 
     auto create_action = [&](const char* name, const char* localized, XrActionType type,
                              XrAction& out) {
@@ -778,6 +1091,7 @@ int main(int argc, char** argv) {
     create_action("thumbstick_click", "Thumbstick Click", XR_ACTION_TYPE_BOOLEAN_INPUT,
                   thumbstick_click_action);
     create_action("menu_click", "Menu Click", XR_ACTION_TYPE_BOOLEAN_INPUT, menu_click_action);
+    create_action("haptic", "Haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, haptic_action);
 
     // Suggesting a path a profile does not expose fails the WHOLE call with
     // XR_ERROR_PATH_UNSUPPORTED -- the classic way to end up with no bindings at all and no clue
@@ -787,14 +1101,30 @@ int main(int argc, char** argv) {
         [&](const char* profile_path_str,
            const std::vector<std::pair<XrAction, const char*>>& bindings) {
             XrPath profile_path = XR_NULL_PATH;
-            xrStringToPath(g_instance, profile_path_str, &profile_path);
+            const XrResult profile_r = xrStringToPath(g_instance, profile_path_str, &profile_path);
+
+            if (XR_FAILED(profile_r)) {
+                std::printf("[host] suggest bindings '%s' -> profile path rejected (%s)\n",
+                            profile_path_str, rs(profile_r));
+                return profile_r;
+            }
 
             std::vector<XrActionSuggestedBinding> suggestions;
             suggestions.reserve(bindings.size());
 
             for (const auto& b : bindings) {
                 XrPath p = XR_NULL_PATH;
-                xrStringToPath(g_instance, b.second, &p);
+                const XrResult path_r = xrStringToPath(g_instance, b.second, &p);
+
+                // Dropped rather than passed on as XR_NULL_PATH: a path the runtime will not even
+                // parse would fail the whole call for the wrong reason, and the profile would get
+                // blamed for what is a typo in the string above.
+                if (XR_FAILED(path_r)) {
+                    std::printf("[host] suggest bindings '%s': path '%s' -> %s, dropped\n",
+                                profile_path_str, b.second, rs(path_r));
+                    continue;
+                }
+
                 suggestions.push_back({b.first, p});
             }
 
@@ -833,11 +1163,15 @@ int main(int argc, char** argv) {
             {menu_click_action, "/user/hand/left/input/menu/click"},
             {a_click_action, "/user/hand/right/input/a/click"},
             {b_click_action, "/user/hand/right/input/b/click"},
+            {haptic_action, "/user/hand/left/output/haptic"},
+            {haptic_action, "/user/hand/right/output/haptic"},
         });
 
-    // FALLBACK: whatever the runtime offers when it is not Touch. khr/simple_controller is the
-    // one profile every conformant runtime supports, so this guarantees poses even with nothing
-    // configured -- select doubles as trigger, and there is no squeeze, stick or face buttons.
+    // FALLBACK OF LAST RESORT: khr/simple_controller is the one profile every conformant runtime
+    // supports, so this guarantees poses and a trigger even with nothing else configured -- select
+    // doubles as trigger, and there is no squeeze, stick or face buttons. Everything between here
+    // and the Touch block above exists so that this is not what a Vive, an Index, a WMR headset or
+    // a Pico actually lands on, because landing here means no locomotion and no turning.
     suggest_bindings("/interaction_profiles/khr/simple_controller",
                      {
                          {aim_pose_action, "/user/hand/left/input/aim/pose"},
@@ -848,7 +1182,166 @@ int main(int argc, char** argv) {
                          {trigger_action, "/user/hand/right/input/select/click"},
                          {menu_click_action, "/user/hand/left/input/menu/click"},
                          {menu_click_action, "/user/hand/right/input/menu/click"},
+                         {haptic_action, "/user/hand/left/output/haptic"},
+                         {haptic_action, "/user/hand/right/output/haptic"},
                      });
+
+    // ---- THE GENERIC FALLBACK, WHERE THE RUNTIME OFFERS ONE ------------------------------------
+    //
+    // XR_KHR_generic_controller exists for exactly the case this host kept hitting: a runtime
+    // whose hardware nobody named, falling back to simple_controller, which has no thumbstick, no
+    // squeeze and no face buttons -- the whole of this mod's locomotion and turning, gone.
+    //
+    // Suggested only when the extension actually took (see the scan before xrCreateInstance):
+    // without it the profile path does not exist and the call fails as a whole.
+    //
+    // NO MENU HERE. The profile does not define /input/menu/click -- the extension lists Touch's
+    // menu among the paths with "no generic controller equivalent" -- so the long-press that opens
+    // the settings panel is unreachable on a runtime that lands here, and asking for the path
+    // anyway would take every other binding down with it.
+    if (have_generic_controller) {
+        suggest_bindings(
+            "/interaction_profiles/khr/generic_controller",
+            {
+                {aim_pose_action, "/user/hand/left/input/aim/pose"},
+                {aim_pose_action, "/user/hand/right/input/aim/pose"},
+                {grip_pose_action, "/user/hand/left/input/grip/pose"},
+                {grip_pose_action, "/user/hand/right/input/grip/pose"},
+                {trigger_action, "/user/hand/left/input/trigger/value"},
+                {trigger_action, "/user/hand/right/input/trigger/value"},
+                {squeeze_action, "/user/hand/left/input/squeeze/value"},
+                {squeeze_action, "/user/hand/right/input/squeeze/value"},
+                {stick_action, "/user/hand/left/input/thumbstick"},
+                {stick_action, "/user/hand/right/input/thumbstick"},
+                {thumbstick_click_action, "/user/hand/left/input/thumbstick/click"},
+                {thumbstick_click_action, "/user/hand/right/input/thumbstick/click"},
+                // primary/secondary onto the same buttons the extension's own equivalence table
+                // gives for Touch: left primary is X, left secondary is Y, right primary is A,
+                // right secondary is B.
+                {x_click_action, "/user/hand/left/input/primary/click"},
+                {y_click_action, "/user/hand/left/input/secondary/click"},
+                {a_click_action, "/user/hand/right/input/primary/click"},
+                {b_click_action, "/user/hand/right/input/secondary/click"},
+                {haptic_action, "/user/hand/left/output/haptic"},
+                {haptic_action, "/user/hand/right/output/haptic"},
+            });
+    }
+
+    // VALVE INDEX. a/click and b/click exist on BOTH hands here, unlike Touch, so the mod's four
+    // face buttons map onto them by hand -- left a/b as X/Y, right a/b as A/B, keeping the layout
+    // Touch establishes above.
+    //
+    // There is NO menu/click on this profile. The long-press that opens the settings panel is
+    // therefore unavailable on an Index, and suggesting the path regardless would fail the entire
+    // call and cost the wearer every other binding with it.
+    suggest_bindings(
+        "/interaction_profiles/valve/index_controller",
+        {
+            {aim_pose_action, "/user/hand/left/input/aim/pose"},
+            {aim_pose_action, "/user/hand/right/input/aim/pose"},
+            {grip_pose_action, "/user/hand/left/input/grip/pose"},
+            {grip_pose_action, "/user/hand/right/input/grip/pose"},
+            {trigger_action, "/user/hand/left/input/trigger/value"},
+            {trigger_action, "/user/hand/right/input/trigger/value"},
+            {squeeze_action, "/user/hand/left/input/squeeze/value"},
+            {squeeze_action, "/user/hand/right/input/squeeze/value"},
+            {stick_action, "/user/hand/left/input/thumbstick"},
+            {stick_action, "/user/hand/right/input/thumbstick"},
+            {thumbstick_click_action, "/user/hand/left/input/thumbstick/click"},
+            {thumbstick_click_action, "/user/hand/right/input/thumbstick/click"},
+            {x_click_action, "/user/hand/left/input/a/click"},
+            {y_click_action, "/user/hand/left/input/b/click"},
+            {a_click_action, "/user/hand/right/input/a/click"},
+            {b_click_action, "/user/hand/right/input/b/click"},
+            {haptic_action, "/user/hand/left/output/haptic"},
+            {haptic_action, "/user/hand/right/output/haptic"},
+        });
+
+    // HTC VIVE WAND. No thumbstick and no face buttons at all -- it has a TRACKPAD, and that is
+    // where locomotion has to come from. The profile defines trackpad/x and trackpad/y, which is
+    // exactly what a vector2f action requires of a parent path, so the stick action binds to
+    // /input/trackpad and the stick click to /input/trackpad/click.
+    //
+    // Squeeze is a CLICK on this controller, not a value. A float action bound to a boolean source
+    // is defined to read 0.0 or 1.0, so the grip reads as fully open or fully closed rather than
+    // not at all.
+    suggest_bindings(
+        "/interaction_profiles/htc/vive_controller",
+        {
+            {aim_pose_action, "/user/hand/left/input/aim/pose"},
+            {aim_pose_action, "/user/hand/right/input/aim/pose"},
+            {grip_pose_action, "/user/hand/left/input/grip/pose"},
+            {grip_pose_action, "/user/hand/right/input/grip/pose"},
+            {trigger_action, "/user/hand/left/input/trigger/value"},
+            {trigger_action, "/user/hand/right/input/trigger/value"},
+            {squeeze_action, "/user/hand/left/input/squeeze/click"},
+            {squeeze_action, "/user/hand/right/input/squeeze/click"},
+            {stick_action, "/user/hand/left/input/trackpad"},
+            {stick_action, "/user/hand/right/input/trackpad"},
+            {thumbstick_click_action, "/user/hand/left/input/trackpad/click"},
+            {thumbstick_click_action, "/user/hand/right/input/trackpad/click"},
+            {menu_click_action, "/user/hand/left/input/menu/click"},
+            {menu_click_action, "/user/hand/right/input/menu/click"},
+            {haptic_action, "/user/hand/left/output/haptic"},
+            {haptic_action, "/user/hand/right/output/haptic"},
+        });
+
+    // WINDOWS MIXED REALITY. This one has a thumbstick AND a trackpad, and no face buttons
+    // whatsoever. The stick action takes the THUMBSTICK, because that is what this mod's
+    // locomotion is shaped like; the trackpad is deliberately left unbound rather than fighting
+    // the thumbstick for the same action. Squeeze is a click here too.
+    suggest_bindings(
+        "/interaction_profiles/microsoft/motion_controller",
+        {
+            {aim_pose_action, "/user/hand/left/input/aim/pose"},
+            {aim_pose_action, "/user/hand/right/input/aim/pose"},
+            {grip_pose_action, "/user/hand/left/input/grip/pose"},
+            {grip_pose_action, "/user/hand/right/input/grip/pose"},
+            {trigger_action, "/user/hand/left/input/trigger/value"},
+            {trigger_action, "/user/hand/right/input/trigger/value"},
+            {squeeze_action, "/user/hand/left/input/squeeze/click"},
+            {squeeze_action, "/user/hand/right/input/squeeze/click"},
+            {stick_action, "/user/hand/left/input/thumbstick"},
+            {stick_action, "/user/hand/right/input/thumbstick"},
+            {thumbstick_click_action, "/user/hand/left/input/thumbstick/click"},
+            {thumbstick_click_action, "/user/hand/right/input/thumbstick/click"},
+            {menu_click_action, "/user/hand/left/input/menu/click"},
+            {menu_click_action, "/user/hand/right/input/menu/click"},
+            {haptic_action, "/user/hand/left/output/haptic"},
+            {haptic_action, "/user/hand/right/output/haptic"},
+        });
+
+    // BYTEDANCE PICO NEO 3. Core only from OpenXR 1.1, and this instance asks for 1.0.34, so on a
+    // 1.0 instance the profile is reachable purely through XR_BD_controller_interaction -- hence
+    // the same availability gate as the generic controller above. Without it the path does not
+    // exist and the call would fail as a whole. Face buttons are split by hand exactly as they are
+    // on Touch, and menu/click is defined on BOTH hands here.
+    if (have_bytedance_controller) {
+        suggest_bindings(
+            "/interaction_profiles/bytedance/pico_neo3_controller",
+            {
+                {aim_pose_action, "/user/hand/left/input/aim/pose"},
+                {aim_pose_action, "/user/hand/right/input/aim/pose"},
+                {grip_pose_action, "/user/hand/left/input/grip/pose"},
+                {grip_pose_action, "/user/hand/right/input/grip/pose"},
+                {trigger_action, "/user/hand/left/input/trigger/value"},
+                {trigger_action, "/user/hand/right/input/trigger/value"},
+                {squeeze_action, "/user/hand/left/input/squeeze/value"},
+                {squeeze_action, "/user/hand/right/input/squeeze/value"},
+                {stick_action, "/user/hand/left/input/thumbstick"},
+                {stick_action, "/user/hand/right/input/thumbstick"},
+                {thumbstick_click_action, "/user/hand/left/input/thumbstick/click"},
+                {thumbstick_click_action, "/user/hand/right/input/thumbstick/click"},
+                {x_click_action, "/user/hand/left/input/x/click"},
+                {y_click_action, "/user/hand/left/input/y/click"},
+                {a_click_action, "/user/hand/right/input/a/click"},
+                {b_click_action, "/user/hand/right/input/b/click"},
+                {menu_click_action, "/user/hand/left/input/menu/click"},
+                {menu_click_action, "/user/hand/right/input/menu/click"},
+                {haptic_action, "/user/hand/left/output/haptic"},
+                {haptic_action, "/user/hand/right/output/haptic"},
+            });
+    }
 
     // Illegal to suggest bindings after this point, so every profile above must be suggested
     // first.
@@ -1021,13 +1514,39 @@ int main(int argc, char** argv) {
     uint64_t submitted = 0;
     const ULONGLONG started = GetTickCount64();
 
-    std::printf("[host] entering frame loop -- PUT THE HEADSET ON if nothing appears; the runtime\n"
-                "[host] keeps the session IDLE while it is unworn and will not accept frames.\n");
+    // ---- HAPTICS, WHICH FLOW THE OTHER WAY -----------------------------------------------------
+    //
+    // The read cursor into xr::HapticsState's ring plus what became of the entries it walked.
+    // `haptics_seeded` is the difference between "the mod has never queued anything" and "the mod
+    // has been queueing since before this process existed": the first write_index observed becomes
+    // the cursor, so a running game's backlog is dropped rather than delivered into the wearer's
+    // hands all at once.
+    uint32_t haptic_read = 0;
+    bool haptics_seeded = false;
+    bool haptic_failure_logged = false;
+    uint64_t haptics_fired = 0;
+    uint64_t haptic_overruns = 0;  // entries the producer overwrote before we reached them
+    uint64_t haptic_torn = 0;      // entries lapped DURING our copy, caught by the commit stamp
+    // Swapchain acquire/wait failures across the game screen, the UI layer and the test pattern.
+    // Counted rather than logged per frame: one is a hiccup, a rising count is the fault.
+    uint64_t upload_failures = 0;
+    bool layer_overflow_logged = false;
+    // What the two paired frame calls last returned, so a persistent failure logs on the
+    // transition instead of ninety times a second.
+    XrResult last_wait_result = XR_SUCCESS;
+    XrResult last_begin_result = XR_SUCCESS;
 
-    while (!g_stop) {
+    // ---- ONE EVENT PUMP, TWO CALLERS -----------------------------------------------------------
+    //
+    // The frame loop drains events at the top of every iteration; shutdown drains them again while
+    // waiting for the session to reach STOPPING. A second copy of this switch would be a second
+    // place for a transition to be handled differently, and the transition shutdown waits for is
+    // precisely the one that would be missed.
+    auto pump_events = [&]() {
         XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
+        XrResult poll_r = xrPollEvent(g_instance, &ev);
 
-        while (xrPollEvent(g_instance, &ev) == XR_SUCCESS) {
+        for (; poll_r == XR_SUCCESS; poll_r = xrPollEvent(g_instance, &ev)) {
             // THE RUNTIME RECENTRED. Whatever the wearer just did in the headset moved the
             // origin of LOCAL space, so every position published from here on is measured from
             // somewhere new. The game cannot know that on its own -- it would keep differencing
@@ -1044,6 +1563,29 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // ---- THE RUNTIME ITSELF IS GOING AWAY ---------------------------------------------
+            //
+            // Routine rather than exotic: a SteamVR or Oculus service restart delivers this, and
+            // at `lossTime` every handle this process holds -- instance, session, swapchains,
+            // spaces -- stops being valid. Unhandled, the loop carried on calling into a dead
+            // instance and every result after it was an error with no visible cause.
+            if (ev.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
+                const auto* ilp = reinterpret_cast<XrEventDataInstanceLossPending*>(&ev);
+                std::printf("[host] INSTANCE LOSS PENDING at %lld -- the runtime is going away, "
+                            "stopping\n", static_cast<long long>(ilp->lossTime));
+                g_stop = true;
+            }
+
+            // WE FELL BEHIND. The runtime's event queue is finite and drops the oldest when it
+            // fills, so this says a session state change or a profile change may simply never
+            // have been seen -- which is the only explanation for a state machine that looks
+            // impossible from the log alone.
+            if (ev.type == XR_TYPE_EVENT_DATA_EVENTS_LOST) {
+                const auto* lost = reinterpret_cast<XrEventDataEventsLost*>(&ev);
+                std::printf("[host] %u event(s) LOST -- this pump fell behind the runtime\n",
+                            lost->lostEventCount);
+            }
+
             if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                 state = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev)->state;
                 std::printf("[host] session -> %s\n", state_name(state));
@@ -1051,10 +1593,16 @@ int main(int argc, char** argv) {
                 if (state == XR_SESSION_STATE_READY) {
                     XrSessionBeginInfo sbi{XR_TYPE_SESSION_BEGIN_INFO};
                     sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-                    std::printf("[host] xrBeginSession -> %s\n", rs(xrBeginSession(session, &sbi)));
-                    running = true;
+                    const XrResult session_begin_r = xrBeginSession(session, &sbi);
+                    std::printf("[host] xrBeginSession -> %s\n", rs(session_begin_r));
+                    // `running` is what lets the frame loop call xrWaitFrame. Setting it after a
+                    // FAILED begin would aim every frame at a session that was never started.
+                    running = XR_SUCCEEDED(session_begin_r);
                 } else if (state == XR_SESSION_STATE_STOPPING) {
-                    xrEndSession(session);
+                    // The ONE state xrEndSession is legal from, which is why it lives here rather
+                    // than in the shutdown path -- shutdown reaches this state by asking for it
+                    // and pumping until this line runs.
+                    std::printf("[host] xrEndSession -> %s\n", rs(xrEndSession(session)));
                     running = false;
                 } else if (state == XR_SESSION_STATE_EXITING ||
                            state == XR_SESSION_STATE_LOSS_PENDING) {
@@ -1074,10 +1622,10 @@ int main(int argc, char** argv) {
                     if (XR_SUCCEEDED(pr) && ips.interactionProfile != XR_NULL_PATH) {
                         uint32_t len = 0;
                         char path_buf[XR_MAX_PATH_LENGTH] = {};
-                        xrPathToString(g_instance, ips.interactionProfile, sizeof(path_buf), &len,
-                                       path_buf);
+                        const XrResult name_r = xrPathToString(g_instance, ips.interactionProfile,
+                                                               sizeof(path_buf), &len, path_buf);
                         std::printf("[host] interaction profile changed, hand %u -> %s\n", h,
-                                    path_buf);
+                                    XR_SUCCEEDED(name_r) ? path_buf : rs(name_r));
                     } else {
                         std::printf("[host] interaction profile changed, hand %u -> none (%s)\n", h,
                                     rs(pr));
@@ -1087,6 +1635,21 @@ int main(int argc, char** argv) {
 
             ev = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
         }
+
+        // XR_EVENT_UNAVAILABLE is the ordinary "queue empty" and ends the drain. Anything else is
+        // the instance failing underneath us, and without this the loop would spin on it in
+        // silence for as long as the process lived.
+        if (poll_r != XR_EVENT_UNAVAILABLE) {
+            std::printf("[host] xrPollEvent -> %s -- stopping\n", rs(poll_r));
+            g_stop = true;
+        }
+    };
+
+    std::printf("[host] entering frame loop -- PUT THE HEADSET ON if nothing appears; the runtime\n"
+                "[host] keeps the session IDLE while it is unworn and will not accept frames.\n");
+
+    while (!g_stop) {
+        pump_events();
 
         if (!running) {
             Sleep(20);
@@ -1101,7 +1664,47 @@ int main(int argc, char** argv) {
         // xrWaitFrame is the compositor's throttle -- it is what paces this loop, not a sleep.
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
-        xrWaitFrame(session, &fwi, &fs);
+        const XrResult wait_r = xrWaitFrame(session, &fwi, &fs);
+
+        // ---- A FAILED WAIT IS NOT A FRAME ------------------------------------------------------
+        //
+        // `fs` is value-initialised, so a failure leaves predictedDisplayTime at ZERO -- and the
+        // rest of this loop would hand that zero to xrLocateViews and xrEndFrame, which answer
+        // XR_ERROR_TIME_INVALID forever, as fast as the CPU allows, with nothing on screen to show
+        // for it. The result used to be discarded outright, so that is what a runtime restart
+        // looked like from here: a pegged core and a black headset.
+        //
+        // Skipped means SKIPPED: no xrBeginFrame, therefore no xrEndFrame. The two are a pair and
+        // an end without a begin is as wrong as a begin without an end. Teardown is left to the
+        // event pump, which is where the session-state change actually arrives.
+        if (XR_FAILED(wait_r) || fs.predictedDisplayTime <= 0) {
+            if (wait_r != last_wait_result) {
+                std::printf("[host] xrWaitFrame -> %s (predicted display time %lld) -- skipping "
+                            "frames until it recovers\n", rs(wait_r),
+                            static_cast<long long>(fs.predictedDisplayTime));
+                last_wait_result = wait_r;
+            }
+
+            Sleep(5);
+
+            if (max_seconds > 0 &&
+                GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
+                break;
+            }
+
+            continue;
+        }
+
+        if (wait_r != last_wait_result) {
+            // XR_SESSION_LOSS_PENDING is a SUCCESS code and the ordinary way a SteamVR or Oculus
+            // service restart surfaces here: the frame state is valid and this frame is flown
+            // normally, while the session-state event that follows brings the process down.
+            if (wait_r == XR_SESSION_LOSS_PENDING) {
+                std::printf("[host] xrWaitFrame -> %s -- the runtime is going away\n", rs(wait_r));
+            }
+
+            last_wait_result = wait_r;
+        }
 
         // THE FRAME CLOCK, relayed. xrWaitFrame has just told us when the runtime wants the next
         // frame; releasing the game here makes its update run on the compositor's cadence instead
@@ -1139,26 +1742,60 @@ int main(int argc, char** argv) {
             std::vector<XrView> hv(view_count, {XR_TYPE_VIEW});
 
             const XrResult lr_res = xrLocateViews(session, &vli, &vs, view_count, &located, hv.data());
-            if (!XR_SUCCEEDED(lr_res) || located < 2) {
+
+            // ---- THE HEAD IS NOT THE LEFT EYE ------------------------------------------------
+            //
+            // The position below was always averaged over both eyes, but the ORIENTATION used to
+            // be taken verbatim from hv[0]. On a canted-display headset -- Index, Pimax, Varjo,
+            // Bigscreen Beyond -- the panels are physically rotated and each eye's orientation
+            // carries that cant, so the game's camera ends up permanently yawed with nothing on
+            // screen to explain it.
+            //
+            // VIEW space IS the head: its origin is the point between the eyes, which is exactly
+            // what this publishes. Locating it is the answer rather than averaging two rotations,
+            // which is not a well-defined operation in the first place.
+            XrSpaceLocation head_loc{XR_TYPE_SPACE_LOCATION};
+            const XrResult head_r =
+                xrLocateSpace(view_space, space, fs.predictedDisplayTime, &head_loc);
+
+            // BOTH BITS. hs->position is published from this same location and the mod steers a
+            // camera with it, so a pose with a believable orientation and an unknown position
+            // would look right while standing in the wrong place.
+            const bool head_ok =
+                XR_SUCCEEDED(head_r) &&
+                (head_loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0 &&
+                (head_loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+            const bool views_ok = XR_SUCCEEDED(lr_res) && located >= 2;
+
+            if (!views_ok || !head_ok) {
                 ++pose_skip_locate;
             }
-            if (XR_SUCCEEDED(lr_res) && located >= 2) {
+
+            if (views_ok && head_ok) {
                 auto* hs = reader.host;
                 hs->sequence |= 1u;
                 MemoryBarrier();
 
-                // The HEAD is the midpoint of the two eyes -- the runtime reports eyes, not a head,
-                // and handing the game one eye's pose would offset the whole world by half an IPD.
-                for (int k = 0; k < 3; ++k) {
-                    const float a = (&hv[0].pose.position.x)[k];
-                    const float b = (&hv[1].pose.position.x)[k];
-                    (&hs->position[0])[k] = (a + b) * 0.5f;
-                }
+                // THE WHOLE POSE FROM ONE LOCATED SPACE, orientation and position together.
+                // VIEW is defined as "the view origin used to generate view transforms for the
+                // primary viewer (or centroid of view origins if stereo)", so its position IS the
+                // eye midpoint this used to average out of hv[0]/hv[1] by hand -- the two agree by
+                // definition, and taking both halves from the same XrSpaceLocation means they
+                // cannot disagree even if a runtime defines that centroid differently than we
+                // would. It also leaves exactly one validity check (head_ok) covering the pose the
+                // mod steers a camera with, instead of one covering the orientation and a
+                // different one covering the position.
+                //
+                // The eye poses below are still needed, but only for IPD and for the frustum --
+                // never for the head.
+                hs->position[0] = head_loc.pose.position.x;
+                hs->position[1] = head_loc.pose.position.y;
+                hs->position[2] = head_loc.pose.position.z;
 
-                hs->orientation[0] = hv[0].pose.orientation.x;
-                hs->orientation[1] = hv[0].pose.orientation.y;
-                hs->orientation[2] = hv[0].pose.orientation.z;
-                hs->orientation[3] = hv[0].pose.orientation.w;
+                hs->orientation[0] = head_loc.pose.orientation.x;
+                hs->orientation[1] = head_loc.pose.orientation.y;
+                hs->orientation[2] = head_loc.pose.orientation.z;
+                hs->orientation[3] = head_loc.pose.orientation.w;
 
                 const float dx = hv[1].pose.position.x - hv[0].pose.position.x;
                 const float dy = hv[1].pose.position.y - hv[0].pose.position.y;
@@ -1180,7 +1817,11 @@ int main(int argc, char** argv) {
 
                 hs->fov_x = mx;
                 hs->fov_y = my;
-                hs->valid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) ? 1u : 0u;
+                // Nothing above runs unless xrLocateSpace reported BOTH orientation and position
+                // valid, so this records that condition rather than re-deriving it. It used to be
+                // set from the view state's ORIENTATION bit alone while hs->position was published
+                // regardless -- a pose the mod was told to trust with half of it unknown.
+                hs->valid = 1u;
                 hs->write_qpc = 0;
 
                 MemoryBarrier();
@@ -1235,12 +1876,55 @@ int main(int argc, char** argv) {
         }
 
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
-        xrBeginFrame(session, &fbi);
+        const XrResult begin_r = xrBeginFrame(session, &fbi);
+
+        // XR_FRAME_DISCARDED is a SUCCESS code that still owes an xrEndFrame: the runtime is
+        // saying a PREVIOUS frame was thrown away, not refusing this one. A real failure means no
+        // frame was begun at all, so going on to xrEndFrame would be an unpaired end.
+        if (XR_FAILED(begin_r)) {
+            if (begin_r != last_begin_result) {
+                std::printf("[host] xrBeginFrame -> %s -- skipping the frame\n", rs(begin_r));
+                last_begin_result = begin_r;
+            }
+
+            Sleep(5);
+
+            if (max_seconds > 0 &&
+                GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
+                break;
+            }
+
+            continue;
+        }
+
+        last_begin_result = begin_r;
 
         std::vector<XrCompositionLayerProjectionView> layer_views(view_count);
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        const XrCompositionLayerBaseHeader* layers[4]{};  // projection/2-quad-fallback/test-pattern + UI + settings
+
+        // ---- SIZED WITH ROOM, AND CHECKED ANYWAY -----------------------------------------------
+        //
+        // This array used to be exactly four, which is exactly the worst case it has today: the
+        // two-quad fallback plus the mod's HUD plus the settings panel. It was full, nothing
+        // compared the count against it, and one more layer type would have written past the end
+        // in silence.
+        const XrCompositionLayerBaseHeader* layers[kMaxLayers]{};
         uint32_t layer_count = 0;
+
+        auto append_layer = [&](const XrCompositionLayerBaseHeader* appended) {
+            if (layer_count < kMaxLayers) {
+                layers[layer_count++] = appended;
+                return;
+            }
+
+            // Loud once rather than counted quietly: overflowing this is a mistake in the
+            // composition above, not a runtime condition that can be waited out.
+            if (!layer_overflow_logged) {
+                std::printf("[host] composition layer list full at %u -- dropping a layer; raise "
+                            "kMaxLayers\n", kMaxLayers);
+                layer_overflow_logged = true;
+            }
+        };
 
         // Pull the newest complete frame the game has published, if any.
         uint32_t fw = 0, fh = 0, fpitch = 0;
@@ -1307,6 +1991,8 @@ int main(int argc, char** argv) {
                 screen_images[e].clear();
 
                 if (screen[e] != XR_NULL_HANDLE) {
+                    // Result ignored: this handle is being replaced whatever the runtime says,
+                    // and a destroy that fails leaves nothing this loop could act on.
                     xrDestroySwapchain(screen[e]);
                     screen[e] = XR_NULL_HANDLE;
                 }
@@ -1334,10 +2020,24 @@ int main(int argc, char** argv) {
                 }
 
                 uint32_t n = 0;
-                xrEnumerateSwapchainImages(screen[e], 0, &n, nullptr);
+                XrResult img_r = xrEnumerateSwapchainImages(screen[e], 0, &n, nullptr);
                 std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-                xrEnumerateSwapchainImages(
-                    screen[e], n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+
+                if (XR_SUCCEEDED(img_r) && n > 0) {
+                    img_r = xrEnumerateSwapchainImages(
+                        screen[e], n, &n,
+                        reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+                }
+
+                // The upload path indexes screen_images[e], so an empty or failed enumeration is
+                // a swapchain nothing may point at. Failing the resize here keeps the previous
+                // (working) size in place instead of leaving a handle with no images behind it.
+                if (XR_FAILED(img_r) || n == 0) {
+                    std::printf("[host] eye %d screen swapchain images -> %s (%u) -- abandoning "
+                                "this resize\n", e, rs(img_r), n);
+                    ok = false;
+                    break;
+                }
 
                 for (uint32_t k = 0; k < n; ++k) {
                     screen_images[e].push_back(imgs[k].texture);
@@ -1365,6 +2065,8 @@ int main(int argc, char** argv) {
             ui_images.clear();
 
             if (ui_swapchain != XR_NULL_HANDLE) {
+                // Result ignored for the same reason as the eye swapchains above -- the handle is
+                // being replaced regardless.
                 xrDestroySwapchain(ui_swapchain);
                 ui_swapchain = XR_NULL_HANDLE;
             }
@@ -1383,27 +2085,55 @@ int main(int argc, char** argv) {
             const XrResult ui_r = xrCreateSwapchain(session, &ui_sc, &ui_swapchain);
             std::printf("[host] ui swapchain %ux%u -> %s\n", uw, uh, rs(ui_r));
 
-            if (XR_SUCCEEDED(ui_r)) {
-                uint32_t n = 0;
-                xrEnumerateSwapchainImages(ui_swapchain, 0, &n, nullptr);
-                std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-                xrEnumerateSwapchainImages(
-                    ui_swapchain, n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+            uint32_t ui_n = 0;
+            XrResult ui_img_r = XR_SUCCESS;
 
-                for (uint32_t k = 0; k < n; ++k) {
-                    ui_images.push_back(imgs[k].texture);
+            if (XR_SUCCEEDED(ui_r)) {
+                ui_img_r = xrEnumerateSwapchainImages(ui_swapchain, 0, &ui_n, nullptr);
+                std::vector<XrSwapchainImageD3D11KHR> imgs(ui_n,
+                                                           {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+
+                if (XR_SUCCEEDED(ui_img_r) && ui_n > 0) {
+                    ui_img_r = xrEnumerateSwapchainImages(
+                        ui_swapchain, ui_n, &ui_n,
+                        reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
                 }
 
+                if (XR_SUCCEEDED(ui_img_r)) {
+                    for (uint32_t k = 0; k < ui_n; ++k) {
+                        ui_images.push_back(imgs[k].texture);
+                    }
+                }
+            }
+
+            if (!ui_images.empty()) {
                 ui_w = uw;
                 ui_h = uh;
                 ui_uploaded = false;
             } else {
+                // Created but with no usable images is the same outcome as never created, and it
+                // must not be left looking usable: the upload path bounds-checks against
+                // ui_images, so a live handle with an empty vector would fail that check on every
+                // frame from here on rather than once.
+                if (ui_swapchain != XR_NULL_HANDLE) {
+                    std::printf("[host] ui swapchain images -> %s (%u) -- destroying it\n",
+                                rs(ui_img_r), ui_n);
+                    // Result ignored: the failure being reported is the enumeration, and this is
+                    // the cleanup for it.
+                    xrDestroySwapchain(ui_swapchain);
+                    ui_swapchain = XR_NULL_HANDLE;
+                }
+
                 ui_w = 0;
                 ui_h = 0;
-                have_ui_frame = false;  // creation failed; nothing to upload this frame
+                have_ui_frame = false;  // nothing to upload this frame
             }
         }
 
+
+        // FOCUSED gates every input and output action below -- the hands block here and the
+        // haptic ring after it -- so it is derived once rather than spelled out twice.
+        const bool session_focused = (state == XR_SESSION_STATE_FOCUSED);
 
         // ---- TELL THE GAME WHAT THE HANDS ARE DOING --------------------------------------------
         //
@@ -1417,7 +2147,7 @@ int main(int argc, char** argv) {
             // state is not defined to still track live input after that. Treating "not focused" as
             // "not active" here, rather than publishing whatever was last synced, is what keeps a
             // menu overlay from leaving a weapon aimed at a frozen ray.
-            bool hands_active = (state == XR_SESSION_STATE_FOCUSED);
+            bool hands_active = session_focused;
 
             if (hands_active) {
                 XrActiveActionSet active_set{action_set, XR_NULL_PATH};
@@ -1462,6 +2192,14 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
+                // ---- THESE RESULTS ARE IGNORED, AND THAT IS THE CORRECT CHOICE ----------------
+                //
+                // Every state and location struct here is value-initialised, so a failed call
+                // leaves isActive at XR_FALSE and locationFlags at 0 -- which is precisely the
+                // "no controller, nothing valid" reading the code below already handles. They run
+                // eight times a hand, every frame; a log line per call would bury the ones that
+                // matter, and there is no recovery available that the zeroed state does not
+                // already express.
                 XrActionStateGetInfo pgi{XR_TYPE_ACTION_STATE_GET_INFO};
                 pgi.action = aim_pose_action;
                 pgi.subactionPath = hand_path[h];
@@ -1505,12 +2243,10 @@ int main(int argc, char** argv) {
                 hi.grip.position[2] = grip_loc.pose.position.z;
                 hi.grip.valid = grip_valid ? 1u : 0u;
 
-                // Float, vector2f and boolean action states: not logged per call, same as
-                // xrLocateViews and the swapchain acquire/wait/release calls above -- these run up
-                // to eight times a hand, every frame, and a log line per call would bury the ones
-                // that matter under noise. isActive false (no binding on this profile, or on this
-                // hand -- A/B and X/Y are single-hand on Touch) reads as the at-rest value rather
-                // than whatever was last synced.
+                // Float, vector2f and boolean action states, ignored for the reason given above:
+                // each state struct is value-initialised, so isActive false -- no binding on this
+                // profile, or none on this hand, since A/B and X/Y are single-hand on Touch --
+                // reads as the at-rest value rather than whatever was last synced.
                 XrActionStateGetInfo fgi{XR_TYPE_ACTION_STATE_GET_INFO};
                 fgi.subactionPath = hand_path[h];
 
@@ -1606,10 +2342,116 @@ int main(int argc, char** argv) {
             hands_bound_log = profile_bound;
         }
 
+        // ---- THE OTHER DIRECTION: BUZZ THE CONTROLLER ------------------------------------------
+        //
+        // A ring the GAME writes and this loop drains -- xr::HapticsState says why it is a ring
+        // and not one slot per hand. What looks paranoid below is the consumer half of that
+        // contract, and every part of it is preventing a specific failure:
+        //
+        //   - The cursor is SEEDED from the first write_index observed, so a mod that has been
+        //     shooting for ten minutes before this process started does not deliver ten minutes
+        //     of backlog into the wearer's hands at once.
+        //   - `avail` is an UNSIGNED difference, so the 2^32 wrap of a monotonic counter costs
+        //     nothing and needs no special case.
+        //   - Each entry is copied BETWEEN two reads of its `commit` stamp. A producer that laps
+        //     the whole ring mid-copy changes the stamp, and the entry is dropped instead of
+        //     fired with a duration that is half one pulse and half another.
+        //   - The window is drained even when it cannot be fired. A buzz for a shot taken while
+        //     the system menu had input, delivered whenever focus happens to come back, is
+        //     attached to nothing the wearer is doing.
+        if (reader.haptics != nullptr && haptic_action != XR_NULL_HANDLE) {
+            xr::HapticsState* haptics = reader.haptics;
+            const uint32_t write_index = haptics->write_index;
+            MemoryBarrier();
+
+            if (!haptics_seeded) {
+                haptic_read = write_index;
+                haptics_seeded = true;
+            }
+
+            const uint32_t avail = write_index - haptic_read;
+
+            if (avail > xr::kHapticSlots) {
+                // The oldest entries are already overwritten. Walking them anyway would fire a
+                // mixture of old and new pulses; skipping to the newest full window and SAYING
+                // SO in the status line is the honest failure.
+                haptic_overruns += avail - xr::kHapticSlots;
+                haptic_read = write_index - xr::kHapticSlots;
+            }
+
+            for (uint32_t t = haptic_read + 1u; static_cast<int32_t>(write_index - t) >= 0; ++t) {
+                const xr::HapticPulse* entry = &haptics->slot[(t - 1u) % xr::kHapticSlots];
+
+                const uint32_t commit_before = entry->commit;
+                MemoryBarrier();
+                const xr::HapticPulse pulse = *entry;
+                MemoryBarrier();
+                const uint32_t commit_after = entry->commit;
+
+                if (commit_before != t || commit_after != t) {
+                    ++haptic_torn;
+                    continue;
+                }
+
+                // `hand` indexes hand_path[2], and the producer's clamp lives in another
+                // process's binary. A stamp that happened to survive the copy is still not a
+                // reason to index an array with a value from shared memory.
+                if (pulse.hand > xr::kHandRight) {
+                    ++haptic_torn;
+                    continue;
+                }
+
+                if (!session_focused) {
+                    continue;
+                }
+
+                XrHapticActionInfo hai{XR_TYPE_HAPTIC_ACTION_INFO};
+                hai.action = haptic_action;
+                hai.subactionPath = hand_path[pulse.hand];
+
+                XrResult haptic_r = XR_SUCCESS;
+
+                if (pulse.stop != 0u) {
+                    haptic_r = xrStopHapticFeedback(session, &hai);
+                } else {
+                    XrHapticVibration vib{XR_TYPE_HAPTIC_VIBRATION};
+                    // Range-checked HERE as well as at the producer. These go straight into the
+                    // runtime, an amplitude outside [0,1] or a negative duration that is not
+                    // XR_MIN_HAPTIC_DURATION is XR_ERROR_VALIDATION_FAILURE, and an entry that
+                    // passed the commit check is still an entry we did not compute ourselves.
+                    vib.duration =
+                        pulse.duration_ns < 0 ? XR_MIN_HAPTIC_DURATION : pulse.duration_ns;
+                    vib.frequency = (std::isfinite(pulse.frequency_hz) && pulse.frequency_hz > 0.0f)
+                                        ? pulse.frequency_hz
+                                        : XR_FREQUENCY_UNSPECIFIED;
+                    vib.amplitude = std::isfinite(pulse.amplitude)
+                                        ? (std::max)(0.0f, (std::min)(1.0f, pulse.amplitude))
+                                        : 0.0f;
+                    haptic_r = xrApplyHapticFeedback(
+                        session, &hai, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+                }
+
+                if (XR_FAILED(haptic_r)) {
+                    // Once, not per pulse: a runtime that refuses one refuses all of them, and a
+                    // line per shot fired would bury every other message in this log.
+                    if (!haptic_failure_logged) {
+                        std::printf("[host] haptic feedback -> %s (not retried, logged once)\n",
+                                    rs(haptic_r));
+                        haptic_failure_logged = true;
+                    }
+                } else {
+                    ++haptics_fired;
+                }
+            }
+
+            haptic_read = write_index;
+        }
+
         // One call, every frame regardless of whether the block above ran: the settings panel's
         // own menu-button/aim-ray polling must not depend on the mod publishing hands, since a
         // wearer must be able to open Settings before (or without) the mod running at all.
-        const XrCompositionLayerQuad* settings_quad = settings_ui.update(fs.predictedDisplayTime);
+        const XrCompositionLayerQuad* settings_quad =
+            settings_ui.update(fs.predictedDisplayTime, fs.shouldRender != XR_FALSE);
 
         XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},
                                           {XR_TYPE_COMPOSITION_LAYER_QUAD}};
@@ -1625,14 +2467,39 @@ int main(int argc, char** argv) {
         // released may be submitted on later frames without re-acquiring, and the runtime uses that
         // last released image -- so holding a frame costs nothing and is what a compositor expects.
         if (fs.shouldRender != XR_FALSE && have_frame && screen[0] != XR_NULL_HANDLE) {
+            bool both_eyes_uploaded = true;
+
             for (int e = 0; e < 2; ++e) {
                 uint32_t index = 0;
                 XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-                xrAcquireSwapchainImage(screen[e], &ai, &index);
+
+                // BOUNDS-CHECKED AGAINST THIS SWAPCHAIN'S OWN IMAGES. A failed acquire never
+                // writes `index`, so it stays 0 and the upload below would scribble into image 0
+                // of a swapchain the runtime has not handed us -- and the image count is the
+                // runtime's choice, two here and three there, so even a successful acquire is not
+                // a promise about a vector we filled somewhere else. Same shape as
+                // ui/SettingsUi.cpp's renderAndBuildQuad().
+                if (XR_FAILED(xrAcquireSwapchainImage(screen[e], &ai, &index)) ||
+                    index >= screen_images[e].size()) {
+                    ++upload_failures;
+                    both_eyes_uploaded = false;
+                    continue;
+                }
 
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
-                xrWaitSwapchainImage(screen[e], &wi);
+
+                // "The swapchain image must have been successfully waited on without timeout
+                // before it is released" -- so a failed wait forbids the copy below. The acquire
+                // still has to be undone, or the swapchain loses an image per frame until it has
+                // none left to give.
+                if (XR_FAILED(xrWaitSwapchainImage(screen[e], &wi))) {
+                    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    xrReleaseSwapchainImage(screen[e], &ri);
+                    ++upload_failures;
+                    both_eyes_uploaded = false;
+                    continue;
+                }
 
                 // SLICING WITHOUT A SHADER. UpdateSubresource walks the source using the stride it
                 // is given, so starting the right eye half a row in and keeping the FULL pitch
@@ -1645,10 +2512,18 @@ int main(int argc, char** argv) {
                 ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, eye_bits, fpitch, 0);
 
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                // Result ignored deliberately: a release that fails has still handed the image
+                // back as far as this loop is concerned, there is nothing to retry, and the next
+                // acquire reports the real state. Same choice in ui/SettingsUi.cpp.
                 xrReleaseSwapchainImage(screen[e], &ri);
             }
 
-            screen_ready = true;
+            // Only once BOTH eyes landed. screen_ready is what lets the submit paths below point
+            // a layer at these swapchains, and half a stereo pair -- one eye new, one eye holding
+            // the previous frame -- is worse to look at than holding both.
+            if (both_eyes_uploaded) {
+                screen_ready = true;
+            }
         }
 
         // ---- APPEAR / DISAPPEAR, LOGGED ONCE -----------------------------------------------
@@ -1673,48 +2548,62 @@ int main(int argc, char** argv) {
         if (fs.shouldRender != XR_FALSE && have_ui_frame && ui_swapchain != XR_NULL_HANDLE) {
             uint32_t ui_index = 0;
             XrSwapchainImageAcquireInfo ui_ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            xrAcquireSwapchainImage(ui_swapchain, &ui_ai, &ui_index);
 
-            XrSwapchainImageWaitInfo ui_wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-            ui_wi.timeout = XR_INFINITE_DURATION;
-            xrWaitSwapchainImage(ui_swapchain, &ui_wi);
+            if (XR_FAILED(xrAcquireSwapchainImage(ui_swapchain, &ui_ai, &ui_index)) ||
+                ui_index >= ui_images.size()) {
+                ++upload_failures;
+            } else {
+                XrSwapchainImageWaitInfo ui_wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                ui_wi.timeout = XR_INFINITE_DURATION;
+                const bool ui_waited = XR_SUCCEEDED(xrWaitSwapchainImage(ui_swapchain, &ui_wi));
 
-            if (uderive_alpha != 0) {
-                // ---- ALPHA IS NOT IN THE PIXELS ---------------------------------------------
-                //
-                // The engine's UI shaders emit zero alpha and forcing the colour-write mask does
-                // not change that (measured 0xF for the whole bracket). The surface is cleared to
-                // transparent black and only the UI draws into it, so RGB is already the
-                // premultiplied contribution and its brightness IS its coverage -- deriving
-                // A = max(R,G,B) here is exact, not an approximation. Paid on the host rather than
-                // the game's render thread, because the host is already touching every pixel to
-                // upload it and the game would pay it inside the frame instead.
-                ui_staging.resize(static_cast<size_t>(upitch) * uh);
+                if (ui_waited) {
+                    if (uderive_alpha != 0) {
+                        // ---- ALPHA IS NOT IN THE PIXELS -------------------------------------
+                        //
+                        // The engine's UI shaders emit zero alpha and forcing the colour-write
+                        // mask does not change that (measured 0xF for the whole bracket). The
+                        // surface is cleared to transparent black and only the UI draws into it,
+                        // so RGB is already the premultiplied contribution and its brightness IS
+                        // its coverage -- deriving A = max(R,G,B) here is exact, not an
+                        // approximation. Paid on the host rather than the game's render thread,
+                        // because the host is already touching every pixel to upload it and the
+                        // game would pay it inside the frame instead.
+                        ui_staging.resize(static_cast<size_t>(upitch) * uh);
 
-                for (uint32_t row = 0; row < uh; ++row) {
-                    const uint8_t* src = ubits + static_cast<size_t>(row) * upitch;
-                    uint8_t* dst = ui_staging.data() + static_cast<size_t>(row) * upitch;
+                        for (uint32_t row = 0; row < uh; ++row) {
+                            const uint8_t* src = ubits + static_cast<size_t>(row) * upitch;
+                            uint8_t* dst = ui_staging.data() + static_cast<size_t>(row) * upitch;
 
-                    for (uint32_t x = 0; x < uw; ++x) {
-                        const uint8_t b = src[x * 4 + 0];
-                        const uint8_t g = src[x * 4 + 1];
-                        const uint8_t r = src[x * 4 + 2];
-                        dst[x * 4 + 0] = b;
-                        dst[x * 4 + 1] = g;
-                        dst[x * 4 + 2] = r;
-                        dst[x * 4 + 3] = (std::max)(b, (std::max)(g, r));
+                            for (uint32_t x = 0; x < uw; ++x) {
+                                const uint8_t b = src[x * 4 + 0];
+                                const uint8_t g = src[x * 4 + 1];
+                                const uint8_t r = src[x * 4 + 2];
+                                dst[x * 4 + 0] = b;
+                                dst[x * 4 + 1] = g;
+                                dst[x * 4 + 2] = r;
+                                dst[x * 4 + 3] = (std::max)(b, (std::max)(g, r));
+                            }
+                        }
+
+                        ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ui_staging.data(),
+                                               upitch, 0);
+                    } else {
+                        ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ubits, upitch, 0);
                     }
+
+                    ui_uploaded = true;
+                } else {
+                    ++upload_failures;
                 }
 
-                ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ui_staging.data(), upitch, 0);
-            } else {
-                ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ubits, upitch, 0);
+                // Released whether or not the wait succeeded: the wait is what licenses the COPY
+                // above, but an acquired image that is never released is one the swapchain never
+                // gets back. The release's own result is ignored for the reason given at the
+                // game-screen upload. ui/SettingsUi.cpp makes the same pair of decisions.
+                XrSwapchainImageReleaseInfo ui_ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(ui_swapchain, &ui_ri);
             }
-
-            XrSwapchainImageReleaseInfo ui_ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-            xrReleaseSwapchainImage(ui_swapchain, &ui_ri);
-
-            ui_uploaded = true;
         }
 
         // ---- PROJECTION, ONCE THE GAME IS ACTUALLY TRACKING THE HEAD ---------------------------
@@ -1788,7 +2677,36 @@ int main(int argc, char** argv) {
         // a menu is up.
         const bool flat_requested = reader.frame_flat();
         XrQuaternionf stated{};
-        const bool stated_ok = reader.frame_rendered_pose(stated);
+        bool stated_ok = reader.frame_rendered_pose(stated);
+
+        // ---- NORMALISED BEFORE IT GOES ANYWHERE NEAR A LAYER -----------------------------------
+        //
+        // "A runtime must return XR_ERROR_POSE_INVALID if the orientation norm deviates by more
+        // than 1% from unit length", and xrEndFrame lists XR_ERROR_POSE_INVALID among its errors.
+        // So one bad quaternion does not cost one eye -- it drops the WHOLE frame, both eyes and
+        // every other layer with it. This value crossed a process boundary from an engine that
+        // composes rotations of its own, so unit length is a hope rather than a guarantee.
+        //
+        // Once, not per eye: both eyes are given the same orientation, so normalising inside the
+        // per-eye loop would only pay for the same divide twice.
+        if (stated_ok) {
+            const float norm2 = stated.x * stated.x + stated.y * stated.y + stated.z * stated.z +
+                                stated.w * stated.w;
+
+            if (std::isfinite(norm2) && norm2 > 1.0e-12f) {
+                const float inv = 1.0f / sqrtf(norm2);
+                stated.x *= inv;
+                stated.y *= inv;
+                stated.z *= inv;
+                stated.w *= inv;
+            } else {
+                // No direction to recover. Dividing by a zero or NaN norm produces a quaternion
+                // the compositor rejects exactly as hard as the one we started with, so the
+                // remembered pose stands instead.
+                stated_ok = false;
+            }
+        }
+
         if (!stated_ok) {
             ++stated_absent;
         }
@@ -1813,19 +2731,19 @@ int main(int argc, char** argv) {
             //     x = W * (tan a + tan m) / (2 tan m)
             // Interpolating in angle instead would be subtly wrong everywhere and grossly wrong at
             // the edges -- and it would look like a lens problem rather than an arithmetic one.
-            const float tx = tanf(slot.rendered.angleRight);
-            const float ty = tanf(slot.rendered.angleUp);
+            const float tx = tan_half_angle(slot.rendered.angleRight);
+            const float ty = tan_half_angle(slot.rendered.angleUp);
 
             for (int e = 0; e < 2; ++e) {
                 const XrFovf& want = slot.wanted[e];
 
-                const float x0 = (tanf(want.angleLeft) + tx) / (2.0f * tx);
-                const float x1 = (tanf(want.angleRight) + tx) / (2.0f * tx);
+                const float x0 = (tan_half_angle(want.angleLeft) + tx) / (2.0f * tx);
+                const float x1 = (tan_half_angle(want.angleRight) + tx) / (2.0f * tx);
 
                 // Y IS FLIPPED: angleUp is positive upward, image rows run downward, so the TOP of
                 // the rectangle comes from angleUp.
-                const float y0 = (ty - tanf(want.angleUp)) / (2.0f * ty);
-                const float y1 = (ty - tanf(want.angleDown)) / (2.0f * ty);
+                const float y0 = (ty - tan_half_angle(want.angleUp)) / (2.0f * ty);
+                const float y1 = (ty - tan_half_angle(want.angleDown)) / (2.0f * ty);
 
                 auto to_px = [](float f, uint32_t extent) {
                     const int32_t v = static_cast<int32_t>(lroundf(f * static_cast<float>(extent)));
@@ -1874,8 +2792,7 @@ int main(int argc, char** argv) {
             proj.space = space;
             proj.viewCount = 2;
             proj.views = proj_views;
-            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
-            layer_count = 1;
+            append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj));
             ++submitted;
         } else if (fs.shouldRender != XR_FALSE && screen_ready) {
             if (!have_frame) {
@@ -1915,10 +2832,9 @@ int main(int argc, char** argv) {
                     static_cast<float>(screen_w) * (screen_layout == xr::kLayoutSideBySide ? 2.0f
                                                                                            : 1.0f);
                 quad[e].size = {width_m, width_m * static_cast<float>(screen_h) / content_w};
-                layers[e] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad[e]);
+                append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad[e]));
             }
 
-            layer_count = 2;
             ++submitted;
         } else if (fs.shouldRender != XR_FALSE) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
@@ -1929,16 +2845,44 @@ int main(int argc, char** argv) {
             XrViewState vs{XR_TYPE_VIEW_STATE};
             uint32_t located = 0;
             std::vector<XrView> views(view_count, {XR_TYPE_VIEW});
-            xrLocateViews(session, &vli, &vs, view_count, &located, views.data());
+            const XrResult test_lr =
+                xrLocateViews(session, &vli, &vs, view_count, &located, views.data());
 
-            for (uint32_t i = 0; i < view_count; ++i) {
+            // A FAILED LOCATE LEAVES AN ALL-ZERO POSE, and a zero quaternion is not unit length:
+            // xrEndFrame answers XR_ERROR_POSE_INVALID and drops the whole frame, every frame,
+            // for as long as tracking is out. Nothing submitted is better than a layer built on
+            // a pose the runtime never gave us.
+            bool test_ok = XR_SUCCEEDED(test_lr) && located == view_count &&
+                           (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
+                           (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
+
+            for (uint32_t i = 0; test_ok && i < view_count; ++i) {
                 uint32_t index = 0;
                 XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-                xrAcquireSwapchainImage(eyes[i].swapchain, &ai, &index);
+
+                // Bounds-checked against THIS swapchain's own image count rather than assumed:
+                // a failed acquire leaves `index` at whatever it was, and the count is the
+                // runtime's choice -- three on one runtime, two on another.
+                if (XR_FAILED(xrAcquireSwapchainImage(eyes[i].swapchain, &ai, &index)) ||
+                    index >= eyes[i].views.size()) {
+                    ++upload_failures;
+                    test_ok = false;
+                    break;
+                }
 
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
-                xrWaitSwapchainImage(eyes[i].swapchain, &wi);
+
+                // "The swapchain image must have been successfully waited on without timeout
+                // before it is released" -- so a failed wait cannot be followed by a draw, but
+                // the acquire still has to be undone or the swapchain leaks an image every frame.
+                if (XR_FAILED(xrWaitSwapchainImage(eyes[i].swapchain, &wi))) {
+                    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    xrReleaseSwapchainImage(eyes[i].swapchain, &ri);
+                    ++upload_failures;
+                    test_ok = false;
+                    break;
+                }
 
                 // NO SHADERS ON PURPOSE. A clear is the smallest thing that can put light in front
                 // of someone, so if this does not appear the fault is in the session, the swapchain
@@ -1949,6 +2893,7 @@ int main(int argc, char** argv) {
                 ctx->ClearRenderTargetView(eyes[i].views[index], colour[i % 2]);
 
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                // Result ignored, as at the two upload sites above.
                 xrReleaseSwapchainImage(eyes[i].swapchain, &ri);
 
                 layer_views[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
@@ -1960,12 +2905,13 @@ int main(int argc, char** argv) {
                                                             static_cast<int32_t>(eyes[i].height)};
             }
 
-            layer.space = space;
-            layer.viewCount = view_count;
-            layer.views = layer_views.data();
-            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
-            layer_count = 1;
-            ++submitted;
+            if (test_ok) {
+                layer.space = space;
+                layer.viewCount = view_count;
+                layer.views = layer_views.data();
+                append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
+                ++submitted;
+            }
         }
 
         // ---- THE UI LAYER, ON TOP OF WHATEVER WORLD LAYER WAS JUST CHOSEN -----------------------
@@ -2006,19 +2952,25 @@ int main(int argc, char** argv) {
             ui_quad.size.width = ui_width_m;
             ui_quad.size.height = ui_width_m * static_cast<float>(ui_h) / static_cast<float>(ui_w);
 
-            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ui_quad);
+            append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ui_quad));
         }
 
         // The settings panel's own quad, independent of ui_enabled/ui_present_now above -- it is
         // not the mod's HUD, so it must stay available even when that HUD is off. nullptr while
-        // hidden (menu button not pressed) or not yet initialised, so nothing is appended then.
-        if (settings_quad != nullptr) {
-            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(settings_quad);
+        // hidden (menu button not pressed), not yet initialised, or on a frame the runtime said
+        // not to render.
+        //
+        // shouldRender is re-checked here rather than trusted to the panel: "the application
+        // should avoid heavy GPU work where possible, for example by skipping layer rendering and
+        // then omitting those layers when calling xrEndFrame" is an obligation on THIS call site,
+        // and it must hold whatever ui/SettingsUi.cpp does next.
+        if (fs.shouldRender != XR_FALSE && settings_quad != nullptr) {
+            append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(settings_quad));
         }
 
         XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
         fei.displayTime = fs.predictedDisplayTime;
-        fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        fei.environmentBlendMode = blend_mode;
         fei.layerCount = layer_count;
         fei.layers = layer_count != 0 ? layers : nullptr;
         const XrResult end = xrEndFrame(session, &fei);
@@ -2079,6 +3031,16 @@ int main(int argc, char** argv) {
                         hand_tracked_log[xr::kHandRight] ? "tracked" : "inferred",
                         hand_aim_pos_log[xr::kHandRight][0], hand_aim_pos_log[xr::kHandRight][1],
                         hand_aim_pos_log[xr::kHandRight][2]);
+
+            // A LINE OF ITS OWN, for the reason spelled out above: these counters were added
+            // after the crash that split this block, and appending them to a neighbouring format
+            // string is exactly the edit that caused it.
+            std::printf("[host]   haptics: %llu fired, %llu dropped (ring overrun), %llu torn, "
+                        "swapchain upload failures %llu\n",
+                        static_cast<unsigned long long>(haptics_fired),
+                        static_cast<unsigned long long>(haptic_overruns),
+                        static_cast<unsigned long long>(haptic_torn),
+                        static_cast<unsigned long long>(upload_failures));
         }
 
         if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
@@ -2094,10 +3056,47 @@ int main(int argc, char** argv) {
     // D3D11 resources, both of which need `session`/`device`/`ctx` still alive to release cleanly.
     settings_ui.shutdown();
 
+    // ---- ASK TO LEAVE, THEN WAIT TO BE TOLD TO -------------------------------------------------
+    //
+    // xrEndSession is legal ONLY from XR_SESSION_STATE_STOPPING: "it must call xrEndSession when
+    // the session is in the XR_SESSION_STATE_STOPPING state, otherwise
+    // XR_ERROR_SESSION_NOT_STOPPING will be returned". Calling it unconditionally, as this used
+    // to, therefore did nothing on every clean shutdown -- the session was destroyed while still
+    // running, and the runtime was left tearing down a compositor client that never said goodbye.
+    //
+    // The transition is the RUNTIME's to make. xrRequestExitSession asks for it ("if the
+    // application wishes to exit a running session, the application can call
+    // xrRequestExitSession") and the answer arrives as an ordinary session-state event, so the
+    // same pump the frame loop uses drives it here rather than a second copy of the switch.
+    //
+    // BOUNDED, because a wedged or already-lost runtime must not hold shutdown open forever. Past
+    // the bound xrEndSession is skipped -- out of state it would only add an error -- and
+    // xrDestroySession below runs either way, which is legal from any state.
     if (running) {
-        xrEndSession(session);
+        std::printf("[host] xrRequestExitSession -> %s\n", rs(xrRequestExitSession(session)));
+
+        const ULONGLONG exit_deadline = GetTickCount64() + 2000;
+
+        while (running && GetTickCount64() < exit_deadline) {
+            pump_events();
+
+            if (running) {
+                Sleep(5);
+            }
+        }
+
+        if (running) {
+            std::printf("[host] session never reached STOPPING within 2s (state %s) -- skipping "
+                        "xrEndSession and destroying it as-is\n", state_name(state));
+        }
     }
 
+    // ---- EVERY DESTROY BELOW IGNORES ITS RESULT, ON PURPOSE ------------------------------------
+    //
+    // xrDestroy* can only report an invalid handle or an already-lost instance, and both are
+    // states this teardown is already walking out of -- there is no alternative action, and
+    // xrDestroyInstance at the end reclaims anything a failure left behind anyway. Checking them
+    // would add branches that can only ever print.
     for (auto& e : eyes) {
         for (auto* v : e.views) {
             if (v != nullptr) {
@@ -2122,6 +3121,13 @@ int main(int argc, char** argv) {
 
     if (space != XR_NULL_HANDLE) {
         xrDestroySpace(space);
+    }
+
+    // Destroyed here rather than left to xrDestroyInstance: it is created beside `space` and the
+    // head pose published every frame is an xrLocateSpace on it, so the two belong together.
+    // Safe at this point because settings_ui.shutdown() above has already released its borrow.
+    if (view_space != XR_NULL_HANDLE) {
+        xrDestroySpace(view_space);
     }
 
     // xrDestroyActionSet also destroys the actions it owns, per spec -- nothing to release there.

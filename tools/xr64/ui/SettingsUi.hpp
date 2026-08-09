@@ -49,7 +49,13 @@ public:
     // only while visible -- renders into this panel's own swapchain image. Returns the quad layer
     // to append to this frame's layer list, or nullptr while hidden, so main.cpp only grows its
     // layer array when there is something to show.
-    const XrCompositionLayerQuad* update(XrTime predicted_display_time);
+    //
+    // `should_render` is this frame's XrFrameState::shouldRender. False means the runtime has told
+    // the app not to produce pixels, so the swapchain acquire/wait/render/release is skipped and
+    // the return is nullptr -- but everything above it still runs, because a menu press or a
+    // settings change arriving on a hidden frame must not be thrown away. Deliberately has no
+    // default argument: which frames render is the caller's decision and belongs at the call site.
+    const XrCompositionLayerQuad* update(XrTime predicted_display_time, bool should_render);
 
     void shutdown();
 
