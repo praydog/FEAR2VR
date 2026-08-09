@@ -805,12 +805,61 @@ bool start_host(const fs::path& self_dir) {
     return true;
 }
 
-bool do_launch(const Config& cfg, bool start_game, int32_t wait_seconds) {
+// ---- THE SECOND READINESS SIGNAL -----------------------------------------------------------
+//
+// gameclient.dll below says the SDK's base module is mapped. This says the SteamStub has finished
+// with FEAR2.exe: the shipped exe is CEG/SteamStub-wrapped, so its .text is CIPHERTEXT until the
+// stub decrypts it at runtime, and injecting before that makes every exe pattern scan miss. Those
+// misses LATCH -- a function-local static caches the failure deliberately, because the exe is
+// always mapped so a miss is normally definitive -- which leaves the session dead for its whole
+// lifetime with no error that says why.
+//
+// Loading gameclient.dll is itself done by decrypted code, so in principle it already implies the
+// stub has run and this check is redundant. It is here anyway because the two signals are cheap
+// and the failure they guard against is silent and permanent: a session that scans early does not
+// crash, it just never arms VR. Belt and braces is the right trade when the alternative is
+// reasoning about the ordering of another vendor's startup.
+//
+// Zero-sized and tiny helper windows (splash, IME) are skipped -- they are visible but they are
+// not the engine's.
+bool has_visible_window(uint32_t pid) {
+    struct Search {
+        uint32_t pid;
+        bool found;
+    } search{pid, false};
+
+    EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+            auto* s = reinterpret_cast<Search*>(param);
+            DWORD owner = 0;
+            GetWindowThreadProcessId(hwnd, &owner);
+            if (owner != s->pid || !IsWindowVisible(hwnd)) {
+                return TRUE;
+            }
+            RECT r{};
+            if (GetWindowRect(hwnd, &r) && (r.right - r.left) > 320 && (r.bottom - r.top) > 240) {
+                s->found = true;
+                return FALSE;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&search));
+
+    return search.found;
+}
+
+bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t wait_seconds) {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     const fs::path self_dir = fs::path(self).parent_path();
 
-    start_host(self_dir);
+    // OPT-OUT, because starting the host is not a passive act. xr64.exe loads the active OpenXR
+    // runtime, which starts that vendor's services and can raise a firewall prompt on a machine
+    // whose owner asked for neither. A test run wants the LAA launch and nothing else, so
+    // `--no-host` gives it the 4 GB session without waking a headset.
+    if (start_xr_host) {
+        start_host(self_dir);
+    }
 
     const auto wait_for_game = [&](int32_t secs) {
         uint32_t p = 0;
@@ -855,27 +904,43 @@ bool do_launch(const Config& cfg, bool start_game, int32_t wait_seconds) {
         return false;
     }
 
-    // WAIT FOR gameclient.dll, NOT FOR THE PROCESS. Injecting the moment FEAR2.exe exists produces a
-    // mod that loads, hooks d3d9 and runs frames while every SDK scan fails with "gameclient.dll
-    // module unresolved" -- the game is playable, nothing reports an error, and VR never arms.
-    // gameserver.dll has a late-resolve path and recovers; gameclient.dll does not, so its absence
-    // at injection is permanent for the session. It is the module the SDK is built on, which makes
-    // it the only honest readiness signal here.
-    printf("[launch] found pid %u, waiting for gameclient.dll\n", pid);
+    // TWO SIGNALS, BOTH REQUIRED, because they guard different failures.
+    //
+    // gameclient.dll: injecting the moment FEAR2.exe exists produces a mod that loads, hooks d3d9
+    // and runs frames while every SDK scan fails with "gameclient.dll module unresolved" -- the
+    // game is playable, nothing reports an error, and VR never arms. gameserver.dll has a
+    // late-resolve path and recovers; gameclient.dll does not, so its absence at injection is
+    // permanent for the session. It is the module the SDK is built on.
+    //
+    // A visible window: the SteamStub has finished decrypting FEAR2.exe's .text. See
+    // has_visible_window above for why a latched pattern miss is worse than a crash.
+    printf("[launch] found pid %u, waiting for gameclient.dll and the engine window\n", pid);
     bool client_up = false;
+    bool window_up = false;
     for (int32_t elapsed = 0; elapsed < 180; ++elapsed) {
-        if (module_loaded(pid, "gameclient.dll")) {
-            client_up = true;
+        client_up = client_up || module_loaded(pid, "gameclient.dll");
+        window_up = window_up || has_visible_window(pid);
+        if (client_up && window_up) {
             break;
         }
         Sleep(1000);
     }
-    if (!client_up) {
-        // Injecting anyway rather than refusing: a layout this check does not understand should
-        // degrade to the old behaviour, not to a launcher that will not launch. Loud, because a
-        // session that starts here is the broken one described above.
-        printf("[launch] gameclient.dll never appeared -- injecting anyway, but SDK scans will "
-               "likely fail and VR will not arm\n");
+    if (!client_up || !window_up) {
+        // REFUSE, rather than injecting anyway. This used to degrade to injecting on the argument
+        // that a layout the check does not understand should not stop the launcher -- but the
+        // session it produces is the silently-dead one both signals exist to prevent: exe pattern
+        // misses latch forever, the game stays playable, and VR simply never arms. Nothing
+        // downstream can tell that apart from a code regression, and the test fixture now gates on
+        // this exit code, so injecting here would turn a broken session into a green launch and a
+        // suite full of reds that look like the mod's fault.
+        //
+        // The game is left RUNNING. Someone who knows better than this check can inject into it
+        // deliberately, which is an informed override rather than a silent default.
+        printf("[launch] not ready after 180s (gameclient.dll %s, window %s) -- NOT injecting.\n",
+               client_up ? "yes" : "NO", window_up ? "yes" : "NO");
+        printf("[launch] the game is running (pid %u). If this check is wrong for your layout, "
+               "inject explicitly: injector.exe --inject\n", pid);
+        return false;
     }
 
     return do_inject_pid(cfg, pid);
@@ -886,6 +951,7 @@ void print_usage() {
     printf("  --launch   start the host, start the game with a 4 GB address space, inject (default)\n");
     printf("  options: [--process FEAR2.exe] [--dll path\\to\\fear2vr.dll] [--port 8798]\n");
     printf("           [--no-game] do not start the game, just wait for one already running\n");
+    printf("           [--no-host] do not start xr64.exe; launch and inject only\n");
     printf("           [--wait N] seconds to wait for the game (default 300)\n");
 }
 
@@ -895,6 +961,7 @@ int main(int argc, char** argv) {
     Config cfg;
     enum class Action { None, Inject, Unload, Reload, Status, Launch } action = Action::None;
     bool start_game = true;
+    bool start_xr_host = true;
     int32_t wait_seconds = 300;
 
     for (int32_t i = 1; i < argc; ++i) {
@@ -903,6 +970,7 @@ int main(int argc, char** argv) {
         if (a == "--inject") action = Action::Inject;
         else if (a == "--launch") action = Action::Launch;
         else if (a == "--no-game") start_game = false;
+        else if (a == "--no-host") start_xr_host = false;
         else if (a == "--wait") wait_seconds = atoi(next().c_str());
         else if (a == "--unload") action = Action::Unload;
         else if (a == "--reload") action = Action::Reload;
@@ -933,7 +1001,7 @@ int main(int argc, char** argv) {
         case Action::Unload: ok = do_unload(cfg); break;
         case Action::Reload: ok = do_reload(cfg); break;
         case Action::Status: do_status(cfg); return 0;
-        case Action::Launch: ok = do_launch(cfg, start_game, wait_seconds); break;
+        case Action::Launch: ok = do_launch(cfg, start_game, start_xr_host, wait_seconds); break;
         default: break;
     }
     return ok ? 0 : 1;
