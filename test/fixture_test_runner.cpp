@@ -703,6 +703,21 @@ uint32_t find_pid(const char* process_name) {
     return pid;
 }
 
+// THE 4 GB SESSION IS NOT CALLED FEAR2.exe. `injector.exe --launch` runs the game from a
+// Large-Address-Aware COPY named FEAR2_laa.exe (Injector.cpp kCopySuffix), and the injector's own
+// find_game_pid has always accepted both names for exactly that reason. This runner did not, so
+// after the cold-start path switched to the LAA launcher it looked for a process that does not
+// exist, reported "game not running" with the game on screen, and skipped the whole suite.
+//
+// THE COPY WINS when both are present: that is the session with the address space, and therefore
+// the one worth testing. Same precedence as the injector.
+uint32_t find_game_pid() {
+    if (const uint32_t laa = find_pid("FEAR2_laa.exe")) {
+        return laa;
+    }
+    return find_pid("FEAR2.exe");
+}
+
 bool remote_find_module(uint32_t pid, const char* basename, RemoteModule& out) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
     if (snap == INVALID_HANDLE_VALUE) return false;
@@ -767,19 +782,29 @@ struct SpawnedProcess {
     }
 };
 
-// BRING THE GAME UP THE ONLY WAY IT COMES UP: through Steam, via tools/resume_game.py.
+// BRING THE GAME UP THE WAY THE PROJECT BRINGS IT UP: `injector.exe --launch`, via
+// tools/resume_game.py.
 //
-// This used to CreateProcessW the exe directly, and that CANNOT WORK -- the on-disk FEAR2.exe is
-// CEG/SteamStub-wrapped and refuses a direct launch (AGENTS.md rule 9 and the launcher notes say so
-// explicitly). The bug hid for the entire life of the runner because the branch only executes when
-// no game is already running, and in practice one always was. The moment the game crashed, ctest
-// started reporting a launch failure that looked like a broken fixture rather than a runner that
-// was never able to launch anything.
+// This has been wrong twice, in two different ways, and the second way is the instructive one.
+//
+// It first CreateProcessW'd the exe directly, which CANNOT WORK -- the on-disk FEAR2.exe is
+// CEG/SteamStub-wrapped and the stub checks its parent process. That bug hid for the entire life
+// of the runner because the branch only executes when no game is already running, and in practice
+// one always was.
+//
+// The fix for THAT was to delegate to resume_game.py -- which launched through
+// `steam://rungameid`. Correct-looking, and quietly wrong: Steam's own launch gives the game a
+// 2 GB address space, which is precisely the configuration `injector.exe --launch` exists to
+// avoid and which Injector.cpp:840-845 refuses to fall back to. A 2 GB session boots, injects and
+// passes most of this suite; it just dies under memory pressure a 4 GB session survives. So the
+// suite spent months cold-starting the configuration the launcher was written to prevent, and
+// nothing reported it. resume_game.py now calls the injector's own launcher.
 //
 // Delegating rather than reimplementing, because resume_game.py does not merely start the process:
-// it waits for the engine, injects, dispatches Menu.StartCheckpoint (the game's OWN UI command --
-// synthetic input cannot drive the Scaleform menu) and dismisses the load screen. A runner that
-// only spawned would land at the main menu, where 103 checks go red for want of a world.
+// it waits for the engine window, lets `--launch` inject, dispatches Menu.StartCheckpoint (the
+// game's OWN UI command -- synthetic input cannot drive the Scaleform menu) and dismisses the load
+// screen. A runner that only spawned would land at the main menu, where 103 checks go red for want
+// of a world.
 //
 // We do NOT own the resulting process: nothing is written to `out`, so teardown leaves the game
 // running. That is deliberate and matches the project's premise -- inject, test, uninject, with
@@ -832,10 +857,11 @@ bool bring_up_fixture() {
     // was read, and the run was rightly killed. Progress is printed so `ctest -V` streams it and a
     // failure's captured output says how far it got.
     //
-    // A cold start is ~25s now (Steam launch, engine window, inject, checkpoint load). It used to
+    // A cold start is ~25s now (LAA launch, engine window, inject, checkpoint load). It used to
     // be 165s because resume_game.py blind-slept 45s waiting for the engine and polled everything
     // else at 2-3s intervals; it waits on the game's actual window instead.
-    printf("[fixture] no game running -- cold start through Steam, ~25s. `ctest -V` to watch.\n");
+    printf("[fixture] no game running -- cold start via injector --launch, ~25s. "
+           "`ctest -V` to watch.\n");
     fflush(stdout);
 
     DWORD waited = WAIT_TIMEOUT;
@@ -951,20 +977,21 @@ int main(int argc, char** argv) {
 
     // 2. Reuse a running game, else spawn and boot.
     SpawnedProcess spawned;
-    uint32_t pid = find_pid("FEAR2.exe");
+    uint32_t pid = find_game_pid();
     if (pid != 0) {
-        printf("[fixture] reusing running FEAR2.exe (pid %lu)\n", pid);
+        printf("[fixture] reusing the running game (pid %lu)\n", pid);
     } else {
         if (!fs::exists(fixture)) {
             printf("[fixture] game exe not found at %s -- skipping\n", fixture.string().c_str());
             return kSkip;
         }
-        printf("[fixture] no game running -- bringing one up through Steam (resume_game.py)\n");
+        printf("[fixture] no game running -- bringing one up with a 4 GB address space "
+               "(resume_game.py -> injector --launch)\n");
         if (!bring_up_fixture()) {
             printf("[fixture] could not bring the game up -- skipping\n");
             return kSkip;
         }
-        pid = find_pid("FEAR2.exe");
+        pid = find_game_pid();
         if (pid == 0) {
             printf("[fixture] game not running after resume_game.py -- skipping\n");
             return kSkip;
@@ -976,7 +1003,7 @@ int main(int argc, char** argv) {
         if (spawned.launched) {
             TerminateProcess(spawned.pi.hProcess, 0);
             printf("[fixture] terminated the instance we spawned\n");
-        } else if (find_pid("FEAR2.exe") != 0 && !resident_fear2vr(pid).empty()) {
+        } else if (find_game_pid() != 0 && !resident_fear2vr(pid).empty()) {
             run_injector(injector, "unload", dll, port);
             printf("[fixture] unloaded from the pre-existing instance (left running)\n");
         }
@@ -989,7 +1016,7 @@ int main(int argc, char** argv) {
         // the reinject below lands on a still-resident payload, which the injector refuses, and the run
         // then proceeds against a stale DLL. wait_unloaded is already the primitive this runner uses for
         // the same question at the end of the suite.
-        if (const auto stale = find_pid("FEAR2.exe"); stale != 0) {
+        if (const auto stale = find_game_pid(); stale != 0) {
             if (!wait_unloaded(stale, 50)) {  // 50 x 200ms
                 printf("[fixture] a previous fear2vr payload is still resident after 10s -- skipping "
                        "rather than testing against it\n");
@@ -1013,8 +1040,14 @@ int main(int argc, char** argv) {
     }
     printf("[fixture] IPC live; running host-side assertions\n");
 
+    // THE MAIN IMAGE BY EITHER NAME. A 4 GB session's main module is FEAR2_laa.exe, so asserting
+    // "FEAR2.exe" here would fail on precisely the configuration the launcher produces. The mod
+    // has the same rule and solves it the same way -- sdk::Modules resolves the main image by
+    // handle rather than by name (Modules.cpp:81-86).
     RemoteModule game_mod{};
-    check(remote_find_module(pid, "FEAR2.exe", game_mod), "remote_find_module(FEAR2.exe)");
+    const bool have_game_mod = remote_find_module(pid, "FEAR2_laa.exe", game_mod) ||
+                               remote_find_module(pid, "FEAR2.exe", game_mod);
+    check(have_game_mod, "remote_find_module(the game's main image)");
     RemoteModule gc_mod{}, db_mod{}, lt_mod{};
     const bool have_gc = remote_find_module(pid, "gameclient.dll", gc_mod);
     const bool have_db = remote_find_module(pid, "gamedatabase.dll", db_mod);
@@ -10684,9 +10717,65 @@ int main(int argc, char** argv) {
                   "live rather than a struct nobody drives");
 
             // ---- HEAD POSE -> THE CAMERA -------------------------------------------------------
+            //
+            // TAKE OWNERSHIP OF THE POSE SOURCE FIRST. Every check below drives a SIMULATED head
+            // pose through /xr/head, and Framework.cpp refuses those outright while the host owns
+            // the pose (`vr_host_pose`) so a stray status read cannot fight a live headset. That
+            // refusal is correct; what is not correct is a test that never establishes its own
+            // precondition. Left on by an earlier check, it makes every assertion here read
+            // `dyaw +0.000` -- the write is dropped, the readback still matches, and the whole
+            // block looks like broken head tracking rather than an unmet prerequisite. It cost a
+            // full investigation, which is why the mod now also publishes `head_pose_rejected`.
+            //
+            // RESTORED AT THE END OF THE BLOCK, including on the early-exit paths, so the later
+            // host-pose and frame-publisher checks do not silently inherit local-pose mode.
+            // FAIL CLOSED AT EVERY STEP. A precondition that defaults to "satisfied" when its own
+            // HTTP call fails is worse than no precondition: it hands the block a green light on
+            // exactly the runs where something is wrong. Each of the three steps below must
+            // SUCCEED and be PARSED, and any of them failing fails the check rather than the
+            // dozen confusing zeros downstream.
+            bool have_prior = false;
+            bool prior_host_pose = false;
+            if (http::get(port, "/xr/head", resp)) {
+                have_prior = json_bool(http::body_of(resp), "vr_host_pose", prior_host_pose);
+            }
+
+            // RESTORES WHAT WAS THERE, and only when it actually read it. Restoring a value it
+            // never observed would be guessing, and guessing "off" would leave a live headset
+            // disconnected from the pose source for every later check.
+            struct PoseOwnershipGuard {
+                int port;
+                bool known;
+                bool prior;
+                ~PoseOwnershipGuard() {
+                    if (known) {
+                        std::string ignored;
+                        http::get(port, prior ? "/xr/capture?host_pose=1"
+                                              : "/xr/capture?host_pose=0", ignored);
+                    }
+                }
+            } pose_owner{port, have_prior, prior_host_pose};
+
+            // GUARDED BY have_prior. Mutating the pose source when the snapshot failed would
+            // leave the guard unable to restore it -- a failed read must not be able to
+            // disconnect a live host for every later check.
+            const bool disabled_host_pose =
+                have_prior && http::get(port, "/xr/capture?host_pose=0", resp);
+
             http::get(port, "/xr/enable?on=1", resp);
             http::get(port, "/xr/head?yaw=0&pitch=0&roll=0", resp);
             std::this_thread::sleep_for(std::chrono::milliseconds(600));
+
+            // The precondition is an ASSERTION, not an assumption: ask the mod whether it just
+            // dropped a pose write, and require a parsed answer of "no".
+            bool rejected = true;
+            const bool asked = http::get(port, "/xr/head?yaw=0", resp) &&
+                               json_bool(http::body_of(resp), "head_pose_rejected", rejected);
+
+            const bool owns_pose = have_prior && disabled_host_pose && asked && !rejected;
+            check(owns_pose,
+                  "the suite owns the head pose source before driving a simulated pose -- the host "
+                  "does not, so /xr/head is not silently dropping every write below");
 
             double base_view_yaw = 0.0, base_view_pitch = 0.0, base_aim_yaw = 0.0;
             if (http::get(port, "/xr/head", resp)) {
@@ -12383,110 +12472,6 @@ int main(int argc, char** argv) {
         check(multithreaded == ((flags & 0x4) != 0),
               "and sdk::Render::is_multithreaded() agrees with the D3DCREATE_MULTITHREADED bit in "
               "the raw flags");
-    }
-
-    // ---- THE RESIDENT PROXY, WHICH IS WHAT KEEPS THIS SUITE POSSIBLE ------------
-    //
-    // Loading an OpenXR runtime into the mod strands its threads in our module, and the unload
-    // path's quiescence check -- correctly -- then refuses to unmap us for the rest of the session.
-    // That was observed as a link failure: fear2vr.dll stayed locked and the next build could not
-    // overwrite it. Since this suite runs inject / test / unload on every invocation, the proxy is
-    // load-bearing for the harness itself, not just for the mod.
-    //
-    // Note what is NOT done here: no runtime is loaded. Attaching must be free, because merely
-    // asking whether a proxy exists should never start a vendor's VR service.
-    {
-        std::string r;
-        bool attached = false, loaded_after_attach = true;
-        long long round_trip = -1;
-
-        if (http::get(port, "/xr/runtime", r)) {
-            const std::string b = http::body_of(r);
-            json_bool(b, "xr_rt_proxy", attached);
-            json_bool(b, "xr_rt_loaded", loaded_after_attach);
-        }
-
-        // A value with no meaning to the proxy on purpose -- it stores handles without knowing what
-        // they are, which is what lets the mod's XR semantics be rewritten without a game restart.
-        http::get(port, "/xr/runtime?store=fixture_probe&value=305419896", r);
-
-        if (http::get(port, "/xr/runtime?fetch=fixture_probe", r)) {
-            json_int(http::body_of(r), "xr_rt_handle", round_trip);
-        }
-
-        long long absent = -1;
-
-        if (http::get(port, "/xr/runtime?fetch=fixture_never_stored", r)) {
-            json_int(http::body_of(r), "xr_rt_handle", absent);
-        }
-
-        printf("[fixture] xr proxy: attached=%d round-trip=%lld unknown-key=%lld\n",
-               static_cast<int>(attached), round_trip, absent);
-
-        check(attached, "the mod reaches the resident OpenXR proxy, which is the module that may "
-                        "hold a runtime without pinning this one");
-        // ATTACHING MUST NOT CHANGE ANYTHING, which is not the same claim as "no runtime is
-        // loaded". The first version asserted the latter and failed the moment anyone in this
-        // process had deliberately loaded one -- a legitimate state, and the test called it a bug.
-        // A second attach is the honest measurement: whatever the runtime's state was, asking again
-        // must leave it exactly there.
-        bool loaded_after_second = !loaded_after_attach;
-
-        if (http::get(port, "/xr/runtime", r)) {
-            json_bool(http::body_of(r), "xr_rt_loaded", loaded_after_second);
-        }
-
-        check(loaded_after_second == loaded_after_attach,
-              "and attaching starts NOTHING -- it never switches a runtime on, because asking "
-              "whether VR is available must not wake a vendor's services");
-        check(round_trip == 305419896,
-              "state parked in the proxy reads back, which is how an XrInstance and XrSession "
-              "survive a mod reload instead of being rebuilt each time");
-        check(absent == 0, "and an unknown key reads 0 rather than whatever was last stored");
-    }
-
-    // ---- AND THE GAME CAN SEE A HEADSET RUNTIME ---------------------------------
-    //
-    // The bitness matters more than anything else here: the runtime a 32-bit process resolves is
-    // NOT the one a 64-bit tool sees. On this machine the 64-bit active runtime is the Meta XR
-    // Simulator, which is x64-only and can never serve FEAR2, so a host-side check would report a
-    // runtime the game cannot use. Only the game's own view is worth asserting.
-    //
-    // Deliberately DISCOVERY ONLY. Loading a runtime pins this DLL -- none of them support
-    // FreeLibrary -- and would end the inject/unload loop this suite depends on. Bring-up beyond
-    // this point lives in the separate xr-probe process.
-    {
-        std::string r;
-        bool discovered = false, loaded = false;
-        long long available = -1;
-        std::string manifest, library;
-
-        if (http::get(port, "/xr/runtime", r)) {
-            const std::string b = http::body_of(r);
-            json_bool(b, "xr_rt_discovered", discovered);
-            json_bool(b, "xr_rt_loaded", loaded);
-            json_int(b, "xr_rt_available", available);
-            manifest = json_string(b, "xr_rt_manifest");
-            library = json_string(b, "xr_rt_library");
-        }
-
-        printf("[fixture] openxr: %lld runtime(s) registered, active %s\n", available,
-               manifest.empty() ? "(none)" : manifest.c_str());
-
-        check_gated(available > 0, "no OpenXR runtime registered for 32-bit on this machine",
-                    g_skipped_motion, discovered && !manifest.empty(),
-                    "the game resolves the 32-bit active OpenXR runtime from inside its own "
-                    "process, which is the only view that can be acted on");
-        check_gated(discovered, "no runtime discovered", g_skipped_motion,
-                    library.find(':') != std::string::npos,
-                    "and resolves its manifest to an absolute library path, so it does not depend "
-                    "on the working directory the game happened to start in");
-        // Same correction: discovery must not CAUSE a load. If something already loaded the
-        // runtime in this process the claim is untestable here, so it is gated rather than failed.
-        check_gated(!loaded, "a runtime was already loaded in this process", g_skipped_motion,
-                    !loaded,
-                    "and discovery loads NOTHING -- a load would pin this DLL and cost a game "
-                    "restart per edit for the rest of the session");
     }
 
     // ---- AND IT CAN STAY ON THE GPU ---------------------------------------------

@@ -938,14 +938,52 @@ so it never reached `capture_viewport()` or `record_pass()`: the census reported
 frame where three setups had happened, and the one pass a stereo bug would live in was the invisible
 one. It is recorded now, which is what made the table above possible.
 
-### OpenXR is reachable from this 32-bit process, with no loader binary
+### CLOSED: OpenXR in the 32-bit process -- the loader existed, it was never the path, the code is gone
 
-The last unknown, and it is now closed. There is no 32-bit `openxr_loader.dll` on this machine and
-the Meta XR Simulator -- the one route that would allow bring-up with no hardware -- is **x64 only**
-(SIMULATOR.dll, machine 0x8664), so it can never serve FEAR2. Neither turned out to matter: the
-loader's job at this depth is small and documented, and `sdk::OpenXR` does it directly.
+**The 32-bit OpenXR surface has been DELETED.** `sdk::OpenXR`, `xr::RuntimeLoader`, the
+`fear2xr.dll` proxy, the `/xr/runtime` route and the `xr-probe` target are all out of the tree.
+OpenXR lives entirely in the 64-bit host (`tools/xr64`), which links the real x64 Khronos loader and
+owns the instance, session and swapchains; the game reaches it over the shared mapping in
+`shared/xr/SharedFrame.hpp` and makes no OpenXR call of its own. What follows is the RECORD of how
+that was settled -- kept because the numbers cost a session to obtain, and a reader who does not
+have them will spend that session again asking why the 32-bit loader is not used.
 
-Measured against the registered active runtime, in `build/bin/xr-probe.exe`:
+**The exclusion was never "no 32-bit loader exists".** One does: the Khronos release ships it, and
+it is vendored at `deps/openxr/native/Win32/release/bin/openxr_loader.dll`. The loading code had
+PREFERRED a loader sitting next to the module all along -- nothing ever put one there, so direct
+negotiation was the only path that ever ran. The actual reason the loader went unused was that an
+initialisation function FAULTED, and that was measured before the LAA launcher, in a 2 GB session.
+
+**Retested under LAA, in a live 4 GB game process**, with the loader copied beside the mod:
+
+    LoadLibrary(openxr_loader.dll)          ok -- no fault, process survived
+    xrEnumerateInstanceExtensionProperties  ok -- 89 extensions (vs 35 direct)
+    xrCreateInstance                        FAILED, XrResult -32 XR_ERROR_FILE_ACCESS_ERROR
+
+So the explosion is gone under LAA and the failure is a clean error -- a different and better
+problem, but still not a working path. The 89-vs-35 gap is the implicit API layers the loader
+inserts and direct negotiation skips, which is the real conformance cost of the direct route:
+implicit layers are ones a runtime, an overlay or the user registers, and a conformant
+implementation enables them without the application naming them. Negotiating directly runs with
+none of them.
+
+**The copy was reverted, and then the whole surface followed it.** Shipping the loader silently
+moved the mod onto a path where no instance can be created, and a conformant path that cannot
+create an instance is worse than a less conformant one that can. `cmake.toml` copies no 32-bit
+loader and deletes a stale one from `bin/` after every build, because a leftover DLL there invites
+exactly the wrong conclusion about where OpenXR runs.
+
+**What the proxy was, since "proxy" invites the wrong reading of the history.** `fear2xr.dll` was
+never a transport to the host. It was a pinned 32-bit in-game module that loaded a 32-bit runtime
+ITSELF and handed `xrGetInstanceProcAddr` back to the mod. It existed because a runtime spawns
+threads that would stop the mod ever proving itself quiet at unload -- a problem that disappeared
+when OpenXR moved to its own process, which is what left the module with nothing to do.
+
+The Meta XR Simulator -- the one route that would have allowed bring-up with no hardware -- is
+**x64 only** (SIMULATOR.dll, machine 0x8664), so it could never have served a 32-bit FEAR2. That
+finding stands and is now the host's advantage rather than the game's dead end.
+
+Measured against the registered active runtime, with the since-deleted `xr-probe`:
 
     manifest      HKLM\Software\Khronos\OpenXR\1\ActiveRuntime  (WOW6432Node view)
                   F:\Oculus\Support\oculus-runtime\oculus_openxr_32.json
@@ -955,7 +993,8 @@ Measured against the registered active runtime, in `build/bin/xr-probe.exe`:
                   xrCreateInstance                       -> XR_SUCCESS
     extensions    35, including XR_KHR_D3D11_enable
 
-`XR_KHR_D3D11_enable` is the one that matters: it is how a D3D9 game's surface reaches a compositor.
+`XR_KHR_D3D11_enable` is the entry that mattered: it is how a D3D9 game's surface reaches a
+compositor. That requirement did not go away with the 32-bit surface -- it moved to the host.
 
 **HANDLES ARE 64 BITS IN A 32-BIT PROCESS.** OpenXR's `XR_DEFINE_HANDLE` only makes handles pointers
 when the pointer size IS 8; otherwise they are `uint64_t`, like Vulkan's non-dispatchable handles.
@@ -963,7 +1002,11 @@ Declaring `XrInstance` as `void*` costs four bytes of argument, so under `__stdc
 sixteen where the caller pushed twelve. The stack unbalances by four and the next return goes
 somewhere arbitrary. That is not theory -- it read `name` from the wrong slot (three runtimes
 returning -1, -2 and -7) and then jumped into unmapped memory and killed the game. Both symptoms had
-one cause, and the fix was four bytes wide.
+one cause, and the fix was four bytes wide. The trap is only reachable where a hand-written
+declaration meets a 32-bit process, and both halves are gone: OpenXR is confined to `tools/xr64`,
+where the pointer size IS 8 and the real headers are used. Keep the rule anyway -- the general
+form, that an OpenXR type's size is not the host's word size, is why those headers are not
+optional.
 
 **XR_TYPE_EXTENSION_PROPERTIES is 2**, established by asking the runtime: 0 and 1 were rejected with
 XR_ERROR_VALIDATION_FAILURE, 2 accepted. The first version guessed 3, which is
@@ -3725,12 +3768,13 @@ GPU-resident submission surface, the instance, the system, the graphics requirem
 selection. What cannot happen in FEAR2's own process is the SESSION. Submission therefore has to go
 through a 64-bit host, which is the shape `tools/xr64` already has.
 
-`sdk::OpenXR::create_session()` now REFUSES on a runtime named "Oculus" in a 32-bit process rather
-than calling and dying, because leaving it callable meant one stray request would take the game down
-with no crash log worth reading. The match is on the runtime's own name from
-`xrGetInstanceProperties`, not on the library path: through the loader every runtime's library on
-disk is `openxr_loader.dll`, and the first version of this check matched a path, silently answered
-"supported", and let the fatal call straight through.
+That guard is now structural. `sdk::OpenXR::create_session()` used to REFUSE on a runtime named
+"Oculus" in a 32-bit process rather than calling and dying, because leaving it callable meant one
+stray request would take the game down with no crash log worth reading; the whole 32-bit call path
+has since been deleted, so there is nothing left to refuse. The lesson the guard taught survives
+it: it matched on the runtime's own name from `xrGetInstanceProperties`, NOT on the library path,
+because through the loader every runtime's library on disk is `openxr_loader.dll` -- the first
+version matched a path, silently answered "supported", and let the fatal call straight through.
 
 ### The headers ended a run of guessing
 
@@ -3751,9 +3795,9 @@ runtime dutifully refused to resolve it, extension enumeration returned nothing,
 was therefore never requested, and the failure surfaced three steps later as
 "xrGetD3D11GraphicsRequirementsKHR unavailable". Mechanical renames do not respect quotes.
 
-### An OpenXR instance exists, and the runtime says the headset is merely ABSENT
+### An OpenXR instance DID exist in the 32-bit process, and the runtime called the headset ABSENT
 
-`xrCreateInstance` succeeds in this 32-bit process, through the resident proxy, with
+`xrCreateInstance` succeeded in this 32-bit process, through the since-deleted resident proxy, with
 `XR_KHR_D3D11_enable` ENABLED rather than merely listed -- which is a stronger statement than
 enumeration: a runtime can advertise an extension and still refuse to turn it on.
 
@@ -3765,74 +3809,77 @@ enumeration: a runtime can advertise an extension and still refuse to turn it on
 **The two codes differ, and that is the whole finding.** Numbers alone cannot say whether a refusal
 means "nothing is plugged in" or "this runtime does not do that at all", so the handheld form factor
 was asked for as a control: a PC runtime cannot serve one. It answers -34 where the head-mounted
-display answers -35. So the head-mounted form factor is SUPPORTED AND UNAVAILABLE -- a waitable
-condition. Plug a headset in and this path continues; nothing here needs redesigning first.
+display answers -35. So the head-mounted form factor was SUPPORTED AND UNAVAILABLE -- a waitable
+condition, and the wait ended: with a Quest Pro connected, `xrGetSystem` returned a real system
+(0x16) and the 32-bit path then died at `xrCreateSession`. See "THE 32-BIT OCULUS RUNTIME CANNOT
+CREATE A SESSION" above for where that led.
 
-**The instance survives a mod reload.** It is parked in the proxy under `xr_instance` and adopted on
-the next load rather than rebuilt -- verified by creating it, fully unloading the mod, re-injecting,
-and reading back the same handle. Instances are expensive and a runtime may permit only one, so this
-is the difference between iterating on XR code and restarting the game for each attempt.
+**The instance survived a mod reload.** It was parked in the proxy under `xr_instance` and adopted
+on the next load rather than rebuilt -- verified by creating it, fully unloading the mod,
+re-injecting, and reading back the same handle. Instances are expensive and a runtime may permit
+only one, so that was the difference between iterating on XR code and restarting the game for each
+attempt. A separate host process makes the point moot: it outlives the mod without being asked to.
 
-**Struct layout is asserted, not hoped for.** `XrVersion` and `XrFlags64` are 64-bit and force
+**Struct layout was asserted, not hoped for.** `XrVersion` and `XrFlags64` are 64-bit and force
 8-byte alignment inside otherwise 32-bit structures, so a hand-written definition that looks right
 can still be four bytes out -- exactly the class of error the handle size already cost this project.
 `sizeof(XrApplicationInfo) == 272`, `offsetof(XrInstanceCreateInfo, applicationInfo) == 16`,
-`sizeof(XrInstanceCreateInfo) == 304`, `sizeof(XrSystemGetInfo) == 12`, all static_asserted.
+`sizeof(XrInstanceCreateInfo) == 304`, `sizeof(XrSystemGetInfo) == 12`, all static_asserted for as
+long as the declarations were hand-written. Using the real headers is what removed the need to
+assert them at all.
 
 **A silent failure worth keeping.** The in-game path created its instance with NO extensions enabled
 while reporting success, because `supports_extension()` answered from an empty cache that only
 `enumerate_extensions()` filled. It reported `d3d11=false` on a runtime that plainly offers it. The
-accessor now enumerates on demand -- a capability query that requires the caller to remember a prior
-call is a trap, and it had already been walked into.
+fix was to enumerate on demand; the part to carry forward is that a capability query which requires
+the caller to remember a prior call is a trap, and this project had already walked into it once.
 
-### The proxy had to stop sharing code with the mod
+### HISTORY: the resident proxy, and why it is gone
 
-`sdk::OpenXR.cpp` was compiled into BOTH the proxy and the mod, so every edit to the consumer API
-forced a proxy rebuild -- and the proxy is pinned, so that meant a game restart. It happened twice
-before the rule already written down was actually followed. The loading half now lives alone in
-`xr::RuntimeLoader` (`shared/xr/RuntimeLoader.cpp`), which is the entire content of the proxy and is
-expected to be finished; everything iterated on is in `sdk::OpenXR`, which reaches the runtime
-through the pointer the proxy hands back. The code was MOVED rather than retyped, and the probe's
-output is byte-identical across the split -- same interface version, same 88 extensions.
+`fear2xr.dll` answered a real constraint in the years before the 64-bit host, and the shape of the
+answer is worth keeping even though the module is not. The mod's unload is fail-closed:
+`prove_quiescent` suspends every other thread and refuses to unmap if any thread's `Eip` is inside
+our module, or if any thread cannot be inspected at all. An OpenXR runtime spawns threads on load,
+so after one the mod could never prove itself quiet -- which is the correct behaviour of a check
+worth keeping. Putting the runtime in a module that never leaves moved those threads outside the
+range the check cares about. Verified at the time: runtime loaded in-game, `injector --unload`, DLL
+writable, rebuild clean.
 
-### The resident proxy: how the runtime stays without pinning the mod
+**It also bought XR STATE OUTLIVING THE MOD.** The proxy held a dumb key/value store of handles --
+dumb because it must not know what an XrSession is, which is exactly what let the mod's XR
+semantics be rewritten without a game restart. Measured: a handle stored, the mod fully unloaded and
+re-injected, the handle read back unchanged. `tools/xr64` gets that property for free and more of
+it: the instance and the session live in a process that does not notice a mod reload at all.
 
-The door is no longer one-way. `fear2xr.dll` loads the OpenXR runtime and never leaves; the mod
-talks to it through a C ABI and stays freely unloadable.
+**The price, paid knowingly, and the rule that survives.** The proxy itself was pinned, so replacing
+IT needed a game restart -- observed immediately, as LNK1104 on fear2xr.dll while the game held it.
+That is why it was thin and held no policy: *the part that cannot be iterated must be the part that
+never needs to be.* The same rule is why the host owns the runtime, the handles and the D3D11 device
+today and the mod owns everything else.
 
-**Why it works.** The mod's unload is fail-closed: `prove_quiescent` suspends every other thread and
-refuses to unmap if any thread's `Eip` is inside our module, or if any thread cannot be inspected at
-all. An OpenXR runtime spawns threads on load, so after one the mod can never prove itself quiet --
-which is the correct behaviour of a check worth keeping. Moving the runtime into a module that stays
-puts those threads outside the range the check cares about. Verified directly: runtime loaded
-in-game, `injector --unload`, DLL writable, rebuild clean.
+Two lessons from it that outlived the code:
 
-**And it buys more than it costs: XR STATE OUTLIVES THE MOD.** The proxy holds a dumb key/value
-store of handles -- dumb because it must not know what an XrSession is, which is exactly what lets
-the mod's XR semantics be rewritten without a game restart. Measured: a handle stored, the mod fully
-unloaded and re-injected, the handle read back unchanged. An XrInstance and XrSession cost real time
-to build and a session cannot be casually recreated, so this turns "restart the game to test an XR
-change" into the same reload loop everything else here enjoys.
+- **Attaching must be free.** The first version loaded the runtime inside `fear2xr_get_api`, so
+  merely asking whether a proxy existed started a vendor's VR service. It was split so that
+  attaching started nothing and a separate call was the moment a caller said it wanted a headset.
+  Same reasoning as `injector.exe --no-host`.
+- **Never hand a runtime a pointer that outlives the call.** A debug-utils messenger, or any
+  registered callback, would be invoked after the mod unloaded and jump into freed memory. Callbacks
+  belonged to the proxy or to nobody; they belong to the host or to nobody now.
 
-**The price, paid knowingly.** The proxy itself is pinned, so replacing IT needs a game restart --
-observed immediately, as LNK1104 on fear2xr.dll while the game held it. That is why the proxy is
-thin and holds no policy: the part that cannot be iterated must be the part that never needs to be.
-Design rule: *the proxy owns what cannot be safely destroyed and recreated -- the runtime module,
-the handles, later the D3D11 device. Everything else belongs to the mod.*
+And one about builds: the consumer API and the loading half were at first compiled into BOTH the
+proxy and the mod, so every edit to the consumer API forced a rebuild of the PINNED module, which
+meant a game restart. It happened twice before the rule already written down was followed, and the
+fix was to move the loading half out rather than retype it -- byte-identical probe output across the
+split, same interface version, same 88 extensions. Anything sharing a translation unit with a module
+you cannot replace inherits its rebuild cost.
 
-**Attaching must be free.** The first version loaded the runtime inside `fear2xr_get_api`, so merely
-asking whether a proxy existed started a vendor's VR service. Split: `attach_proxy()` starts nothing
-and reaches the handle store, `ensure_runtime()` is the moment a caller says it wants a headset.
+### Capability enumeration is NOT stable across service state
 
-**One rule for consumers.** Never hand the runtime a pointer into the mod that outlives a call. A
-debug-utils messenger, or any registered callback, would be invoked after the mod unloads and jump
-into freed memory. Callbacks belong to the proxy or to nobody.
-
-**An unexplained observation, recorded rather than explained.** The same Oculus runtime, same
-library, same negotiated version, reported 35 extensions in one session and 88 in a later one. The
-only known difference is that OVRServer was freshly woken by the probe in the first case and fully
-up in the second [INFERENCE]. Whatever the cause, capability enumeration is NOT stable across
-service state, so a mod must not read it once at startup and trust it forever.
+Recorded rather than explained. The same Oculus runtime, same library, same negotiated version,
+reported 35 extensions in one session and 88 in a later one. The only known difference is that
+OVRServer was freshly woken by the probe in the first case and fully up in the second [INFERENCE].
+Whatever the cause, a consumer must not read capabilities once at startup and trust them forever.
 
 ### Loading a runtime is a one-way door, and it is not passive
 
@@ -3841,8 +3888,9 @@ Two properties that shape where OpenXR work is allowed to happen in this project
 **It pins the DLL.** Oculus, Virtual Desktop and PimaxXR each spawn threads on load and none of them
 support `FreeLibrary`. After a load, `injector --unload` no longer frees fear2vr.dll and the next
 build fails to overwrite it -- observed directly as LNK1104. The iteration loop is inject / test /
-unload / rebuild, so an unguarded load costs a game restart per edit. Bring-up therefore lives in
-`xr-probe.exe`, a throwaway process, and the in-game route is discovery-only unless asked.
+unload / rebuild, so an unguarded load costs a game restart per edit. This is the property that
+decided the architecture: the runtime lives in a process the game can outlive, `tools/xr64`, which
+is killed and restarted at no cost to the session.
 
 **It touches the machine.** Loading a runtime starts that vendor's services. An early version of the
 probe walked every entry in `AvailableRuntimes` to see which ones worked, which brought up
@@ -3852,10 +3900,13 @@ is free; loading is not. The sweep is gone -- only the ACTIVE runtime is ever lo
 an uninstalled runtime can REMAIN registered: PimaxXR's manifest is still listed here after removal.
 
 **And a third-party runtime can kill the host.** The Oculus runtime faulted inside its own
-negotiation on one occasion (null `this`, write to +0xF). `sdk::OpenXR` guards the load, the
-negotiation, and every call through the runtime's own entry point, latching a faulted runtime off
-rather than poking it again. A mod must degrade to flatscreen, not take the game down on a machine
-its author never tested.
+negotiation on one occasion (null `this`, write to +0xF). The in-game code that guarded the load,
+the negotiation and every call through the runtime's entry point -- latching a faulted runtime off
+rather than poking it again -- is gone with the rest of the 32-bit surface, and the rule it served
+is now enforced by the process boundary: a runtime that faults takes `tools/xr64` down, not FEAR2.
+The game does not even stall behind the corpse, because `FramePublisher::wait_for_host_tick` gives
+up pacing after a run of silence. A mod must degrade to flatscreen, not take the game down on a
+machine its author never tested.
 
 ### The pair can stay on the GPU, which is what submission needs
 

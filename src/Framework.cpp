@@ -68,7 +68,6 @@
 #include "sdk/UiCommands.hpp"
 #include "sdk/Memory.hpp"
 #include "sdk/Physics.hpp"
-#include "sdk/OpenXR.hpp"
 #include "sdk/PlayerMgr.hpp"
 #include "sdk/WeaponMgr.hpp"
 #include "sdk/Resources.hpp"
@@ -10955,8 +10954,9 @@ bool Framework::initialize() {
         bool nudge_ok = false;
         bool hide_addr_ok = false;
         bool snap_now_ok = false;
-        int32_t xr_system_result = 1;  // 1 = not asked
-        size_t xr_system_id = 0;
+        // Set only by /xr/head, and only when a pose was actually asked for and refused because
+        // the host owns the pose source. A read-only status poll leaves it false.
+        bool head_pose_rejected = false;
 
         if (route == "/xr/enable") {
             mod.set_enabled(webapi_query_int(q, "on", 1) != 0);
@@ -10980,80 +10980,6 @@ bool Framework::initialize() {
                 acc.release();
             } else {
                 accuracy_refused = !acc.set_scale(static_cast<float>(webapi_query_double(q, "scale", 0.25)));
-            }
-        } else if (route == "/xr/runtime") {
-            // Reach OpenXR from INSIDE the game, which is the only view that counts: the runtime a
-            // 32-bit process resolves is not the one a 64-bit tool sees. Goes as deep as a machine
-            // with no headset allows -- discover, load, negotiate, enumerate -- and deliberately
-            // stops short of a session, which needs a device.
-            auto& xr = sdk::OpenXR::get();
-            if (webapi_query_int(q, "unload", 0) != 0) {
-                xr.unload();
-            } else {
-                // ONLY THE ACTIVE RUNTIME, and only when asked. An earlier version of this route
-                // took an `index=` and walked every registered runtime to see which ones worked.
-                // That is a genuinely bad thing to do on someone's machine: LOADING a runtime is
-                // not a passive act -- it starts that vendor's services (PimaxXR brought up
-                // PiPlatformService, Oculus woke OVRServer) and trips a Windows firewall prompt
-                // that then blocks everything else. A consumer wanting a different runtime should
-                // change the ACTIVE one, which is the switch the user already controls.
-                // THROUGH THE RESIDENT PROXY, never directly. Loading a runtime into THIS module
-                // would strand its threads in our address range, and the unload path's quiescence
-                // check -- correctly -- then refuses to unmap us forever. fear2xr.dll holds the
-                // runtime instead and never leaves, so the mod stays reloadable and the XR state
-                // survives the reload.
-                // Discovery ALWAYS runs: a registry read and a small file parse, no library
-                // touched, nothing started. It answers "is there VR software on this machine",
-                // which is what a mod needs before it offers a VR mode at all.
-                xr.discover();
-
-                // Attaching is free and starts nothing, so it always happens: it is how the mod
-                // finds the resident proxy and reaches state that outlived it.
-                xr.attach_proxy();
-
-                if (q.find("store") != q.end()) {
-                    xr.persist_handle(webapi_query_string(q, "store").c_str(),
-                                      static_cast<uint64_t>(webapi_query_int(q, "value", 0)));
-                }
-
-                if (webapi_query_int(q, "load", 0) != 0 && xr.load_via_proxy()) {
-                    std::vector<std::string> exts;
-                    xr.enumerate_extensions(exts);
-                }
-                // An instance, created THROUGH THE PROXY and parked in it. A reload adopts the
-                // existing one rather than building a second: instances are expensive, a runtime
-                // may permit only one, and rebuilding it would waste the reason the proxy exists.
-                if (webapi_query_int(q, "instance", 0) != 0 && xr.load_via_proxy()) {
-                    std::vector<std::string> want;
-                    if (xr.supports_extension("XR_KHR_D3D11_enable")) {
-                        want.emplace_back("XR_KHR_D3D11_enable");
-                    }
-                    xr.create_instance("FEAR2VR", want);
-                }
-                if (webapi_query_int(q, "destroy_instance", 0) != 0) {
-                    xr.destroy_instance();
-                }
-                if (webapi_query_int(q, "system", 0) != 0) {
-                    sdk::OpenXR::XrHandle sys_id = 0;
-                    xr_system_result = xr.get_system(sys_id);
-                    xr_system_id = static_cast<size_t>(sys_id);
-                }
-                if (webapi_query_int(q, "list", 0) != 0) {
-                    for (const auto& e : xr.extensions()) {
-                        LOGX("[openxr] ext %s", e.c_str());
-                    }
-                }
-                if (q.find("probe") != q.end()) {
-                    static const char* const kNames[] = {"xrGetInstanceProcAddr",
-                                                         "xrEnumerateInstanceExtensionProperties",
-                                                         "xrCreateInstance",
-                                                         "xrEnumerateApiLayerProperties"};
-                    for (const char* n : kNames) {
-                        void* p = nullptr;
-                        LOGX("[openxr] resolve %-42s XrResult %d ptr %p", n,
-                             static_cast<int>(xr.resolve(n, &p)), p);
-                    }
-                }
             }
         } else if (route == "/xr/capture") {
             // Read the finished frame back off the GPU. `path=` writes a BMP; without it the
@@ -11358,7 +11284,17 @@ bool Framework::initialize() {
                                     q.find("roll") != q.end() || q.find("x") != q.end() ||
                                     q.find("y") != q.end() || q.find("z") != q.end();
 
-            if (wants_pose && !VR::get().using_host_pose()) {
+            // SAY SO WHEN THE COMMAND IS DROPPED. Refusing while the host owns the pose is right
+            // -- a stray status read must not fight a live headset -- but reporting ok:true for a
+            // write that never happened is not. That combination cost a long investigation: the
+            // route answered success, /vr/head's readback matched, and the view simply never
+            // moved, which reads as broken head tracking rather than as "someone else owns this".
+            //
+            // Published as its own field rather than by flipping ok, because ok is shared by every
+            // /xr/* route through the JSON below and a status read is still a success.
+            head_pose_rejected = wants_pose && VR::get().using_host_pose();
+
+            if (wants_pose && !head_pose_rejected) {
                 vr::Pose pose{};
                 pose.orientation = {
                     static_cast<float>(cy * sp * cr + sy * cp * sr),
@@ -11379,7 +11315,11 @@ bool Framework::initialize() {
         std::string out;
         {
             JsonFields jf(out);
-            jf.b("ok", true)
+            // ok IS FALSE WHEN A POSE COMMAND WAS DROPPED. Every other /xr/* route here is a
+            // status read and stays successful; only a pose that was ASKED for and refused on
+            // ownership flips it. Answering ok:true for a write that never happened is what made
+            // an ownership conflict read as broken head tracking for an entire investigation.
+            jf.b("ok", !head_pose_rejected)
               .s("runtime", st.runtime_name)
               .b("enabled", st.enabled)
               .b("head_valid", st.head_valid)
@@ -11390,11 +11330,14 @@ bool Framework::initialize() {
               .f("head_eng_x", st.head_engine[0], 5).f("head_eng_y", st.head_engine[1], 5)
               .f("head_eng_z", st.head_engine[2], 5).f("head_eng_w", st.head_engine[3], 5)
               .f("head_pos_y", head.position[1], 4)
-              .b("xr_rt_discovered", sdk::OpenXR::get().discovered())
-              .b("xr_rt_crashed", sdk::OpenXR::get().crashed())
               .u("fc_device_lost", static_cast<size_t>(FrameCapture::get().device_lost_events()))
               .b("fp_publishing", FrameCapture::get().publishing())
               .b("vr_host_pose", VR::get().using_host_pose())
+              // TRUE when this very request asked for a pose and it was DROPPED because the host
+              // owns the pose source. Without it the caller sees ok:true, a matching readback and
+              // a view that never moves -- which reads as broken head tracking instead of an
+              // ownership conflict, and did for a whole investigation.
+              .b("head_pose_rejected", head_pose_rejected)
               .b("vr_paced", VR::get().paced())
               .b("vr_level_aim", ViewHook::get().level_aim())
               .b("vr_pin_eye", VR::get().pin_eye_height())
@@ -11489,30 +11432,16 @@ bool Framework::initialize() {
               .f("fp_gap_sd_ms", FramePublisher::get().gap_stddev_ms(), 3)
               .f("fp_gap_min_ms", FramePublisher::get().gap_min_ms(), 3)
               .f("fp_gap_max_ms", FramePublisher::get().gap_max_ms(), 3)
-              .b("xr_rt_proxy", sdk::OpenXR::get().using_proxy())
-              .u("xr_instance", static_cast<size_t>(sdk::OpenXR::get().instance()))
-              .i("xr_last_result", static_cast<int64_t>(sdk::OpenXR::get().last_xr_result()))
-              .i("xr_system_result", static_cast<int64_t>(xr_system_result))
-              .u("xr_system", xr_system_id)
+              // No xr_* runtime fields here any more. OpenXR lives entirely in the 64-bit host
+              // (tools/xr64); the game holds no instance, no session and no runtime to report on,
+              // and it reaches the host over the shared mapping in shared/xr/SharedFrame.hpp.
+              // What the game CAN still say about XR is published from that mapping -- see
+              // vr_host_pose above and the fp_* frame-publisher counters.
               .u("d3d_behavior_flags",
                  static_cast<size_t>(sdk::Render::creation_params().has_value()
                                          ? sdk::Render::creation_params()->BehaviorFlags
                                          : 0u))
               .b("d3d_multithreaded", sdk::Render::is_multithreaded().value_or(false))
-              .u("xr_rt_handle",
-                 static_cast<size_t>(sdk::OpenXR::get().persisted_handle(
-                     webapi_query_string(q, "fetch").c_str())))
-              .s("xr_rt_manifest", sdk::OpenXR::get().manifest_path())
-              .u("xr_rt_available", sdk::OpenXR::available_runtimes().size())
-              .b("xr_rt_loaded", sdk::OpenXR::get().loaded())
-              .s("xr_rt_library", sdk::OpenXR::get().library_path())
-              .u("xr_rt_iface", static_cast<size_t>(sdk::OpenXR::get().interface_version()))
-              .u("xr_rt_api_major", static_cast<size_t>(sdk::OpenXR::get().api_major()))
-              .u("xr_rt_api_minor", static_cast<size_t>(sdk::OpenXR::get().api_minor()))
-              .u("xr_rt_extensions", sdk::OpenXR::get().extensions().size())
-              .b("xr_rt_d3d11", sdk::OpenXR::get().supports_extension("XR_KHR_D3D11_enable"))
-              .b("xr_rt_d3d12", sdk::OpenXR::get().supports_extension("XR_KHR_D3D12_enable"))
-              .s("xr_rt_error", sdk::OpenXR::get().last_error())
               .b("hands", st.hands)
               .u("hand_applied", static_cast<size_t>(st.hand_applied))
               .f("hand_off_x", st.hand_offset[0], 3)
@@ -11819,6 +11748,54 @@ bool Framework::initialize() {
               .f("pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4)
               .u("pitch_completed", static_cast<size_t>(o.pitch_completed))
               .u("pitch_abandoned", static_cast<size_t>(o.pitch_abandoned));
+        }
+        return out;
+    };
+
+    handlers.haptic = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& fp = FramePublisher::get();
+
+        // RIGHT BY DEFAULT: the weapon hand is what a shot, a hit or a pickup buzzes, so the
+        // common call is the short one.
+        const std::string hand_name = webapi_query_string(q, "hand");
+        const uint32_t hand = hand_name == "left" ? xr::kHandLeft : xr::kHandRight;
+        const bool stop = webapi_query_int(q, "stop", 0) != 0;
+
+        // MILLISECONDS IN, nanoseconds out -- nanoseconds in a URL is a way to typo three orders
+        // of magnitude. Absent or zero is XR_MIN_HAPTIC_DURATION (-1) rather than a zero-length
+        // pulse: "the shortest the runtime can produce" is what a discrete event wants and is the
+        // one duration every runtime can honour.
+        const long long ms = webapi_query_int(q, "ms", 0);
+        const int64_t duration_ns = ms > 0 ? static_cast<int64_t>(ms) * 1000000 : -1;
+
+        const auto hz = static_cast<float>(webapi_query_double(q, "hz", 0.0));
+        const auto amp = static_cast<float>(webapi_query_double(q, "amp", 1.0));
+
+        const bool ok = stop ? fp.stop_haptic(hand) : fp.request_haptic(hand, duration_ns, hz, amp);
+
+        const xr::HapticsState* haptics = fp.haptics_state();
+        const xr::HapticPulse* wrote =
+            ok && haptics != nullptr ? &haptics->slot[(haptics->write_index - 1u) % xr::kHapticSlots]
+                                     : nullptr;
+
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", ok)
+              .b("active", fp.active())
+              .s("hand", hand == xr::kHandLeft ? "left" : "right")
+              .b("stop", stop)
+              // READ BACK OUT OF THE MAPPING, not echoed. Amplitude is clamped on the way in and a
+              // stop carries no duration at all, so a route that repeats its own input cannot show
+              // a caller that its amp=1.5 became 1.0 or that its ms= was ignored by stop=1. These
+              // three are the entry the host will read. Zeroes when nothing was queued, which
+              // ok=false beside them already says.
+              .i("duration_ns", static_cast<long long>(wrote != nullptr ? wrote->duration_ns : 0))
+              .f("hz", wrote != nullptr ? static_cast<double>(wrote->frequency_hz) : 0.0, 1)
+              .f("amp", wrote != nullptr ? static_cast<double>(wrote->amplitude) : 0.0, 3)
+              .u("queued", static_cast<size_t>(fp.haptics_queued()))
+              .u("slots", static_cast<size_t>(xr::kHapticSlots));
         }
         return out;
     };
