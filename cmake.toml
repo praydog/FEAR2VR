@@ -217,13 +217,27 @@ set_tests_properties(command-server-test PROPERTIES TIMEOUT 60)
 # cannot be checked by eye; I signed off on that one twice while it was wrong.
 #
 # Needs no build and no game, so it costs a fraction of a second on every ctest run.
+#
+# REGISTERED EITHER WAY. This used to be wrapped in `if(Python3_Interpreter_FOUND)`, so on a
+# machine without Python the test simply CEASED TO EXIST -- ctest reported three passing targets
+# and a mandatory check had silently left the suite. A check that can disappear is not mandatory,
+# and "it passed" then means something different depending on the machine. When Python is missing
+# the target is registered as a FAILING one that says why, which is loud, honest and fixable.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
 	add_test(NAME format-strings
 		COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/check_formats.py"
 		WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-	set_tests_properties(format-strings PROPERTIES TIMEOUT 60)
+else()
+	# FAILS WITH A REASON. `cmake -E false` would fail silently, which turns "mandatory check
+	# absent" into "mandatory check red for no stated cause" -- barely an improvement. A one-line
+	# script says what is missing and how to fix it, in the ctest output where someone will read it.
+	file(WRITE "${CMAKE_BINARY_DIR}/format_strings_no_python.cmake"
+		"message(FATAL_ERROR \\"format-strings needs a Python 3 interpreter and CMake found none. Install Python 3 or put it on PATH; this check is not optional -- see tools/check_formats.py.\\")\\n")
+	add_test(NAME format-strings
+		COMMAND ${CMAKE_COMMAND} -P "${CMAKE_BINARY_DIR}/format_strings_no_python.cmake")
 endif()
+set_tests_properties(format-strings PROPERTIES TIMEOUT 60)
 """
 
 [target.command-server-test.properties]

@@ -112,6 +112,9 @@ int64_t g_art_variance = 0;
 // than of the mod. Tallied apart because the remedy is neither "stand still" nor "load a level"
 // nor "restore the loadout" -- it is "focus the game", which an unattended run cannot do.
 int64_t g_skipped_unfocused = 0;
+// The frame publisher never opened, so the shared mapping -- and the haptic ring in it -- does not
+// exist to assert against. Counted rather than passed over, so a green run cannot hide behind it.
+int64_t g_skipped_no_publisher = 0;
 // Set once, early, by the loadout probe: can the player actually shoot? Suite-wide because the
 // probe has to run BEFORE the first assertion (a dead player fails checks that have nothing to do
 // with weapons) while the firing checks that consume it are thousands of lines further down.
@@ -795,7 +798,7 @@ struct SpawnedProcess {
 // The fix for THAT was to delegate to resume_game.py -- which launched through
 // `steam://rungameid`. Correct-looking, and quietly wrong: Steam's own launch gives the game a
 // 2 GB address space, which is precisely the configuration `injector.exe --launch` exists to
-// avoid and which Injector.cpp:840-845 refuses to fall back to. A 2 GB session boots, injects and
+// avoid and which do_launch's "NO SILENT FALLBACK" branch in injector/Injector.cpp refuses to fall back to. A 2 GB session boots, injects and
 // passes most of this suite; it just dies under memory pressure a 4 GB session survives. So the
 // suite spent months cold-starting the configuration the launcher was written to prevent, and
 // nothing reported it. resume_game.py now calls the injector's own launcher.
@@ -12472,6 +12475,82 @@ int main(int argc, char** argv) {
         check(multithreaded == ((flags & 0x4) != 0),
               "and sdk::Render::is_multithreaded() agrees with the D3DCREATE_MULTITHREADED bit in "
               "the raw flags");
+    }
+
+    // ---- THE HAPTIC RING, WHICH NOTHING ELSE COVERS ---------------------------------
+    //
+    // /vr/haptic is the only way into the game -> host haptic ring, and its response reads the
+    // entry BACK OUT OF THE MAPPING rather than echoing the request -- so these assertions are
+    // about what the host will actually consume, not about what the route was told. That is why
+    // this needs no offsets of its own (TESTING.MD: no magic values, no ReadProcessMemory).
+    //
+    // DELIBERATELY SILENT. If xr64 happens to be running it will consume everything queued here
+    // and buzz the wearer's controller in the middle of a test run, so every entry is queued at
+    // amplitude ZERO and the block ends with a stop. That is also why the clamp is exercised from
+    // BELOW (a negative amplitude must land on 0) rather than from above: asserting that 5 clamps
+    // to 1 would mean queueing a full-strength pulse to prove it. The two bounds are the same
+    // expression, and a silent suite is worth more than the second half of it.
+    //
+    // Cheap and deterministic: five HTTP calls, no world state, no timing, nothing that depends on
+    // where the player is standing.
+    {
+        std::string r;
+        bool active = false;
+
+        if (http::get(port, "/vr/haptic?hand=right&amp=0", r)) {
+            json_bool(http::body_of(r), "active", active);
+        }
+
+        // AN ABSENT DURATION IS XR_MIN_HAPTIC_DURATION, not zero. OpenXR requires the duration to
+        // be positive or exactly -1, so a zero reaching the runtime is a value it must reject --
+        // and the mod, not the caller, is what guarantees that.
+        double dur = 0.0;
+        if (http::get(port, "/vr/haptic?hand=right&amp=0", r)) {
+            json_double(http::body_of(r), "duration_ns", dur);
+        }
+        check_gated(active, "the frame publisher is not open, so the ring does not exist",
+                    g_skipped_no_publisher, dur == -1.0,
+                    "a pulse with no duration is queued as XR_MIN_HAPTIC_DURATION rather than a "
+                    "zero-length one the runtime would have to refuse");
+
+        // Milliseconds in, nanoseconds out, read back from the slot the host will read.
+        double scaled = 0.0;
+        if (http::get(port, "/vr/haptic?hand=left&ms=50&amp=0", r)) {
+            json_double(http::body_of(r), "duration_ns", scaled);
+        }
+        check_gated(active, "the frame publisher is not open, so the ring does not exist",
+                    g_skipped_no_publisher, scaled == 50000000.0,
+                    "and a duration in milliseconds reaches the mapping in nanoseconds");
+
+        // CLAMPED IN THE MOD. A runtime may reject an amplitude outside [0,1], and the split is
+        // that the mod owns policy while the host passes values straight through -- so the clamp
+        // has to be observable here rather than trusted.
+        double lo = -1.0;
+        if (http::get(port, "/vr/haptic?hand=right&amp=-3", r)) {
+            json_double(http::body_of(r), "amp", lo);
+        }
+        check_gated(active, "the frame publisher is not open, so the ring does not exist",
+                    g_skipped_no_publisher, lo == 0.0,
+                    "an out-of-range amplitude is clamped into [0,1] before the host can see it");
+
+        // A STOP IS AN ENTRY, not a flag: it takes a ring slot like any other request, so the host
+        // consumes it in order rather than racing it against a pulse queued beside it. It is also
+        // what leaves the controller quiet after this block.
+        double before = 0.0;
+        double after = 0.0;
+        bool stopped = false;
+        if (http::get(port, "/vr/haptic?hand=left&amp=0", r)) {
+            json_double(http::body_of(r), "queued", before);
+        }
+        if (http::get(port, "/vr/haptic?hand=left&stop=1", r)) {
+            const std::string b = http::body_of(r);
+            json_double(b, "queued", after);
+            json_bool(b, "stop", stopped);
+        }
+        check_gated(active, "the frame publisher is not open, so the ring does not exist",
+                    g_skipped_no_publisher, stopped && after == before + 1.0,
+                    "a stop is serialised into the ring as its own entry, so it cannot overtake a "
+                    "pulse the host has not consumed yet");
     }
 
     // ---- AND IT CAN STAY ON THE GPU ---------------------------------------------

@@ -28,9 +28,24 @@ constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // every offset past the control block move, so a host and mod built against different versions of
 // this file must refuse each other rather than read pixels at the wrong address.
 // 6 adds the HapticsState block (game -> host), which moves kPayloadOffset and therefore every
-// pixel slot. Both sides refuse a mismatched partner rather than reading pixels at the wrong
-// address, so a mod and host from different versions fail loudly instead of showing garbage.
-constexpr uint32_t kSharedFrameVersion = 6u;  // 4 added the rendered pose, 5 the per-slot views
+// pixel slot.
+//
+// THE VERSION IS IN THE OBJECT NAMES, and a field check alone was not enough. CreateFileMapping
+// with a name RETURNS THE EXISTING SECTION, so a reloaded mod re-stamped `version` in the section
+// an already-connected host was reading; and the host only validated it inside SharedReader::open(),
+// which returns early once it holds a mapping. The host deliberately outlives mod reloads, so a v5
+// host would have gone on reading v6 haptics bytes as its UiFrameHeader -- garbage, not a refusal,
+// which is precisely the failure the version field was added to prevent.
+//
+// Putting the number in the NAME removes the class instead of patching the path: a mod and host
+// built against different versions never touch the same kernel object at all. The host reports no
+// mapping, which is unambiguous and self-explanatory. The field check stays as belt and braces and
+// is now re-validated per poll (tools/xr64/main.cpp), so a same-name mismatch still cannot be read.
+#define FEAR2VR_SHARED_FRAME_VERSION 6
+#define FEAR2VR_STRINGIFY_(x) #x
+#define FEAR2VR_STRINGIFY(x) FEAR2VR_STRINGIFY_(x)
+
+constexpr uint32_t kSharedFrameVersion = FEAR2VR_SHARED_FRAME_VERSION;  // 4 added the rendered pose
 
 // Sized for the game's native per-eye back buffer: 4320x2224 (2160x2224 per eye, side by side),
 // rounded up to a height of 2240 for headroom. Width and height are named rather than folded
@@ -290,9 +305,13 @@ struct HapticPulse {
     uint32_t hand;         // kHandLeft or kHandRight -- carried per entry, not per ring
     uint32_t stop;         // non-zero: xrStopHapticFeedback instead of applying a pulse
 
-    // The ticket this entry was written for, stamped AFTER the payload and cleared to 0 before
+    // The ticket this entry was written for, stamped AFTER the payload and set to ~ticket before
     // it. A consumer that sees anything other than the ticket it expected -- on either side of
     // its copy -- was lapped and must discard the entry rather than fire it.
+    //
+    // NOT zero for the in-progress marker: write_index wraps every 2^32 pulses, and on that one
+    // ticket zero would mean both "being written" and "committed", so a torn entry would pass the
+    // check. The complement can never equal the ticket.
     volatile uint32_t commit;
     uint32_t reserved;
 };
@@ -440,7 +459,11 @@ constexpr uint32_t ui_slot_offset(uint32_t slot) {
 // in whichever process guessed low.
 constexpr uint32_t kSharedFrameTotalBytes = kUiPayloadOffset + kUiSlots * kUiSlotStride;
 
-constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
+// VERSION-SUFFIXED, so a mod and host built against different layouts cannot meet. See the note
+// on kSharedFrameVersion: a bare name let a reloaded mod re-stamp the section a connected host
+// was already reading.
+constexpr const char* kSharedFrameName =
+    "Local\\fear2vr_frame_v" FEAR2VR_STRINGIFY(FEAR2VR_SHARED_FRAME_VERSION);
 
 // ---- LETTING THE RUNTIME PACE THE GAME ----------------------------------------------------------
 //
@@ -453,6 +476,10 @@ constexpr const char* kSharedFrameName = "Local\\fear2vr_frame";
 // and juddered, while the SAME build alt-tabbed to ~72 fps looked perfect. A faster game made the
 // picture worse, because frames and poses were being produced on two unrelated clocks and the beat
 // between them is visible. Pacing removes the beat rather than compensating for it.
-constexpr const char* kFrameTickEventName = "Local\\fear2vr_frame_tick";
+// Suffixed for the same reason as the section, and it must move WITH it: a v5 host waking a v6
+// mod's frame loop through a shared event, while unable to read its pixels, would be a worse
+// failure than not meeting at all.
+constexpr const char* kFrameTickEventName =
+    "Local\\fear2vr_frame_tick_v" FEAR2VR_STRINGIFY(FEAR2VR_SHARED_FRAME_VERSION);
 
 }  // namespace xr

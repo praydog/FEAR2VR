@@ -861,9 +861,16 @@ bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t w
         start_host(self_dir);
     }
 
-    const auto wait_for_game = [&](int32_t secs) {
+    // ONE DEADLINE FOR THE WHOLE LAUNCH, shared by finding the process and by the readiness gate
+    // below. Giving each phase its own fresh `--wait N` means `--wait 30` can legitimately take
+    // sixty seconds, which is not what the option appears to promise to anyone reading it or
+    // passing it through (resume_game.py forwards its --launch-timeout straight into this).
+    const ULONGLONG launch_deadline =
+        GetTickCount64() + static_cast<ULONGLONG>(wait_seconds > 0 ? wait_seconds : 0) * 1000ull;
+
+    const auto wait_for_game = [&]() {
         uint32_t p = 0;
-        for (int32_t i = 0; i < secs; ++i) {
+        while (GetTickCount64() < launch_deadline) {
             p = find_game_pid(cfg.process);
             if (p != 0) break;
             printf(".");
@@ -895,7 +902,7 @@ bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t w
         }
     } else if (pid == 0) {
         printf("[launch] waiting for %s", cfg.process.c_str());
-        pid = wait_for_game(wait_seconds);
+        pid = wait_for_game();
     }
 
     if (pid == 0) {
@@ -917,14 +924,20 @@ bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t w
     printf("[launch] found pid %u, waiting for gameclient.dll and the engine window\n", pid);
     bool client_up = false;
     bool window_up = false;
-    for (int32_t elapsed = 0; elapsed < 180; ++elapsed) {
+    // do/while, so ONE sample always happens: `--wait 0` means "do not wait", not "do not look".
+    // An already-running, already-ready game must still pass the gate rather than be refused for
+    // having no budget left to confirm what is already true.
+    do {
         client_up = client_up || module_loaded(pid, "gameclient.dll");
         window_up = window_up || has_visible_window(pid);
         if (client_up && window_up) {
             break;
         }
+        if (GetTickCount64() >= launch_deadline) {
+            break;
+        }
         Sleep(1000);
-    }
+    } while (true);
     if (!client_up || !window_up) {
         // REFUSE, rather than injecting anyway. This used to degrade to injecting on the argument
         // that a layout the check does not understand should not stop the launcher -- but the
@@ -936,8 +949,8 @@ bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t w
         //
         // The game is left RUNNING. Someone who knows better than this check can inject into it
         // deliberately, which is an informed override rather than a silent default.
-        printf("[launch] not ready after 180s (gameclient.dll %s, window %s) -- NOT injecting.\n",
-               client_up ? "yes" : "NO", window_up ? "yes" : "NO");
+        printf("[launch] not ready within the %ds budget (gameclient.dll %s, window %s) -- NOT "
+               "injecting.\n", wait_seconds, client_up ? "yes" : "NO", window_up ? "yes" : "NO");
         printf("[launch] the game is running (pid %u). If this check is wrong for your layout, "
                "inject explicitly: injector.exe --inject\n", pid);
         return false;

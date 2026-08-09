@@ -279,15 +279,17 @@ struct SharedReader {
     }
 
     // True when a COMPLETE frame newer than the last one is available.
-    uint32_t layout() const { return header == nullptr ? 0u : header->layout; }
-    uint32_t frame_host_sequence() const { return header == nullptr ? 0u : header->host_sequence; }
+    uint32_t layout() const { return layout_is_ours() ? header->layout : 0u; }
+    uint32_t frame_host_sequence() const {
+        return layout_is_ours() ? header->host_sequence : 0u;
+    }
     // The game asking to be shown FLAT -- see xr::SharedFrameHeader::flat. True while a menu is up.
-    bool frame_flat() const { return header != nullptr && header->flat != 0u; }
+    bool frame_flat() const { return layout_is_ours() && header->flat != 0u; }
 
     // THE POSE THE FRAME WAS ACTUALLY DRAWN FROM, stated by the writer rather than looked up here.
     // False when the writer could not recover it, in which case the sequence lookup stands.
     bool frame_rendered_pose(XrQuaternionf& out) const {
-        if (header == nullptr || header->rendered_valid == 0u) {
+        if (!layout_is_ours() || header->rendered_valid == 0u) {
             return false;
         }
         out.x = header->rendered_orientation[0];
@@ -297,8 +299,22 @@ struct SharedReader {
         return true;
     }
 
+    // REVALIDATED ON EVERY USE, not just at open(). The section is a named kernel object that
+    // outlives a mod reload, and CreateFileMapping hands the reloaded mod the SAME section -- so a
+    // one-shot check at connect time could be satisfied by one build and then silently serve
+    // another. Requires BOTH magic and version: magic alone accepts an unstamped or garbage
+    // header, which is the state a section is in before any writer has touched it.
+    //
+    // The object names now carry the version too (xr::kSharedFrameName), which should make this
+    // unreachable; it stays because the cost is one compare against a value already in cache and
+    // the failure it prevents is reading another layout's bytes as pixels.
+    bool layout_is_ours() const {
+        return header != nullptr && header->magic == xr::kSharedFrameMagic &&
+               header->version == xr::kSharedFrameVersion;
+    }
+
     bool poll(uint32_t& w, uint32_t& h, uint32_t& pitch, const uint8_t*& bits) {
-        if (header == nullptr || header->magic != xr::kSharedFrameMagic) {
+        if (!layout_is_ours()) {
             return false;
         }
 
@@ -340,7 +356,7 @@ struct SharedReader {
     // default, and a stale sequence must never be mistaken for a published layer.
     bool poll_ui(uint32_t& w, uint32_t& h, uint32_t& pitch, uint32_t& derive_alpha,
                 const uint8_t*& bits) {
-        if (ui == nullptr || header == nullptr || header->magic != xr::kSharedFrameMagic) {
+        if (ui == nullptr || !layout_is_ours()) {
             return false;
         }
 
@@ -380,8 +396,7 @@ struct SharedReader {
     // costs at most one frame of stale visibility -- the PIXELS are only ever trusted through
     // poll_ui(), which does not have that luxury.
     bool ui_present() const {
-        return ui != nullptr && header != nullptr && header->magic == xr::kSharedFrameMagic &&
-              ui->present != 0u;
+        return ui != nullptr && layout_is_ours() && ui->present != 0u;
     }
 };
 

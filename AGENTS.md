@@ -478,7 +478,7 @@ RUNNING, since the parent handle is opened on a live steam.exe (`Injector.cpp:54
 stub answers "Application load error 5:0000065434" without it -- `resume_game.py` starts Steam
 itself when it is not up. It is simply never asked to start the GAME. **Do not launch through
 `steam://rungameid`.** It yields a 2 GB session, and
-`Injector.cpp:840-845` refuses to fall back to it deliberately, because that configuration "causes
+`do_launch`'s "NO SILENT FALLBACK" branch in `injector/Injector.cpp` refuses to fall back to it deliberately, because that configuration "causes
 the crashes this exists to prevent".
 
 **When a launch fails, read the injector's echoed lines**, indented under `[resume]`. They are the

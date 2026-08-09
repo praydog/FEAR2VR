@@ -11766,8 +11766,18 @@ bool Framework::initialize() {
         // of magnitude. Absent or zero is XR_MIN_HAPTIC_DURATION (-1) rather than a zero-length
         // pulse: "the shortest the runtime can produce" is what a discrete event wants and is the
         // one duration every runtime can honour.
+        //
+        // CLAMPED BEFORE THE MULTIPLY, because the multiply is where a URL becomes undefined
+        // behaviour. webapi_query_int parses with strtoll, which saturates at LLONG_MAX on a range
+        // error, and LLONG_MAX * 1'000'000 overflows a signed 64-bit -- so `?ms=99999999999` would
+        // be UB before the value ever reached the mapping. The bound is the largest value the
+        // conversion itself can represent, not a policy about how long a haptic should be: every
+        // duration OpenXR considers valid still survives it.
+        constexpr long long kNsPerMs = 1'000'000;
+        constexpr long long kMaxMs = (std::numeric_limits<int64_t>::max)() / kNsPerMs;
         const long long ms = webapi_query_int(q, "ms", 0);
-        const int64_t duration_ns = ms > 0 ? static_cast<int64_t>(ms) * 1000000 : -1;
+        const long long clamped_ms = ms > kMaxMs ? kMaxMs : ms;
+        const int64_t duration_ns = clamped_ms > 0 ? static_cast<int64_t>(clamped_ms) * kNsPerMs : -1;
 
         const auto hz = static_cast<float>(webapi_query_double(q, "hz", 0.0));
         const auto amp = static_cast<float>(webapi_query_double(q, "amp", 1.0));

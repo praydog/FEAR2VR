@@ -1096,7 +1096,7 @@ because nothing ever ran it.
 That delegation was itself a defect, and the more instructive one, because it passed.
 `resume_game.py` launched through `steam://rungameid`, which starts the game in the 2 GB
 configuration that `launch_with_laa` exists to avoid. The injector refuses that fallback by name --
-`injector/Injector.cpp:840-845` will not silently start a Steam session because it "causes the
+`do_launch`'s "NO SILENT FALLBACK" branch in `injector/Injector.cpp` will not silently start a Steam session because it "causes the
 crashes this exists to prevent" -- and the fixture was doing exactly that on every cold start,
 through the back door. Both paths now go through `injector.exe --launch --no-host`.
 

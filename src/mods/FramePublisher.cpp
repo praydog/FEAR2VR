@@ -398,10 +398,22 @@ bool FramePublisher::queue_haptic(uint32_t hand, int64_t duration_ns, float freq
     // and a block-wide sequence would have gone even again long before that mattered. Cleared
     // first, stamped last -- a reader that does not see its own ticket on BOTH sides of its copy
     // discards the entry rather than firing half of the old pulse and half of this one.
-    pulse->commit = 0u;
+    //
+    // THE IN-PROGRESS MARKER IS ~ticket, NOT ZERO. Zero looks obvious and is wrong exactly once
+    // per 2^32 pulses: write_index wraps, ticket becomes 0, and then the "being written" stamp and
+    // the "committed" stamp are the same value -- so a host copying that slot mid-write sees the
+    // ticket it expected on both sides and fires a torn entry. Any value that cannot equal the
+    // ticket works; the complement is free and needs no extra state.
+    pulse->commit = ~ticket;
     ::MemoryBarrier();
 
-    pulse->duration_ns = duration_ns;
+    // NON-POSITIVE DURATIONS BECOME XR_MIN_HAPTIC_DURATION (-1). OpenXR requires
+    // XrHapticVibration::duration to be positive or exactly that sentinel, so a zero queued by a
+    // direct caller would reach the runtime as a value it must reject. The /vr/haptic route
+    // already maps an absent or zero `ms` this way; doing it here too means the C++ API carries
+    // the same guarantee instead of relying on every caller knowing the rule. A stop ignores the
+    // duration entirely, so it is left alone.
+    pulse->duration_ns = (!stop && duration_ns <= 0) ? -1 : duration_ns;
     pulse->frequency_hz = frequency_hz;
     // CLAMPED HERE rather than trusted. A runtime is entitled to reject an amplitude outside
     // [0,1], and the split across this boundary is that the mod owns policy while the host passes

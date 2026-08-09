@@ -30,7 +30,7 @@ HOW IT STARTS THE GAME
 Through `injector.exe --launch`, which gives the game a 4 GB address space, NOT through
 `steam://rungameid`. The shipped exe genuinely refuses a direct launch -- SteamStub checks its parent
 process -- but the conclusion "so ask Steam to launch it" is wrong: Steam's own launch produces a 2 GB
-session, and Injector.cpp:840-845 refuses to fall back to it because that is "the 2 GB configuration that
+session, and do_launch's "NO SILENT FALLBACK" branch in injector/Injector.cpp refuses to fall back to it because that is "the 2 GB configuration that
 causes the crashes this exists to prevent". This script used to do exactly what the injector will not,
 which meant every cold `ctest` start ran the configuration the LAA launcher exists to avoid. Steam must
 still be RUNNING, because the game is parented to it; it is simply never asked to launch anything.
@@ -324,7 +324,7 @@ def launch_game(injector, wait_s):
     function used to do, is "therefore ask Steam to launch it". Steam's own launch produces a 2 GB
     address space, and `injector.exe --launch` exists precisely to avoid that: it copies the exe,
     sets the Large-Address-Aware bit on the COPY, and starts it with steam.exe as the parent, so
-    the stub is satisfied and the game gets 4 GB. Injector.cpp:840-845 refuses to fall back to
+    the stub is satisfied and the game gets 4 GB. do_launch's "NO SILENT FALLBACK" branch refuses to fall back to
     Steam for exactly this reason -- "the 2 GB configuration that causes the crashes this exists to
     prevent" -- and this script was quietly doing the thing the injector will not do, on every
     cold ctest start.
@@ -542,10 +542,12 @@ def main():
             print("[resume] FAILED: the game did not appear")
             return 1
         # THE INJECTOR ALREADY WAITED FOR THIS, and for gameclient.dll, before it injected -- see
-        # do_launch's two-signal gate. So on the cold path this normally returns immediately. It
-        # stays because it is the script's own guarantee that the engine is up before anything
-        # below tries to drive its menu, and because `--launch` deliberately degrades to injecting
-        # anyway after 180s rather than refusing: if that happened, this is what notices.
+        # do_launch's two-signal gate, which now shares one deadline with --wait rather than
+        # keeping a fixed budget of its own. So on the cold path this normally returns immediately.
+        # It stays because it is the script's own guarantee that the engine is up before anything
+        # below tries to drive its menu -- and note that do_launch REFUSES to inject when the gate
+        # times out (it used to inject anyway), so a launch that got that far already failed above
+        # and we never reach here with an unready game.
         print("[resume] waiting for the engine's window")
         if not wait_for_window(args.launch_timeout):
             print("[resume] FAILED: the game never showed a window")
