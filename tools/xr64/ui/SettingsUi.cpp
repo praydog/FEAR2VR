@@ -89,6 +89,38 @@ void rotateByQuat(const XrQuaternionf& q, float vx, float vy, float vz, float& o
     oz = vz + q.w * tz + (q.x * ty - q.y * tx);
 }
 
+const char* dxgiFormatName(DXGI_FORMAT f) {
+    switch (f) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return "B8G8R8A8_TYPELESS";
+    case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return "R8G8B8A8_TYPELESS";
+    case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+    default: return "unnamed";
+    }
+}
+
+// XR_KHR_D3D11_enable pins down only that swapchain textures are created D3D11_USAGE_DEFAULT and
+// how XrSwapchainUsageFlags map onto D3D11_BIND_FLAG bits; XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT
+// is explicitly listed as IGNORED for D3D11. So there is no conformant way to REQUEST a
+// reinterpretable image -- whether a typeless one comes back is runtime-specific and can only be
+// learned by reading the desc off the texture the runtime actually handed over.
+//
+// A typeless format is not a legal RTV format, so those need an explicit view format named here;
+// DXGI_FORMAT_UNKNOWN is this function's "the texture is already concretely typed" answer, and the
+// caller turns it into a nullptr desc so the view uses the texture's own format.
+DXGI_FORMAT rtvFormatForTexture(DXGI_FORMAT texture_format) {
+    switch (texture_format) {
+    // UNORM rather than UNORM_SRGB matches this host's existing convention of treating the UI
+    // surface as just bytes -- the mod's own HUD swapchain in main.cpp is a raw memcpy upload with
+    // no colour-space conversion anywhere in it either.
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    default: return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
 // What the background poll thread learns from the mod, mirrored into the document by the main
 // thread (applySyncIfDue()) -- see the mutex on Impl::snapshot. Every "*_known"/"*_route_ok" flag
 // exists because an unreachable mod, or a route this build doesn't have yet, must leave the
@@ -211,27 +243,49 @@ bool SettingsUi::Impl::createSwapchain() {
     uint32_t n = 0;
     xrEnumerateSwapchainImages(swapchain, 0, &n, nullptr);
     std::vector<XrSwapchainImageD3D11KHR> imgs(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-    xrEnumerateSwapchainImages(swapchain, n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+    const XrResult er =
+        xrEnumerateSwapchainImages(swapchain, n, &n, reinterpret_cast<XrSwapchainImageBaseHeader*>(imgs.data()));
+    // A failed enumerate leaves `imgs` zero-filled, and the GetDesc below dereferences the texture
+    // pointer directly -- an unusable panel must not become a null deref in the host.
+    if (XR_FAILED(er) || n == 0) {
+        std::printf("[host] [ui] settings swapchain image enumerate -> XrResult %d, %u images\n",
+                    static_cast<int>(er), n);
+        destroySwapchain();
+        return false;
+    }
 
-    // The runtime commonly hands back TYPELESS images for an sRGB-requested format specifically so
-    // an app can choose either an sRGB or a UNORM view; the UNORM one is what matches this host's
-    // existing convention of treating the UI surface as "just bytes" (see the raw memcpy upload
-    // for the mod's own HUD swapchain in main.cpp -- no colour-space conversion happens there
-    // either). If the runtime instead handed back a concretely-typed image, the sRGB view create
-    // fails and the fallback below asks for the native format instead.
-    const bool want_unorm_view = (swapchain_format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
-    D3D11_RENDER_TARGET_VIEW_DESC unorm_desc{};
-    unorm_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    unorm_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-
+    // OPEN QUESTION, do not read this code as settling it: what the concretely-typed path does to
+    // the picture has never been checked against pixels. If a runtime returns *_UNORM_SRGB and
+    // RmlUi's shaders already emit sRGB-encoded bytes, the hardware encode on write would encode
+    // them a second time; if RmlUi emits linear, the typed view is the correct one and the
+    // typeless-plus-UNORM path is the suspect. Nobody has sampled the panel in-headset to find out
+    // which, so both branches stay as written and the log line below at least names which one ran.
     for (uint32_t i = 0; i < n; ++i) {
         images.push_back(imgs[i].texture);
-        ID3D11RenderTargetView* rtv = nullptr;
-        HRESULT hr = want_unorm_view ? device->CreateRenderTargetView(imgs[i].texture, &unorm_desc, &rtv)
-                                     : device->CreateRenderTargetView(imgs[i].texture, nullptr, &rtv);
-        if (FAILED(hr)) {
-            hr = device->CreateRenderTargetView(imgs[i].texture, nullptr, &rtv);
+
+        // Per image rather than once: nothing in the spec says the runtime must hand back a
+        // uniformly-formatted set, and GetDesc costs nothing next to a swapchain create.
+        D3D11_TEXTURE2D_DESC td{};
+        imgs[i].texture->GetDesc(&td);
+        const DXGI_FORMAT view_format = rtvFormatForTexture(td.Format);
+
+        if (i == 0) {
+            std::printf("[host] [ui] settings swapchain colour: requested %s (%lld), runtime returned %s (%u), "
+                        "RTV view %s\n",
+                        dxgiFormatName(static_cast<DXGI_FORMAT>(swapchain_format)),
+                        static_cast<long long>(swapchain_format), dxgiFormatName(td.Format),
+                        static_cast<unsigned>(td.Format),
+                        view_format == DXGI_FORMAT_UNKNOWN ? "texture's own format" : dxgiFormatName(view_format));
         }
+
+        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
+        rtv_desc.Format = view_format;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+
+        ID3D11RenderTargetView* rtv = nullptr;
+        const HRESULT hr = (view_format == DXGI_FORMAT_UNKNOWN)
+                               ? device->CreateRenderTargetView(imgs[i].texture, nullptr, &rtv)
+                               : device->CreateRenderTargetView(imgs[i].texture, &rtv_desc, &rtv);
         if (FAILED(hr)) {
             std::printf("[host] [ui] RTV create failed for settings image %u: 0x%08lx\n", i,
                         static_cast<unsigned long>(hr));
@@ -669,7 +723,7 @@ bool SettingsUi::init(ID3D11Device* device, ID3D11DeviceContext* context, XrInst
     return true;
 }
 
-const XrCompositionLayerQuad* SettingsUi::update(XrTime predicted_display_time) {
+const XrCompositionLayerQuad* SettingsUi::update(XrTime predicted_display_time, bool should_render) {
     if (m_impl->rml_context == nullptr) {
         return nullptr;
     }
@@ -677,7 +731,12 @@ const XrCompositionLayerQuad* SettingsUi::update(XrTime predicted_display_time) 
     m_impl->applySyncIfDue();
     m_impl->updateCursorElement();
     m_impl->rml_context->Update();
-    if (!m_impl->visible) {
+    // `should_render` is main.cpp's XrFrameState::shouldRender. The cheap half above still runs on
+    // a shouldRender == XR_FALSE frame -- the wearer's menu press and the mod's settings must not
+    // be dropped just because the compositor has the session hidden -- but the swapchain
+    // acquire/wait/render/release is exactly the work the runtime just told us not to do, and the
+    // caller does not append the quad on those frames either, so nullptr is the honest answer.
+    if (!should_render || !m_impl->visible) {
         return nullptr;
     }
     return m_impl->renderAndBuildQuad();

@@ -14,7 +14,11 @@ inject → test → uninject with the game never restarting.
 
 1. **32-bit only.** Build is `-A Win32`; cmake fails hard on 64-bit. `Eip` not
    `Rip` in thread contexts; x86 `__thiscall` detours are written as
-   `__fastcall(this, edx_dummy)`.
+   `__fastcall(this, edx_dummy)`. The one 64-bit thing in the repo is
+   `tools/xr64`, the OpenXR host, and it is deliberately NOT in this build --
+   it configures on its own (`cmake -B build64 -A x64 -S tools/xr64`). Nothing
+   in the mod calls OpenXR; the two processes meet only at the shared mapping
+   in `shared/xr/SharedFrame.hpp`.
 2. **No test code in the shipped mod (fear2vr.dll).** Assertions live host-side
    in `test/fixture_test_runner.cpp`. The DLL may expose *diagnostics*
    (`/health`, `/sdk/targets`, `/engine-hook`) — data, never pass/fail
@@ -402,6 +406,8 @@ shared/                       -- Log, HttpClient, sdk/ (fear2-sdk static lib)
 shared/sdk/                   -- Modules, CClientMgr, CClientShell, Engine, DatabaseMgr,
                                  VisTree, Model (consumer-facing skeleton/material API)
 shared/sdk/regenny/           -- generated (sdk:generate) layout structs + Primitives.hpp shim
+shared/xr/                    -- SharedFrame.hpp, the ONLY contract between the mod and the
+                                 64-bit OpenXR host (frame/UI slots, haptic ring, host state)
 reversing/                    -- fear2.genny (ground truth for LAYOUT),
                                  MAPPING_WORKFLOW.MD (the recipe -- start here),
                                  ENGINE_NOTES.md (what is known about FEAR2),
@@ -414,6 +420,9 @@ src/mods/                     -- ViewHook (the view override), Watchpoints (hard
                                  running while the window is not focused)
 injector/                     -- LoadLibrary injector (inject/unload/reload/status)
 test/                         -- command_server_tests (Tier-1), fixture_test_runner (Tier-2)
+tools/                        -- resume_game.py (fixture bring-up), check_formats.py (Tier-0)
+tools/xr64/                   -- the 64-bit OpenXR host: separate x64 build, owns the instance,
+                                 session and swapchains (see hard rule 1)
 TESTING.MD                    -- the testing contract (rigor, evidence rules)
 ```
 
@@ -429,16 +438,17 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure
 ## Crash recovery: `python tools/resume_game.py`
 
 **One command takes a dead game to an injected, in-world, test-ready session with no
-human.** Verified end to end from a terminated process: 71 seconds, cold.
+human.** Verified end to end from a terminated process: 71 seconds, cold -- clocked when the
+launch step still went through Steam, and not re-timed since it became the LAA launch.
 
 ```
 python tools/resume_game.py          # idempotent -- run it any time
 ```
 
 ```
-[resume] FEAR2 is not running -- launching through Steam
-[resume] waiting for the engine to come up
-[resume] injecting
+[resume] FEAR2 is not running -- launching with a 4 GB address space (injector --launch)
+[resume]   <the injector's own stdout, echoed line by line, indented two spaces>
+[resume] waiting for the engine's window
 [resume] at the menu -- invoking Menu.StartCheckpoint
 [resume] world loaded
 [resume] in-world
@@ -446,12 +456,35 @@ python tools/resume_game.py          # idempotent -- run it any time
 
 What it does, and why each step is what it is:
 
-1. **Launch through Steam** (`steam://rungameid/16450`), never the exe. The on-disk
-   `FEAR2.exe` is CEG/SteamStub-wrapped and refuses a direct launch.
-2. **Inject** and wait for `/health`.
+1. **`injector.exe --launch --no-host`** -- the project's own launcher, not Steam and not the
+   shipped exe. `launch_with_laa` copies `FEAR2.exe`, sets the Large-Address-Aware bit on the
+   COPY, and starts it parented to steam.exe, which is the only path that gives the game a 4 GB
+   address space. `--no-host` leaves xr64.exe out of it: a fixture wants the address space, not a
+   headset.
+2. **Wait for `/health`.** There is no separate inject step on the cold path -- `--launch` injects
+   in the same call, so running `--inject` after it would be a second attempt against an already
+   resident DLL. The warm path (game up, mod not) still injects, and still says so.
 3. **`/console/run?cmd=Menu.StartCheckpoint`** -- the game's OWN UI command, not a
    synthesised click. This is "Continue From Last Saved Point".
 4. **`/input/tap?vk=32`** to dismiss the load screen's "press to continue".
+
+**"It cannot be launched directly" is TRUE. "So launch it through Steam" does not follow.** The
+on-disk `FEAR2.exe` is CEG/SteamStub-wrapped and a plain `CreateProcess` of it fails -- that half
+has never stopped being true, and it is why the test runner's `CreateProcessW` never worked. The
+conclusion drawn from it was the wrong one. `launch_with_laa` satisfies the stub without asking
+Steam to launch anything: Steam's environment and command line come from the registry, and the
+process is created with steam.exe as `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. Steam must be
+RUNNING, since the parent handle is opened on a live steam.exe (`Injector.cpp:544-548`) and the
+stub answers "Application load error 5:0000065434" without it -- `resume_game.py` starts Steam
+itself when it is not up. It is simply never asked to start the GAME. **Do not launch through
+`steam://rungameid`.** It yields a 2 GB session, and
+`do_launch`'s "NO SILENT FALLBACK" branch in `injector/Injector.cpp` refuses to fall back to it deliberately, because that configuration "causes
+the crashes this exists to prevent".
+
+**When a launch fails, read the injector's echoed lines**, indented under `[resume]`. They are the
+whole diagnosis -- whether the exe was found, whether steam.exe could be opened for parenting,
+whether gameclient.dll ever came up. The Steam route printed nothing at all on failure, which is
+what made three consecutive 200-second launch timeouts so expensive to explain.
 
 **The menu CANNOT be driven by synthetic input.** Measured, not assumed -- all three
 routes fail, and the evidence is in `reversing/REVERSING_LESSONS.md`:

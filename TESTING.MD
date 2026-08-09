@@ -62,12 +62,22 @@ NOT art at all and had to be fixed properly: a null control tuned on a still sce
 assertion that asserted more than the feature promised, and a genuine race in `AmmoKeeper` that the
 suite had been correctly reporting all along.
 
-## Two tiers of test
+## The three ctest targets
 
 | Tier | Target | When it runs | Exit |
 |---|---|---|---|
+| Tier-0 | `format-strings` | Always (static, no build, no game) | 0/1 — no environment excuse |
 | Tier-1 | `command-server-test` | Always (CI, headless, no game) | 0/1 — no environment excuse |
 | Tier-2 | `fixture-test` | When FEAR2.exe can run | 0 pass / 1 fail / **77 skip** |
+
+Tier-0 (`tools/check_formats.py`) counts the conversions in every `printf`-family call in the tree
+and holds that against the argument list -- the COUNT, not the types, because counting is what
+went wrong three times out of three. It reads source, so it costs a fraction of a second and needs
+neither a compiler nor a game. It exists because the host's periodic log line broke three times in
+one session: arguments inserted where they read well rather than where the format wanted them, a
+`double` printed through `%llu`, and a field left behind after its argument was deleted, which
+handed a float to `%s` and crashed the host inside `strnlen`. MSVC does not warn at this project's
+level and a 36-argument call cannot be checked by eye.
 
 Tier-1 mock-tests the IPC command server over localhost HTTP in-process: health
 fragment plumbing, `/sdk/targets` and `/engine-hook` routing, 404/400s, `/unload`
@@ -119,8 +129,14 @@ python tools/resume_game.py          # idempotent; run before a session or after
 ```
 
 Verified end to end from a TERMINATED process: 71 seconds, cold, no human input.
-Dead game -> Steam launch -> inject -> `Menu.StartCheckpoint` -> Space -> in-world,
-followed immediately by a full suite run of 1532 checks.
+Dead game -> `injector.exe --launch --no-host` (the LAA launcher, which injects in the same
+call) -> `Menu.StartCheckpoint` -> Space -> in-world, followed immediately by a full suite run
+of 1532 checks. The 71 s was clocked when that first step still went through Steam; the LAA
+launch replaced it and has not been re-timed, so read the number as an order of magnitude.
+
+**It does not launch through `steam://rungameid`, and must not.** That yields a 2 GB session --
+see "The runner could never launch the game" below for what that cost. Steam still has to be
+RUNNING, because the launcher parents the game to steam.exe; it is just never asked to start it.
 
 It matters for the evidence rules, not just convenience. A red that only appears at the
 menu is a state, and a suite run against the wrong state produces a hundred plausible
@@ -639,6 +655,7 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure
 Individual:
 
 ```
+python tools\check_formats.py                    :: Tier-0, always -- no build needed
 bin\command-server-test.exe                      :: Tier-1, always
 bin\fixture-test.exe --injector bin\injector.exe --dll bin\fear2vr.dll ^
     --fixture W:\SteamLibrary\steamapps\common\FEAR2\FEAR2.exe --port 8798
@@ -668,6 +685,7 @@ curl http://127.0.0.1:8798/unload
 | `src/Main.cpp` | thin DllMain |
 | `injector/` | inject/unload/reload/status CLI |
 | `test/` | Tier-1 headless + Tier-2 game-fixture runners (all assertions) |
+| `tools/` | `check_formats.py` (Tier-0), `resume_game.py` (fixture bring-up), `xr64/` (the 64-bit OpenXR host) |
 
 ## Fix the shape, not just the symptom
 
@@ -1061,10 +1079,10 @@ always was -- so the bug sat behind a condition that never fired until the game 
 and ctest started reporting a launch failure that read like a broken fixture.
 
 It now delegates to `tools/resume_game.py`, which is the documented path and does more than start a
-process: Steam launch, engine wait, inject, `Menu.StartCheckpoint`, dismiss the load screen. A
-runner that merely spawned would land at the main menu, where 103 checks go red for want of a
-world. Verified from a genuinely dead game: `no game running -- bringing one up through Steam` ->
-`game is up and in-world (pid 1020892)`.
+process: launch, engine wait, injection, `Menu.StartCheckpoint`, dismiss the load screen. A runner
+that merely spawned would land at the main menu, where 103 checks go red for want of a world.
+Verified from a genuinely dead game: the runner brought one up and reported it in-world on its own
+(pid 1020892).
 
 It deliberately does NOT own the process it brings up, so teardown leaves the game running -- which
 is the whole premise of the loop.
@@ -1072,6 +1090,27 @@ is the whole premise of the loop.
 **The general shape:** a fallback path that is never exercised is not a fallback, it is an untested
 claim. This one contradicted a documented hard fact in the repo's own rules and still shipped,
 because nothing ever ran it.
+
+### And the FIRST FIX was wrong too, in a way nothing reported
+
+That delegation was itself a defect, and the more instructive one, because it passed.
+`resume_game.py` launched through `steam://rungameid`, which starts the game in the 2 GB
+configuration that `launch_with_laa` exists to avoid. The injector refuses that fallback by name --
+`do_launch`'s "NO SILENT FALLBACK" branch in `injector/Injector.cpp` will not silently start a Steam session because it "causes the
+crashes this exists to prevent" -- and the fixture was doing exactly that on every cold start,
+through the back door. Both paths now go through `injector.exe --launch --no-host`.
+
+**Nothing complained, and that is the whole point.** A 2 GB session boots, injects, loads a world
+and passes essentially the entire suite. It differs from a 4 GB one only under memory pressure,
+where it dies and the 4 GB session survives. So the symptom is never "the fixture launched wrong",
+it is "the suite crashes sometimes, usually late, usually in whichever check happened to be
+running" -- an intermittent that leads investigation anywhere except the launch step.
+
+**The better lesson, beside the one above:** the original bug announced itself the first time it
+ran. Its fix did not, because what the fix got wrong was invisible in every outcome the suite
+reports. Do not close a post-mortem on "the failure stopped" -- ask what CONFIGURATION the fix
+produces and whether it is the one that was specified. The first bug cost an afternoon. The second
+would have been paid in crash reports nobody could reproduce.
 
 ## An invariant that was only true once
 

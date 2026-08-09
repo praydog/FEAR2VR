@@ -65,7 +65,9 @@ set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 type = "static"
 sources = ["shared/sdk/**.cpp", "shared/xr/**.cpp"]
 headers = ["shared/sdk/**.hpp", "shared/xr/**.hpp", "shared/xr/**.h"]
-include-directories = ["shared", "deps/openxr/include"]
+# No deps/openxr/include any more: the 32-bit OpenXR surface is gone and shared/xr now holds only
+# SharedFrame.hpp, which is deliberately free of OpenXR types so both bitnesses can compile it.
+include-directories = ["shared"]
 compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
@@ -99,6 +101,27 @@ compile-features = ["cxx_std_23"]
 compile-options = ["/EHa", "/bigobj", "/GS-"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
 link-libraries = ["fear2-core", "fear2-sdk", "kananlib", "safetyhook", "ws2_32", "shlwapi", "dbghelp"]
+cmake-after = """
+# ---- NO OPENXR IN THE GAME ----------------------------------------------------------------------
+#
+# The mod contains no OpenXR code at all: the runtime, the loader, the instance and the session all
+# live in the 64-bit host (tools/xr64), and the game talks to it purely over the shared mapping in
+# shared/xr/SharedFrame.hpp. So nothing here ever loads openxr_loader.dll.
+#
+# The delete below is housekeeping for trees that built while an earlier attempt DID ship a 32-bit
+# loader here. Dropping a copy rule does not remove what it already copied, and a leftover DLL in
+# bin/ invites exactly the wrong conclusion about where OpenXR runs. Same class of trap as a stale
+# CMake cache silently not compiling a new .cpp (AGENTS.md rule 10).
+#
+# Why that attempt was reverted, recorded because the numbers cost a session to get: shipping it
+# moved the mod onto the Khronos loader, which loads fine under LAA and enumerates 89 extensions
+# (against 35 direct, the difference being the implicit API layers the loader inserts) and then
+# fails xrCreateInstance with XR_ERROR_FILE_ACCESS_ERROR (-32). A conformant path that cannot
+# create an instance is worse than a less conformant one that can.
+add_custom_command(TARGET fear2vr POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:fear2vr>/openxr_loader.dll"
+	VERBATIM)
+"""
 
 [target.fear2vr.properties]
 OUTPUT_NAME = "fear2vr"
@@ -143,7 +166,8 @@ add_test(
         --port     8798
 )
 # 420s, not 180. The suite is ~85s, plus up to ~25s if it has to cold-start the game through
-# Steam (measured after resume_game.py stopped blind-sleeping; it used to be 165s). The suite grew a closed-loop aim director whose checks physically turn the player:
+# `injector.exe --launch` (measured after resume_game.py stopped blind-sleeping; it used to be
+# 165s). The suite grew a closed-loop aim director whose checks physically turn the player:
 # driving the pitch into both clamps and back is several seconds each, and a checkpoint restore
 # (only taken when the fixture is unusable) is ~15s on its own. Measured at ~90s healthy, and it
 # timed out at 180 on a run that took the restore path -- a timeout reports as a failure with no
@@ -160,19 +184,6 @@ RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 # --- ctest headless unit runner (Tier-1) -------------------------------------
 # Black-box tests the CommandServer over localhost HTTP in-process -- NO game,
 # NO GPU -- so it ALWAYS runs and must pass on any CI. No SKIP_RETURN_CODE.
-[target.fear2xr]
-type = "shared"
-sources = ["src/xr/Proxy.cpp", "shared/xr/RuntimeLoader.cpp"]
-include-directories = ["shared", "deps/openxr/include"]
-compile-features = ["cxx_std_23"]
-compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-
-[target.fear2xr.properties]
-OUTPUT_NAME = "fear2xr"
-RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
-RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
-RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
-
 [target.ipcbench]
 type = "executable"
 sources = ["tools/ipcbench/main.cpp"]
@@ -185,35 +196,6 @@ RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
 RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
 RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 
-[target.xr-probe]
-type = "executable"
-sources = ["test/xr_probe.cpp", "shared/sdk/OpenXR.cpp", "shared/xr/RuntimeLoader.cpp"]
-include-directories = ["shared", "deps/openxr/include"]
-link-libraries = ["d3d11", "dxgi"]
-compile-features = ["cxx_std_23"]
-compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
-cmake-after = """
-add_test(NAME xr-probe COMMAND xr-probe)
-set_tests_properties(xr-probe PROPERTIES TIMEOUT 60)
-
-# LOADING A RUNTIME IS NOT PASSIVE -- it starts that vendor's services and can raise a Windows
-# firewall prompt that blocks unrelated launches. So the half of the probe that actually talks to a
-# runtime (load, negotiate, enumerate, xrCreateInstance, xrGetSystem) is OPT-IN, and a plain `ctest`
-# stays free of side effects on someone else's machine.
-#
-#   cmake -DFEAR2_XR_RUNTIME_TESTS=ON ...   then   ctest -R xr-probe-runtime
-option(FEAR2_XR_RUNTIME_TESTS "Run OpenXR tests that load a real runtime" OFF)
-if(FEAR2_XR_RUNTIME_TESTS)
-	add_test(NAME xr-probe-runtime COMMAND xr-probe --load)
-	set_tests_properties(xr-probe-runtime PROPERTIES TIMEOUT 120)
-endif()
-"""
-
-[target.xr-probe.properties]
-OUTPUT_NAME = "xr-probe"
-RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"
-RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin"
-RUNTIME_OUTPUT_DIRECTORY_DEBUG = "${CMAKE_BINARY_DIR}/bin"
 
 [target.command-server-test]
 type = "executable"
@@ -235,13 +217,27 @@ set_tests_properties(command-server-test PROPERTIES TIMEOUT 60)
 # cannot be checked by eye; I signed off on that one twice while it was wrong.
 #
 # Needs no build and no game, so it costs a fraction of a second on every ctest run.
+#
+# REGISTERED EITHER WAY. This used to be wrapped in `if(Python3_Interpreter_FOUND)`, so on a
+# machine without Python the test simply CEASED TO EXIST -- ctest reported three passing targets
+# and a mandatory check had silently left the suite. A check that can disappear is not mandatory,
+# and "it passed" then means something different depending on the machine. When Python is missing
+# the target is registered as a FAILING one that says why, which is loud, honest and fixable.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
 	add_test(NAME format-strings
 		COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/check_formats.py"
 		WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-	set_tests_properties(format-strings PROPERTIES TIMEOUT 60)
+else()
+	# FAILS WITH A REASON. `cmake -E false` would fail silently, which turns "mandatory check
+	# absent" into "mandatory check red for no stated cause" -- barely an improvement. A one-line
+	# script says what is missing and how to fix it, in the ctest output where someone will read it.
+	file(WRITE "${CMAKE_BINARY_DIR}/format_strings_no_python.cmake"
+		"message(FATAL_ERROR \\"format-strings needs a Python 3 interpreter and CMake found none. Install Python 3 or put it on PATH; this check is not optional -- see tools/check_formats.py.\\")\\n")
+	add_test(NAME format-strings
+		COMMAND ${CMAKE_COMMAND} -P "${CMAKE_BINARY_DIR}/format_strings_no_python.cmake")
 endif()
+set_tests_properties(format-strings PROPERTIES TIMEOUT 60)
 """
 
 [target.command-server-test.properties]

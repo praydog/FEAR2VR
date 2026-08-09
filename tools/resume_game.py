@@ -25,18 +25,29 @@ within the world" -- which is why it appeared to do nothing at the menu.
 ONCE A WORLD IS LOADED, SYNTHETIC INPUT STARTS WORKING. The load screen's "press to continue" is consumed by
 the game rather than by Scaleform, so a synthetic Space through the same device array does dismiss it.
 
+HOW IT STARTS THE GAME
+----------------------
+Through `injector.exe --launch`, which gives the game a 4 GB address space, NOT through
+`steam://rungameid`. The shipped exe genuinely refuses a direct launch -- SteamStub checks its parent
+process -- but the conclusion "so ask Steam to launch it" is wrong: Steam's own launch produces a 2 GB
+session, and do_launch's "NO SILENT FALLBACK" branch in injector/Injector.cpp refuses to fall back to it because that is "the 2 GB configuration that
+causes the crashes this exists to prevent". This script used to do exactly what the injector will not,
+which meant every cold `ctest` start ran the configuration the LAA launcher exists to avoid. Steam must
+still be RUNNING, because the game is parented to it; it is simply never asked to launch anything.
+
 Idempotent: run it any time. If the game is already in-world it verifies and exits.
 """
 
 import argparse
+import ctypes
 import json
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from ctypes import wintypes
 
-STEAM_APPID = 16450  # F.E.A.R. 2: Project Origin
 VK_SPACE = 32
 
 
@@ -52,17 +63,95 @@ def try_get(port, path):
         return None
 
 
-def game_pid():
-    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq FEAR2.exe", "/FO", "CSV", "/NH"],
-                         capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        parts = [p.strip('"') for p in line.split('","')]
-        if parts and parts[0].lower() == "fear2.exe":
-            try:
-                return int(parts[1])
-            except (IndexError, ValueError):
-                pass
+# ---- FINDING PROCESSES WITHOUT SPAWNING ONE --------------------------------------------------
+#
+# These used to shell out to tasklist.exe, once per poll, twice a second, for up to three minutes.
+# That is thousands of process creations for a question the OS answers from a snapshot, and under
+# that churn process creation itself starts failing: tasklist began dying with 0xc0000142
+# (STATUS_DLL_INIT_FAILED) and each failure raised its own MODAL ERROR DIALOG, so a stalled poll
+# loop papered the desktop with them faster than they could be dismissed. A poll must not be able
+# to do that.
+#
+# CreateToolhelp32Snapshot is the same primitive the injector and the fixture runner already use
+# (fixture_test_runner.cpp find_pid), it costs no process, and it lets one pass answer for several
+# image names at once.
+TH32CS_SNAPPROCESS = 0x00000002
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260)]
+
+
+def pid_of(names):
+    """First pid whose image name matches any of `names` (case-insensitive), or None.
+
+    `names` is ordered and the order is load-bearing for the game: when both the LAA copy and a
+    plain Steam-launched instance exist, the caller wants the COPY, because that is the session
+    with the 4 GB address space. Same precedence the injector applies in find_game_pid.
+    """
+    wanted = [n.lower() for n in names]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    # DECLARE THE SIGNATURES. ctypes defaults every return type to c_int, which is 32 bits, and a
+    # HANDLE on 64-bit Python is 64 -- so an undeclared CreateToolhelp32Snapshot silently TRUNCATES
+    # its handle, and the Process32FirstW and CloseHandle that follow are then handed something
+    # that is not the snapshot. It fails as "no processes found" rather than as an error, which is
+    # indistinguishable here from "the game is not running".
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+
+    if snap == INVALID_HANDLE_VALUE or snap is None:
+        return None
+
+    found = {}
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            image = entry.szExeFile.lower()
+            if image in wanted and image not in found:
+                found[image] = entry.th32ProcessID
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+
+    for name in wanted:
+        if name in found:
+            return found[name]
     return None
+
+
+# THE 4 GB SESSION IS NOT CALLED FEAR2.exe. `injector.exe --launch` runs the game from a
+# Large-Address-Aware COPY named FEAR2_laa.exe (Injector.cpp kCopySuffix), so a lookup for
+# FEAR2.exe alone does not see the session the launcher just started. That mismatch is not
+# hypothetical: it made this script poll for three minutes and report "the game did not appear"
+# while the game was on screen, and the fixture then never sent Menu.StartCheckpoint. The mod
+# itself has always known better -- sdk::Modules resolves the main image by handle rather than by
+# name for exactly this reason (Modules.cpp:81-86).
+GAME_IMAGES = ("FEAR2_laa.exe", "FEAR2.exe")
+
+
+def game_pid():
+    return pid_of(GAME_IMAGES)
 
 
 def game_running():
@@ -187,85 +276,218 @@ def steam_exe():
         return None
 
 
-def steam_thinks_game_runs():
-    """Steam's own idea of what is running, which survives a crash and blocks every relaunch.
+def steam_running():
+    return pid_of(("steam.exe",)) is not None
 
-    A hard kill -- a crash, a taskkill, a runtime faulting the process -- leaves RunningAppID set to
-    our appid with no process behind it. `steam://rungameid` is then a silent no-op FOREVER: Steam
-    believes the game is already up, so it does nothing and reports nothing. That cost this project
-    three consecutive 200-second launch timeouts before anyone thought to look at the registry.
+
+def ensure_steam(wait_s=60):
+    """Steam must be RUNNING, but it is never asked to start the game.
+
+    `launch_with_laa` parents the game to steam.exe via PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
+    (Injector.cpp:544-548) -- without that parent the SteamStub wrapper reports "Application load
+    error 5:0000065434", because it checks who started it. So the client has to be up; it just does
+    not have to launch anything.
+
+    NOTE WHAT IS NO LONGER HERE: the whole stale-RunningAppID dance. A hard kill used to leave
+    Steam believing the game was still running, which made `steam://rungameid` a silent no-op
+    FOREVER and cost this project three consecutive 200-second launch timeouts before anyone
+    thought to look at the registry. The only fix was to restart Steam. We no longer ask Steam to
+    launch anything, so that state cannot block us and the restart is gone with it.
     """
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
-            return int(winreg.QueryValueEx(k, "RunningAppID")[0]) == STEAM_APPID
-    except Exception:
-        return False
+    if steam_running():
+        return True
 
-
-def restart_steam(wait_s=60):
-    """The only reliable way to clear it: Steam caches the state in memory, so poking the registry
-    does nothing. -shutdown exits cleanly and resets RunningAppID to 0 on the way out."""
     exe = steam_exe()
 
     if exe is None:
+        print("[resume] Steam is not running and its path is not in the registry")
         return False
 
-    print("[resume] Steam still thinks FEAR2 is running -- restarting Steam to clear it")
-    subprocess.run([exe, "-shutdown"], check=False)
-    deadline = time.time() + wait_s
-
-    while time.time() < deadline:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True).stdout
-        if "steam.exe" not in out:
-            break
-        time.sleep(1)
-
+    print("[resume] Steam is not running -- starting it (the game is parented to it)")
     subprocess.Popen([exe], close_fds=True)
     deadline = time.time() + wait_s
 
     while time.time() < deadline:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steamwebhelper.exe", "/FO", "CSV",
-                              "/NH"], capture_output=True, text=True).stdout
-        if "steamwebhelper.exe" in out:
-            time.sleep(8)  # the client is up but not yet answering rungameid
+        if steam_running():
+            time.sleep(5)  # the process exists a moment before it can parent anything
             return True
         time.sleep(1)
 
     return False
 
 
-def launch_game(wait_s):
-    # Through Steam, not the exe: the on-disk binary is CEG/SteamStub-wrapped and refuses a direct launch.
-    if steam_thinks_game_runs():
-        restart_steam()
+def launch_game(injector, wait_s):
+    """Through the INJECTOR's own launcher, never `steam://rungameid`.
 
-    for attempt in range(2):
-        subprocess.run(["cmd", "/c", "start", "", "steam://rungameid/%d" % STEAM_APPID], check=False)
-        deadline = time.time() + wait_s
+    The shipped FEAR2.exe genuinely refuses a direct launch -- it is CEG/SteamStub-wrapped and the
+    stub checks its parent process. The WRONG conclusion drawn from that true fact, and what this
+    function used to do, is "therefore ask Steam to launch it". Steam's own launch produces a 2 GB
+    address space, and `injector.exe --launch` exists precisely to avoid that: it copies the exe,
+    sets the Large-Address-Aware bit on the COPY, and starts it with steam.exe as the parent, so
+    the stub is satisfied and the game gets 4 GB. do_launch's "NO SILENT FALLBACK" branch refuses to fall back to
+    Steam for exactly this reason -- "the 2 GB configuration that causes the crashes this exists to
+    prevent" -- and this script was quietly doing the thing the injector will not do, on every
+    cold ctest start.
 
-        while time.time() < deadline:
-            if game_running():
-                return True
-            time.sleep(0.5)
+    --no-host because a test run must not wake an OpenXR runtime. Loading one starts that vendor's
+    services and can raise a firewall prompt, and a plain `ctest` should stay free of side effects
+    on someone else's machine. A human who wants the host runs `injector.exe --launch` without
+    this flag.
 
-        # A launch that produced no process at all is the stale-state signature rather than a slow
-        # disk, so it is worth one Steam restart before giving up on the whole loop.
-        if attempt == 0 and steam_thinks_game_runs() and not restart_steam():
-            break
+    --launch also INJECTS on success, so a caller must not then inject again.
+    """
+    if not ensure_steam():
+        return False
+
+    r = subprocess.run([injector, "--launch", "--no-host", "--wait", str(wait_s)],
+                       capture_output=True, text=True)
+
+    # The injector's own diagnosis is the useful part when this fails -- it names whether the exe
+    # was found, whether Steam could be opened for parenting, and whether gameclient.dll came up.
+    # The Steam path printed NOTHING on failure, which is what made those timeouts so expensive.
+    for line in (r.stdout or "").splitlines():
+        if line.strip():
+            print("[resume]   %s" % line.rstrip())
+
+    if r.returncode != 0:
+        return False
+
+    deadline = time.time() + wait_s
+
+    while time.time() < deadline:
+        if game_running():
+            return True
+        time.sleep(0.5)
 
     return False
 
 
-def inject(injector, wait_s, port):
-    subprocess.run([injector, "--inject"], capture_output=True, check=False)
+def wait_for_ipc(port, wait_s):
     deadline = time.time() + wait_s
     while time.time() < deadline:
         if try_get(port, "/health") is not None:
             return True
         time.sleep(0.5)
     return False
+
+
+def inject(injector, wait_s, port):
+    subprocess.run([injector, "--inject"], capture_output=True, check=False)
+    return wait_for_ipc(port, wait_s)
+
+
+def wait_for_presents(port, min_presenting_s=3.0, wait_s=120):
+    """Wait until the renderer has been CONTINUOUSLY presenting for `min_presenting_s`.
+
+    WHY A WINDOW IS NOT ENOUGH, which is the whole bug. `injector.exe --launch` produces a visible
+    top-level window about a SECOND after the process is created, so every window-based wait in
+    this script returned immediately and the old code queued Menu.StartCheckpoint at once. Under
+    the previous Steam launch the extra startup latency hid this completely -- the delay was
+    ACCIDENTAL, not designed, and it vanished the moment the launcher got faster.
+
+    WHAT IS ACTUALLY OBSERVED, and what is not. At a 0s settle the command was queued and
+    run_ui_command reported it still unconsumed 60 seconds later. That is the observation. The
+    tempting explanation -- "it was queued before the engine presented, and ConsoleRunner drains
+    on the present callback" -- does NOT survive arithmetic: presents begin ~13-15s in, so a
+    command queued at 0.3s should have been drained long inside that 60s window. Something else
+    was true of that run (the process may not have survived; the very first failure of this kind
+    took a crash in gameclient with it), and process liveness and rh_frames were NOT sampled
+    across the 60s, so the mechanism is genuinely unknown. Do not repeat the plausible story as
+    if it were established -- if this matters to you, instrument it rather than inherit it.
+
+    `rh_frames` is RenderHook's count of presents observed since injection. Unlike /health's
+    `frame_ticks` (CClientMgr::Update, which does not tick at the menu at all) it advances while
+    the front end is up, so it is the one counter here that separates "the engine is running" from
+    "a window exists".
+
+    THE FLOOR, MEASURED. Five cold launches, dispatching once at each threshold:
+        0s -> FAIL: queued, never consumed in 60s   (0s is degenerate -- it accepts the first
+                                                     sample without ever observing an INCREASE)
+        2s -> loaded, 22s total
+        3s -> loaded, 23s total (twice)
+        5s -> loaded, 25s total
+    3s is the default: above the smallest value that worked, repeated, and one second is a cheap
+    margin. Note the settle is a small tail on the real cost -- the engine takes ~13-15s to reach
+    its first present, and that part is irreducible from here.
+
+    This is still a proxy. Presents advancing does not prove the Scaleform front end has finished
+    building itself, and nothing this mod exposes today does; a real front-end readiness
+    diagnostic would replace this function outright.
+    """
+    deadline = time.time() + wait_s
+    rising_since = None
+    last = -1
+
+    while time.time() < deadline:
+        sp = try_get(port, "/sdk/shader-params") or {}
+        now = sp.get("rh_frames")
+
+        if now is None:
+            time.sleep(0.5)
+            continue
+
+        if now > last:
+            if rising_since is None:
+                rising_since = time.time()
+        else:
+            rising_since = None  # stalled: restart the settle rather than counting a freeze
+
+        last = now
+
+        if rising_since is not None and (time.time() - rising_since) >= min_presenting_s:
+            return True
+
+        time.sleep(0.5)
+
+    return False
+
+
+def run_ui_command(port, cmd, wait_s=60):
+    """Queue a UI command and PROVE the engine consumed it, before anything times out on it.
+
+    /console/run reports enough to separate two failures that look identical from outside and have
+    OPPOSITE fixes:
+      * queued but never CONSUMED -- the runner is not draining, so the engine is not presenting;
+        waiting is the answer.
+      * consumed and RAN, but nothing happened -- it was dispatched into a front end that was not
+        ready; waiting longer will not help, re-issuing might.
+    Collapsing both into "the world never loaded" is what sent the last investigation chasing
+    window focus for an hour.
+
+    `cmd=` with an empty value is a safe read-only probe: ConsoleRunner::queue rejects an empty
+    command line (ConsoleRunner.cpp:50-53) and queues nothing.
+
+    NOTE: `callback_registered` is deliberately NOT used as a readiness gate. ConsoleRunner sets it
+    as soon as it attaches its present callback at init, specifically so commands drain both at the
+    menu and in play -- so it is true at the same early instant that caused this bug. It is checked
+    only to report a runner that never attached at all.
+
+    Returns (ok, detail). `ok` means CONSUMED AND RAN. What the command then achieved is the
+    caller's business.
+    """
+    state = try_get(port, "/console/run?cmd=") or {}
+
+    if not state.get("callback_registered"):
+        return False, "the console runner never attached to the frame boundary"
+
+    executed_before = state.get("executed") or 0
+
+    r = try_get(port, "/console/run?cmd=%s" % cmd)
+    if r is None or not r.get("ok"):
+        return False, "could not queue %s: %s" % (cmd, r)
+
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(0.5)
+        state = try_get(port, "/console/run?cmd=") or {}
+        if (state.get("executed") or 0) > executed_before:
+            if state.get("last_command") == cmd and state.get("last_outcome") == "ran":
+                return True, None
+            return False, "%s was consumed but the engine reported last_command=%r outcome=%r" % (
+                cmd, state.get("last_command"), state.get("last_outcome"))
+
+    return False, ("%s was queued and never consumed in %ds -- the engine is not presenting, so it "
+                   "was issued before the front end came up" % (cmd, wait_s))
 
 
 def is_ready(sp):
@@ -301,19 +523,31 @@ def main():
     ap.add_argument("--port", type=int, default=8798)
     ap.add_argument("--launch-timeout", type=int, default=180)
     ap.add_argument("--load-timeout", type=int, default=120)
+    # How long the renderer must have been continuously presenting before the front end is driven.
+    # A knob rather than a constant because it stands in for a readiness signal the mod does not
+    # expose yet, and because that is how the default stopped being a guess -- see
+    # wait_for_presents() for the five cold launches that fixed it at 3s.
+    ap.add_argument("--present-settle", type=float, default=3.0)
     ap.add_argument("--foreground", action="store_true",
                     help="activate the game window after launching (see foreground(); off by "
                          "default because it steals focus from whatever you are using)")
     args = ap.parse_args()
 
+    launched = False
+
     if not game_running():
-        print("[resume] FEAR2 is not running -- launching through Steam")
-        if not launch_game(args.launch_timeout):
+        print("[resume] FEAR2 is not running -- launching with a 4 GB address space "
+              "(injector --launch)")
+        if not launch_game(args.injector, args.launch_timeout):
             print("[resume] FAILED: the game did not appear")
             return 1
-        # WAIT FOR THE WINDOW, not for a fixed interval. See has_visible_window() for why this
-        # cannot simply be dropped: injecting before the SteamStub decrypts .text latches every
-        # pattern miss permanently.
+        # THE INJECTOR ALREADY WAITED FOR THIS, and for gameclient.dll, before it injected -- see
+        # do_launch's two-signal gate, which now shares one deadline with --wait rather than
+        # keeping a fixed budget of its own. So on the cold path this normally returns immediately.
+        # It stays because it is the script's own guarantee that the engine is up before anything
+        # below tries to drive its menu -- and note that do_launch REFUSES to inject when the gate
+        # times out (it used to inject anyway), so a launch that got that far already failed above
+        # and we never reach here with an unready game.
         print("[resume] waiting for the engine's window")
         if not wait_for_window(args.launch_timeout):
             print("[resume] FAILED: the game never showed a window")
@@ -321,12 +555,23 @@ def main():
         # OPT-IN ONLY. See foreground() for why this is not automatic.
         if args.foreground and foreground(game_pid()):
             print("[resume] brought the game window forward")
+        launched = True
 
     if try_get(args.port, "/health") is None:
-        print("[resume] injecting")
-        if not inject(args.injector, 60, args.port):
-            print("[resume] FAILED: IPC never answered after injection")
-            return 1
+        if launched:
+            # `injector --launch` ALREADY INJECTED. Running `--inject` again would be a second
+            # attempt against a resident DLL, which the injector correctly refuses -- and that
+            # refusal reads like a failure to anyone watching a cold start. IPC simply has not
+            # come up yet, so wait for the mod that is already in there.
+            print("[resume] waiting for IPC (the launch already injected)")
+            if not wait_for_ipc(args.port, 60):
+                print("[resume] FAILED: IPC never answered after the launch injected")
+                return 1
+        else:
+            print("[resume] injecting")
+            if not inject(args.injector, 60, args.port):
+                print("[resume] FAILED: IPC never answered after injection")
+                return 1
 
     sp = try_get(args.port, "/sdk/shader-params") or {}
     if is_ready(sp):
@@ -363,28 +608,54 @@ def main():
             return 1
 
     if not sp.get("ws_world_loaded"):
-        print("[resume] at the menu -- invoking Menu.StartCheckpoint")
-        r = try_get(args.port, "/console/run?cmd=Menu.StartCheckpoint")
-        if r is None or not r.get("ok"):
-            print("[resume] FAILED: could not queue the UI command: %s" % r)
+        # WAIT FOR THE ENGINE TO BE PRESENTING before touching the front end. See
+        # wait_for_presents() -- a visible window arrives ~1s after the LAA launch and means
+        # nothing about whether there is a menu to drive.
+        settle_started = time.time()
+        if not wait_for_presents(args.port, min_presenting_s=args.present_settle):
+            print("[resume] FAILED: the renderer never started presenting -- the engine is not "
+                  "running frames, so there is no front end to drive")
             return 1
+        print("[resume] renderer presenting, settled %.1fs (waited %.1fs)" %
+              (args.present_settle, time.time() - settle_started))
+
+        # ONE DISPATCH. An earlier version retried once when the first command was consumed and
+        # reported "ran" but no world followed, on the theory that this is the signature of a
+        # front end that was not ready. It is not: `ran` only proves the handler was INVOKED, and
+        # nothing distinguishes "invoked too early" from "invoked fine, loading is just slow" --
+        # so a retry can fire into a world that is already coming up. Until a reproduced run shows
+        # a retry is both safe and necessary, this issues the command once and fails with the
+        # evidence rather than guessing.
+        print("[resume] at the menu -- invoking Menu.StartCheckpoint")
+        ok, detail = run_ui_command(args.port, "Menu.StartCheckpoint")
+
+        if not ok:
+            print("[resume] FAILED: %s" % detail)
+            return 1
+
+        loaded = False
         deadline = time.time() + args.load_timeout
         while time.time() < deadline:
             time.sleep(0.5)
             sp = try_get(args.port, "/sdk/shader-params") or {}
             if sp.get("ws_world_loaded"):
+                loaded = True
                 break
-        else:
-            print("[resume] FAILED: the world never loaded")
-            # THE USUAL CAUSE IS FOCUS, and saying so saves the next person the investigation.
-            # The game's INITIAL load screen stalls while its window is in the background --
-            # distinct from the level load, which runs fine unfocused because FocusKeeper keeps
-            # the clock advancing. Unattended this never happens; it bites when a human alt-tabs
-            # in the seconds after launch.
-            print("[resume]   if you alt-tabbed just after launch, click the game once -- its")
-            print("[resume]   startup load screen waits for the window to be activated.")
-            print("[resume]   `--foreground` makes this script do it, at the cost of stealing focus.")
+
+        if not loaded:
+            # STATE THE EVIDENCE, because the two causes need different work and the last
+            # investigation lost an hour to guessing between them. The command was consumed and
+            # the engine said it ran -- so this is NOT a queueing or liveness problem.
+            print("[resume] FAILED: Menu.StartCheckpoint was consumed and the engine reported it "
+                  "ran, but no world loaded within %ds" % args.load_timeout)
+            print("[resume]   that leaves two candidates, and they are distinguishable by looking:")
+            print("[resume]   1. the front end was not ready for it -- raise wait_for_presents()'s")
+            print("[resume]      floor, and better, expose a real front-end readiness diagnostic;")
+            print("[resume]   2. focus -- the game's INITIAL load screen stalls while its window is")
+            print("[resume]      in the background (the level load does not; FocusKeeper covers")
+            print("[resume]      that). Click the game once, or pass --foreground.")
             return 1
+
         print("[resume] world loaded")
 
     # The load screen waits on a key. Synthetic input reaches the GAME (unlike the menu), so this works --

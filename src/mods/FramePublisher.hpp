@@ -78,6 +78,35 @@ public:
     // mapping is open; a caller must still check `sequence` for a torn read, exactly as with the head.
     const xr::HandsState* hands_state() const;
 
+    // ---- THE ONE BLOCK THAT TRAVELS THE OTHER WAY ----------------------------------------------
+    //
+    // GAME -> HOST. The mod decides a controller should buzz (a hit, a shot, a pickup) but only
+    // the host holds the XrSession and can call xrApplyHapticFeedback, so a request is QUEUED into
+    // the ring at xr::kHapticsStateOffset and fired over there. Returns immediately and never
+    // blocks; a host that is not running simply never drains it.
+    //
+    // A RING RATHER THAN A SLOT because these are events, not a rumble level. Two shots landing
+    // between two host reads must be two buzzes -- last-write-wins would silently make them one,
+    // and a dropped pulse is indistinguishable from a bug in the weapon code.
+    //
+    // `duration_ns` is an XrDuration: -1 is XR_MIN_HAPTIC_DURATION, the shortest pulse the runtime
+    // can produce, which is what a discrete event usually wants. `frequency_hz` of 0 is
+    // XR_FREQUENCY_UNSPECIFIED and lets the runtime pick. `amplitude` is CLAMPED here rather than
+    // trusted: a runtime is entitled to reject a value outside [0,1], and the split across this
+    // boundary is that the mod owns policy while the host passes values straight through.
+    //
+    // False when the section is not open or `hand` is neither xr::kHandLeft nor xr::kHandRight.
+    bool request_haptic(uint32_t hand, int64_t duration_ns, float frequency_hz, float amplitude);
+
+    // xrStopHapticFeedback instead of a pulse, for a rumble started with a long duration that has
+    // to end on an event rather than on a clock.
+    bool stop_haptic(uint32_t hand);
+
+    // The ring itself. NOT const, unlike the two blocks above: this one is ours to write, and the
+    // host is the reader. Null before the mapping is open.
+    xr::HapticsState* haptics_state();
+    uint32_t haptics_queued() const;
+
     // ---- THE RUNTIME'S FRAME CLOCK -------------------------------------------------------------
     //
     // Blocks until the host's next xrWaitFrame tick, or the timeout, whichever comes first. Called
@@ -128,6 +157,11 @@ public:
 private:
     FramePublisher() = default;
 
+    // Both public entry points are the same barrier discipline with one flag flipped, and writing
+    // it twice is how the two would eventually stop agreeing.
+    bool queue_haptic(uint32_t hand, int64_t duration_ns, float frequency_hz, float amplitude,
+                      bool stop);
+
     // The SPREAD of the interval between publishes. Mean frame rate is identical in a smooth place
     // and a juddering one; evenness is the thing never compared.
     int64_t m_prev_publish_qpc{0};
@@ -173,7 +207,7 @@ private:
     // section is one CreateFileMapping, mapped as one small control-block view plus one view per
     // frame slot and per UI slot, each sized to just that block. open() either has all of them or
     // none -- see its comment for why a partial mapping is worse than staying closed.
-    void* m_control_base{nullptr};  // header + HostState + HandsState + UiFrameHeader
+    void* m_control_base{nullptr};  // header + HostState + HandsState + HapticsState + UiFrameHeader
     void* m_frame_base[xr::kFrameSlots]{};
     void* m_ui_base[xr::kUiSlots]{};
     std::string m_error;

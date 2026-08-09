@@ -13,3 +13,4 @@ CMakeLists.txt
 !tools/xr64/CMakeLists.txt
 # reload copies made by the injector sit next to the built DLL
 fear2vr.*.dll
+*.pyc

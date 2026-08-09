@@ -28,9 +28,12 @@ FILE_MAP_READ = 0x0004
 # strides below are rounded up rather than packed tight against the header sizes -- get this wrong
 # and the payload read comes from the wrong slot instead of refusing outright.
 MAGIC = 0x32524546  # 'FER2'
+# Must match kSharedFrameVersion, and it is in the object NAME as well as the header -- see NAME.
+VERSION = 6
 HEADER_BYTES = 128
 HOST_STATE_BYTES = 64
 HANDS_STATE_BYTES = 256
+HAPTICS_STATE_BYTES = 576  # xr::HapticsState -- 64-byte head + 16 x 32-byte ring slots
 UI_HEADER_BYTES = 64
 VIEW_GRANULARITY = 64 * 1024
 
@@ -49,8 +52,13 @@ UI_MAX_BYTES = (FRAME_CAPACITY_WIDTH // 2) * (FRAME_CAPACITY_HEIGHT // 2) * 4
 SLOTS = 3
 UI_SLOTS = 2
 
-PAYLOAD_OFFSET = _align_up(HEADER_BYTES + HOST_STATE_BYTES + HANDS_STATE_BYTES + UI_HEADER_BYTES,
-                           VIEW_GRANULARITY)
+# HAPTICS_STATE_BYTES is in this sum even though it does not currently move PAYLOAD_OFFSET: the
+# control block is far below the 64 KiB granularity either way, so the rounding absorbs it. Stating
+# it anyway keeps the formula a mirror of the C++ one rather than a value that happens to agree,
+# which is what stops it silently diverging the first time a block does cross the boundary.
+PAYLOAD_OFFSET = _align_up(
+    HEADER_BYTES + HOST_STATE_BYTES + HANDS_STATE_BYTES + HAPTICS_STATE_BYTES + UI_HEADER_BYTES,
+    VIEW_GRANULARITY)
 # The STRIDE between slots, not a slot's own byte count -- kSlotStride in the C++ header. Padded up
 # so every slot boundary is still a valid MapViewOfFile offset, which is what the mod and the host
 # actually need; this tool maps the whole section in one view and only cares about getting the same
@@ -59,7 +67,11 @@ SLOT_STRIDE = _align_up(MAX_BYTES, VIEW_GRANULARITY)
 UI_PAYLOAD_OFFSET = _align_up(PAYLOAD_OFFSET + SLOTS * SLOT_STRIDE, VIEW_GRANULARITY)
 UI_SLOT_STRIDE = _align_up(UI_MAX_BYTES, VIEW_GRANULARITY)
 TOTAL_BYTES = UI_PAYLOAD_OFFSET + UI_SLOTS * UI_SLOT_STRIDE  # kSharedFrameTotalBytes: frame AND UI slots
-NAME = "Local\\fear2vr_frame"
+
+# VERSION-SUFFIXED, matching xr::kSharedFrameName. A bare name let a reloaded mod re-stamp the
+# section a connected reader was already using; the version now lives in the object name so
+# mismatched builds cannot meet at all.
+NAME = "Local\\fear2vr_frame_v%u" % VERSION
 
 k32 = ctypes.windll.kernel32
 k32.OpenFileMappingW.restype = wt.HANDLE
@@ -85,6 +97,11 @@ def read_frame():
     magic, version = struct.unpack_from("<II", hdr, 16)
     if magic != MAGIC:
         raise SystemExit("bad magic 0x%08X -- wrong mapping or a schema change" % magic)
+    # ASSERTED, not merely unpacked. The name carries the version now, so reaching a mismatched
+    # section should be impossible -- which is exactly why a silent mismatch here would be baffling
+    # rather than obvious. Restated offsets are only correct for the version they were written for.
+    if version != VERSION:
+        raise SystemExit("shared frame is version %u, this tool understands %u" % (version, VERSION))
 
     seq, layout = struct.unpack_from("<II", hdr, 24)
     width, height, pitch, nbytes = struct.unpack_from("<IIII", hdr, 32)
