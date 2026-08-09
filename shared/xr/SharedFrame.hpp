@@ -27,8 +27,11 @@ constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // (see kViewGranularity below) instead of one view over the whole section -- both the strides and
 // every offset past the control block move, so a host and mod built against different versions of
 // this file must refuse each other rather than read pixels at the wrong address.
-// 6 adds the HapticsState block (game -> host), which moves kPayloadOffset and therefore every
-// pixel slot.
+// 6 adds the HapticsState block (game -> host). It does NOT move kPayloadOffset or the pixel
+// slots: at 576 bytes the whole control block still sits far inside the 64 KiB view granularity,
+// so the rounding absorbs it. What it DOES move is kUiStateOffset, because HapticsState is
+// inserted ahead of the UI header -- which is precisely the mismatch below, a v5 reader taking
+// haptic bytes for its UiFrameHeader.
 //
 // THE VERSION IS IN THE OBJECT NAMES, and a field check alone was not enough. CreateFileMapping
 // with a name RETURNS THE EXISTING SECTION, so a reloaded mod re-stamped `version` in the section

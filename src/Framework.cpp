@@ -41,6 +41,7 @@
 #include "mods/FramePublisher.hpp"
 #include "mods/ResourceWatch.hpp"
 #include "mods/FireRedirect.hpp"
+#include "mods/GunfireHaptics.hpp"
 #include "mods/ViewmodelDecouple.hpp"
 #include "mods/TurnController.hpp"
 #include "ExceptionHandler.hpp"
@@ -10647,6 +10648,10 @@ const char* const kArmSequence[] = {
     "/xr/fire-muzzle?on=1",
     "/xr/accuracy?scale=0.25",
     "/render/ui?on=1",
+    // A pulse in the hand on every shot. Last of the gameplay steps because it is the only one
+    // with a PHYSICAL effect: if anything above fails and the sequence is abandoned, nothing has
+    // started vibrating a controller attached to a session that never armed.
+    "/vr/gunfire-haptics?on=1",
     "/xr/capture?hide_body=1",
     "/xr/enable?on=1",
     "/xr/capture?recenter=1",
@@ -10664,8 +10669,15 @@ bool arm_dispatch(const char* target) {
         g_handlers.xr(t);
         return true;
     }
+    // BEFORE the generic /vr/ families below would be reached, and matched on the full prefix:
+    // /vr/viewmodel and /vr/gunfire-haptics share a namespace and nothing else, so each names its
+    // own handler rather than letting a shorter prefix swallow a longer route.
     if (t.rfind("/vr/viewmodel", 0) == 0 && g_handlers.viewmodel) {
         g_handlers.viewmodel(t);
+        return true;
+    }
+    if (t.rfind("/vr/gunfire-haptics", 0) == 0 && g_handlers.gunfire_haptics) {
+        g_handlers.gunfire_haptics(t);
         return true;
     }
     if (t.rfind("/render/", 0) == 0 && g_handlers.render) {
@@ -10753,6 +10765,20 @@ bool Framework::initialize() {
     Mods::get().add(&RenderTimeline::get());
     Mods::get().add(&UICapture::get());
     Mods::get().add(&MenuInput::get());
+    // BEFORE FrameCapture, and the order is load-bearing rather than tidy. Mods::on_shutdown
+    // runs in REGISTRATION order, and FrameCapture's shutdown closes the shared mapping
+    // (release_surfaces -> FramePublisher::close). This mod's shutdown queues haptic STOPS into
+    // that mapping, so registered after FrameCapture it would find the publisher already gone
+    // and silently fail to silence a pulse still playing in the host -- leaving the controller
+    // buzzing with the mod unmapped and nothing left that could stop it.
+    //
+    // Nothing pulls the other way: on_initialize installs no hook and depends on no mod, and
+    // on_frame only reads a counter a detour maintains, so running earlier in the frame costs
+    // at most one frame of staleness.
+    //
+    // Default OFF: it is a physical side effect, and nothing should start vibrating a
+    // controller because a mod happened to load.
+    Mods::get().add(&GunfireHaptics::get());
     Mods::get().add(&FrameCapture::get());
     Mods::get().add(&ResourceWatch::get());
     Mods::get().add(&FireRedirect::get());
@@ -11748,6 +11774,45 @@ bool Framework::initialize() {
               .f("pitch_deg", sdk::PlayerMgr::aim_pitch(0).value_or(0.0f) * 57.2957795, 4)
               .u("pitch_completed", static_cast<size_t>(o.pitch_completed))
               .u("pitch_abandoned", static_cast<size_t>(o.pitch_abandoned));
+        }
+        return out;
+    };
+
+    // GUNFIRE FEEDBACK, the haptic ring's first real consumer. `on=1` arms it; the pulse shape is
+    // tunable so a wearer can find something that reads as a shot rather than a rumble without a
+    // rebuild. `shots` and `pulses` differ exactly when the frame publisher is closed, which is
+    // how a caller tells "the gun is not firing" from "nothing is listening"; `dropped` counts
+    // shots a single frame produced beyond what the ring can hold.
+    handlers.gunfire_haptics = [](const std::string& request_target) {
+        const WebApiQuery q = webapi_parse_query(request_target);
+        auto& gh = GunfireHaptics::get();
+
+        if (q.find("hand") != q.end()) {
+            gh.set_hand(webapi_query_string(q, "hand") == "left" ? xr::kHandLeft
+                                                                 : xr::kHandRight);
+        }
+        if (q.find("ms") != q.end() || q.find("amp") != q.end()) {
+            gh.set_pulse(static_cast<int32_t>(webapi_query_int(q, "ms", gh.pulse_ms())),
+                         static_cast<float>(webapi_query_double(q, "amp", gh.amplitude())));
+        }
+        // ARMED LAST, so a single call that both configures and enables cannot fire one pulse with
+        // the old shape before the new one lands.
+        if (q.find("on") != q.end()) {
+            gh.set_enabled(webapi_query_int(q, "on", 1) != 0);
+        }
+
+        std::string out;
+        {
+            JsonFields jf(out);
+            jf.b("ok", true)
+              .b("enabled", gh.enabled())
+              .s("hand", gh.hand() == xr::kHandLeft ? "left" : "right")
+              .i("ms", gh.pulse_ms())
+              .f("amp", gh.amplitude(), 3)
+              .u("shots", static_cast<size_t>(gh.shots_seen()))
+              .u("pulses", static_cast<size_t>(gh.pulses_queued()))
+              .u("dropped", static_cast<size_t>(gh.shots_dropped()))
+              .b("publisher_open", FramePublisher::get().active());
         }
         return out;
     };

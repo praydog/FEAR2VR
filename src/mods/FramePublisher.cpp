@@ -386,16 +386,34 @@ bool FramePublisher::queue_haptic(uint32_t hand, int64_t duration_ns, float freq
         return false;
     }
 
+    // ---- ONE PRODUCER AT A TIME, ENFORCED --------------------------------------------------
+    //
+    // The ring's discipline below assumes a single producer: the ticket is claimed as
+    // `write_index + 1` with no compare-exchange, because "the game" was originally the only
+    // caller. That stopped being true the moment there were two entry points -- /vr/haptic runs
+    // on the IPC thread and the gunfire feedback runs on the game thread -- and two producers
+    // computing `write_index + 1` claim the SAME ticket, so one silently overwrites the other's
+    // slot and the host fires one pulse where two were asked for.
+    //
+    // A LOCK RATHER THAN AN INTERLOCKED CLAIM. Making the claim atomic is easy; making the
+    // PUBLISH correct afterwards is not, because write_index may only advance once every earlier
+    // slot is committed, which needs a second cursor and a retry loop. This path runs a handful of
+    // times a second at most, so serialising the whole claim-to-publish keeps the single-producer
+    // invariant TRUE BY CONSTRUCTION instead of defending against its absence. It is a plain
+    // uncontended lock with no allocation and no I/O inside it -- the game thread's worst case is
+    // waiting on about twenty stores.
+    std::lock_guard<std::mutex> guard(m_haptic_lock);
+
     // TICKETS ARE 1-BASED: the Nth pulse ever queued is ticket N and lives in slot (N-1) mod the
-    // ring. Single producer -- everything reaching here is the game -- so the next ticket is one
-    // past the newest published index and needs no compare-exchange to claim.
+    // ring. Single producer -- guaranteed by the lock above -- so the next ticket is one past the
+    // newest published index and needs no compare-exchange to claim.
     const uint32_t ticket = haptics->write_index + 1u;
     xr::HapticPulse* pulse = &haptics->slot[(ticket - 1u) % xr::kHapticSlots];
 
     // NO ODD/EVEN SEQUENCE HERE, unlike every other block in the mapping. A monotonic index
     // published after its payload already is one, and the per-slot commit stamp covers what the
     // index cannot: the host can be halfway through copying this very slot when we lap the ring,
-    // and a block-wide sequence would have gone even again long before that mattered. Cleared
+    // and a block-wide sequence would have gone even again long before that mattered. Invalidated
     // first, stamped last -- a reader that does not see its own ticket on BOTH sides of its copy
     // discards the entry rather than firing half of the old pulse and half of this one.
     //

@@ -165,6 +165,15 @@ void handle_client(SOCKET c) {
         return;
     }
 
+    if (path.rfind("/vr/gunfire-haptics", 0) == 0) {
+        if (!g_handlers.gunfire_haptics) {
+            send_response(c, 404, "{\"ok\":false,\"error\":\"no gunfire haptics handler registered\"}");
+            return;
+        }
+        send_response(c, 200, g_handlers.gunfire_haptics(path));
+        return;
+    }
+
     if (path.rfind("/vr/haptic", 0) == 0) {
         if (!g_handlers.haptic) {
             send_response(c, 404, "{\"ok\":false,\"error\":\"no haptic handler registered\"}");

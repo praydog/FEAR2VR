@@ -226,7 +226,10 @@ struct Handlers {
     ViewmodelFn viewmodel{};         // optional; /vr/viewmodel 404s without it -- MUTATES the rig
     TurnFn turn{};                   // optional; /vr/turn 404s without it -- MUTATES the heading
     ComfortFn comfort{};             // optional; /vr/comfort 404s without it -- MUTATES engine cvars
-    HapticFn haptic{};               // optional; /vr/haptic 404s without it -- queues a host pulse
+    HapticFn haptic{};
+    // Gunfire feedback: arms the per-shot pulse and reports its counters. Optional like the rest;
+    // /vr/gunfire-haptics 404s without it.
+    HapticFn gunfire_haptics{};
     XrFn xr{};                       // optional; /xr/* 404s without it -- MUTATES the simulated runtime
     SpawnsFn spawns{};               // optional; /sdk/spawns 404s without it -- read-only
     WeaponsFn weapons{};             // optional; /sdk/weapons 404s without it -- read-only

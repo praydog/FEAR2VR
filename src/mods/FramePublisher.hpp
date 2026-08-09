@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 #include "xr/SharedFrame.hpp"
@@ -161,6 +162,12 @@ private:
     // it twice is how the two would eventually stop agreeing.
     bool queue_haptic(uint32_t hand, int64_t duration_ns, float frequency_hz, float amplitude,
                       bool stop);
+
+    // SERIALISES THE HAPTIC RING'S PRODUCERS. The ring is single-producer by construction and
+    // there are now two callers on different threads -- /vr/haptic on the IPC thread and the
+    // gunfire feedback on the game thread -- which would otherwise claim the same ticket. See
+    // queue_haptic for why this is a lock and not an interlocked claim.
+    std::mutex m_haptic_lock;
 
     // The SPREAD of the interval between publishes. Mean frame rate is identical in a smooth place
     // and a juddering one; evenness is the thing never compared.
