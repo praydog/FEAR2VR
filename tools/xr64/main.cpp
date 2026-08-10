@@ -42,6 +42,7 @@
 // returns a layer to submit, and one shutdown call. See ui/SettingsUi.hpp for why it owns its
 // own OpenXR swapchain rather than reusing ui_swapchain below.
 #include "ui/SettingsUi.hpp"
+#include <chrono>
 
 namespace {
 
@@ -2577,9 +2578,27 @@ int main(int argc, char** argv) {
         // The right answer is to show the last picture again. A swapchain whose image has been
         // released may be submitted on later frames without re-acquiring, and the runtime uses that
         // last released image -- so holding a frame costs nothing and is what a compositor expects.
-        // No frame yet -- paint the placeholder rather than leaving uninitialised memory on show.
-        if (fs.shouldRender != XR_FALSE && !have_frame && screen[0] != XR_NULL_HANDLE &&
-            screen_w != 0 && screen_h != 0) {
+        // ---- ONLY WHEN THERE IS NO GAME, NOT ON A MISSED FRAME --------------------------------
+        //
+        // `have_frame` is per-frame, and a frame the mod has not published yet is NORMAL -- the
+        // host is meant to hold the last picture (that is what `held` counts). Painting the
+        // placeholder on every such frame made the logo and the game alternate, flickering badly.
+        //
+        // So this is a state, not a fallback: it runs until the FIRST frame ever arrives, and again
+        // only after a long silence, which means the game has gone away rather than skipped a beat.
+        static bool ever_had_frame = false;
+        static auto last_frame_at = std::chrono::steady_clock::now();
+        if (have_frame) {
+            ever_had_frame = true;
+            last_frame_at = std::chrono::steady_clock::now();
+        }
+        const auto silent_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - last_frame_at)
+                                   .count();
+        const bool no_game = !ever_had_frame || silent_ms > 2000;
+
+        if (fs.shouldRender != XR_FALSE && no_game && !have_frame &&
+            screen[0] != XR_NULL_HANDLE && screen_w != 0 && screen_h != 0) {
             static std::vector<uint8_t> ph;
             static uint32_t ph_w = 0, ph_h = 0;
             if (ph_w != screen_w || ph_h != screen_h) {
