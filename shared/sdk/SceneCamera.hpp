@@ -593,6 +593,12 @@ public:
     // nullopt when the exe is not mapped or the read faulted; a zero pair before any target has been bound.
     static std::optional<std::array<int32_t, 2>> current_target_size();
 
+    // Writes the pair above. The pass has no viewport argument -- it multiplies a fractional rect by
+    // these dwords -- so this is the only way to give a pass a viewport that differs from whatever
+    // the last target bind recorded. Written IN PHASE (inside the pass, before the original runs);
+    // the engine rebuilds the descriptor on every bind, so a write from anywhere else is discarded.
+    static bool set_current_target_size(int32_t w, int32_t h);
+
     // ---- THE ASYMMETRIC FRUSTUM, WHICH IS WHAT AN HMD ACTUALLY NEEDS ------------------
     //
     // A headset's two eyes do not look through symmetric frustums: each is off-centre, in opposite

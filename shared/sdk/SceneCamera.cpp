@@ -1081,6 +1081,19 @@ std::optional<std::array<int32_t, 2>> SceneCamera::current_target_size() {
     return std::array<int32_t, 2>{*w, *h};
 }
 
+bool SceneCamera::set_current_target_size(int32_t w, int32_t h) {
+    const auto at = exe_at(kStateOffset);
+    if (at == 0 || w <= 0 || h <= 0) {
+        return false;
+    }
+    // The pass derives its pixel viewport by multiplying a fractional rect by THESE dwords
+    // (LTRenderer_NormalizedRectToPixels), so writing them is how a viewport is changed for a pass
+    // that takes no viewport argument. Same in-phase discipline as set_pass_offset: the value is
+    // rebuilt on every target bind, so it must be written inside the pass, before the original.
+    return mem::write<int32_t>(at + kTargetSizeOffset, w) &&
+           mem::write<int32_t>(at + kTargetSizeOffset + 4, h);
+}
+
 std::optional<uint32_t> SceneCamera::state() {
     const auto at = exe_at(kStateOffset);
     if (at == 0) {

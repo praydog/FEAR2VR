@@ -12,6 +12,7 @@
 #include "HudPassHook.hpp"
 #include "RenderTimeline.hpp"
 #include "sdk/Modules.hpp"
+#include "sdk/SceneCamera.hpp"
 #include "sdk/Render.hpp"
 
 namespace {
@@ -544,9 +545,29 @@ void UICapture::widen_viewport_to_target(IDirect3DDevice9* dev) {
         return;
     }
 
-    // The target's size is asked for once and kept: this runs on every interface pass, and there
-    // are thousands of them per menu, so a COM round trip per pass would be paid forever to learn
-    // a number that only changes when the device does.
+    // ---- THE PRE-WORLD MENU IS LAID OUT TO THE TARGET AND CLIPPED BY THE VIEWPORT --------------
+    //
+    // Measured at the initial menu, in one line:
+    //
+    //     viewport 2560x1440 at 0,0 | source surface 4320x2224 | bracket 2560x1440
+    //
+    // The interface sizes itself from the RENDER TARGET, so with the buffer inflated for
+    // supersampling it lays out across 4320x2224 -- the title lands on x=2160, that buffer's
+    // centre -- while the pass viewport is still the native 2560x1440. Everything right of 2560 is
+    // cut, and the capture reads "MAIN ME" against a hard vertical edge.
+    //
+    // TWO WRONG FIXES, BOTH MEASURED:
+    //   - dev->SetViewport() here does nothing. The published extent did not move by a pixel
+    //     (bbox 0,0,759,671 before and after) because this pass takes no viewport argument: it
+    //     derives one from the engine's bound-target descriptor and overwrites whatever D3D held.
+    //   - Leaving the buffer native until a world exists fixes the menu and breaks the scene. The
+    //     engine asks for presentation parameters twice at startup and never again, and reissuing
+    //     that call at world load resets the swapchain under a stereo path already built for the
+    //     old size: the result was mono and squished.
+    //
+    // So the buffer is inflated from startup exactly as before, and the DESCRIPTOR is corrected
+    // instead -- in phase, before the original runs, which is the same discipline the HUD offset
+    // already uses because the engine rebuilds this on every target bind.
     uint32_t w = m_target_w.load(std::memory_order_relaxed);
     uint32_t h = m_target_h.load(std::memory_order_relaxed);
     if (w == 0 || h == 0) {
@@ -566,20 +587,16 @@ void UICapture::widen_viewport_to_target(IDirect3DDevice9* dev) {
         m_target_h.store(h, std::memory_order_relaxed);
     }
 
-    D3DVIEWPORT9 vp{};
-    if (FAILED(dev->GetViewport(&vp))) {
-        return;
+    const auto cur = sdk::SceneCamera::current_target_size();
+    if (cur.has_value() && (*cur)[0] == static_cast<int32_t>(w) &&
+        (*cur)[1] == static_cast<int32_t>(h)) {
+        return; // already describes the whole target
     }
-    if (vp.X == 0 && vp.Y == 0 && vp.Width == w && vp.Height == h) {
-        return; // already correct -- do not spend a call saying so
-    }
-
-    const D3DVIEWPORT9 full{0, 0, w, h, vp.MinZ, vp.MaxZ};
-    if (SUCCEEDED(dev->SetViewport(&full))) {
+    if (sdk::SceneCamera::set_current_target_size(static_cast<int32_t>(w), static_cast<int32_t>(h))) {
         const uint64_t n = m_viewport_widened.fetch_add(1, std::memory_order_relaxed);
         if (n == 0) {
-            LOGX("[uicap] pre-world interface: viewport %ux%u -> %ux%u (it draws at target size)",
-                 vp.Width, vp.Height, w, h);
+            LOGX("[uicap] pre-world interface: pass target %dx%d -> %ux%u (it draws at target size)",
+                 cur.has_value() ? (*cur)[0] : -1, cur.has_value() ? (*cur)[1] : -1, w, h);
         }
     }
 }
@@ -677,8 +694,16 @@ void UICapture::publish_layer(IDirect3DDevice9* dev) {
         const auto ow = static_cast<uint32_t>(m_width.load(std::memory_order_relaxed));
         const auto oh = static_cast<uint32_t>(m_height.load(std::memory_order_relaxed));
         D3DSURFACE_DESC bd{};
-        if (ow != 0 && oh != 0 && SUCCEEDED(back_src->GetDesc(&bd)) && ow <= bd.Width &&
-            oh <= bd.Height && (ow != bd.Width || oh != bd.Height)) {
+        //
+        // ONLY WHILE THE PASS IS STILL DRAWING SMALL. Once widen_viewport_to_target() has corrected
+        // the pass descriptor the interface covers the WHOLE buffer, and cropping to the bracket
+        // then publishes its top-left corner -- the menu arrives on the quad zoomed far in while
+        // the desktop, which sees the whole buffer, looks perfectly correct. That split between
+        // "right on screen, wrong in the headset" is the signature of cropping a source that no
+        // longer needs it.
+        const bool pass_is_full = m_viewport_widened.load(std::memory_order_relaxed) != 0;
+        if (!pass_is_full && ow != 0 && oh != 0 && SUCCEEDED(back_src->GetDesc(&bd)) &&
+            ow <= bd.Width && oh <= bd.Height && (ow != bd.Width || oh != bd.Height)) {
             src_rect = {0, 0, static_cast<LONG>(ow), static_cast<LONG>(oh)};
             src_rect_p = &src_rect;
             static std::atomic<uint32_t> said{0};

@@ -3770,6 +3770,45 @@ measured rather than feared, and it is the right way round, because a correct pi
 a supersampled one with the interface cut in half. Restoring supersampling means forcing a device
 reset at world load, which is a separate piece of work.
 
+**THE MENU IS CLIPPED BECAUSE THE PASS DESCRIBES A SMALLER TARGET THAN IT DRAWS INTO.** Measured at
+the initial menu, in one line:
+
+    viewport 2560x1440 at 0,0 | source surface 4320x2224 | bracket 2560x1440
+
+The interface sizes itself from the RENDER TARGET, so with the buffer inflated for supersampling it
+lays out across 4320x2224 -- the title lands on x=2160, that buffer's centre -- while the pass
+viewport stays native. Everything right of 2560 is cut; the capture read "MAIN ME" against a hard
+vertical edge. Same fault the in-world HUD had, arriving by a different route: HudScreenDims rewrites
+`ILTClient::GetScreenDims` and THE MENU NEVER ASKS IT.
+
+FIX: `sdk::SceneCamera::set_current_target_size()` writes the bound-target descriptor (+0x174/+0x178)
+IN PHASE from the pre-world interface pass, so the pass viewport covers the whole buffer. The engine
+rebuilds that descriptor on every target bind, so it must be written inside the pass, before the
+original -- the same discipline the HUD offset already uses.
+
+THREE WRONG FIXES, ALL MEASURED, ALL WORTH KNOWING:
+
+  1. `dev->SetViewport()` from the pass does NOTHING. The published extent did not move by a pixel
+     (bbox `0,0,759,671` before and after). This pass takes no viewport argument: it derives one
+     from the descriptor and overwrites whatever D3D held.
+  2. LEAVING THE BUFFER NATIVE UNTIL A WORLD EXISTS fixes the menu and breaks the scene. The engine
+     asks for presentation parameters exactly twice at startup and never again, so nothing applies
+     the override afterwards and the world renders at the window's size.
+  3. REISSUING SetPresentationParams AT WORLD LOAD to repair (2) resets the swapchain under a stereo
+     path already built for the old size. The log looked perfect -- `back buffer 2560x1440 ->
+     4320x2224` -- and the result was MONO AND SQUISHED. A frame that fills the layer is not
+     evidence of correct stereo; count the eyes.
+
+AND THE CROP HAS TO FOLLOW THE PASS. While the pass drew small, the publish path cropped the drawn
+region out of the larger buffer. Once the descriptor is corrected the interface covers the whole
+buffer, and that same crop publishes its top-left corner: the menu arrives on the quad ZOOMED FAR IN
+while the desktop looks perfectly correct. "Right on the screen, wrong in the headset" is the
+signature of cropping a source that no longer needs it -- the desktop sees the buffer, the quad sees
+what we publish.
+
+Verified together: menu whole (logo, all five items, hint bar), world stereo at 4320x2224 with the
+scene path byte-identical to before the menu work, zero crashes.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
