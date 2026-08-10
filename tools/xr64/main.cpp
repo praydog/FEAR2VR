@@ -2072,8 +2072,27 @@ int main(int argc, char** argv) {
         const uint32_t eye_w = (layout == xr::kLayoutSideBySide) ? fw / 2u : fw;
         const uint32_t eye_h = fh;
 
-        if (have_frame &&
-            (screen[0] == XR_NULL_HANDLE || eye_w != screen_w || eye_h != screen_h ||
+        // ---- CREATE THEM EVEN WITH NO GAME --------------------------------------------------
+        //
+        // These used to be created only once a frame had arrived, so running the host on its own --
+        // which is exactly what someone does first, and what happens during the opening movies and
+        // the main menu -- built no swapchains, submitted NO LAYER at all, and left the compositor
+        // showing uninitialised memory in both eyes. That is the flickering colour, and no
+        // placeholder could help because there was nothing to paint into.
+        //
+        // With no frame to size against, the runtime's own recommendation is the right size: it is
+        // what the headset asks for, and the placeholder is the only thing being drawn.
+        const bool want_placeholder_chain =
+            !have_frame && screen[0] == XR_NULL_HANDLE && !config_views.empty();
+        const uint32_t make_w = want_placeholder_chain
+                                    ? config_views[0].recommendedImageRectWidth
+                                    : eye_w;
+        const uint32_t make_h = want_placeholder_chain
+                                    ? config_views[0].recommendedImageRectHeight
+                                    : eye_h;
+
+        if ((have_frame || want_placeholder_chain) &&
+            (screen[0] == XR_NULL_HANDLE || make_w != screen_w || make_h != screen_h ||
              layout != screen_layout)) {
             // Sized to the GAME's frame, not the runtime's recommendation: at native size the
             // upload is a straight copy with no resampling anywhere in the path.
@@ -2096,14 +2115,14 @@ int main(int argc, char** argv) {
                 sc.sampleCount = 1;
                 // Sized to the EYE's picture, so the upload stays a straight copy with no
                 // resampling anywhere between the game's back buffer and the compositor.
-                sc.width = eye_w;
-                sc.height = eye_h;
+                sc.width = make_w;
+                sc.height = make_h;
                 sc.faceCount = 1;
                 sc.arraySize = 1;
                 sc.mipCount = 1;
 
                 const XrResult screen_r = xrCreateSwapchain(session, &sc, &screen[e]);
-                std::printf("[host] eye %d screen swapchain %ux%u (%s) -> %s\n", e, eye_w, eye_h,
+                std::printf("[host] eye %d screen swapchain %ux%u (%s) -> %s\n", e, make_w, make_h,
                             layout == xr::kLayoutSideBySide ? "side-by-side" : "mono", rs(screen_r));
 
                 if (XR_FAILED(screen_r)) {
@@ -2137,8 +2156,8 @@ int main(int argc, char** argv) {
             }
 
             if (ok) {
-                screen_w = eye_w;
-                screen_h = eye_h;
+                screen_w = make_w;
+                screen_h = make_h;
                 screen_layout = layout;
                 screen_ready = false;
             } else {
@@ -2568,6 +2587,7 @@ int main(int argc, char** argv) {
                 ph_w = screen_w;
                 ph_h = screen_h;
             }
+            uint32_t painted = 0;
             for (uint32_t e = 0; e < 2 && !ph.empty(); ++e) {
                 if (screen[e] == XR_NULL_HANDLE) {
                     continue;
@@ -2583,9 +2603,16 @@ int main(int argc, char** argv) {
                 if (XR_SUCCEEDED(xrWaitSwapchainImage(screen[e], &wi))) {
                     ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, ph.data(),
                                            screen_w * 4u, 0);
+                    ++painted;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(screen[e], &ri);
+            }
+            // Without this the projection layer is never submitted -- screen_ready is otherwise
+            // only set by the real-frame upload, so the placeholder would sit in a swapchain the
+            // compositor is never told about.
+            if (painted == 2) {
+                screen_ready = true;
             }
         }
 
