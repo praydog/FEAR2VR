@@ -7,11 +7,82 @@
 #include <thread>
 
 #include <windows.h>
+#include <winternl.h>
 #include <tlhelp32.h>
+#include <algorithm>
 
 #include "Framework.hpp"
 #include "Log.hpp"
 #include "ipc/CommandServer.hpp"
+
+// ---- WAIT FOR gameclient.dll THE INSTANT IT LOADS ----------------------------------------------
+//
+// The OEP gate puts us in before the engine builds anything, which is what we wanted -- and it also
+// puts us in before gameclient.dll exists. Initialising there made every gameclient-dependent mod
+// fail its one-shot on_initialize (ViewHook, SyntheticInput, CameraPassHook, HeadTracking,
+// HudPassHook, RenderTimeline) and left VR dead in world. Being early is worthless if it means
+// being early for the wrong module.
+//
+// Polling for it would work and would also be a race with whatever the engine does next.
+// LdrRegisterDllNotification is exact: the loader calls us as the module is mapped, so the scans
+// the SDK performs have their bytes and nothing has had a chance to run yet.
+//
+// Pattern taken from re2-barebones' REFramework.cpp.
+typedef struct _LDR_DLL_NOTIFICATION_ENTRY {
+    ULONG Flags;
+    PCUNICODE_STRING FullDllName;
+    PCUNICODE_STRING BaseDllName;
+    PVOID DllBase;
+    ULONG SizeOfImage;
+} LDR_DLL_NOTIFICATION_ENTRY, *PLDR_DLL_NOTIFICATION_ENTRY;
+
+typedef union _LDR_DLL_NOTIFICATION_DATA {
+    LDR_DLL_NOTIFICATION_ENTRY Loaded;
+    LDR_DLL_NOTIFICATION_ENTRY Unloaded;
+} LDR_DLL_NOTIFICATION_DATA, *PLDR_DLL_NOTIFICATION_DATA;
+
+using PLDR_DLL_NOTIFICATION_FUNCTION = void(CALLBACK*)(ULONG, PLDR_DLL_NOTIFICATION_DATA, PVOID);
+using LdrRegisterDllNotification_t = NTSTATUS(NTAPI*)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, PVOID,
+                                                      PVOID*);
+
+#define FEAR2VR_LDR_LOADED 1
+
+static std::atomic<bool> g_gameclient_loaded{false};
+static PVOID g_ldr_cookie = nullptr;
+
+void CALLBACK ldr_notification_callback(ULONG reason, PLDR_DLL_NOTIFICATION_DATA data, PVOID) {
+    // Runs under the LOADER LOCK, on the thread doing the load. Do nothing here but observe:
+    // creating threads or loading libraries from this context is how a deadlock is written. The
+    // supervisor picks the flag up and does the real work on its own thread.
+    if (reason != FEAR2VR_LDR_LOADED || data == nullptr || data->Loaded.BaseDllName == nullptr ||
+        data->Loaded.BaseDllName->Buffer == nullptr) {
+        return;
+    }
+    std::wstring name{data->Loaded.BaseDllName->Buffer,
+                      data->Loaded.BaseDllName->Length / sizeof(wchar_t)};
+    std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+    if (name == L"gameclient.dll") {
+        g_gameclient_loaded.store(true, std::memory_order_release);
+    }
+}
+
+// Returns true if the notification is registered; false means fall back to polling.
+bool register_ldr_notification() {
+    if (GetModuleHandleW(L"gameclient.dll") != nullptr) {
+        g_gameclient_loaded.store(true, std::memory_order_release);
+        return true;
+    }
+    auto* nt = GetModuleHandleW(L"ntdll.dll");
+    if (nt == nullptr) {
+        return false;
+    }
+    auto reg = reinterpret_cast<LdrRegisterDllNotification_t>(
+        GetProcAddress(nt, "LdrRegisterDllNotification"));
+    if (reg == nullptr) {
+        return false;
+    }
+    return reg(0, &ldr_notification_callback, nullptr, &g_ldr_cookie) == 0;
+}
 
 // FEAR2.exe is SteamStub-wrapped: .text is ciphertext until the stub decrypts it in memory, and the
 // launcher can inject before that happens. A hook written then patches bytes the stub is about to
@@ -219,14 +290,32 @@ void run_supervisor(void* self_raw, int32_t ipc_port) {
         LOGX("[main] exe %s", decrypted ? "decrypted" : "NEVER matched its plaintext signature");
     }
 
+    // ---- RELEASE, THEN WAIT FOR gameclient.dll ------------------------------------------------
+    //
+    // The engine cannot load gameclient.dll while it is parked at OEP, so holding the gate until
+    // the module appears would deadlock. Release first, then wait for the loader to tell us.
+    {
+        const bool have_notify = register_ldr_notification();
+        if (gated) {
+            g_gate_release.store(true, std::memory_order_release);
+            LOGX("[gate] released -- waiting for gameclient.dll before initialising");
+        }
+        bool loaded = false;
+        for (int i = 0; i < 60000 && !loaded; ++i) {
+            loaded = g_gameclient_loaded.load(std::memory_order_acquire) ||
+                     GetModuleHandleW(L"gameclient.dll") != nullptr;
+            if (!loaded) {
+                Sleep(1);
+            }
+        }
+        LOGX("[main] gameclient.dll %s (%s)", loaded ? "present -- initialising" : "NEVER appeared",
+             have_notify ? "loader notification" : "polling fallback");
+    }
+
     g_framework = std::make_unique<Framework>(self, ipc_port);
     bool ipc_up = g_framework->initialize();
 
-    // Hooks are in (or failed) -- either way the engine must not stay parked.
-    if (gated) {
-        g_gate_release.store(true, std::memory_order_release);
-        LOGX("[gate] released -- engine continues into OEP");
-    }
+
 
     if (!ipc_up) {
         // Without IPC no /unload can ever arrive; leave the module resident but

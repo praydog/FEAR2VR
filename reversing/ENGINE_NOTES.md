@@ -3572,6 +3572,29 @@ and our supervisor thread run concurrently, and the engine could in principle cr
 before the poll succeeds. Making it deterministic needs a second gate at the decrypted OEP -- hold
 the main thread once plaintext is available, install hooks, then resume.
 
+**Being early is only useful for the RIGHT module: gameclient.dll needs a loader notification.**
+The OEP gate put us in before the engine built anything -- and before gameclient.dll existed.
+Initialising there made every gameclient-dependent mod fail its one-shot on_initialize (ViewHook,
+SyntheticInput, CameraPassHook, HeadTracking, HudPassHook, RenderTimeline: six failures) and left VR
+dead in world, while the log still cheerfully said "framework initialized".
+
+Fixed with `LdrRegisterDllNotification` (pattern from re2-barebones' REFramework.cpp): the loader
+calls us as the module is mapped, so the SDK's scans have their bytes and nothing has run yet. The
+callback only sets a flag -- it executes under the LOADER LOCK on the loading thread, and creating
+threads or loading libraries from there is how a deadlock gets written. The supervisor does the
+real work on its own thread.
+
+Order matters and is not obvious: the engine cannot load gameclient.dll while parked at OEP, so the
+gate must be RELEASED first and the wait for the module comes after. Holding both at once
+deadlocks.
+
+    [gate] engine parked at OEP -- installing hooks now
+    [gate] released -- waiting for gameclient.dll before initialising
+    [main] gameclient.dll present -- initialising (loader notification)
+    mod init failures: 0        (was 6)
+    52: [hooks] installed Renderer_SetPresentationParams
+    63: [scenetarget] back buffer 1024x768 -> 4320x2224     <- first device, still after us
+
 **WORKING: the engine is now held at OEP while the mod installs its hooks.**
 
     [gate] armed hardware execute breakpoint at 0x00652ED8 (SteamStub -> OEP)
