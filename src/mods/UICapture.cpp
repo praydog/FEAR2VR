@@ -545,6 +545,23 @@ void UICapture::widen_viewport_to_target(IDirect3DDevice9* dev) {
         return;
     }
 
+    // ---- ONLY WHEN THERE IS NO WORLD, NOT MERELY NO SCENE *THIS FRAME* -----------------------
+    //
+    // The caller's guard is `!m_seen_fullscreen`, which is per-frame state: it means "no engine
+    // full-screen pass has run YET in this frame". In a world, any frame whose first pass happens
+    // to come from gameclient satisfies it, and forcing the descriptor to the whole buffer there
+    // describes a pass as covering 4320x2224 while the scene target is smaller -- which magnifies
+    // the scene. Reported as the world being "REALLY zoomed in" on the second load, and the second
+    // load is exactly when pass ordering differs.
+    //
+    // gameserver.dll is the world signal. It stays resolved after returning to the menu, which is
+    // correct here rather than a leak: that menu has a scene rendering behind it, so the engine's
+    // full-screen pass sets m_seen_fullscreen and this is never reached anyway.
+    const auto* gs = sdk::Modules::get().game_server();
+    if (gs != nullptr && gs->handle != nullptr) {
+        return;
+    }
+
     // ---- THE PRE-WORLD MENU IS LAID OUT TO THE TARGET AND CLIPPED BY THE VIEWPORT --------------
     //
     // Measured at the initial menu, in one line:

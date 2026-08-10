@@ -40,6 +40,15 @@ public:
 
     std::string_view get_name() const override { return "SceneTarget"; }
     std::optional<std::string> on_initialize() override;
+
+    // What the game asked for before the buffer was inflated -- the honest screen size. Zero until
+    // the first presentation-params call.
+    // The size the back buffer was last forced to -- what anything drawing into it must use.
+    uint32_t forced_buffer_w() const;
+    uint32_t forced_buffer_h() const;
+
+    uint32_t native_screen_w() const;
+    uint32_t native_screen_h() const;
     void on_shutdown() override;
 
     // One distinct (flags, width, height) triple seen at a scene-target bind, with how often.

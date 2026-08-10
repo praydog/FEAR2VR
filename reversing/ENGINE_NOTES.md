@@ -3809,6 +3809,66 @@ what we publish.
 Verified together: menu whole (logo, all five items, hint bar), world stereo at 4320x2224 with the
 scene path byte-identical to before the menu work, zero crashes.
 
+**THE SECOND-WORLD RENDER TARGET -- SOLVED.** Long-standing open bug: the first world renders
+correctly and every world after it is wrong. Measured creation chronology:
+
+    #2 CreateRenderTarget 4320x2224 creator=gameclient.dll+0xE463D   <- first world, correct
+    #3 CreateRenderTarget 2560x1440 creator=gameclient.dll+0x8DC65   <- second world, wrong
+
+2560x1440 IS NOT OURS AND IS NOT THE GAME'S. The window was 640x480 and the desktop spans
+5120x1440 -- it is the PRIMARY DISPLAY's mode. The second load sizes its target from the display
+instead of from the buffer. (A hardcoded 2560x1440 in HudScreenDims was found while chasing
+this. It is NOT the cause -- the size still appeared after it was changed -- and it is STILL THERE:
+the fix was reverted along with the GetScreenDims approach it was entangled with. It remains a
+latent bug, currently invisible because it happens to match the machine it was written on. Anyone
+running at another resolution will meet it; see the OPEN item below.)
+
+TWO THINGS HAVE TO BE CORRECTED, AND BOTH ONLY IN A WORLD:
+
+  1. THE CREATION SIZE. Not the bind extent -- that was tried twice and broke ambient occlusion and
+     shadows both times, because the depth and auxiliary buffers are allocated from the creation
+     size, so widening the extent afterwards leaves those passes sampling outside what exists. A
+     scene that looks right with broken shading is the signature of exactly that mistake.
+  2. THE OWNER'S LAYOUT RECT. The creator is
+     `CreateRenderTarget(this[51]-this[49], this[52]-this[50], 0xFC8, this+48)`, so `out` IS
+     `&this[48]` and the four dwords after it are the rect the size came from. Resize the target
+     alone and the interface draws complete, correctly proportioned, and small in the buffer's
+     top-left corner.
+
+         owner rect (0,0)-(2560,1440) -> (0,0)-(4320,2224)
+
+     The write is guarded by a layout check -- it happens only if those dwords really describe the
+     size just requested -- so a wrong inference declines instead of corrupting. The check passing
+     live is also what confirms the layout.
+
+DO NOT ROUTE THIS THROUGH GetScreenDims. Tried in both directions and wrong in both: reporting
+smaller shrinks the HUD into the corner, reporting larger reintroduces the clipping the downscale
+exists to fix. The reported size decides BOTH how large the interface draws AND how large its target
+is, so it cannot express "big target, and lay out to it". The rect can.
+
+WHY THE FIRST WORLD WAS NEVER AFFECTED: its target comes from a different creator (+0xE463D) that is
+already buffer-sized, so the small rect never bit. The bug was never "the second load breaks" so much
+as "the first load gets lucky".
+
+Verified by the user across menu -> world -> menu -> world: scene correct on both runs, shadows and
+AO correct, HUD correct, menu whole.
+
+**OPEN: HudScreenDims hardcodes the interface size.**
+
+    constexpr int32_t kUIWidth = 2560;
+    constexpr int32_t kUIHeight = 1440;
+
+Described in its own comment as "the configuration this project has been shipping", which is an
+assumption wearing a measurement's clothes. It is the size GetScreenDims is rewritten DOWN to while
+supersampling, so on a machine configured at anything else the interface lays out to a resolution
+that exists nowhere -- observed live at a 640x480 window, where the HUD drew into the corner.
+
+Replacing it with the size the game actually asked for (SceneTarget::native_screen_w/h, which exist
+and are correct) was tried and reverted, because it was bundled with routing the second-world fix
+through GetScreenDims, and that part was wrong. The substitution itself is still right and should be
+redone on its own, then tested at a resolution OTHER than 2560x1440 -- at 2560x1440 the bug and the
+fix are indistinguishable.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

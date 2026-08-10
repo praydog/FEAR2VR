@@ -70,6 +70,11 @@ std::atomic<bool> g_trace_pending{false};
 // What we last forced the back buffer to, so a virtual target that disagrees can be spotted.
 std::atomic<uint32_t> g_last_forced_w{0};
 std::atomic<uint32_t> g_last_forced_h{0};
+
+// The extent the interface was binding before any world existed. The second world adopts that very
+// target, so this is what tells the adopted bind apart from a shadow or AO target.
+std::atomic<uint32_t> g_preworld_bind_w{0};
+std::atomic<uint32_t> g_preworld_bind_h{0};
 std::atomic<uint64_t> g_transition{0};
 char g_trace_why[64]{};
 
@@ -162,6 +167,71 @@ char __stdcall create_render_target_detour(int width, int height, int flags, voi
     // useless for this: they only advance on a transition, and the bad 2560x1440 creation was
     // measured to have NO SetPresentationParams or InitRender before it, so the counter would not
     // have moved between the two world loads.
+    // ---- CORRECT THE SIZE AT CREATION, NOT AT BIND ------------------------------------------
+    //
+    // The second world creates its own target rather than reusing the first world's:
+    //
+    //     #2 CreateRenderTarget 4320x2224 creator=gameclient.dll+0xE463D   <- first world, right
+    //     #3 CreateRenderTarget 2560x1440 creator=gameclient.dll+0x8DC65   <- second world, wrong
+    //
+    // 2560x1440 is the PRIMARY DISPLAY's mode, not anything the game was configured with (the
+    // window here is 640x480 and the desktop spans 5120x1440), so the second load sizes its target
+    // from the display instead of from the buffer.
+    //
+    // Patching the extent at bind time made the scene look right and broke ambient occlusion and
+    // shadows, twice. That is the tell: the extent is not the only thing derived from this size --
+    // the depth and auxiliary buffers are allocated with it, so widening the extent afterwards
+    // leaves those passes sampling outside what was allocated. Correcting the CREATION gives every
+    // one of them a consistent size, which is the state the first world is already in.
+    if (flags == 0xFC8 && width >= 256 && height >= 256) {
+        const auto* gs_c = sdk::Modules::get().game_server();
+        const bool in_world_c = gs_c != nullptr && gs_c->handle != nullptr;
+        const uint32_t fw = g_last_forced_w.load(std::memory_order_relaxed);
+        const uint32_t fh = g_last_forced_h.load(std::memory_order_relaxed);
+        if (in_world_c && fw != 0 && fh != 0 &&
+            (static_cast<uint32_t>(width) != fw || static_cast<uint32_t>(height) != fh)) {
+            LOGX("[scenetarget] world created a %dx%d scene target -- creating %ux%u instead",
+                 width, height, fw, fh);
+
+            // ---- AND THE OWNER'S RECT, WHICH IS WHERE IT DRAWS --------------------------------
+            //
+            // The creator is `CreateRenderTarget(this[51]-this[49], this[52]-this[50], 0xFC8,
+            // this+48)`, so `out` IS `&this[48]` and the four dwords after it are the rect the
+            // size was derived from. Resizing the target alone leaves that rect small, and the
+            // interface then draws complete and correctly proportioned into the buffer's top-left
+            // corner -- measured on the second world.
+            //
+            // Correcting it through GetScreenDims was tried and is wrong in both directions:
+            // reporting smaller shrinks the HUD, reporting larger reintroduces the clipping that
+            // the downscale exists to fix. The rect is the thing that actually disagrees with the
+            // target, so the rect is what gets corrected.
+            //
+            // GUARDED BY A LAYOUT CHECK, not by faith: the write only happens if the four dwords
+            // really do describe the size just asked for. If this layout is ever wrong, the
+            // check fails and nothing is written.
+            if (out != nullptr) {
+                auto* const rect = reinterpret_cast<int32_t*>(out) + 1; // this[49..52]
+                const int32_t l = rect[0];
+                const int32_t t = rect[1];
+                const int32_t rr = rect[2];
+                const int32_t b = rect[3];
+                if (rr - l == width && b - t == height) {
+                    rect[0] = 0;
+                    rect[1] = 0;
+                    rect[2] = static_cast<int32_t>(fw);
+                    rect[3] = static_cast<int32_t>(fh);
+                    LOGX("[scenetarget]   owner rect (%d,%d)-(%d,%d) -> (0,0)-(%u,%u)", l, t, rr, b,
+                         fw, fh);
+                } else {
+                    LOGX("[scenetarget]   owner rect (%d,%d)-(%d,%d) does not describe %dx%d -- "
+                         "left alone", l, t, rr, b, width, height);
+                }
+            }
+
+            width = static_cast<int>(fw);
+            height = static_cast<int>(fh);
+        }
+    }
     if (flags == 0xFC8 && width >= 256 && height >= 256) {
         const auto seq = g_crt_seq.fetch_add(1, std::memory_order_relaxed);
         if (seq < 64) {
@@ -214,6 +284,76 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
         if (pooled != 0) {
             const uint32_t pw = *reinterpret_cast<const uint16_t*>(pooled + kPooledWidth);
             const uint32_t ph = *reinterpret_cast<const uint16_t*>(pooled + kPooledHeight);
+
+            // ---- THE SECOND WORLD ADOPTS A TARGET SIZED FOR SOMETHING ELSE --------------------
+            //
+            // Measured chronology across menu -> world -> menu -> world:
+            //
+            //     #2 Create 4320x2224 creator=gameclient.dll+0xE463D   <- first world, correct
+            //        (no equivalent creation on the second load)
+            //
+            // The creator is guarded by a cache -- `if (!this[48]) { this[48] = dword_101FE2F4;
+            // ... }` -- so once a shared target exists the world adopts it instead of allocating
+            // one from its own rect. On the second load that shared target is the interface's, at
+            // the window's size, and the scene then occupies 2560x1440 of a 4320x2224 buffer: a
+            // square with black down the right and bottom, in the headset and on screen both.
+            //
+            // THIS TARGET IS VIRTUAL (0x800): it owns no surface, it draws into the back buffer,
+            // so these dwords describe an extent rather than an allocation -- which is why the
+            // first world can carry 4320x2224 in the very same fields. Correcting the extent here,
+            // before the original binds it, puts the scene back across the whole buffer and leaves
+            // everything downstream (pass viewport, HUD layout) deriving from one consistent size.
+            // WHICH SITE BINDS WHICH TARGET. Rewriting every mismatched virtual bind fixed the
+            // second world's scene and broke the shading with it -- ambient occlusion and shadows
+            // bind virtual targets of their own, and an extent forced to the back buffer's size is
+            // wrong for every one of them. The scene bind has to be told apart from those, and the
+            // call site is the discriminator this project already uses for exactly this.
+            if ((flags & 0x800u) != 0) {
+                const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+                const auto* exe_m = sdk::Modules::get().exe();
+                const auto* gc_m = sdk::Modules::get().game_client();
+                const char* mod = "?";
+                uintptr_t rel = ret;
+                if (exe_m != nullptr && ret >= exe_m->base && ret < exe_m->base + exe_m->size) {
+                    mod = "FEAR2.exe";
+                    rel = ret - exe_m->base;
+                } else if (gc_m != nullptr && ret >= gc_m->base && ret < gc_m->base + gc_m->size) {
+                    mod = "gameclient.dll";
+                    rel = ret - gc_m->base;
+                }
+                // CHRONOLOGY, NOT A SET. A (size, caller) set cannot answer this: the second
+                // world's bind may repeat a size the menu already used, and a set swallows it.
+                // Logging only when the size CHANGES keeps the sequence readable and bounded.
+                static std::atomic<uint32_t> last{0};
+                const uint32_t now = (pw << 16) | (ph & 0xFFFFu);
+                if (last.exchange(now, std::memory_order_relaxed) != now) {
+                    static std::atomic<uint32_t> budget{0};
+                    if (budget.fetch_add(1, std::memory_order_relaxed) < 40) {
+                        LOGX("[vbind] %ux%u from %s+0x%IX", pw, ph, mod,
+                             static_cast<size_t>(rel));
+                    }
+                }
+            }
+            // NOTE: the bind-time extent rewrite that used to live here is gone. It made the
+            // scene fill the buffer while leaving the depth and auxiliary buffers at the created
+            // size, which broke ambient occlusion and shadows -- observed twice. The size is
+            // corrected at creation now; see create_render_target_detour.
+            if (false) {
+                const uint32_t want_w = g_last_forced_w.load(std::memory_order_relaxed);
+                const uint32_t want_h = g_last_forced_h.load(std::memory_order_relaxed);
+                if (want_w != 0 && want_h != 0 && want_w <= 0xFFFFu && want_h <= 0xFFFFu &&
+                    (pw != want_w || ph != want_h)) {
+                    *reinterpret_cast<uint16_t*>(pooled + kPooledWidth) =
+                        static_cast<uint16_t>(want_w);
+                    *reinterpret_cast<uint16_t*>(pooled + kPooledHeight) =
+                        static_cast<uint16_t>(want_h);
+                    static std::atomic<uint32_t> said{0};
+                    if (said.fetch_add(1, std::memory_order_relaxed) < 4) {
+                        LOGX("[scenetarget] virtual bind %ux%u -> %ux%u (adopted a target sized for "
+                             "something else)", pw, ph, want_w, want_h);
+                    }
+                }
+            }
 
             // ---- WHO REBUILDS THE VIRTUAL TARGET, AND AT WHAT SIZE -----------------------------
             //
@@ -561,6 +701,28 @@ void load_settings() {
 SceneTarget& SceneTarget::get() {
     static SceneTarget s_instance;
     return s_instance;
+}
+
+// The size the game itself asked for, before we inflated the buffer. This is the only honest
+// answer to "how big is the screen": it is what the engine would have used had the mod not been
+// here. Zero until the first presentation-params call has been seen.
+// What the back buffer was last forced to. The interface's target is created from the size the
+// engine reports, so a consumer that draws into the buffer needs the buffer's size, not the
+// window's.
+uint32_t SceneTarget::forced_buffer_w() const {
+    return g_last_forced_w.load(std::memory_order_relaxed);
+}
+
+uint32_t SceneTarget::forced_buffer_h() const {
+    return g_last_forced_h.load(std::memory_order_relaxed);
+}
+
+uint32_t SceneTarget::native_screen_w() const {
+    return g_saved_screen_w.load(std::memory_order_relaxed);
+}
+
+uint32_t SceneTarget::native_screen_h() const {
+    return g_saved_screen_h.load(std::memory_order_relaxed);
 }
 
 std::optional<std::string> SceneTarget::on_initialize() {
