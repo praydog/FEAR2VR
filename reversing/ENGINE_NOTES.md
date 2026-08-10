@@ -3671,6 +3671,105 @@ probe, r_InitRender was caught but Renderer_SetPresentationParams had already ru
 observing decryption and reacting to it cannot be atomic. Gating EXECUTION rather than observing it
 is what makes the ordering a guarantee.
 
+**The transport was never opened before a world, and that was the publish gate.**
+`FramePublisher::open()` was only called from paths that presuppose a session -- the frame capture's
+continuous mode and VR arming. Before a world the shared mapping was never created, so
+`m_control_base` stayed null and `publish_ui()` returned false on every frame with an EMPTY
+`last_error()`, because a null control block is one of the two paths that sets no message. That
+empty string cost several wrong guesses (the restore path, the readback, the slot budget) before it
+was read as the clue it was.
+
+Opening it during framework init -- one idempotent call -- fixes it outright:
+
+    before:  seen=13188  swaps=1884  publishes=0     failures=1883
+    after:   seen=12523  swaps=0     publishes=1788  failures=0
+
+Publishing is now a property of the mod being loaded rather than of the game reaching a level.
+
+STILL OPEN, and now the only thing between here and a visible menu: `swaps=0`. The
+`m_seen_fullscreen` gate in on_pass still drops every pre-world pass, so the layer being published
+is one nothing has drawn into. Relaxing that gate was measured to take swaps 0 -> 1884, but the
+version tried keyed off the previous frame's fullscreen state, which is unsafe across menu -> world
+(the first world frame inherits "no fullscreen", bypasses the guard, and captures the early pass the
+code says blackened presentation). It needs a real world/menu signal.
+
+**Why the menu "used to work" and then stopped -- the whole chain, finally.** Three separate faults
+in series, which is why it resisted so long. None of them was the one being looked for at the time.
+
+  1. THE TRANSPORT WAS NEVER OPENED BEFORE A WORLD. FramePublisher::open() was only called from
+     session-dependent paths, so publish_ui() failed every frame with an EMPTY last_error (a null
+     control block is one of the two paths that sets no message). Fixed by opening at framework
+     init: publishes 0 -> 1788, failures 1883 -> 0.
+  2. NOTHING WAS EVER DRAWN INTO THE LAYER. on_pass drops every gameclient pass until an engine
+     full-screen pass has been seen, and the pre-world menu renders no scene, so swaps stayed 0. A
+     UI-only frame has nothing to blacken, so publish_layer now sources the BACK BUFFER directly
+     instead of borrowing the target.
+  3. THE PICTURE WAS A POSTAGE STAMP. We inflate the back buffer and leave the WINDOW alone, so the
+     movies and menu draw at 640x480 into the corner of 4320x2224. Captured and confirmed: a tiny
+     image on a field of black. Now cropped to the drawn region and scaled up to the layer.
+
+And the answer to "it worked before": reaching the menu FROM a world still renders a scene behind
+it, so the full-screen pass fires, the flag sets, and the normal path runs. The initial menu never
+had one. Same code, two different worlds.
+
+CROP SOURCE MATTERS: use the BRACKET's size (m_width/m_height), not SceneTarget's saved screen dims.
+With the OEP gate, init_render_detour has not run when the menu draws, so the saved dims are still 0
+and the crop silently disables itself -- measured.
+
+    [uicap] UI-only frame: cropping 640x480 out of the 4320x2224 buffer
+    publishes=1293  failures=0  crashes=0
+
+**UICapture is OFF by default, and that is why the quad is empty in ordinary use.**
+`m_enabled` defaults false and is only set by `/render/ui?on=1`. Nothing in the normal launch path
+calls it, so the interface layer is never captured and never published -- the quad stays empty
+regardless of everything else being right.
+
+This also invalidates a lot of earlier measurement in this file: every "seen=0 / target=0x0" reading
+came from a switched-off module unless the test had turned it on by hand first. Check `m_enabled`
+before believing any UICapture counter.
+
+ENABLING IT AT FRAMEWORK INIT CRASHES THE GAME. Measured on an otherwise clean run:
+
+    [crash] 0xC0000005 read of 0x00000004 at GameClient.dll+0x9CFE3
+    #01 FEAR2.exe+0x10DC2   #02 FEAR2.exe+0x6D1C
+
+So capture cannot simply be on from the start; framework init is too early for whatever
+GameClient.dll+0x9CFE3 dereferences. Reverted. The enable has to happen once the interface actually
+exists -- the gameclient loader notification is present now and is the obvious hook point to try,
+but it needs the crash understood first rather than moved.
+
+**THE MENU WAS CLIPPED BECAUSE WE INFLATED THE BUFFER AND NOTHING ELSE AGREED.** Measured in one
+line at the initial menu:
+
+    viewport 2560x1440 at 0,0 | source surface 4320x2224 | bracket 2560x1440
+
+The interface sizes itself from the RENDER TARGET, so an inflated buffer makes it lay out across
+4320x2224 -- the title lands on x=2160 (that buffer's centre) and the hint bar on 0.9 of its height
+-- while the pass viewport stays native, cutting everything right of 2560. The capture read
+"MAIN ME" against a hard vertical edge. Same fault the in-world HUD had; different route in, because
+HudScreenDims rewrites `ILTClient::GetScreenDims` and THE MENU NEVER ASKS IT.
+
+TRIED AND MEASURED AS NOT WORKING: widening the D3D viewport (`SetViewport` to the target size) on
+pre-world interface passes. The published extent did not move by a pixel -- bbox `(0,0,759,671)`
+before and after -- because the 2D pass derives its viewport from the engine's bound-target
+descriptor and rebuilds it after our write. `SetViewport` is the wrong lever for this pass.
+
+FIX: do not inflate before a world exists, gated on `gameserver.dll` being resolved. Content then
+fills the frame -- bbox `(0,0,1280,720)`, i.e. 100% of the layer, up from 59% wide.
+
+THE BUFFER AND THE BELIEVED SIZE MUST BE GATED TOGETHER. Gating only the presentation-params
+override left `init_render_detour` still forcing 4320x2224, which produced the same class of
+mismatch pointing the other way: `binds 4320x2224` against a native 2560x1440 back buffer. Both
+sites now share the world signal, and the pair was verified agreeing in-world (`back buffer
+2560x1440`, `binds 2560x1440`).
+
+COST, STATED PLAINLY: the engine does NOT re-ask for presentation parameters on world load --
+verified by loading a world and watching the detour never fire again. So with the gate the world
+renders at NATIVE size, not supersampled. That is the tradeoff the earlier revert feared; it is now
+measured rather than feared, and it is the right way round, because a correct picture at native beats
+a supersampled one with the interface cut in half. Restoring supersampling means forcing a device
+reset at world load, which is a separate piece of work.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

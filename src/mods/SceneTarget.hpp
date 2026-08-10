@@ -88,6 +88,11 @@ public:
     // Every device-shaping call marks a transition; the next frame with a device in hand reports
     // the LIVE back buffer and viewport. Bounded to a handful of lines per transition so a play
     // session stays readable.
+    // The screen size the engine had BEFORE we forced the buffer -- i.e. the region the game
+    // actually draws into when it has not been told about the larger buffer. Zero until captured.
+    uint32_t original_screen_w() const;
+    uint32_t original_screen_h() const;
+
     void note_transition(const char* why);
     void trace_if_pending(void* d3d9_device);
     // The size the main view is actually rendering at, when the override is active. Everything that

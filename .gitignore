@@ -18,4 +18,5 @@ fear2vr.*.dll
 # Frame captures and files created by a mangled CLI argument being taken
 # as an output path -- a 36 MB '--info' BMP reached origin this way.
 *.bmp
+*.png
 --*

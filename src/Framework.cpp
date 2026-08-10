@@ -12375,6 +12375,30 @@ bool Framework::initialize() {
         LOGX("[framework] IPC server failed to start on port %d (in use?)", m_ipc_port);
         return false;
     }
+    // ---- OPEN THE TRANSPORT NOW, NOT WHEN A WORLD HAPPENS TO NEED IT -------------------------
+    //
+    // FramePublisher::open() was only ever called from paths that presuppose a session -- the frame
+    // capture's continuous mode and VR arming. Before a world existed the shared mapping was never
+    // created, so m_control_base stayed null and publish_ui() returned false on EVERY frame with an
+    // EMPTY last_error, because a null control block is one of the two paths that does not set one.
+    // Measured at the main menu as swaps climbing into the thousands with publishes stuck at 0.
+    //
+    // That single gate is what kept the opening movies and the main menu out of the headset: the
+    // capture side worked the whole time and had nowhere to put the result. Opening here costs one
+    // idempotent call -- open() returns true immediately once mapped -- and makes publishing a
+    // property of the mod being loaded rather than of the game reaching a level.
+    // NOT ENABLING UICapture HERE. It defaults off and only /render/ui?on=1 turns it on, which is
+    // why the quad is empty in ordinary use -- but switching it on at framework init crashed the
+    // game inside GameClient.dll+0x9CFE3 (read of null+4, from FEAR2.exe+0x10DC2) on a run that was
+    // otherwise clean. Capturing has to start later than this, once the interface exists; see
+    // ENGINE_NOTES.
+    if (!FramePublisher::get().open()) {
+        LOGX("[framework] frame transport did NOT open: %s -- nothing can be published",
+             FramePublisher::get().last_error().c_str());
+    } else {
+        LOGX("[framework] frame transport open before any world");
+    }
+
     LOGX("[framework] IPC command server on http://127.0.0.1:%d", m_ipc_port);
     LOGX("[framework] initialized");
     return true;

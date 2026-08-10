@@ -134,6 +134,9 @@ private:
 
     void publish_layer(struct IDirect3DDevice9* dev);
     void swap_target(struct IDirect3DDevice9* dev);
+    // Pre-world only: the interface lays out to the render target while the viewport stays native,
+    // so the menu is drawn oversized and clipped. See the call site for the measurement.
+    void widen_viewport_to_target(struct IDirect3DDevice9* dev);
     void restore_target(struct IDirect3DDevice9* dev);
 
     std::atomic<bool> m_enabled{false};
@@ -158,6 +161,9 @@ private:
     std::atomic<int32_t> m_width{0};
     std::atomic<int32_t> m_height{0};
     std::atomic<uint64_t> m_pass_calls{0};  // times on_pass() was entered at all
+    std::atomic<uint32_t> m_target_w{0};        // render-target size, asked for once
+    std::atomic<uint32_t> m_target_h{0};
+    std::atomic<uint64_t> m_viewport_widened{0};
     std::atomic<uint64_t> m_swaps{0};
     std::atomic<uint64_t> m_restores{0};
     std::atomic<uint64_t> m_failures{0};

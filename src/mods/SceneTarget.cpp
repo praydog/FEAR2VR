@@ -375,7 +375,15 @@ int __cdecl init_render_detour(const void* mode) {
     const uint32_t rw = g_rec_w.load(std::memory_order_relaxed);
     const uint32_t rh = g_rec_h.load(std::memory_order_relaxed);
     const auto* exe = sdk::Modules::get().exe();
-    if (r == 0 && scale > 0.0f && rw != 0 && rh != 0 && exe != nullptr && exe->base != 0) {
+    // THE BUFFER AND THE BELIEVED SIZE MUST MOVE TOGETHER. Gating only the buffer (below) while
+    // this still forced 4320x2224 left the engine sizing everything for a target larger than the
+    // buffer it draws into -- measured as `binds 4320x2224` against a native 2560x1440 back buffer.
+    // A mismatch in this direction is what clipped the menu in the first place, so the same world
+    // signal gates both.
+    const auto* gs_i = sdk::Modules::get().game_server();
+    const bool have_world_i = gs_i != nullptr && gs_i->handle != nullptr;
+    if (r == 0 && have_world_i && scale > 0.0f && rw != 0 && rh != 0 && exe != nullptr &&
+        exe->base != 0) {
         const auto w = static_cast<uint32_t>((static_cast<float>(rw) * scale) * 2.0f) & ~1u;
         const auto h = static_cast<uint32_t>(static_cast<float>(rh) * scale) & ~1u;
 
@@ -425,12 +433,30 @@ char __fastcall set_presentation_params_detour(void* self, void* /*edx*/, int wi
     LOGX("[scenetarget] present params %dx%d windowed=%d", width, height, windowed);
     SceneTarget::get().note_transition("SetPresentationParams");
 
-    // NOTE: deferring this until a session exists DOES fix the movies and the menu (they draw at
-    // the window's size, and inflating only the buffer strands them in a corner). It was reverted
-    // because it can only be safe if the engine re-asks for presentation parameters on world load,
-    // and that is unverified -- if it does not, the first world renders at the menu's size and
-    // loses native rendering, which is the one constraint that must hold. See ENGINE_NOTES.
-    if (scale > 0.0f && rw != 0 && rh != 0) {
+    // ---- NOT BEFORE A WORLD EXISTS ---------------------------------------------------------
+    //
+    // Inflating the buffer while the window stays native is what breaks the movies and the menu:
+    // they are drawn to the TARGET's size, so a 4320x2224 buffer gets a menu laid out across 4320
+    // while the pass viewport is still 2560x1440, and everything right of 2560 is cut. Captured at
+    // the menu, the title reads "MAIN ME" against a hard vertical edge.
+    //
+    // The in-world HUD hits the same fault and HudScreenDims fixes it by rewriting
+    // ILTClient::GetScreenDims. The menu never asks that -- it takes the target size -- so there is
+    // no size to correct at the source, and widening the D3D viewport does not work either: the 2D
+    // pass derives its viewport from the engine's bound-target descriptor and overwrites ours
+    // (measured -- the published extent did not move by a pixel).
+    //
+    // So the buffer is left alone until there is a world to supersample. This was prototyped and
+    // reverted once before for a reason that is now testable rather than feared: it is only safe if
+    // the engine re-asks for presentation parameters on world load. It does -- verified by loading
+    // a world and watching this detour fire again; see ENGINE_NOTES.
+    const auto* gs = sdk::Modules::get().game_server();
+    const bool have_world = gs != nullptr && gs->handle != nullptr;
+    if (!have_world) {
+        LOGX("[scenetarget] no world yet -- leaving the back buffer at %dx%d so the movies and menu "
+             "fill the window", width, height);
+    }
+    if (have_world && scale > 0.0f && rw != 0 && rh != 0) {
         if (windowed != 0) {
             // Both eyes side by side in one buffer, so double the width and not the height.
             const int w = static_cast<int>((static_cast<float>(rw) * scale) * 2.0f) & ~1;
@@ -629,6 +655,13 @@ void SceneTarget::set_recommended(uint32_t per_eye_w, uint32_t per_eye_h) {
 float SceneTarget::scale() const { return load_scale(); }
 uint32_t SceneTarget::target_w() const { return g_rec_w.load(std::memory_order_relaxed); }
 uint32_t SceneTarget::target_h() const { return g_rec_h.load(std::memory_order_relaxed); }
+uint32_t SceneTarget::original_screen_w() const {
+    return g_saved_screen_w.load(std::memory_order_relaxed);
+}
+uint32_t SceneTarget::original_screen_h() const {
+    return g_saved_screen_h.load(std::memory_order_relaxed);
+}
+
 void SceneTarget::note_transition(const char* why) {
     const auto n = g_transition.fetch_add(1, std::memory_order_relaxed) + 1;
     strncpy_s(g_trace_why, why, _TRUNCATE);

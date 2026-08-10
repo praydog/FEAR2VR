@@ -423,6 +423,28 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
         }
     }
 
+    // ---- TURN OURSELVES ON WHEN THE INTERFACE IS ACTUALLY DRAWING ---------------------------
+    //
+    // m_enabled defaulted false and only /render/ui?on=1 ever set it, so in ordinary use nothing
+    // was captured and the quad stayed empty. Enabling at framework init instead crashed the game:
+    //
+    //     0xC0000005 read of 0x00000004 at GameClient.dll+0x9CFE3
+    //
+    // which decompiles to `switch (*(_DWORD *)(this[2] + 4))` -- a game-state query whose state
+    // object is still null that early, so it reads address 4. Framework init is simply before the
+    // interface exists.
+    //
+    // A pass ISSUED BY gameclient.dll proves it exists and is drawing, and the caller recording
+    // above runs whether or not we are enabled -- so that can be observed from the off state. The
+    // mod becomes self-timing instead of depending on a route nobody calls.
+    if (!m_enabled.load(std::memory_order_relaxed)) {
+        const auto* gc = sdk::Modules::get().game_client();
+        if (gc != nullptr && gc->base != 0 && caller >= gc->base && caller < gc->base + gc->size) {
+            m_enabled.store(true, std::memory_order_release);
+            LOGX("[uicap] interface is drawing (pass from gameclient.dll) -- capture enabled");
+        }
+    }
+
     if (!m_enabled.load(std::memory_order_acquire)) {
         return;
     }
@@ -491,10 +513,75 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
     // A gameclient pass BEFORE any full-screen work is part of building the frame, not the HUD:
     // borrowing the target there blackened the presented image.
     if (!m_seen_fullscreen) {
+        // ---- THE PRE-WORLD MENU IS DRAWN OVERSIZED AND THEN CLIPPED ---------------------------
+        //
+        // Measured at the initial menu, in one line:
+        //
+        //     viewport 2560x1440 at 0,0 | source surface 4320x2224 | bracket 2560x1440
+        //
+        // The interface scales itself to the RENDER TARGET, so with the buffer inflated for
+        // supersampling it lays out across 4320x2224 -- the title sits on x=2160, which is that
+        // buffer's centre, and the hint bar on 0.9 of its height. The viewport is still the native
+        // 2560x1440, so everything right of 2560 is cut: the captured menu reads "MAIN ME" against
+        // a hard vertical edge.
+        //
+        // This is the same fault HudScreenDims fixes for the in-world HUD, arriving by a different
+        // route: that one rewrites ILTClient::GetScreenDims, and the menu never asks it -- it takes
+        // the target's size instead. So the size cannot be corrected at the source here, and the
+        // viewport is widened to match what is actually being drawn.
+        //
+        // Only on frames with no scene in them. There is nothing else in the pass to distort, and
+        // in-world is left entirely alone.
+        widen_viewport_to_target(dev);
         return;
     }
 
     swap_target(dev);
+}
+
+void UICapture::widen_viewport_to_target(IDirect3DDevice9* dev) {
+    if (dev == nullptr) {
+        return;
+    }
+
+    // The target's size is asked for once and kept: this runs on every interface pass, and there
+    // are thousands of them per menu, so a COM round trip per pass would be paid forever to learn
+    // a number that only changes when the device does.
+    uint32_t w = m_target_w.load(std::memory_order_relaxed);
+    uint32_t h = m_target_h.load(std::memory_order_relaxed);
+    if (w == 0 || h == 0) {
+        IDirect3DSurface9* rt = nullptr;
+        if (FAILED(dev->GetRenderTarget(0, &rt)) || rt == nullptr) {
+            return;
+        }
+        D3DSURFACE_DESC d{};
+        const bool ok = SUCCEEDED(rt->GetDesc(&d));
+        rt->Release();
+        if (!ok || d.Width == 0 || d.Height == 0) {
+            return;
+        }
+        w = d.Width;
+        h = d.Height;
+        m_target_w.store(w, std::memory_order_relaxed);
+        m_target_h.store(h, std::memory_order_relaxed);
+    }
+
+    D3DVIEWPORT9 vp{};
+    if (FAILED(dev->GetViewport(&vp))) {
+        return;
+    }
+    if (vp.X == 0 && vp.Y == 0 && vp.Width == w && vp.Height == h) {
+        return; // already correct -- do not spend a call saying so
+    }
+
+    const D3DVIEWPORT9 full{0, 0, w, h, vp.MinZ, vp.MaxZ};
+    if (SUCCEEDED(dev->SetViewport(&full))) {
+        const uint64_t n = m_viewport_widened.fetch_add(1, std::memory_order_relaxed);
+        if (n == 0) {
+            LOGX("[uicap] pre-world interface: viewport %ux%u -> %ux%u (it draws at target size)",
+                 vp.Width, vp.Height, w, h);
+        }
+    }
 }
 
 void UICapture::publish_layer(IDirect3DDevice9* dev) {
@@ -504,14 +591,40 @@ void UICapture::publish_layer(IDirect3DDevice9* dev) {
     // holding none -- a frozen ammo counter looks live -- but re-announcing "gone" 90 times a
     // second would be pointless traffic through a sequence the host is polling.
     if (!m_enabled.load(std::memory_order_acquire) ||
-        m_surface.load(std::memory_order_relaxed) == nullptr) {
+        (m_surface.load(std::memory_order_relaxed) == nullptr && m_seen_fullscreen)) {
         if (m_published.exchange(false, std::memory_order_acq_rel)) {
             pub.publish_ui(nullptr, 0, 0, 0, true, true, true);
         }
         return;
     }
 
-    auto* surf = static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
+    // ---- A FRAME WITH NO SCENE IS ALREADY THE PICTURE WE WANT --------------------------------
+    //
+    // The pre-world menu and the opening movies issue only gameclient passes: no engine full-screen
+    // pass runs, so on_pass's `m_seen_fullscreen` guard drops every one and nothing is ever swapped
+    // into m_surface. Measured at the initial menu as swaps=0 while publishes climbed -- a layer
+    // being published that nothing had drawn into.
+    //
+    // That guard is right in world, where borrowing the target before the scene is drawn blackens
+    // the presented image. On a frame with no scene there is nothing to blacken, and the BACK
+    // BUFFER already holds exactly what belongs on the quad, so take it directly and borrow
+    // nothing.
+    //
+    // It is also why the menu works when reached FROM a world but not at startup: that case still
+    // renders a scene behind the menu, so the flag is set and the normal path runs.
+    IDirect3DSurface9* back_src = nullptr;
+    if (!m_seen_fullscreen &&
+        FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back_src))) {
+        back_src = nullptr;
+    }
+    struct BackRelease {
+        IDirect3DSurface9* s;
+        ~BackRelease() { if (s != nullptr) { s->Release(); } }
+    } back_guard{back_src};
+
+    auto* surf = back_src != nullptr
+                     ? back_src
+                     : static_cast<IDirect3DSurface9*>(m_surface.load(std::memory_order_relaxed));
 
     // DOWNSCALED ON THE GPU FIRST. The captured surface is the back buffer's size (2560x1440 here),
     // and a quad two metres away does not resolve that -- so the readback, which is the expensive
@@ -544,7 +657,55 @@ void UICapture::publish_layer(IDirect3DDevice9* dev) {
         stage = g;
     }
 
-    if (FAILED(dev->StretchRect(surf, nullptr, scaled, nullptr, D3DTEXF_LINEAR)) ||
+    // ---- CROP TO WHAT THE GAME ACTUALLY DREW --------------------------------------------------
+    //
+    // We inflate the back buffer and leave the WINDOW alone, so before a world the movies and the
+    // menu are drawn at the engine's own size into the top-left corner of a much larger buffer --
+    // confirmed by capturing it: a tiny picture on a field of black. Publishing the whole surface
+    // put that same postage stamp on the quad.
+    //
+    // So take only the region the game drew. StretchRect scales it up to the layer, which is what
+    // the quad wanted all along. In world this is skipped entirely: the scene target IS the buffer
+    // and the full surface is correct.
+    RECT src_rect{};
+    const RECT* src_rect_p = nullptr;
+    if (back_src != nullptr) {
+        // The BRACKET's size, not SceneTarget's saved screen dims. With the OEP gate in place
+        // init_render_detour has not run by the time the menu draws, so the saved dims are still 0
+        // -- measured, and it silently disabled the crop. m_width/m_height are what the engine told
+        // us its render target is when the bracket opened, which is precisely the region it draws.
+        const auto ow = static_cast<uint32_t>(m_width.load(std::memory_order_relaxed));
+        const auto oh = static_cast<uint32_t>(m_height.load(std::memory_order_relaxed));
+        D3DSURFACE_DESC bd{};
+        if (ow != 0 && oh != 0 && SUCCEEDED(back_src->GetDesc(&bd)) && ow <= bd.Width &&
+            oh <= bd.Height && (ow != bd.Width || oh != bd.Height)) {
+            src_rect = {0, 0, static_cast<LONG>(ow), static_cast<LONG>(oh)};
+            src_rect_p = &src_rect;
+            static std::atomic<uint32_t> said{0};
+            if (said.fetch_add(1, std::memory_order_relaxed) < 2) {
+                {
+            // WHAT THE ENGINE IS ACTUALLY ALLOWED TO DRAW INTO. The bracket size is our own
+            // bookkeeping; the viewport and the real surface are the engine's, and the published
+            // picture showed a hard clip that matched neither. Log all three once.
+            static std::atomic<bool> s_once{false};
+            if (!s_once.exchange(true, std::memory_order_relaxed)) {
+                D3DVIEWPORT9 vp{};
+                D3DSURFACE_DESC bd{};
+                const bool vp_ok = SUCCEEDED(dev->GetViewport(&vp));
+                const bool bd_ok = (surf != nullptr) && SUCCEEDED(surf->GetDesc(&bd));
+                LOGX("[uicap] viewport %ux%u at %u,%u (ok=%d) | source surface %ux%u (ok=%d) | bracket %dx%d",
+                     vp.Width, vp.Height, vp.X, vp.Y, (int)vp_ok, bd.Width, bd.Height, (int)bd_ok,
+                     (int)m_width.load(std::memory_order_relaxed),
+                     (int)m_height.load(std::memory_order_relaxed));
+            }
+        }
+        LOGX("[uicap] UI-only frame: cropping %ux%u out of the %ux%u buffer", ow, oh,
+                     bd.Width, bd.Height);
+            }
+        }
+    }
+
+    if (FAILED(dev->StretchRect(surf, src_rect_p, scaled, nullptr, D3DTEXF_LINEAR)) ||
         FAILED(dev->GetRenderTargetData(scaled, stage))) {
         m_failures.fetch_add(1, std::memory_order_relaxed);
         return;
