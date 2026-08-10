@@ -14,3 +14,8 @@ CMakeLists.txt
 # reload copies made by the injector sit next to the built DLL
 fear2vr.*.dll
 *.pyc
+
+# Frame captures and files created by a mangled CLI argument being taken
+# as an output path -- a 36 MB '--info' BMP reached origin this way.
+*.bmp
+--*
