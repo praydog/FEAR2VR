@@ -263,10 +263,16 @@ public:
     // THE KEYS ARE SETTINGS, NOT CONSTANTS, because the game lets the player rebind them -- a
     // hardcoded VK is correct only for a default profile and fails silently for anyone else.
     // Defaults are this machine's measured bindings: Shift sprints, V melees.
+    // ZERO MEANS "USE THE PLAYER'S BINDING", which is the default and the shippable behaviour.
+    // A non-zero value pins a specific input, which is what the fixture needs to drive one key
+    // deterministically -- but it is an override, not the normal path.
     void set_sprint_vk(uint32_t vk) { m_sprint_vk.store(vk, std::memory_order_relaxed); }
     void set_melee_vk(uint32_t vk) { m_melee_vk.store(vk, std::memory_order_relaxed); }
-    uint32_t sprint_vk() const { return m_sprint_vk.load(std::memory_order_relaxed); }
-    uint32_t melee_vk() const { return m_melee_vk.load(std::memory_order_relaxed); }
+    // The input that will ACTUALLY be pressed -- the override when one is pinned, otherwise the
+    // player's own binding. Reporting the raw override instead would print 0 for the normal case,
+    // which tells a bug report nothing about what the mod is really doing.
+    uint32_t sprint_vk() const { return sprint_input(); }
+    uint32_t melee_vk() const { return melee_input(); }
 
     bool sprinting() const { return m_sprinting.load(std::memory_order_relaxed); }
     uint64_t melees() const { return m_melees.load(std::memory_order_relaxed); }
@@ -288,7 +294,7 @@ public:
     // GENERIC VK_CONTROL, not VK_LCONTROL -- the engine's keyboard array is indexed by the unsided
     // virtual key, which is what the sprint measurement established.
     void set_reflex_vk(uint32_t vk) { m_reflex_vk.store(vk, std::memory_order_relaxed); }
-    uint32_t reflex_vk() const { return m_reflex_vk.load(std::memory_order_relaxed); }
+    uint32_t reflex_vk() const { return reflex_input(); }
     uint64_t reflex_toggles() const { return m_reflex_toggles.load(std::memory_order_relaxed); }
 
     void set_snap_degrees(float deg) { m_snap_deg.store(deg, std::memory_order_relaxed); }
@@ -464,9 +470,17 @@ std::atomic<bool> m_late_latch{false};
     // device array is indexed by the unsided virtual key: holding 0x10 while moving sets
     // MoveFlag::Sprinting (flags 0x40801), while VK_LSHIFT 0xA0 and VK_RSHIFT 0xA1 both leave it
     // clear. Defaulting to the sided key is why the first version of this did nothing at all.
-    std::atomic<uint32_t> m_sprint_vk{0x10};
-    std::atomic<uint32_t> m_melee_vk{'V'};
-    std::atomic<uint32_t> m_reflex_vk{0x11};  // VK_CONTROL, unsided
+    // 0 = resolve from the player's bindings (sdk::Actions). These were VK_SHIFT, 'V' and
+    // VK_CONTROL, which are merely the DEFAULT bindings for sprint, melee and reflex -- correct
+    // until the player rebinds, which is exactly why they are no longer baked in here.
+    std::atomic<uint32_t> m_sprint_vk{0};
+    std::atomic<uint32_t> m_melee_vk{0};
+    std::atomic<uint32_t> m_reflex_vk{0};
+
+    // Resolve an override-or-binding, in that order.
+    uint32_t sprint_input() const;
+    uint32_t melee_input() const;
+    uint32_t reflex_input() const;
     std::atomic<uint64_t> m_reflex_toggles{0};
     bool m_left_trigger_down{false};
     uint32_t m_last_hands_sequence{0};

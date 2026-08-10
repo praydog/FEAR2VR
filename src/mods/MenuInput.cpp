@@ -5,6 +5,7 @@
 #include "Log.hpp"
 #include "RenderHook.hpp"
 #include "SyntheticInput.hpp"
+#include "sdk/Actions.hpp"
 #include "sdk/Engine.hpp"
 #include "sdk/Events.hpp"
 #include "FramePublisher.hpp"
@@ -170,7 +171,11 @@ void MenuInput::poll_controller() {
             if (menu_up) {
                 tap(kEscape);
             } else {
-                SyntheticInput::get().tap(kVkEscape);
+                // The action, not the key. Opening the pause menu is COMMAND_ID_MENU, and a
+                // player who has moved it off Escape still expects this button to pause.
+                // kVkEscape remains the fallback for an unreadable profile.
+                SyntheticInput::get().tap(
+                    sdk::Actions::input_for(sdk::Action::Menu).value_or(kVkEscape));
             }
             m_pause_presses.fetch_add(1, std::memory_order_relaxed);
         }

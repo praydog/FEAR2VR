@@ -21,6 +21,7 @@
 #include "Hooks.hpp"
 #include "Log.hpp"
 #include "Mods.hpp"
+#include "sdk/Actions.hpp"
 #include "sdk/CClientMgr.hpp"
 #include "sdk/ObjectWatch.hpp"
 #include "sdk/CClientShell.hpp"
@@ -11566,6 +11567,11 @@ bool Framework::initialize() {
               .b("vr_sprinting", VR::get().sprinting())
               .u("vr_sprint_vk", static_cast<size_t>(VR::get().sprint_vk()))
               .u("vr_melee_vk", static_cast<size_t>(VR::get().melee_vk()))
+              // Where the controller's actions are resolved FROM. Without this a release bug
+              // report saying "jump does nothing" cannot distinguish a rebound profile, an
+              // unreadable one, and a broken hook.
+              .b("actions_loaded", sdk::Actions::loaded())
+              .s("actions_source", sdk::Actions::source_path())
               .u("vr_weapon_cycles", VR::get().weapon_cycles())
               .u("vr_uses", VR::get().uses())
               .u("si_wheel_delivered", SyntheticInput::get().wheel_delivered())

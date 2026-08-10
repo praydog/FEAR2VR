@@ -19,6 +19,7 @@
 #include "ViewHook.hpp"
 #include "sdk/CClientMgr.hpp"
 #include "sdk/Model.hpp"
+#include "sdk/Actions.hpp"
 #include "sdk/WeaponMgr.hpp"
 #include "SyntheticInput.hpp"
 #include "HeadTracking.hpp"
@@ -31,15 +32,45 @@ std::atomic<uint64_t> g_applied{0};
 std::atomic<bool> g_head_valid{false};
 std::atomic<bool> g_hands{false};
 
-// Forward, back, strafe left, strafe right -- the engine's own bindings, driven as keys so movement
-// stays aim-relative and animation-correct. Order matches the bit order in update_locomotion.
-constexpr std::array<uint32_t, 4> kLocoKeys{'W', 'S', 'A', 'D'};
+// ---- ACTIONS, NOT KEYS -------------------------------------------------------------------------
+//
+// These used to be hardcoded virtual keys ('W', VK_SPACE, 'R', 'E', VK_SHIFT, ...), which is only
+// correct on a default profile: rebind jump and the controller's jump button presses a key that no
+// longer jumps. sdk::Actions resolves an action to whatever input the PLAYER has bound to the
+// engine's own command id, so the controller drives the action rather than a key that usually means
+// it.
+//
+// The values below are the shipped defaults, kept ONLY as a last resort for when no profile can be
+// read at all -- see action_input(). They are the behaviour this mod already had, so falling back
+// is never worse than before, and it is logged rather than silent.
+constexpr uint32_t kDefaultForward = 'W';
+constexpr uint32_t kDefaultBackward = 'S';
+constexpr uint32_t kDefaultStrafeLeft = 'A';
+constexpr uint32_t kDefaultStrafeRight = 'D';
+constexpr uint32_t kDefaultJump = 0x20;    // VK_SPACE
+constexpr uint32_t kDefaultReload = 0x52;  // 'R'
+constexpr uint32_t kDefaultUse = 0x45;     // 'E'
 
-// The game's own default bindings. Sent as keys so the engine's binding table, cooldowns and
-// animation gating all apply exactly as they do for a keyboard player.
-constexpr uint32_t kKeyJump = 0x20;    // VK_SPACE
-constexpr uint32_t kKeyReload = 0x52;  // 'R'
-constexpr uint32_t kKeyUse = 0x45;     // 'E'
+// Order matches the bit order in update_locomotion.
+constexpr std::array<sdk::Action, 4> kLocoActions{sdk::Action::Forward, sdk::Action::Backward,
+                                                  sdk::Action::StrafeLeft,
+                                                  sdk::Action::StrafeRight};
+constexpr std::array<uint32_t, 4> kLocoDefaults{kDefaultForward, kDefaultBackward,
+                                                kDefaultStrafeLeft, kDefaultStrafeRight};
+
+// The input to press for `action`. Resolved from the player's bindings; `fallback` is used only
+// when the profile is unreadable, and that is reported once so a bug report can say so.
+uint32_t action_input(sdk::Action action, uint32_t fallback) {
+    if (const auto bound = sdk::Actions::input_for(action)) {
+        return *bound;
+    }
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+        LOGX("[vr] no bindings available -- falling back to the shipped default keys, which are "
+             "wrong for any player who has rebound them");
+    }
+    return fallback;
+}
 
 constexpr float kStickDeadZone = 0.30f;
 constexpr float kSnapFire = 0.70f;   // beyond this, a snap fires
@@ -69,7 +100,19 @@ constexpr float kTriggerRelease = 0.35f;
 
 // The engine's fire button, in the encoding SyntheticInput uses: mouse buttons live above the
 // virtual-key range, and 0x100 is the left one.
-constexpr uint8_t kMouseFire = 0;
+constexpr uint8_t kDefaultFireButton = 0;
+
+// Fire keeps the direct mouse path -- its ordering against the engine's own poll matters, see the
+// call site -- but WHICH button comes from the binding. A player who has fire on a key rather than
+// a mouse button is handled too: that lands above the mouse range and goes through SyntheticInput.
+void issue_fire(bool down) {
+    const uint32_t code = action_input(sdk::Action::Fire, 0x100u + kDefaultFireButton);
+    if (code >= 0x100u) {
+        sdk::Input::send_mouse_button(static_cast<uint8_t>(code - 0x100u), down);
+    } else {
+        SyntheticInput::get().hold(code, down);
+    }
+}
 
 // Last head orientation seen, in both spaces. Reported so a consumer -- or the fixture -- can
 // check the conversion against its input without recomputing it, which would just be asserting
@@ -78,6 +121,24 @@ std::atomic<float> g_head_rt[4]{};
 std::atomic<float> g_head_eng[4]{};
 
 } // namespace
+
+// The three actions that carry a manual override. An explicit value wins so the fixture can pin a
+// key; otherwise the player's own binding decides, with the historical default only if no profile
+// can be read at all.
+uint32_t VR::sprint_input() const {
+    const uint32_t pinned = m_sprint_vk.load(std::memory_order_relaxed);
+    return pinned != 0 ? pinned : action_input(sdk::Action::Sprint, 0x10);
+}
+
+uint32_t VR::melee_input() const {
+    const uint32_t pinned = m_melee_vk.load(std::memory_order_relaxed);
+    return pinned != 0 ? pinned : action_input(sdk::Action::Melee, 'V');
+}
+
+uint32_t VR::reflex_input() const {
+    const uint32_t pinned = m_reflex_vk.load(std::memory_order_relaxed);
+    return pinned != 0 ? pinned : action_input(sdk::Action::Reflex, 0x11);
+}
 
 VR& VR::get() {
     static VR inst{};
@@ -216,11 +277,11 @@ void VR::set_trigger_enabled(bool enabled) {
     if (!enabled && g_firing.exchange(false, std::memory_order_relaxed)) {
         // NEVER LEAVE THE TRIGGER HELD. A latched fire button outlives this mod -- the engine keeps
         // the state -- and would burn the magazine with nobody driving it.
-        sdk::Input::send_mouse_button(kMouseFire, false);
+        issue_fire(false);
         if (m_sprinting.exchange(false, std::memory_order_relaxed)) {
             // Engine state OUTLIVES this DLL, so a held key is ours to put back. Leaving Shift down
             // through an uninject leaves the player sprinting with no controller attached to it.
-            SyntheticInput::get().hold(m_sprint_vk.load(std::memory_order_relaxed), false);
+            SyntheticInput::get().hold(sprint_input(), false);
         }
     }
 }
@@ -681,7 +742,7 @@ void VR::update_trigger() {
     // EDGE ONLY. The engine consumes a press edge; re-asserting every frame would keep overwriting
     // the transition it is looking for -- the same reason SyntheticInput applies keys after the
     // engine's own poll rather than before it.
-    sdk::Input::send_mouse_button(kMouseFire, now);
+    issue_fire(now);
     g_firing.store(now, std::memory_order_relaxed);
 
     if (now) {
@@ -694,8 +755,8 @@ void VR::set_locomotion(bool on) {
         // RELEASE WHAT WE ARE HOLDING, or turning the feature off leaves the player walking into a
         // wall forever with no key to let go of. The engine holds key state, not us.
         auto& si = SyntheticInput::get();
-        for (const auto vk : kLocoKeys) {
-            si.hold(vk, false);
+        for (size_t i = 0; i < kLocoActions.size(); ++i) {
+            si.hold(action_input(kLocoActions[i], kLocoDefaults[i]), false);
         }
         m_held_keys = 0;
         m_loco_keys.store(0, std::memory_order_relaxed);
@@ -742,10 +803,10 @@ void VR::update_locomotion() {
     // EDGE-DRIVEN, not re-asserted: hold() is a level, and writing the same level every frame would
     // fight the engine's own poll for no reason. Only transitions are sent.
     if (wanted != m_held_keys) {
-        for (size_t i = 0; i < kLocoKeys.size(); ++i) {
+        for (size_t i = 0; i < kLocoActions.size(); ++i) {
             const uint32_t bit = 1u << i;
             if ((wanted & bit) != (m_held_keys & bit)) {
-                si.hold(kLocoKeys[i], (wanted & bit) != 0u);
+                si.hold(action_input(kLocoActions[i], kLocoDefaults[i]), (wanted & bit) != 0u);
             }
         }
         m_held_keys = wanted;
@@ -1005,7 +1066,7 @@ void VR::update_buttons() {
     const bool want_sprint = left.active && (left.buttons & vr::VRRuntime::kButtonThumbstick) != 0u;
 
     if (want_sprint != m_sprinting.load(std::memory_order_relaxed)) {
-        si.hold(m_sprint_vk.load(std::memory_order_relaxed), want_sprint);
+        si.hold(sprint_input(), want_sprint);
         m_sprinting.store(want_sprint, std::memory_order_relaxed);
     }
 
@@ -1018,7 +1079,7 @@ void VR::update_buttons() {
                                               : (left.trigger > kTriggerPress);
 
         if (down && !m_left_trigger_down) {
-            if (si.tap(m_reflex_vk.load(std::memory_order_relaxed))) {
+            if (si.tap(reflex_input())) {
                 m_reflex_toggles.fetch_add(1, std::memory_order_relaxed);
             }
         }
@@ -1060,7 +1121,7 @@ void VR::update_buttons() {
     // key every frame overwrites the very transition it is looking for -- the same reason
     // SyntheticInput applies keys after the engine's own poll rather than before it.
     if ((pressed & vr::VRRuntime::kButtonA) != 0u) {
-        if (si.tap(kKeyJump)) {
+        if (si.tap(action_input(sdk::Action::Jump, kDefaultJump))) {
             m_jumps.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -1073,16 +1134,16 @@ void VR::update_buttons() {
     // Two taps in one frame is safe: SyntheticInput has 16 key slots and each claims its own, so
     // neither overwrites the other's edge.
     if ((pressed & vr::VRRuntime::kButtonB) != 0u) {
-        if (si.tap(kKeyReload)) {
+        if (si.tap(action_input(sdk::Action::Reload, kDefaultReload))) {
             m_reloads.fetch_add(1, std::memory_order_relaxed);
         }
-        if (si.tap(kKeyUse)) {
+        if (si.tap(action_input(sdk::Action::Use, kDefaultUse))) {
             m_uses.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
     if ((pressed & vr::VRRuntime::kButtonThumbstick) != 0u) {
-        if (si.tap(m_melee_vk.load(std::memory_order_relaxed))) {
+        if (si.tap(melee_input())) {
             m_melees.fetch_add(1, std::memory_order_relaxed);
         }
     }
