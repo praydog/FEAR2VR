@@ -3572,6 +3572,82 @@ and our supervisor thread run concurrently, and the engine could in principle cr
 before the poll succeeds. Making it deterministic needs a second gate at the decrypted OEP -- hold
 the main thread once plaintext is available, install hooks, then resume.
 
+**WORKING: the engine is now held at OEP while the mod installs its hooks.**
+
+    [gate] armed hardware execute breakpoint at 0x00652ED8 (SteamStub -> OEP)
+    [gate] engine parked at OEP -- installing hooks now
+    [gate] released -- engine continues into OEP
+    35: [hooks] installed Renderer_SetPresentationParams
+    43: [framework] initialized
+    48: [scenetarget] back buffer 1024x768 -> 4320x2224     <- the FIRST device, after our hooks
+
+Hooks precede the first device creation by construction rather than by luck. Two things had to be
+right, and each was wrong first:
+
+  1. WATCH THE OEP, NOT THE CALL TO IT. 0x7761F8 (`call [ebp+var_434]`) is the last call in `start`
+     and looked like the dispatch. A breakpoint there was verified armed AND still armed after
+     release (dr0=0x007761F8, dr7=0x1, thread alive) and never faulted -- so that call is one of
+     several tails in `start`, not the taken path. The destination, 0x652ED8 (RVA 0x252ED8), cannot
+     be avoided. Hardware breakpoints match an ADDRESS, not content, so arming .text while it is
+     still ciphertext is fine.
+  2. THE LAUNCHER MUST WAIT FOR THE DR, NOT FOR THE MODULE. Releasing on "LoadLibrary returned" let
+     the stub run past OEP while the supervisor thread was still starting. Waiting for the register
+     is safe where waiting for framework-ready is not -- arming a DR needs no decryption, so it
+     cannot deadlock against the stub -- and it needs no IPC, because the register read back off the
+     thread IS the handshake.
+
+Reading dr0/dr7 back after release is what separated "cleared" from "never executed", and is worth
+keeping as the first diagnostic if this ever regresses. After a successful gate they read 0.
+
+**Superseded, kept for the reasoning -- the earlier attempt that armed but never fired.** Status:
+
+    [main] supervisor thread start
+    [gate] armed hardware execute breakpoint at 0x007761F8 (SteamStub -> OEP)
+    [gate] OEP was never reached; proceeding ungated
+
+So the DR write succeeded on the parked primary thread and the address is right (base 0x400000 +
+RVA 0x3761F8), but no EXCEPTION_SINGLE_STEP arrived at 0x7761F8. Candidates, none yet eliminated:
+  - the DR did not survive: the primary thread is spinning inside OUR entry-point stub when it is
+    armed, and something between there and OEP clears DR7 (the stub's own code, or a Windows path);
+  - `start` does not reach 0x7761F8 linearly in this run;
+  - the fault is delivered but consumed by another handler before ours.
+The next diagnostic is cheap and decisive: log how many threads were armed, and read DR7/DR0 back
+from the primary thread a second later to see whether the bits are still set.
+
+The fallback is graceful and was exercised: framework initialised, hooks installed, zero crashes,
+game alive. So this is inert until it works rather than a regression.
+
+**The deterministic startup gate: SteamStub's call to OEP, at FEAR2.exe 0x7761F8.**
+Disassembled (commented in the IDB):
+
+    .bind:7761F8   call [ebp+var_434]     <- the OEP call
+    .bind:7761FE   pop edi / pop esi / pop ebx / leave / retn
+
+It is the last call `start` makes before its epilogue, and its target is the real OEP, 0x652ED8.
+That is the one instant that satisfies both constraints at once: the image is FULLY decrypted (the
+stub has finished), and the engine has not started (nothing has been created yet).
+
+USE A HARDWARE EXECUTE BREAKPOINT, NOT A PATCH. It changes no bytes, so stub self-verification
+cannot observe it -- unlike the byte patch this rules out, and unlike a debug port, which was tried
+and produced the "T:0000065432" rejection no other path produced. `src/mods/Watchpoints.hpp`
+already implements exactly this: DR7 R/W=00, length forced to 1, and execute watches are reported
+as FAULTS, i.e. the trap happens BEFORE the instruction runs.
+
+Sequence, using pieces that all already exist:
+  1. Launcher parks the process at the entry-point gate and injects (implemented, then reverted --
+     restore it).
+  2. The DLL arms an Execute watch at exe_base + 0x3761F8 on the primary thread. Safe at this point
+     precisely because it is hardware: the .bind code is still ciphertext and a patch there would be
+     destroyed by decryption.
+  3. Launcher releases the gate. The stub decrypts and runs.
+  4. The watch faults at 0x7761F8. The handler holds the primary thread until the framework reports
+     its hooks installed, then clears the watch and continues into OEP.
+
+This replaces the race that was measured twice: with the DLL loaded and spinning on a plaintext
+probe, r_InitRender was caught but Renderer_SetPresentationParams had already run, because
+observing decryption and reacting to it cannot be atomic. Gating EXECUTION rather than observing it
+is what makes the ordering a guarantee.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same

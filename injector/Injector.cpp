@@ -717,14 +717,52 @@ uint32_t launch_with_laa(const Config& cfg, const std::wstring& exe) {
         return give_up("the spoof did not verify");
     }
 
-    // NOT INJECTING HERE, THOUGH THE GATE IS THE RIGHT MOMENT IN PRINCIPLE. Tried and reverted:
-    // loading the DLL at the entry point got our hooks in before the device existed (verified by
-    // log order), but Renderer_SetPresentationParams then never fired again -- the patch had been
-    // written into a region SteamStub had not finished decrypting, and was discarded. The plaintext
-    // probe only checks sub_46F715, which is decrypted earlier than the renderer's code.
+    // ---- INJECT WHILE THE PROCESS IS STILL PARKED ---------------------------------------------
     //
-    // Doing this properly needs a per-region readiness check, or a second gate at the decrypted
-    // OEP. See ENGINE_NOTES.
+    // The stub holds the primary thread at the entry point with the loader initialised, which is
+    // the only moment we can exist before the engine builds anything. The DLL then arms a HARDWARE
+    // execute breakpoint on SteamStub's call to OEP and holds the engine there while it installs
+    // its hooks -- see the bootstrap gate in AgentRuntime.cpp.
+    //
+    // Wait ONLY for the module to appear, never for the mod to be ready: SteamStub cannot decrypt
+    // until this gate opens, and the DLL's gate is downstream of that, so waiting here deadlocks.
+    if (!cfg.dll.empty()) {
+        if (do_inject_pid(cfg, pi.dwProcessId, /*allow_resident=*/false)) {
+            for (int i = 0; i < 100 && !module_loaded(pi.dwProcessId, "fear2vr.dll"); ++i) {
+                Sleep(50);
+            }
+            printf("[laa] injected at the entry point, before the engine starts\n");
+
+            // ---- AND WAIT FOR ITS BREAKPOINT TO BE ARMED ------------------------------------
+            //
+            // "The module is loaded" is NOT "the gate is set". Releasing on the former let the stub
+            // run all the way to OEP while the DLL's supervisor thread was still starting, so the
+            // breakpoint was armed into a thread that had already gone past it -- measured as
+            // "armed ... / OEP was never reached".
+            //
+            // Waiting for THIS is safe where waiting for framework-ready is not: arming a debug
+            // register needs no decryption, so it cannot deadlock against the stub. And it needs no
+            // IPC -- the register itself is the handshake, read straight back off the thread.
+            const uintptr_t want_dr0 = base + 0x252ED8;  // the real OEP
+            bool armed = false;
+            for (int i = 0; i < 400 && !armed; ++i) {
+                CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                if (GetThreadContext(pi.hThread, &ctx)) {
+                    armed = ctx.Dr0 == want_dr0 && (ctx.Dr7 & 0x1) != 0;
+                }
+                if (!armed) {
+                    Sleep(5);
+                }
+            }
+            printf("[laa] OEP breakpoint %s before releasing the entry point\n",
+                   armed ? "armed and verified" : "NOT armed (continuing ungated)");
+        } else {
+            printf("[laa] early injection failed; the game still runs and --inject works once it "
+                   "is up\n");
+        }
+    }
+
     FlushInstructionCache(pi.hProcess, reinterpret_cast<LPCVOID>(ep), 5);
     const uint32_t go = 1;
     if (!wpm(pi.hProcess, gate, &go, 4)) return give_up("could not release the gate");
@@ -754,6 +792,22 @@ uint32_t launch_with_laa(const Config& cfg, const std::wstring& exe) {
             return give_up("could not put the page protections back");
         }
         FlushInstructionCache(pi.hProcess, reinterpret_cast<LPCVOID>(ep), 5);
+    }
+
+    // DIAGNOSTIC: the breakpoint is verified armed before release and still never fires. Read it
+    // back afterwards to separate "the DR was cleared" from "OEP never ran on this thread" -- some
+    // protectors continue on a thread other than the one that entered the stub, and debug registers
+    // are per-thread.
+    {
+        Sleep(1500);
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        const bool got = GetThreadContext(pi.hThread, &ctx) != FALSE;
+        DWORD exit_code = 0;
+        GetExitCodeThread(pi.hThread, &exit_code);
+        printf("[laa] after release: dr0=0x%08lX dr7=0x%08lX (read=%d, primary thread exit=%lu; "
+               "259 = still running)\n",
+               got ? ctx.Dr0 : 0, got ? ctx.Dr7 : 0, got ? 1 : 0, exit_code);
     }
 
     const uint32_t pid = pi.dwProcessId;

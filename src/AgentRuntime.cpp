@@ -7,6 +7,7 @@
 #include <thread>
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include "Framework.hpp"
 #include "Log.hpp"
@@ -18,6 +19,132 @@
 //
 // The plaintext is the signal. sub_46F715 begins `fldz; push esi` = D9 EE 56, known from the
 // FEAR2_dump.exe IDB. Separate function because MSVC rejects __try in anything requiring unwinding.
+// ---- BOOTSTRAP GATE: HOLD THE ENGINE AT SteamStub's CALL TO OEP --------------------------------
+//
+// The launcher injects us while the process is parked at the entry point, which is the only way to
+// exist before the engine builds anything. Two facts make the naive versions fail:
+//
+//   - FEAR2.exe is SteamStub-wrapped, so .text is CIPHERTEXT until the stub runs. A byte patch
+//     placed now is destroyed by decryption; measured, and it silently cost us
+//     Renderer_SetPresentationParams.
+//   - Watching for decryption and then reacting is a RACE. Measured twice: with the DLL loaded and
+//     spinning on a plaintext probe, r_InitRender was caught while SetPresentationParams had
+//     already run.
+//
+// So gate EXECUTION rather than observing it. FEAR2.exe 0x7761F8 is `call [ebp+var_434]`, the last
+// call SteamStub's `start` makes before its epilogue, and its target is the real OEP (0x652ED8). At
+// that instruction the image is fully decrypted and the engine has not started.
+//
+// A HARDWARE execute breakpoint is what makes this safe: DR7 R/W=00 changes no bytes, so it can be
+// armed while .bind is still ciphertext and stub self-verification has nothing to observe. A
+// debug port was tried instead and produced "T:0000065432", an error no other path produced.
+//
+// This is deliberately self-contained rather than using the Watchpoints mod: that mod is
+// initialised by the framework, and the framework is precisely what this gate exists to run first.
+namespace {
+
+// THE OEP ITSELF, not SteamStub's call to it. 0x7761F8 (`call [ebp+var_434]`) looked like the
+// dispatch, and the breakpoint there was verified armed and still armed after release -- dr0
+// 0x007761F8, dr7 0x1, thread alive -- yet never faulted. So that call is one of several tails in
+// `start` and not the taken path.
+//
+// The destination cannot be avoided. And a hardware breakpoint does not care that .text is still
+// ciphertext when it is armed: DRs match an ADDRESS, not content, so the fault happens the moment
+// the decrypted OEP executes.
+constexpr uintptr_t kOepCallRva = 0x252ED8;  // FEAR2.exe 0x652ED8, the real OEP
+
+std::atomic<bool> g_gate_hit{false};
+std::atomic<bool> g_gate_release{false};
+uintptr_t g_gate_addr = 0;
+PVOID g_gate_veh = nullptr;
+
+LONG CALLBACK gate_veh(EXCEPTION_POINTERS* info) {
+    if (info->ExceptionRecord->ExceptionCode != static_cast<DWORD>(EXCEPTION_SINGLE_STEP) ||
+        g_gate_addr == 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress) != g_gate_addr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Execute watches FAULT, so we are here BEFORE the call runs. Park until the supervisor has the
+    // hooks in, then take the breakpoint back out and fall through into OEP.
+    g_gate_hit.store(true, std::memory_order_release);
+    while (!g_gate_release.load(std::memory_order_acquire)) {
+        Sleep(1);
+    }
+    info->ContextRecord->Dr0 = 0;
+    info->ContextRecord->Dr7 &= ~static_cast<DWORD>(0x1);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// The engine's thread: everything in this process that is not us. At injection time that is the
+// primary thread, still parked at the launcher's entry-point gate.
+bool arm_gate_on_other_threads(uintptr_t addr) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const DWORD self_pid = GetCurrentProcessId();
+    const DWORD self_tid = GetCurrentThreadId();
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    uint32_t armed = 0;
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID != self_pid || te.th32ThreadID == self_tid) {
+                continue;
+            }
+            HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME,
+                                   FALSE, te.th32ThreadID);
+            if (th == nullptr) {
+                continue;
+            }
+            SuspendThread(th);
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(th, &ctx)) {
+                ctx.Dr0 = static_cast<DWORD>(addr);
+                // Slot 0 local enable; R/W=00 (execute) and LEN=00 (1 byte) are already zero.
+                ctx.Dr7 = (ctx.Dr7 & ~static_cast<DWORD>(0xF0000)) | 0x1;
+                ctx.Dr6 = 0;
+                ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                if (SetThreadContext(th, &ctx)) {
+                    ++armed;
+                }
+            }
+            ResumeThread(th);
+            CloseHandle(th);
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    return armed != 0;
+}
+
+// Returns true if the gate is armed and the caller should wait for it.
+bool install_bootstrap_gate() {
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base == 0) {
+        return false;
+    }
+    g_gate_addr = base + kOepCallRva;
+    g_gate_veh = AddVectoredExceptionHandler(1, gate_veh);
+    if (g_gate_veh == nullptr) {
+        LOGX("[gate] AddVectoredExceptionHandler failed -- continuing without the OEP gate");
+        return false;
+    }
+    if (!arm_gate_on_other_threads(g_gate_addr)) {
+        RemoveVectoredExceptionHandler(g_gate_veh);
+        g_gate_veh = nullptr;
+        LOGX("[gate] could not arm the OEP breakpoint -- continuing without it");
+        return false;
+    }
+    LOGX("[gate] armed hardware execute breakpoint at 0x%08IX (SteamStub -> OEP)", g_gate_addr);
+    return true;
+}
+
+} // namespace
+
 static bool exe_is_decrypted() {
     constexpr uintptr_t kProbeRva = 0x6F715;
     constexpr uint8_t kProbe[3] = {0xD9, 0xEE, 0x56};
@@ -71,24 +198,35 @@ void run_supervisor(void* self_raw, int32_t ipc_port) {
     // g_framework is assigned exactly once here and deliberately NEVER reset:
     // after a clean unmap the whole image goes away; on the dormant path the
     // object must stay for any straggler. Destruction never runs in-process.
-    // Runs on THIS supervisor thread, never on the launcher's. The launcher releases the entry
-    // point as soon as LoadLibrary returns; if it waited for us instead, SteamStub could never run
-    // and the wait below would never finish -- the stub is what decrypts the image.
-    {
+    // Hold the engine at SteamStub's call to OEP while the framework installs its hooks. Falls back
+    // to the plaintext poll if the gate cannot be armed -- worse (it is a race) but not broken.
+    const bool gated = install_bootstrap_gate();
+    if (gated) {
+        for (int i = 0; i < 30000 && !g_gate_hit.load(std::memory_order_acquire); ++i) {
+            Sleep(1);
+        }
+        LOGX("[gate] %s", g_gate_hit.load(std::memory_order_acquire)
+                              ? "engine parked at OEP -- installing hooks now"
+                              : "OEP was never reached; proceeding ungated");
+    } else {
         bool decrypted = false;
-        for (int i = 0; i < 2000 && !decrypted; ++i) {  // up to ~20s
+        for (int i = 0; i < 4000000 && !decrypted; ++i) {
             decrypted = exe_is_decrypted();
             if (!decrypted) {
-                Sleep(10);
+                SwitchToThread();
             }
         }
-        LOGX("[main] exe %s", decrypted ? "decrypted -- safe to install hooks"
-                                        : "NEVER matched its plaintext signature (hooks may be "
-                                          "written into ciphertext)");
+        LOGX("[main] exe %s", decrypted ? "decrypted" : "NEVER matched its plaintext signature");
     }
 
     g_framework = std::make_unique<Framework>(self, ipc_port);
     bool ipc_up = g_framework->initialize();
+
+    // Hooks are in (or failed) -- either way the engine must not stay parked.
+    if (gated) {
+        g_gate_release.store(true, std::memory_order_release);
+        LOGX("[gate] released -- engine continues into OEP");
+    }
 
     if (!ipc_up) {
         // Without IPC no /unload can ever arrive; leave the module resident but
