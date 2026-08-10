@@ -522,6 +522,83 @@ LONG WINAPI host_crash_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// ---- WHAT THE HEADSET SHOWS WHEN THERE IS NO FRAME ---------------------------------------------
+//
+// Skipping the upload leaves the swapchain image holding whatever was in that memory, which the
+// compositor happily shows: flickering garbage colours. Uninitialised is not "nothing" -- it is
+// noise, and it is unpleasant to wear.
+//
+// So paint something deliberate instead: black, with FEAR2VR spelled out so it is obvious the host
+// is alive and simply has no picture yet (opening movies, main menu, or a stalled game).
+//
+// A 5x7 bitmap font, drawn by hand rather than pulled in as a dependency. Seven glyphs is less code
+// than any font library's initialisation, and this must work before anything else does.
+namespace placeholder {
+
+constexpr int kGlyphW = 5;
+constexpr int kGlyphH = 7;
+
+// Row bits, MSB-left across 5 columns. F E A R 2 V R
+constexpr uint8_t kGlyphs[7][kGlyphH] = {
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10},  // F
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F},  // E
+    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // A
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // R
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},  // 2
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},  // V
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // R
+};
+
+// BGRA, black background, dim so it is restful to look at rather than a bright slab.
+void build(std::vector<uint8_t>& out, uint32_t w, uint32_t h) {
+    out.assign(static_cast<size_t>(w) * h * 4u, 0u);
+    if (w < 64 || h < 32) {
+        return;
+    }
+    // Scale the word to roughly a quarter of the eye's width, and keep it whole pixels so the
+    // glyphs stay crisp instead of shimmering.
+    const int glyphs = 7;
+    const int spacing = 1;
+    const int cells = glyphs * (kGlyphW + spacing) - spacing;
+    int scale = static_cast<int>(w / 4u) / cells;
+    if (scale < 1) {
+        scale = 1;
+    }
+    const int text_w = cells * scale;
+    const int text_h = kGlyphH * scale;
+    const int ox = (static_cast<int>(w) - text_w) / 2;
+    const int oy = (static_cast<int>(h) - text_h) / 2;
+
+    for (int g = 0; g < glyphs; ++g) {
+        const int gx = ox + g * (kGlyphW + spacing) * scale;
+        for (int row = 0; row < kGlyphH; ++row) {
+            const uint8_t bits = kGlyphs[g][row];
+            for (int col = 0; col < kGlyphW; ++col) {
+                if ((bits & (1u << (kGlyphW - 1 - col))) == 0u) {
+                    continue;
+                }
+                for (int sy = 0; sy < scale; ++sy) {
+                    for (int sx = 0; sx < scale; ++sx) {
+                        const int px = gx + col * scale + sx;
+                        const int py = oy + row * scale + sy;
+                        if (px < 0 || py < 0 || px >= static_cast<int>(w) ||
+                            py >= static_cast<int>(h)) {
+                            continue;
+                        }
+                        auto* p = &out[(static_cast<size_t>(py) * w + px) * 4u];
+                        p[0] = 0x60;  // B
+                        p[1] = 0x50;  // G
+                        p[2] = 0x40;  // R
+                        p[3] = 0xFF;
+                    }
+                }
+            }
+        }
+    }
+}
+
+} // namespace placeholder
+
 int main(int argc, char** argv) {
     SetUnhandledExceptionFilter(host_crash_handler);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -2481,6 +2558,37 @@ int main(int argc, char** argv) {
         // The right answer is to show the last picture again. A swapchain whose image has been
         // released may be submitted on later frames without re-acquiring, and the runtime uses that
         // last released image -- so holding a frame costs nothing and is what a compositor expects.
+        // No frame yet -- paint the placeholder rather than leaving uninitialised memory on show.
+        if (fs.shouldRender != XR_FALSE && !have_frame && screen[0] != XR_NULL_HANDLE &&
+            screen_w != 0 && screen_h != 0) {
+            static std::vector<uint8_t> ph;
+            static uint32_t ph_w = 0, ph_h = 0;
+            if (ph_w != screen_w || ph_h != screen_h) {
+                placeholder::build(ph, screen_w, screen_h);
+                ph_w = screen_w;
+                ph_h = screen_h;
+            }
+            for (uint32_t e = 0; e < 2 && !ph.empty(); ++e) {
+                if (screen[e] == XR_NULL_HANDLE) {
+                    continue;
+                }
+                uint32_t index = 0;
+                XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                if (XR_FAILED(xrAcquireSwapchainImage(screen[e], &ai, &index)) ||
+                    index >= screen_images[e].size()) {
+                    continue;
+                }
+                XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                wi.timeout = XR_INFINITE_DURATION;
+                if (XR_SUCCEEDED(xrWaitSwapchainImage(screen[e], &wi))) {
+                    ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, ph.data(),
+                                           screen_w * 4u, 0);
+                }
+                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(screen[e], &ri);
+            }
+        }
+
         if (fs.shouldRender != XR_FALSE && have_frame && screen[0] != XR_NULL_HANDLE) {
             bool both_eyes_uploaded = true;
 
