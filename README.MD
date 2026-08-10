@@ -2,6 +2,8 @@
 
 VR mod for F.E.A.R. 2: Project Origin
 
+Work in progress. Not yet released.
+
 ## Features
 
 * Full stereoscopic 3D
