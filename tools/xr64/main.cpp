@@ -613,6 +613,7 @@ int main(int argc, char** argv) {
     // How long to wait for a NEW game frame before giving up and re-showing the last one. This is
     // what lets the runtime observe the game's real rate and engage its own reprojection; see the
     // wait itself. Zero restores the old always-submit behaviour for an A/B.
+    bool no_crop = false;  // submit the whole rendered picture with its symmetric FOV
     uint32_t content_wait_ms = 12;
     // ---- DELIBERATELY SUBMIT AN OLDER POSE ------------------------------------------------------
     //
@@ -648,6 +649,20 @@ int main(int argc, char** argv) {
             max_seconds = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--pose-lag") == 0 && i + 1 < argc) {
             pose_lag_steps = static_cast<uint32_t>(std::atoi(argv[++i]));
+        } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+            // ---- THE HOST HAD NO LOG, WHICH IS WHY THE RUNTIME SIDE WAS BLIND ----------------
+            //
+            // Everything here goes to stdout and dies with the console, so the ONE component that
+            // actually talks to the runtime left no record -- while the mod's side has been fully
+            // logged all along. Chasing a fault that only reproduces on one runtime, that is the
+            // wrong half to be able to read.
+            //
+            // Line-buffered so a hang or a crash still leaves everything up to that moment on disk.
+            if (std::freopen(argv[++i], "w", stdout) != nullptr) {
+                std::setvbuf(stdout, nullptr, _IOLBF, 4096);
+            }
+        } else if (std::strcmp(argv[i], "--no-crop") == 0) {
+            no_crop = true;
         } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
             content_wait_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--no-ui") == 0) {
@@ -816,6 +831,25 @@ int main(int argc, char** argv) {
         blend_r = xrEnumerateEnvironmentBlendModes(g_instance, system,
                                                    XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
                                                    blend_count, &blend_count, blend_modes.data());
+
+        // RETRY ON SIZE_INSUFFICIENT. Observed live against Meta XR Simulator: the count call
+        // answered 1, the fill call then demanded 2 and failed --
+        //
+        //   xrEnumerateEnvironmentBlendModes -> XR_ERROR_SIZE_INSUFFICIENT (2)
+        //   environment blend mode OPAQUE, from 2 offered:
+        //     UNKNOWN
+        //
+        // so the modes were never read and OPAQUE went out unverified, with a bogus "UNKNOWN" in
+        // the log. The two-call idiom has to tolerate the count growing between the calls; the
+        // failure writes the required size, so one retry is enough.
+        if (blend_r == XR_ERROR_SIZE_INSUFFICIENT && blend_count > blend_modes.size()) {
+            blend_modes.resize(blend_count);
+            blend_r = xrEnumerateEnvironmentBlendModes(g_instance, system,
+                                                       XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                       blend_count, &blend_count,
+                                                       blend_modes.data());
+        }
+        blend_modes.resize(blend_count);
     }
 
     if (XR_FAILED(blend_r) || blend_modes.empty()) {
@@ -1016,60 +1050,51 @@ int main(int argc, char** argv) {
     std::printf("[host] %u swapchain format(s), using %lld\n", format_count,
                 static_cast<long long>(chosen_format));
 
+    // EVERY format, named. The runtime skips a blit when our image's centre pixel reads zero
+    // ("[DIAG-ZEROSKIP] Skipping blit: source image center pixel is zero"), and it reads zero
+    // because the game's back buffer is X8R8G8B8 -- alpha bits undefined, in practice 0 -- copied
+    // straight into an ALPHA format. A format that ignores alpha would fix that for nothing, so it
+    // has to be known whether one is offered rather than assumed either way.
+    for (uint32_t fi = 0; fi < format_count && fi < formats.size(); ++fi) {
+        const char* name = "?";
+        switch (formats[fi]) {
+            case 28: name = "R8G8B8A8_UNORM"; break;
+            case 29: name = "R8G8B8A8_UNORM_SRGB"; break;
+            case 87: name = "B8G8R8A8_UNORM"; break;
+            case 91: name = "B8G8R8A8_UNORM_SRGB"; break;
+            case 88: name = "B8G8R8X8_UNORM (no alpha)"; break;
+            case 93: name = "B8G8R8X8_UNORM_SRGB (no alpha)"; break;
+            case 10: name = "R16G16B16A16_FLOAT"; break;
+            case 24: name = "R10G10B10A2_UNORM"; break;
+            default: break;
+        }
+        std::printf("[host]   format %lld = %s\n", static_cast<long long>(formats[fi]), name);
+    }
+
+    // ---- NO PER-EYE SWAPCHAINS: THE SCREEN CHAINS ARE THE ONLY ONES --------------------------
+    //
+    // A second set used to be created here, at the runtime's recommended size, for a startup test
+    // pattern. The pattern is gone (the black FEAR2VR placeholder covers "no game frame yet" and
+    // paints into the screen chains), but merely CREATING these was still fatal on Meta XR
+    // Simulator:
+    //
+    //   [host] eye 0 swapchain 1440x1584 -> XR_SUCCESS      <- claims view 0
+    //   [host] eye 1 swapchain 1440x1584 -> XR_SUCCESS      <- claims view 1
+    //   [sim]  Replacing existing color swapchain (viewIndex=0) - cleaning up previous swapchain
+    //
+    // The simulator associates swapchains with view indices in CREATION ORDER, so the first two
+    // claimed views 0 and 1; when the real screen chains were created they replaced them, and the
+    // compositor destroyed the previous pair and stopped compositing for the rest of the session.
+    //
+    // That is why the menu looked fine and only the world was frozen: the menu the wearer sees is
+    // the UI QUAD, on its own swapchain. The projection layer had been dead since startup -- there
+    // was simply nothing in it to notice until a world put content there.
+    //
+    // Nothing in the spec ties a swapchain to a view before it is submitted, so this is a runtime
+    // behaviour to avoid rather than a rule we were breaking. Avoiding it is free: these were
+    // unused.
     std::vector<Eye> eyes(view_count);
 
-    for (uint32_t i = 0; i < view_count; ++i) {
-        XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        sc.format = chosen_format;
-        sc.sampleCount = 1;
-        sc.width = config_views[i].recommendedImageRectWidth;
-        sc.height = config_views[i].recommendedImageRectHeight;
-        sc.faceCount = 1;
-        sc.arraySize = 1;
-        sc.mipCount = 1;
-
-        r = xrCreateSwapchain(session, &sc, &eyes[i].swapchain);
-        eyes[i].width = sc.width;
-        eyes[i].height = sc.height;
-        std::printf("[host] eye %u swapchain %ux%u -> %s\n", i, sc.width, sc.height, rs(r));
-
-        if (XR_FAILED(r)) {
-            return 1;
-        }
-
-        uint32_t image_count = 0;
-        XrResult eye_img_r =
-            xrEnumerateSwapchainImages(eyes[i].swapchain, 0, &image_count, nullptr);
-        std::vector<XrSwapchainImageD3D11KHR> images(image_count,
-                                                     {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-
-        if (XR_SUCCEEDED(eye_img_r) && image_count > 0) {
-            eye_img_r = xrEnumerateSwapchainImages(
-                eyes[i].swapchain, image_count, &image_count,
-                reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
-        }
-
-        // The render target views built below are what the startup test pattern clears. With no
-        // images there is nothing to build them from, and that path indexed the empty vector
-        // regardless of how the enumeration went.
-        if (XR_FAILED(eye_img_r) || image_count == 0) {
-            std::printf("[host] eye %u swapchain images -> %s (%u)\n", i, rs(eye_img_r),
-                        image_count);
-            return 1;
-        }
-
-        for (uint32_t k = 0; k < image_count; ++k) {
-            ID3D11RenderTargetView* rtv = nullptr;
-            D3D11_RENDER_TARGET_VIEW_DESC rtvd{};
-            rtvd.Format = static_cast<DXGI_FORMAT>(chosen_format);
-            rtvd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-            device->CreateRenderTargetView(images[k].texture, &rtvd, &rtv);
-            eyes[i].views.push_back(rtv);
-        }
-
-        std::printf("[host]   %u image(s)\n", image_count);
-    }
 
     XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
@@ -1486,6 +1511,8 @@ int main(int argc, char** argv) {
     // code path means the mono case is not a special case that rots while stereo is developed.
     XrSwapchain screen[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
     std::vector<ID3D11Texture2D*> screen_images[2];
+    uint32_t screen_alloc_w = 0;  // what the swapchain images were ALLOCATED at, once
+    uint32_t screen_alloc_h = 0;
     uint32_t screen_w = 0;       // the size of ONE eye's picture, not of the published frame
     uint32_t screen_h = 0;
     uint32_t screen_layout = 0xFFFFFFFFu;
@@ -1570,6 +1597,52 @@ int main(int argc, char** argv) {
     bool running = false;
     uint64_t frames = 0;
     uint64_t content_waits_expired = 0;
+
+    // ---- WHERE THE HOST'S FRAME ACTUALLY GOES ---------------------------------------------
+    //
+    // Split three ways, because "the host is slow" is not actionable: time BLOCKED IN
+    // xrWaitFrame is the runtime pacing us and is normal; time in the content wait is us
+    // waiting for the game; time in xrEndFrame is the compositor accepting the submission.
+    // Only the last two can indicate a fault on our side, and on a software runtime the third
+    // is where contention would appear.
+    // ---- WALL CLOCK ON OUR OWN LINES ------------------------------------------------------
+    //
+    // The runtime's frontend (MetaXRSimulator.exe) writes its diagnostics -- including
+    // "[DIAG-ZEROSKIP] Skipping blit" -- DIRECTLY TO THE CONSOLE, not through a stdout handle it
+    // inherited from us. Console-direct writes bypass pipes, so neither freopen(--log) nor
+    // Tee-Object can ever capture them; they are only visible in the window. Two attempts to count
+    // them in a file returned zero for that reason, which is worse than no measurement.
+    //
+    // The frontend stamps its lines with wall clock. Ours had none, so a pasted console dump could
+    // not be lined up against them. Now it can: same clock, same format.
+    auto stamp = []() -> const char* {
+        static char buf[16];
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        std::snprintf(buf, sizeof(buf), "%02u:%02u:%02u.%03u", st.wHour, st.wMinute, st.wSecond,
+                      st.wMilliseconds);
+        return buf;
+    };
+
+    double t_wait_ms = 0.0, t_content_ms = 0.0, t_end_ms = 0.0;
+    double t_wait_max = 0.0, t_content_max = 0.0, t_end_max = 0.0;
+
+    // THE UPLOAD -- the hole in the first pass of this instrumentation. Acquire/wait/
+    // UpdateSubresource/release is the ONLY place the host touches memory the RUNTIME owns, so a
+    // software-backed swapchain costs here what a hardware one does not. A large CPU copy per eye
+    // per frame is also the right shape for a fault that slows the whole MACHINE, not just the
+    // game -- which is what separates the simulator from real hardware.
+    double t_upload_ms = 0.0, t_upload_max = 0.0;
+    uint64_t upload_bytes = 0;
+    LARGE_INTEGER qpf{};
+    QueryPerformanceFrequency(&qpf);
+    auto now_ms = [&qpf]() -> double {
+        LARGE_INTEGER t{};
+        QueryPerformanceCounter(&t);
+        return qpf.QuadPart ? (static_cast<double>(t.QuadPart) * 1000.0 /
+                               static_cast<double>(qpf.QuadPart))
+                            : 0.0;
+    };
     // ---- IS THE TRANSPORT DELIVERING IN ORDER, AND HOW OLD IS WHAT IT DELIVERS? ----------------
     // The consumer is the only place that can see either. `rendered_seq` is the pose the game says
     // it drew with; it must never go BACKWARDS, and its distance behind the pose we last published
@@ -1757,7 +1830,13 @@ int main(int argc, char** argv) {
         // xrWaitFrame is the compositor's throttle -- it is what paces this loop, not a sleep.
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
+        const double t_wait_0 = now_ms();
         const XrResult wait_r = xrWaitFrame(session, &fwi, &fs);
+        {
+            const double d = now_ms() - t_wait_0;
+            t_wait_ms += d;
+            if (d > t_wait_max) { t_wait_max = d; }
+        }
 
         // ---- A FAILED WAIT IS NOT A FRAME ------------------------------------------------------
         //
@@ -2051,6 +2130,7 @@ int main(int argc, char** argv) {
             // BOUNDED, because a game that has stopped -- loading, alt-tabbed, hitching -- must
             // not take the compositor down with it. Past the bound we submit the held frame, which
             // is the old behaviour and still better than nothing on screen.
+            const double t_content_0 = now_ms();
             if (!have_frame && content_wait_ms > 0) {
                 const ULONGLONG deadline = GetTickCount64() + content_wait_ms;
                 while (!have_frame && GetTickCount64() < deadline) {
@@ -2060,6 +2140,11 @@ int main(int argc, char** argv) {
                 if (!have_frame) {
                     ++content_waits_expired;
                 }
+            }
+            {
+                const double d = now_ms() - t_content_0;
+                t_content_ms += d;
+                if (d > t_content_max) { t_content_max = d; }
             }
 
             if (ui_enabled) {
@@ -2083,6 +2168,8 @@ int main(int argc, char** argv) {
         //
         // With no frame to size against, the runtime's own recommendation is the right size: it is
         // what the headset asks for, and the placeholder is the only thing being drawn.
+        // With no frame to size against, the runtime's own recommendation is the right size: it is
+        // what the headset asks for, and the placeholder is the only thing being drawn.
         const bool want_placeholder_chain =
             !have_frame && screen[0] == XR_NULL_HANDLE && !config_views.empty();
         const uint32_t make_w = want_placeholder_chain
@@ -2092,8 +2179,76 @@ int main(int argc, char** argv) {
                                     ? config_views[0].recommendedImageRectHeight
                                     : eye_h;
 
-        if ((have_frame || want_placeholder_chain) &&
-            (screen[0] == XR_NULL_HANDLE || make_w != screen_w || make_h != screen_h ||
+        // ---- ALLOCATED ONCE, DESCRIBED PER FRAME ------------------------------------------
+        //
+        // The condition here used to include `make_w != screen_w || layout != screen_layout`, so
+        // the chains were destroyed and rebuilt whenever the picture changed shape. Both change at
+        // world load: the menu publishes ONE image, the world publishes side-by-side, so eye_w
+        // halves AND the layout flips. The simulator's viewport visibly resizes at that moment and
+        // the compositor dies -- it keeps one color/depth swapchain per view index, destroys the
+        // previous when a different one appears, and never composites again.
+        //
+        // The spec's own wording says how this is meant to work: recommendedImageRectWidth is "the
+        // optimal width of XrSwapchainSubImage::imageRect to use when rendering this view into a
+        // swapchain" -- the recommendation sizes the RECT, not the image, and maxImageRectWidth
+        // caps it. So allocate the image once at the maximum, and let imageRect say how much of it
+        // is filled this frame. Nothing is ever replaced, so there is nothing to clean up.
+        // ---- SIZED TO THE FRAME, NOT TO THE RUNTIME'S MAXIMUM ------------------------------
+        //
+        // This allocated at maxImageRectWidth/Height (8192x8192 here) so the chain would never need
+        // recreating. It backfired, and Meta XR Simulator said so once a second:
+        //
+        //   [DIAG-ZEROSKIP] Skipping blit: source image center pixel is zero
+        //
+        // The runtime samples the centre of the swapchain IMAGE before blitting it. Only the
+        // top-left ~2160x2224 of an 8192x8192 image is ever written, so its centre at (4096,4096)
+        // is untouched memory -- zero, every frame, by construction. The runtime then refuses the
+        // blit and keeps the last frame it accepted, which is exactly the reported symptom: one
+        // frozen scene frame while the game and input carry on.
+        //
+        // Recreating the chain when the picture changes shape is FINE, which the same log settles:
+        // "Swapchains changed detected, re-enumerating... Successfully re-enumerated swapchains."
+        // The compositor handles replacement cleanly. So size to the frame and let it recreate.
+        // ---- ONE ALLOCATION, LARGE ENOUGH FOR EVERY SHAPE ------------------------------------
+        //
+        // Two constraints, both measured the hard way, and every earlier attempt satisfied one
+        // while breaking the other:
+        //
+        //   1. NEVER RECREATE THE CHAIN. Meta XR Simulator cannot survive a replacement: the
+        //      inner window visibly resizes and from that moment NOTHING composites again -- the
+        //      scene, the UI panel, everything. Its log says "Replacing existing color swapchain
+        //      ... cleaning up previous" then "Successfully re-enumerated", which reads like
+        //      recovery and is not one.
+        //   2. THE IMAGE CENTRE MUST HOLD WRITTEN PIXELS. Allocating at maxImageRect (8192x8192)
+        //      avoided (1) and broke this: only the top-left was filled, so the centre at
+        //      (4096,4096) was untouched memory and the runtime skipped every blit --
+        //      "[DIAG-ZEROSKIP] source image center pixel is zero" -- while our own centre-pixel
+        //      probe read live content from the source buffer.
+        //
+        // The shape changes because the menu publishes one layout and a world another (that is the
+        // width change on screen), so the allocation must cover BOTH from the first creation. An
+        // eye is at most the whole published frame (a mono frame is not split), so the full frame
+        // size is the bound. The picture is then CENTRED in it, which keeps the middle real in
+        // every configuration, and imageRect names where it landed -- exactly what imageRect is
+        // for, and it costs no reallocation.
+        // Sized to the FRAME. A fixed capacity-sized allocation was tried while chasing a
+        // freeze that turned out to be the MCP operator layer, not us -- it cost ~230 MB of VRAM to
+        // satisfy a constraint that did not exist. Recreating on a shape change is fine.
+        const uint32_t alloc_w = want_placeholder_chain ? config_views[0].recommendedImageRectWidth
+                                                        : make_w;
+        const uint32_t alloc_h = want_placeholder_chain ? config_views[0].recommendedImageRectHeight
+                                                        : make_h;
+
+        // The picture's size and layout may change at any time (menu -> world flips both). That is
+        // now a bookkeeping update, not a reallocation.
+        if (have_frame && screen[0] != XR_NULL_HANDLE) {
+            screen_w = make_w;
+            screen_h = make_h;
+            screen_layout = layout;
+        }
+
+        if ((have_frame || want_placeholder_chain) && alloc_w != 0 && alloc_h != 0 &&
+            (screen[0] == XR_NULL_HANDLE || alloc_w != screen_w || alloc_h != screen_h ||
              layout != screen_layout)) {
             // Sized to the GAME's frame, not the runtime's recommendation: at native size the
             // upload is a straight copy with no resampling anywhere in the path.
@@ -2114,10 +2269,12 @@ int main(int argc, char** argv) {
                     XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
                 sc.format = screen_format;
                 sc.sampleCount = 1;
+                // Sized to the RUNTIME'S MAXIMUM, not to this frame: see above. The eye's
+                // picture is placed in the top-left and imageRect names it.
                 // Sized to the EYE's picture, so the upload stays a straight copy with no
                 // resampling anywhere between the game's back buffer and the compositor.
-                sc.width = make_w;
-                sc.height = make_h;
+                sc.width = alloc_w;
+                sc.height = alloc_h;
                 sc.faceCount = 1;
                 sc.arraySize = 1;
                 sc.mipCount = 1;
@@ -2154,9 +2311,41 @@ int main(int argc, char** argv) {
                 for (uint32_t k = 0; k < n; ++k) {
                     screen_images[e].push_back(imgs[k].texture);
                 }
+
+                // ---- NO IMAGE MAY HOLD UNTOUCHED MEMORY -------------------------------------
+                //
+                // Measured: over fifteen one-per-second samples the runtime handed us image index
+                // 1 or 2 and NEVER 0 -- roughly a 0.2% coincidence if all three were rotating. So
+                // image 0 was never written, and something that samples it finds exactly what the
+                // runtime kept reporting:
+                //
+                //   [host] centre pixel B=24 G=25 R=23 A=10      <- what we upload
+                //   [DIAG-ZEROSKIP] source image center pixel is zero   <- 160 ms later
+                //
+                // A contradiction on one clock, and this resolves it: the reader was not looking at
+                // the image we wrote. Priming every image once removes the condition entirely,
+                // whichever index anything samples, and it costs one clear per image at creation.
+                //
+                // Opaque black, not transparent: it also settles the other open question, since an
+                // alpha of zero is the other way a pixel reads as zero.
+                for (uint32_t k = 0; k < n; ++k) {
+                    ID3D11RenderTargetView* rtv = nullptr;
+                    D3D11_RENDER_TARGET_VIEW_DESC rtvd{};
+                    rtvd.Format = static_cast<DXGI_FORMAT>(screen_format);
+                    rtvd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+                    if (SUCCEEDED(device->CreateRenderTargetView(imgs[k].texture, &rtvd, &rtv)) &&
+                        rtv != nullptr) {
+                        const float opaque_black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                        ctx->ClearRenderTargetView(rtv, opaque_black);
+                        rtv->Release();
+                    }
+                }
+                std::printf("[host] primed %u swapchain image(s) for eye %d\n", n, e);
             }
 
             if (ok) {
+                screen_alloc_w = alloc_w;
+                screen_alloc_h = alloc_h;
                 screen_w = make_w;
                 screen_h = make_h;
                 screen_layout = layout;
@@ -2195,6 +2384,9 @@ int main(int argc, char** argv) {
             ui_sc.mipCount = 1;
 
             const XrResult ui_r = xrCreateSwapchain(session, &ui_sc, &ui_swapchain);
+            // Primed below once enumerated: the chain is capacity-sized while the content is
+            // smaller, so the surround would otherwise be untouched memory -- the same hazard the
+            // eye chains had.
             std::printf("[host] ui swapchain %ux%u -> %s\n", uw, uh, rs(ui_r));
 
             uint32_t ui_n = 0;
@@ -2219,7 +2411,7 @@ int main(int argc, char** argv) {
             }
 
             if (!ui_images.empty()) {
-                ui_w = uw;
+                ui_w = uw;   // content size, not chain size: the chain is fixed at capacity
                 ui_h = uh;
                 ui_uploaded = false;
             } else {
@@ -2422,6 +2614,19 @@ int main(int argc, char** argv) {
                     if (menu_down_at[h] == 0) {
                         menu_down_at[h] = fs.predictedDisplayTime;
                         menu_consumed[h] = false;
+                        // Prime every UI image opaque black, same reason as the eye chains.
+                        for (auto* tex : ui_images) {
+                            ID3D11RenderTargetView* rtv = nullptr;
+                            D3D11_RENDER_TARGET_VIEW_DESC rtvd{};
+                            rtvd.Format = static_cast<DXGI_FORMAT>(screen_format);
+                            rtvd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+                            if (SUCCEEDED(device->CreateRenderTargetView(tex, &rtvd, &rtv)) && rtv) {
+                                const float ob[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                                ctx->ClearRenderTargetView(rtv, ob);
+                                rtv->Release();
+                            }
+                        }
+
                     } else if (!menu_consumed[h] &&
                                fs.predictedDisplayTime - menu_down_at[h] >= kMenuHoldNs) {
                         settings_ui.toggle();
@@ -2620,7 +2825,8 @@ int main(int argc, char** argv) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
                 if (XR_SUCCEEDED(xrWaitSwapchainImage(screen[e], &wi))) {
-                    ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, ph.data(),
+                    const D3D11_BOX ph_box{0, 0, 0, screen_w, screen_h, 1};
+                    ctx->UpdateSubresource(screen_images[e][index], 0, &ph_box, ph.data(),
                                            screen_w * 4u, 0);
                     ++painted;
                 }
@@ -2648,6 +2854,7 @@ int main(int argc, char** argv) {
                 // runtime's choice, two here and three there, so even a successful acquire is not
                 // a promise about a vector we filled somewhere else. Same shape as
                 // ui/SettingsUi.cpp's renderAndBuildQuad().
+                const double t_up_0 = now_ms();
                 if (XR_FAILED(xrAcquireSwapchainImage(screen[e], &ai, &index)) ||
                     index >= screen_images[e].size()) {
                     ++upload_failures;
@@ -2678,13 +2885,77 @@ int main(int argc, char** argv) {
                                               ? fbits + static_cast<size_t>(screen_w) * 4u
                                               : fbits;
 
-                ctx->UpdateSubresource(screen_images[e][index], 0, nullptr, eye_bits, fpitch, 0);
+                // A BOX, NOT THE WHOLE IMAGE. The swapchain image is allocated at the runtime's
+                // maximum and only the top-left screen_w x screen_h of it is this frame's picture,
+                // so a null box would both misplace the copy and walk off the end of the source.
+                // ---- WHAT IS ACTUALLY IN THE MIDDLE OF THE PICTURE ----------------------------
+                //
+                // The runtime refuses the blit with "[DIAG-ZEROSKIP] Skipping blit: source image
+                // center pixel is zero", so the centre pixel of what we upload IS zero. Which BYTES
+                // are zero decides what kind of bug this is, and the two answers point opposite
+                // ways:
+                //   only the alpha byte -> the game's X8R8G8B8 back buffer leaves alpha 0 and the
+                //                          runtime keys on it; fix with a format or a layer flag.
+                //   all four bytes      -> we are publishing BLACK FRAMES and the fault is ours,
+                //                          upstream of OpenXR entirely.
+                // One log line a second settles it. Read from the source we are about to copy.
+                if (e == 0) {
+                    static ULONGLONG s_last_px = 0;
+                    const ULONGLONG now_ms2 = GetTickCount64();
+                    if (now_ms2 - s_last_px > 1000) {
+                        s_last_px = now_ms2;
+                        // WHICH IMAGE WE JUST WROTE, and how many the chain has. The runtime reads
+                    // zero from "the source image" in the same second we upload a non-zero centre
+                    // pixel, so it is not reading what we wrote. If acquire keeps returning the
+                    // same index, the chain's other images are never written and a reader that
+                    // samples one of those sees untouched memory forever -- which is a frozen view
+                    // over live data, exactly as reported.
+                    std::printf("%s [host] wrote image index %u of %zu\n", stamp(), index,
+                                screen_images[e].size());
+                    const size_t cx = static_cast<size_t>(screen_w) / 2u;
+                        const size_t cy = static_cast<size_t>(screen_h) / 2u;
+                        const uint8_t* px = eye_bits + cy * static_cast<size_t>(fpitch) + cx * 4u;
+                        std::printf("%s [host] centre pixel B=%u G=%u R=%u A=%u (eye %ux%u pitch %u)\n",
+                                    stamp(), px[0], px[1], px[2], px[3], screen_w, screen_h, fpitch);
+                    }
+                }
+
+                // CENTRED, not top-left: see the allocation above for why the middle of the
+                // image must never be untouched memory.
+                const UINT off_x = screen_alloc_w > screen_w ? (screen_alloc_w - screen_w) / 2u : 0u;
+                const UINT off_y = screen_alloc_h > screen_h ? (screen_alloc_h - screen_h) / 2u : 0u;
+                const D3D11_BOX box{off_x, off_y, 0, off_x + screen_w, off_y + screen_h, 1};
+                ctx->UpdateSubresource(screen_images[e][index], 0, &box, eye_bits, fpitch, 0);
+
+                // ---- SUBMIT THE COPY BEFORE HANDING THE IMAGE BACK ----------------------------
+                //
+                // This runtime is RenderingD3D11OnVulkan: it does not consume our D3D11 texture
+                // directly, it COPIES it into a Vulkan image. That copy happens around
+                // xrReleaseSwapchainImage, on its own timeline -- so an UpdateSubresource still
+                // sitting unsubmitted in our immediate context is invisible to it, and it copies
+                // whatever the texture held before.
+                //
+                // That is the last thing consistent with everything measured: our CPU-side centre
+                // pixel is live (we read our own source buffer), all three images are written and
+                // primed, indices rotate, the rect is right, xrEndFrame succeeds -- and the runtime
+                // still reports the centre as zero, because it is reading GPU contents our commands
+                // had not yet produced.
+                //
+                // A native D3D11 runtime shares this device and its submission order, which is why
+                // real hardware never showed this. Flush costs one submission per eye per frame.
+                ctx->Flush();
 
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 // Result ignored deliberately: a release that fails has still handed the image
                 // back as far as this loop is concerned, there is nothing to retry, and the next
                 // acquire reports the real state. Same choice in ui/SettingsUi.cpp.
                 xrReleaseSwapchainImage(screen[e], &ri);
+                {
+                    const double d = now_ms() - t_up_0;
+                    t_upload_ms += d;
+                    if (d > t_upload_max) { t_upload_max = d; }
+                    upload_bytes += static_cast<uint64_t>(fpitch) * static_cast<uint64_t>(eye_h);
+                }
             }
 
             // Only once BOTH eyes landed. screen_ready is what lets the submit paths below point
@@ -2755,10 +3026,15 @@ int main(int argc, char** argv) {
                             }
                         }
 
-                        ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ui_staging.data(),
+                        // BOUNDED: the chain is capacity-sized and the content is smaller, so a
+                        // null box would both misplace the copy and read past the source.
+                        const D3D11_BOX ui_box{0, 0, 0, uw, uh, 1};
+                        ctx->UpdateSubresource(ui_images[ui_index], 0, &ui_box, ui_staging.data(),
                                                upitch, 0);
                     } else {
-                        ctx->UpdateSubresource(ui_images[ui_index], 0, nullptr, ubits, upitch, 0);
+                        const D3D11_BOX ui_box2{0, 0, 0, uw, uh, 1};
+                        ctx->UpdateSubresource(ui_images[ui_index], 0, &ui_box2, ubits, upitch, 0);
+                        ctx->Flush();  // same interop reason as the eye uploads
                     }
 
                     ui_uploaded = true;
@@ -2906,6 +3182,23 @@ int main(int argc, char** argv) {
             for (int e = 0; e < 2; ++e) {
                 const XrFovf& want = slot.wanted[e];
 
+                // What the GAME actually rendered: the symmetric frustum we asked it for.
+                XrFovf symmetric_fov{};
+                {
+                    const float mx = std::atan(std::fabs(std::tan(want.angleLeft)) >
+                                                       std::fabs(std::tan(want.angleRight))
+                                                   ? std::fabs(std::tan(want.angleLeft))
+                                                   : std::fabs(std::tan(want.angleRight)));
+                    const float my = std::atan(std::fabs(std::tan(want.angleUp)) >
+                                                       std::fabs(std::tan(want.angleDown))
+                                                   ? std::fabs(std::tan(want.angleUp))
+                                                   : std::fabs(std::tan(want.angleDown)));
+                    symmetric_fov.angleLeft = -mx;
+                    symmetric_fov.angleRight = mx;
+                    symmetric_fov.angleUp = my;
+                    symmetric_fov.angleDown = -my;
+                }
+
                 const float x0 = (tan_half_angle(want.angleLeft) + tx) / (2.0f * tx);
                 const float x1 = (tan_half_angle(want.angleRight) + tx) / (2.0f * tx);
 
@@ -2919,6 +3212,12 @@ int main(int argc, char** argv) {
                     return v < 0 ? 0 : (v > static_cast<int32_t>(extent) ? static_cast<int32_t>(extent) : v);
                 };
 
+                // MEASURED AGAINST THE PICTURE, which is what was rendered. Deriving this from the
+                // allocation was wrong on its own terms: only 2160 px of a 4320-wide image are ever
+                // written, so a rect claiming 3477 named pixels that do not exist and declared a
+                // FOV to match. It also did not fix the freeze -- starting the host in an already
+                // loaded world freezes with no geometry change at all -- so rect constancy was
+                // never the issue and correctness wins.
                 const int32_t px0 = to_px(x0, screen_w);
                 const int32_t px1 = to_px(x1, screen_w);
                 const int32_t py0 = to_px(y0, screen_h);
@@ -2953,11 +3252,90 @@ int main(int argc, char** argv) {
                 // headset's own asymmetric frustum.
                 proj_views[e].fov = want;
                 proj_views[e].subImage.swapchain = screen[e];
-                proj_views[e].subImage.imageRect.offset = {px0, py0};
-                proj_views[e].subImage.imageRect.extent = {(std::max)(1, px1 - px0),
-                                                           (std::max)(1, py1 - py0)};
+                // The picture may be centred inside a larger image, so the rect carries that
+                // offset. With the allocation sized to the frame these are simply zero.
+                const int32_t cx_off =
+                    screen_alloc_w > screen_w
+                        ? static_cast<int32_t>((screen_alloc_w - screen_w) / 2u) : 0;
+                const int32_t cy_off =
+                    screen_alloc_h > screen_h
+                        ? static_cast<int32_t>((screen_alloc_h - screen_h) / 2u) : 0;
+
+                // ---- TESTING WHETHER THE CROP ITSELF IS WHAT THE RUNTIME DISLIKES --------------
+                //
+                // The game renders the smallest SYMMETRIC frustum containing the headset's, and we
+                // declare the headset's ASYMMETRIC one with a crop (see HostState::fov_x). That is
+                // correct per the spec and works on hardware, but it is the one structural thing
+                // this submission does that a conventional app does not -- so --no-crop submits the
+                // whole rendered picture with the symmetric FOV instead, which is a plain
+                // full-image projection layer. If the freeze goes with it, the crop is implicated.
+                if (no_crop) {
+                    proj_views[e].fov = symmetric_fov;
+                    proj_views[e].subImage.imageRect.offset = {cx_off, cy_off};
+                    proj_views[e].subImage.imageRect.extent = {
+                        static_cast<int32_t>(screen_w), static_cast<int32_t>(screen_h)};
+                } else {
+                    proj_views[e].subImage.imageRect.offset = {px0 + cx_off, py0 + cy_off};
+                }
+                if (!no_crop) {
+                    proj_views[e].subImage.imageRect.extent = {(std::max)(1, px1 - px0),
+                                                               (std::max)(1, py1 - py0)};
+                }
             }
 
+            // ---- WHAT WE TELL THE RUNTIME TO SAMPLE -----------------------------------------
+            //
+            // The upload is proven live (the centre pixel changes as the wearer moves) and the
+            // runtime still shows a stale frame, so the remaining unknown is whether the RECT we
+            // declare covers the region we filled. The runtime sizes its readback to this rect --
+            // it logged 1738x2224 while the eye picture is 2160x2224 -- so a rect offset into
+            // unwritten pixels looks exactly like a freeze while every byte we upload is correct.
+            {
+                static ULONGLONG s_last_rect = 0;
+                const ULONGLONG now_r = GetTickCount64();
+                if (now_r - s_last_rect > 1000) {
+                    s_last_rect = now_r;
+                    const auto& l = proj_views[0].subImage.imageRect;
+                    const auto& rr = proj_views[1].subImage.imageRect;
+                    std::printf("%s [host] rect L off(%d,%d) ext(%dx%d) R off(%d,%d) ext(%dx%d) filled %ux%u\n",
+                                stamp(), l.offset.x, l.offset.y, l.extent.width, l.extent.height,
+                                rr.offset.x, rr.offset.y, rr.extent.width, rr.extent.height,
+                                screen_w, screen_h);
+                }
+            }
+            // ---- NAME WHATEVER CHANGES, THE MOMENT IT CHANGES -------------------------------
+            //
+            // Sampling once a second cannot say WHICH value moved when the runtime re-enumerates
+            // and freezes. Three fixes were aimed at the swapchain and one at the rect on the
+            // strength of a guess about that. This fires only on a CHANGE, and prints every
+            // number we hand the runtime, so the next transition names its own cause.
+            {
+                static uint32_t p_aw = 0, p_ah = 0, p_sw = 0, p_sh = 0, p_lay = 99;
+                static int32_t p_lx = -1, p_ly = -1, p_lw = -1, p_lh = -1;
+                static int32_t p_rx = -1, p_ry = -1, p_rw = -1, p_rh = -1;
+                static uint32_t p_uiw = 0, p_uih = 0;
+                const auto& L = proj_views[0].subImage.imageRect;
+                const auto& R = proj_views[1].subImage.imageRect;
+                if (p_aw != screen_alloc_w || p_ah != screen_alloc_h || p_sw != screen_w ||
+                    p_sh != screen_h || p_lay != static_cast<uint32_t>(screen_layout) ||
+                    p_lx != L.offset.x || p_ly != L.offset.y || p_lw != L.extent.width ||
+                    p_lh != L.extent.height || p_rx != R.offset.x || p_ry != R.offset.y ||
+                    p_rw != R.extent.width || p_rh != R.extent.height || p_uiw != ui_w ||
+                    p_uih != ui_h) {
+                    std::printf("%s [host] GEOMETRY CHANGED alloc %ux%u picture %ux%u layout %u "
+                                "L off(%d,%d) ext(%dx%d) R off(%d,%d) ext(%dx%d) ui %ux%u\n",
+                                stamp(), screen_alloc_w, screen_alloc_h, screen_w, screen_h,
+                                static_cast<uint32_t>(screen_layout), L.offset.x, L.offset.y,
+                                L.extent.width, L.extent.height, R.offset.x, R.offset.y,
+                                R.extent.width, R.extent.height, ui_w, ui_h);
+                    p_aw = screen_alloc_w; p_ah = screen_alloc_h; p_sw = screen_w;
+                    p_sh = screen_h; p_lay = static_cast<uint32_t>(screen_layout);
+                    p_lx = L.offset.x; p_ly = L.offset.y; p_lw = L.extent.width;
+                    p_lh = L.extent.height; p_rx = R.offset.x; p_ry = R.offset.y;
+                    p_rw = R.extent.width; p_rh = R.extent.height;
+                    p_uiw = ui_w; p_uih = ui_h;
+                }
+            }
             proj.space = space;
             proj.viewCount = 2;
             proj.views = proj_views;
@@ -3006,80 +3384,21 @@ int main(int argc, char** argv) {
 
             ++submitted;
         } else if (fs.shouldRender != XR_FALSE) {
-            XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
-            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            vli.displayTime = fs.predictedDisplayTime;
-            vli.space = space;
-
-            XrViewState vs{XR_TYPE_VIEW_STATE};
-            uint32_t located = 0;
-            std::vector<XrView> views(view_count, {XR_TYPE_VIEW});
-            const XrResult test_lr =
-                xrLocateViews(session, &vli, &vs, view_count, &located, views.data());
-
-            // A FAILED LOCATE LEAVES AN ALL-ZERO POSE, and a zero quaternion is not unit length:
-            // xrEndFrame answers XR_ERROR_POSE_INVALID and drops the whole frame, every frame,
-            // for as long as tracking is out. Nothing submitted is better than a layer built on
-            // a pose the runtime never gave us.
-            bool test_ok = XR_SUCCEEDED(test_lr) && located == view_count &&
-                           (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
-                           (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
-
-            for (uint32_t i = 0; test_ok && i < view_count; ++i) {
-                uint32_t index = 0;
-                XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-
-                // Bounds-checked against THIS swapchain's own image count rather than assumed:
-                // a failed acquire leaves `index` at whatever it was, and the count is the
-                // runtime's choice -- three on one runtime, two on another.
-                if (XR_FAILED(xrAcquireSwapchainImage(eyes[i].swapchain, &ai, &index)) ||
-                    index >= eyes[i].views.size()) {
-                    ++upload_failures;
-                    test_ok = false;
-                    break;
-                }
-
-                XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-                wi.timeout = XR_INFINITE_DURATION;
-
-                // "The swapchain image must have been successfully waited on without timeout
-                // before it is released" -- so a failed wait cannot be followed by a draw, but
-                // the acquire still has to be undone or the swapchain leaks an image every frame.
-                if (XR_FAILED(xrWaitSwapchainImage(eyes[i].swapchain, &wi))) {
-                    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-                    xrReleaseSwapchainImage(eyes[i].swapchain, &ri);
-                    ++upload_failures;
-                    test_ok = false;
-                    break;
-                }
-
-                // NO SHADERS ON PURPOSE. A clear is the smallest thing that can put light in front
-                // of someone, so if this does not appear the fault is in the session, the swapchain
-                // or the submission -- never in a triangle.
-                const float t = static_cast<float>((frames % 120)) / 120.0f;
-                const float colour[2][4] = {{0.15f + 0.35f * t, 0.05f, 0.05f, 1.0f},
-                                            {0.05f, 0.05f, 0.15f + 0.35f * t, 1.0f}};
-                ctx->ClearRenderTargetView(eyes[i].views[index], colour[i % 2]);
-
-                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-                // Result ignored, as at the two upload sites above.
-                xrReleaseSwapchainImage(eyes[i].swapchain, &ri);
-
-                layer_views[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-                layer_views[i].pose = views[i].pose;
-                layer_views[i].fov = views[i].fov;
-                layer_views[i].subImage.swapchain = eyes[i].swapchain;
-                layer_views[i].subImage.imageRect.offset = {0, 0};
-                layer_views[i].subImage.imageRect.extent = {static_cast<int32_t>(eyes[i].width),
-                                                            static_cast<int32_t>(eyes[i].height)};
-            }
-
-            if (test_ok) {
-                layer.space = space;
-                layer.viewCount = view_count;
-                layer.views = layer_views.data();
-                append_layer(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
-                ++submitted;
+            // ---- NOTHING TO SUBMIT YET -------------------------------------------------------
+            //
+            // A startup test pattern used to live here, submitting a coloured clear through its own
+            // swapchain pair. It was removed while hunting a freeze that turned out to be the MCP
+            // operator layer rather than anything we submit -- so the reasoning recorded here at the
+            // time (that a second swapchain set was fatal to the simulator) was WRONG.
+            //
+            // It stays removed on its own merit: the black FEAR2VR placeholder already covers "no
+            // game frame yet" and paints into screen[], the same chains everything else uses, so a
+            // second set bought nothing. A frame with no layers is legal.
+            static bool s_said = false;
+            if (!s_said) {
+                s_said = true;
+                std::printf("[host] no content and no screen swapchains yet -- submitting an empty "
+                            "frame rather than creating a second swapchain set\n");
             }
         }
 
@@ -3142,7 +3461,13 @@ int main(int argc, char** argv) {
         fei.environmentBlendMode = blend_mode;
         fei.layerCount = layer_count;
         fei.layers = layer_count != 0 ? layers : nullptr;
+        const double t_end_0 = now_ms();
         const XrResult end = xrEndFrame(session, &fei);
+        {
+            const double d = now_ms() - t_end_0;
+            t_end_ms += d;
+            if (d > t_end_max) { t_end_max = d; }
+        }
 
         if (++frames % 90 == 0) {
             // ---- SPLIT ON PURPOSE ----------------------------------------------------------
@@ -3181,6 +3506,16 @@ int main(int argc, char** argv) {
                         stated_worst_deg,
                         static_cast<unsigned long long>(stated_samples),
                         static_cast<unsigned long long>(stated_absent));
+
+            std::printf("[host]   frame ms/90: wait %.1f (max %.1f), content %.1f (max %.1f), "
+                        "upload %.1f (max %.1f, %.1f MB), end %.1f (max %.1f)\n",
+                        t_wait_ms, t_wait_max, t_content_ms, t_content_max,
+                        t_upload_ms, t_upload_max,
+                        static_cast<double>(upload_bytes) / (1024.0 * 1024.0),
+                        t_end_ms, t_end_max);
+            t_wait_ms = t_content_ms = t_end_ms = t_upload_ms = 0.0;
+            t_wait_max = t_content_max = t_end_max = t_upload_max = 0.0;
+            upload_bytes = 0;
 
             std::printf("[host]   transport: OUT-OF-ORDER %llu, repeats %llu, content-wait %llu, "
                         "POSE-SKIP %llu/%llu\n",
