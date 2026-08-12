@@ -4089,6 +4089,106 @@ The two facts that should have redirected the hunt hours earlier: our centre pix
 the same second the runtime called it zero (two readers, two images), and starting the host inside an
 already-loaded world froze with no resize and no geometry change.
 
+## Screen-space effects in stereo (shadows / AO / anything sampling the frame)
+
+REPORTED SYMPTOM, not yet root-caused: shadows, ambient occlusion and some other shaders are
+slightly wrong and DIFFER BETWEEN THE EYES, and have since stereo first worked. The obvious
+explanation -- "the shader constants carry the centre camera while we displace by the IPD" -- was
+investigated and is WRONG. What follows is what the engine actually does, so the next session starts
+from the map rather than the guess.
+
+### The camera constants ARE per-eye. Measured.
+
+`SceneRenderer_BuildCameraMatrices` @ **0x610ba1** runs **PER PASS**, not per frame:
+
+    CLTRenderer_SetupPassPerspective 0x610f76
+      -> SceneRenderer_SetupCameraShaderParams 0x610e21
+        -> sub_610DA2 -> BuildCameraMatrices 0x610ba1        (gated on *this == 3)
+
+It reads the camera record at **g_SceneRenderer+8 = 0x72e790** -- transform +0x14 (0x72e7a4),
+projection centre +0x38/+0x3C (0x72e7c8/cc), near +0x40 -- and writes:
+
+    View            +0x48   0x72e7d8
+    Projection      +0x78   0x72e808
+    ViewProjection  +0xB8   0x72e848
+    WorldToScreen   +0xF8   0x72e888
+    ScreenToClip    +0x138  0x72e8c8
+
+Because the mod substitutes a displaced camera INSIDE the pass (CameraPassHook::setup_pass_detour
+for the left eye, build_eye + draw_scene_detour for the right), every one of those is rebuilt from
+the per-eye pose. The screen-space parameters read those globals DIRECTLY, with no cache in between:
+
+    sub_60C91C  k_mDrawPrimToClip (reg 8)  <- 0x72e848  ViewProjection
+    sub_60C765  k_mObjectToClip            <- 0x72e8c8  ScreenToClip
+    sub_610E21  k_vWorldSpaceCameraDir (reg 2) <- forward of quat 0x72e7a4
+                k_vHalfViewPlane      (reg 3) <- tan(fov/2) as (x, y, 1/x, 1/y)
+                k_vScene_ZRange              <- 0x72e7d0/4
+
+The LTShaderParam bus itself: named params live at 0x72F080-0x730398, each carrying its register in
+the low u16 of +0x08 and its value at +0x1C; `LTShaderParam_Flush` 0x60c20a ->
+`LTShader_SetConstantByRegister` 0x618d4e -> shader system `g_pLTShaderSystem` 0x72ed90 (device at
++16) vtable slot 80.
+
+### The lighting/shadow mirror is also per-eye.
+
+The lighting and shadow factories do NOT read those globals; they read a scene struct. That struct is
+built by **sub_625799**, called from `SceneRenderer_DrawScene` **0x611f1d**, and it COPIES from the
+live camera record every time:
+
+    +0x1F4 <- 0x72e7a4  camera LTTransform (world position at +0x204)
+    +0x248 <- 0x72e7d8  View
+    +0x278 <- 0x72e808  Projection
+    +0x2B8 <- 0x72e848  ViewProjection
+    +0x2F8 <- 0x72e888  WorldToScreen
+
+Consumers: lighting factory `sub_623BEF`, per-object `sub_6234DB` (which sets
+k_vObjectSpaceEyePos), shadow/depth factory `sub_6245A5`. Since the mod replays `DrawScene` per eye,
+this mirror is rebuilt per eye too.
+
+### What is NOT per-eye, and is where to look next
+
+1. **The shadow CASTER pass uses a different camera record.** `sub_629BEE` builds its own scene
+   struct from **&unk_72E928** (= camera record + 0x198), written by **sub_6294FB**. That is the
+   LIGHT's camera and being eye-independent is probably CORRECT -- a shadow map is rendered from the
+   light, not the eye. Worth confirming rather than assuming, because if anything eye-dependent
+   leaks into it, both eyes get one eye's answer.
+
+2. **The AO pass touches no camera matrices at all.** `sub_628065` (the only consumer of
+   `dword_72EEC8`, the ambientocclusion.mat pointer) draws a fullscreen quad and takes its
+   viewport/rect from scene struct **+0x228**, deriving its UV scale from the device viewport
+   dimensions. So AO cannot be wrong via a matrix -- it can only be wrong via the VIEWPORT, which in
+   side-by-side stereo is half the buffer. **This is the strongest remaining hypothesis.**
+
+3. **The quarter-resolution auxiliary pass is deliberately not displaced.** CameraPassHook classifies
+   a pass as the main view only when the bound target matches the back buffer, and leaves an
+   auxiliary ~640x360 pass alone (`main_view_only`). Its own header calls that pass "a screen-space
+   input rather than a view", drawn from the same viewpoint every frame. If anything consumes it as
+   a screen-space input for the main view, its result matches NEITHER eye.
+
+### Next steps, cheapest first
+
+1. **Test the viewport hypothesis directly**: run stereo with the viewport split OFF
+   (`set_stereo(on, half_ipd, split_viewport = false)`) and see whether AO and shadows become
+   consistent between the eyes. If they do, the fault is viewport-derived UV maths in fullscreen
+   passes, not anything to do with the camera.
+2. **Find what consumes the 640x360 pass.** If it feeds AO or shadows, decide whether to displace it
+   per eye or to render it twice.
+3. **Confirm unk_72E928 is genuinely the light's camera** by trapping its writer (`/watch/arm` on
+   0x72E928) across a stereo frame and checking it does not move with the eye.
+4. **Only then consider writing shader constants.** `sdk::ShaderParams` is deliberately READ-ONLY
+   today; the engine's own setters are `LTShaderParam_SetValue` 0x60C5B9 and `Flush` 0x60C20A. The
+   natural injection point already exists per eye: `apply_frustum_centre(eye)` runs after the
+   engine's own setup in both the left path (CameraPassHook.cpp, after the original returns) and the
+   right (draw_scene_detour), and the eye identity is known at both.
+
+### Do not repeat these
+
+- The camera-constant theory is disproved: matrices are per-pass and the mirror is copied per pass.
+  Re-deriving that costs a session.
+- `CLTRenderer_SetupPassPerspective` hardcodes the projection centre to (0,0) (`fldz` at 0x610FB7),
+  which is why asymmetry has to be injected at the record's +0x38/+0x3C and the matrices rebuilt --
+  `sdk::SceneCamera::set_projection_centre` already does exactly that.
+
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the
 notification that resizes it, and nothing in this path calls it. Writing the numbers is not the same
