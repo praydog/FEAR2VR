@@ -2247,9 +2247,20 @@ int main(int argc, char** argv) {
             screen_layout = layout;
         }
 
+        // AGAINST THE CHAIN'S OWN ALLOCATION, never against the picture bookkeeping above. That
+        // block has already set screen_w/screen_h/screen_layout to THIS frame, and alloc_w is
+        // make_w whenever a frame exists -- so comparing the two asked "does this frame differ from
+        // itself", which is false forever and made recreation dead code the moment the first chain
+        // existed. The images then stayed at their first size while screen_alloc_w/h (assigned only
+        // inside this branch) went stale, and every centred offset and imageRect derived from them
+        // pointed at the wrong region. Visible as the menu rendering correctly once and breaking on
+        // the way back from a world, and as a broken loading screen -- both are shape changes.
+        //
+        // It is the vestige of an "allocate once, never recreate" design that was reverted: the
+        // bookkeeping it needed outlived the allocation it was written for.
         if ((have_frame || want_placeholder_chain) && alloc_w != 0 && alloc_h != 0 &&
-            (screen[0] == XR_NULL_HANDLE || alloc_w != screen_w || alloc_h != screen_h ||
-             layout != screen_layout)) {
+            (screen[0] == XR_NULL_HANDLE || alloc_w != screen_alloc_w ||
+             alloc_h != screen_alloc_h)) {
             // Sized to the GAME's frame, not the runtime's recommendation: at native size the
             // upload is a straight copy with no resampling anywhere in the path.
             bool ok = true;
