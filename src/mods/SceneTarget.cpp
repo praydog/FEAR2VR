@@ -650,20 +650,62 @@ void load_settings() {
     // Permille rather than a float: GetPrivateProfileInt cannot read one, and a second parser for a
     // single number is not worth writing.
     //
-    // DEFAULT OFF. Shipping this on produced a back buffer with THREE panels -- a raw pre-post scene
-    // across the left half, and the engine's post-processed pair squeezed into the right -- so the
-    // host's 50% slice handed one raw image to the left eye and two small ones to the right. The
-    // composite below blits the scene target BEFORE the engine's post chain has run, and the engine
-    // then draws its own result over part of it. Until that is understood, this stays off.
-    const uint32_t permille = GetPrivateProfileIntA("render", "supersample_permille", 0, path);
+    // DEFAULT 1.0x, NOT OFF. This used to default to 0, which meant a machine with no fear2vr.ini
+    // rendered the game at whatever the engine last saved -- 640x480 on a fresh profile -- and then
+    // handed that to a 2160x2224-per-eye headset. That is not a conservative default, it is the
+    // worst possible image, and it required a hand-written file to escape. So absence now means
+    // "render at exactly what the headset asked for": 1000 permille of the recommended size, no
+    // supersampling, nothing invented.
+    //
+    // An EXPLICIT 0 still disables it, which is the escape hatch when the buffer override itself is
+    // the thing being debugged -- so the distinction is absence vs. a written 0, and
+    // GetPrivateProfileInt cannot tell those apart. Hence the string read.
+    //
+    // ABOVE 1000 IS THE UNPROVEN PART. Shipping a supersampled value once produced a back buffer
+    // with THREE panels -- a raw pre-post scene across the left half and the engine's post-processed
+    // pair squeezed into the right -- because the composite blits the scene target before the
+    // engine's post chain has run. 1.0x is what has been run daily since; anything above it is
+    // opting into that unknown.
+    char raw[32]{};
+    const bool written = GetPrivateProfileStringA("render", "supersample_permille", "", raw,
+                                                  sizeof(raw), path) > 0;
+    const uint32_t permille =
+        written ? GetPrivateProfileIntA("render", "supersample_permille", 1000, path) : 1000;
     if (permille == 0) {
-        LOGX("[scenetarget] supersampling off (set supersample_permille in %s) -- back buffer as-is",
-             path);
+        LOGX("[scenetarget] supersampling explicitly disabled in %s -- back buffer as-is", path);
         return;
     }
     if (w == 0 || h == 0) {
+        // The host publishes the size at startup and the launcher waits for it, so reaching here
+        // means xr64 never ran or never got as far as xrEnumerateViewConfigurationViews.
         LOGX("[scenetarget] no per-eye size known -- is xr64.exe running? back buffer as-is");
         return;
+    }
+
+    // ---- ONLY AT LAUNCH. A RELOAD MUST NOT RESIZE A LIVE RENDERER ------------------------------
+    //
+    // The buffer override works by answering the engine's own presentation-params call before the
+    // device exists. Injected into a session that already has a renderer -- which is every
+    // `injector.exe --reload`, the iteration loop this project is built around -- there is no such
+    // call to answer, and forcing one is a device reset nobody asked for. That killed the game
+    // during a reload the moment this defaulted on, where previously the default of "off" meant a
+    // reload changed nothing.
+    //
+    // g_RMode is the discriminator and costs nothing: it is zero until the engine has chosen a
+    // mode, so non-zero here means we arrived late. Cold-launch injection happens at the entry
+    // point, long before that.
+    const auto* const exe_at_load = sdk::Modules::get().exe();
+    if (exe_at_load != nullptr && exe_at_load->base != 0) {
+        const uint32_t live_w =
+            *reinterpret_cast<const uint32_t*>(exe_at_load->base + kRMode + kRModeWidth);
+        const uint32_t live_h =
+            *reinterpret_cast<const uint32_t*>(exe_at_load->base + kRMode + kRModeHeight);
+        if (live_w != 0 || live_h != 0) {
+            LOGX("[scenetarget] renderer already up at %ux%u -- injected into a live session, so "
+                 "the back buffer is left alone. Relaunch (injector.exe --launch) to render at the "
+                 "headset's %ux%u per eye.", live_w, live_h, w, h);
+            return;
+        }
     }
     g_rec_w.store(w, std::memory_order_relaxed);
     g_rec_h.store(h, std::memory_order_relaxed);

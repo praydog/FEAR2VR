@@ -923,6 +923,52 @@ bool start_host(const fs::path& self_dir) {
     return true;
 }
 
+// ---- WAIT FOR THE HEADSET'S SIZE TO EXIST BEFORE INJECTING -------------------------------------
+//
+// xr64 publishes the runtime's recommended per-eye size to LOCALAPPDATA within a second of starting
+// -- it is the first thing it does after xrGetSystem. The mod reads that file ONCE, seconds after
+// injection, before the renderer has built anything, and cannot wait on it: the decision has to be
+// made before the engine asks for presentation parameters.
+//
+// So the ordering has to be enforced HERE, by the only party that knows both events. Without this
+// the two races: a first-ever run finds no file, renders the game at whatever the engine last saved
+// (640x480 on a fresh profile) and hands that to a 2160x2224 headset, while every subsequent run
+// works because the previous run's file is still on disk. A bug that fixes itself on the second
+// attempt is one nobody can reproduce and everybody hits once.
+//
+// AN EXISTING FILE IS ACCEPTED IMMEDIATELY. It is only stale if the headset changed, and its
+// contents are then wrong by exactly the amount a re-read would fix on the next launch -- whereas
+// demanding a fresh write would stall for the full timeout whenever the host was already running,
+// since it publishes at startup and never again.
+bool wait_for_headset_size(uint32_t timeout_ms) {
+    char local[MAX_PATH]{};
+    if (GetEnvironmentVariableA("LOCALAPPDATA", local, MAX_PATH) == 0) {
+        return false;
+    }
+    const std::string ini = std::string(local) + "\\fear2vr\\runtime.ini";
+
+    const uint64_t deadline = GetTickCount64() + timeout_ms;
+    for (;;) {
+        const uint32_t w = GetPrivateProfileIntA("render", "per_eye_width", 0, ini.c_str());
+        const uint32_t h = GetPrivateProfileIntA("render", "per_eye_height", 0, ini.c_str());
+        if (w != 0 && h != 0) {
+            printf("[launch] headset asks for %ux%u per eye\n", w, h);
+            return true;
+        }
+        if (GetTickCount64() >= deadline) {
+            break;
+        }
+        Sleep(250);
+    }
+
+    // Not fatal: the game is still playable, it just renders at whatever the engine chooses. Said
+    // plainly, because the symptom (a tiny, soft image in the headset) does not point here.
+    printf("[launch] xr64 never published a per-eye size to %s within %us -- the game will render "
+           "at its own resolution, which will look wrong in a headset\n", ini.c_str(),
+           timeout_ms / 1000);
+    return false;
+}
+
 // ---- THE SECOND READINESS SIGNAL -----------------------------------------------------------
 //
 // gameclient.dll below says the SDK's base module is mapped. This says the SteamStub has finished
@@ -977,6 +1023,12 @@ bool do_launch(const Config& cfg, bool start_game, bool start_xr_host, int32_t w
     // `--no-host` gives it the 4 GB session without waking a headset.
     if (start_xr_host) {
         start_host(self_dir);
+
+        // BEFORE THE GAME, not before the injection. --launch injects at the entry point from
+        // inside launch_with_laa, so anything sequenced after that call has already missed the
+        // mod's one read of this file. Waiting here also costs nothing: the host publishes within
+        // a second of starting, and the game then takes tens of seconds to reach a renderer.
+        wait_for_headset_size(15000);
     }
 
     // ONE DEADLINE FOR THE WHOLE LAUNCH, shared by finding the process and by the readiness gate
