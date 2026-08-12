@@ -139,6 +139,19 @@ compile-features = ["cxx_std_23"]
 compile-definitions = ["NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS"]
 link-libraries = ["ws2_32", "shell32"]
 
+cmake-after = """
+# staging/ holds what the injector places next to the game (DXVK's d3d9.dll and its licence).
+# Copy it beside injector.exe so the injector's own 'look next to me' lookup finds it -- one
+# mechanism, no search paths. copy_directory_if_different is a no-op when nothing changed, so this
+# does not dirty the output on every build.
+add_custom_command(TARGET injector POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/staging"
+        "$<TARGET_FILE_DIR:injector>"
+    COMMENT "Staging DXVK and its licence beside injector.exe"
+    VERBATIM)
+"""
+
 [target.injector.properties]
 OUTPUT_NAME = "injector"
 RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin"

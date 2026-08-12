@@ -1,0 +1,4 @@
+
+# staging payloads are placed byte-for-byte next to the game -- never touch their bytes
+staging/d3d9.dll binary
+*.dll binary

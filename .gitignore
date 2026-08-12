@@ -20,3 +20,8 @@ fear2vr.*.dll
 *.bmp
 *.png
 --*
+
+# staging/ IS the payload -- it is committed on purpose. A global core.excludesFile with *.dll in it
+# (this machine has one) would otherwise drop d3d9.dll silently, so the repo says so itself: a repo
+# .gitignore outranks the global one, and a CI runner that has no global ignore behaves identically.
+!staging/*.dll

@@ -525,9 +525,73 @@ std::wstring game_exe_path() {
     return {};
 }
 
+// ---- DXVK, STAGED NEXT TO THE GAME ONLY IF IT IS NOT ALREADY THERE ------------------------------
+//
+// DXVK is not an optimisation here, it is part of the configuration: same build and runtime, it
+// takes VR from 50-60 fps to the 72 cap on hardware, and it is the difference between 10-20 fps with
+// minutes-long loads and a normal session under Meta XR Simulator. The cause is that the native
+// D3D9 GetRenderTargetData blocks until the GPU drains, and our frame readback pays that every
+// frame; DXVK's does not stall the same way. See AGENTS.md.
+//
+// So a session without it is a session that will be misjudged, and the injector should not depend on
+// the user having remembered. It stages a copy next to the game exe when one is not present.
+//
+// WHY A COPY AND NOT SOMETHING CLEVERER. The game statically imports d3d9.dll, so the Windows loader
+// resolves it before any of our code runs -- preloading from the injector's own directory cannot
+// win a race that is already over, and the alternatives (a .local redirection directory, or running
+// the exe from elsewhere with the game folder as CWD) either need writes in the same place or risk
+// the engine resolving its own data relative to the exe. The loader searches the exe's directory
+// first, so the file has to sit there.
+//
+// NEVER OVERWRITES. If a d3d9.dll is already present it is left exactly as it is: it may be the
+// user's own build, a different version, or something they are deliberately testing, and silently
+// replacing a graphics driver shim is not a thing an injector should do.
+//
+// LICENCE: DXVK is zlib/libpng -- redistribution in binary form is permitted for any purpose,
+// requiring only that its origin is not misrepresented and altered versions are marked. Ship
+// dxvk-LICENSE.txt beside the binary; the acknowledgement is appreciated rather than required.
+void stage_dxvk_beside(const std::wstring& exe) {
+    wchar_t self[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, self, MAX_PATH) == 0) {
+        return;
+    }
+
+    const fs::path src = fs::path(self).parent_path() / L"d3d9.dll";
+    const fs::path dst = fs::path(exe).parent_path() / L"d3d9.dll";
+
+    std::error_code ec;
+    if (!fs::exists(src, ec)) {
+        return;  // nothing shipped beside the injector; nothing to say about it
+    }
+    if (fs::exists(dst, ec)) {
+        printf("[dxvk] d3d9.dll already present beside the game -- left alone\n");
+        return;
+    }
+
+    if (fs::copy_file(src, dst, ec)) {
+        printf("[dxvk] staged d3d9.dll beside the game (it is part of the configuration, not an "
+               "optimisation -- see AGENTS.md)\n");
+
+        // Best-effort, and deliberately not fatal: the licence text is a courtesy to whoever finds
+        // the file later, not a precondition for the game running.
+        const fs::path lic_src = fs::path(self).parent_path() / L"dxvk-LICENSE.txt";
+        const fs::path lic_dst = fs::path(exe).parent_path() / L"dxvk-LICENSE.txt";
+        if (fs::exists(lic_src, ec) && !fs::exists(lic_dst, ec)) {
+            fs::copy_file(lic_src, lic_dst, ec);
+        }
+    } else {
+        printf("[dxvk] could not stage d3d9.dll beside the game (%s) -- the session will run on the "
+               "native D3D9 runtime and be much slower\n", ec.message().c_str());
+    }
+}
+
 uint32_t launch_with_laa(const Config& cfg, const std::wstring& exe) {
     const std::wstring copy = fs::path(exe).parent_path().wstring() + L"\\" +
                               fs::path(exe).stem().wstring() + kCopySuffix;
+
+    // Before anything launches: the loader reads d3d9.dll out of the exe's directory at process
+    // start, so staging it later would be staging it for the next run.
+    stage_dxvk_beside(exe);
 
     const SteamContext ctx = derive_steam_context(exe);
     if (!ctx.ok) {
