@@ -3815,9 +3815,19 @@ correctly and every world after it is wrong. Measured creation chronology:
     #2 CreateRenderTarget 4320x2224 creator=gameclient.dll+0xE463D   <- first world, correct
     #3 CreateRenderTarget 2560x1440 creator=gameclient.dll+0x8DC65   <- second world, wrong
 
-2560x1440 IS NOT OURS AND IS NOT THE GAME'S. The window was 640x480 and the desktop spans
-5120x1440 -- it is the PRIMARY DISPLAY's mode. The second load sizes its target from the display
-instead of from the buffer. (A hardcoded 2560x1440 in HudScreenDims was found while chasing
+WHERE 2560x1440 COMES FROM IS STILL UNKNOWN, AND TWO CONFIDENT ANSWERS HAVE ALREADY BEEN WRONG.
+Measured against a machine with a 640x480 game window, a 5120x1440 native monitor, and the display
+forced to 1920x1080, the size stayed 2560x1440 throughout. So it is NOT the window, NOT the desktop
+span, and NOT the display mode -- that last one was written here as fact and then disproved by
+setting the monitor to 1920x1080 and watching the size not move.
+
+It is EXACTLY HudScreenDims' kUIWidth/kUIHeight, which is suggestive but unproven: the obvious test
+(set them to 2048x1152 and look) could not be completed, because the probe values clip the UI on
+sight, so no clean second-world reading was obtainable. An earlier attempt to rule the constant out
+was ALSO invalid -- the "dynamic" version fell back to 2560x1440 whenever the native size was
+unknown, which it was, so it reported the same number and the test proved nothing.
+
+Leave it as unexplained. The fix below neutralises the size whatever its origin. (A hardcoded 2560x1440 in HudScreenDims was found while chasing
 this. It is NOT the cause -- the size still appeared after it was changed -- and it is STILL THERE:
 the fix was reverted along with the GetScreenDims approach it was entangled with. It remains a
 latent bug, currently invisible because it happens to match the machine it was written on. Anyone
@@ -3868,6 +3878,216 @@ and are correct) was tried and reverted, because it was bundled with routing the
 through GetScreenDims, and that part was wrong. The substitution itself is still right and should be
 redone on its own, then tested at a resolution OTHER than 2560x1440 -- at 2560x1440 the bug and the
 fix are indistinguishable.
+
+**THE HEADSET TEXTURE STOPS UPDATING IN-WORLD: THE CAPTURE THINKS THE DEVICE IS LOST.**
+`/xr/capture` is the diagnostic that answers this, and it answered it in one line:
+
+    frames 6753   applied 6753   fp_publishing true   fc_device_lost 6312
+
+So the transport is fine and the UI layer publishes normally (`ui: publishes` climbs, failures 0) --
+FrameCapture is bailing at its `TestCooperativeLevel() != D3D_OK` guard on nearly every frame and
+never producing a scene frame. WHY it reports non-OK is still open; the guard now logs the HRESULT
+on change, which is the next reading to take.
+
+**AND THAT SESSION ENDED IN A BUGCHECK.** 0xD1 DRIVER_IRQL_NOT_LESS_OR_EQUAL, args
+(0x8, 0x2, 0x0, 0xfffff8067b1d0d70) -- a near-null read at IRQL 2. Resolved from the minidump
+without a debugger: the faulting address falls inside a module based at 0xfffff8067b1c0000 with
+SizeOfImage 0xdf000, which matches **dxgmms2.sys** exactly (the DirectX kernel memory manager),
+faulting at +0x10d70.
+
+Method worth reusing, since no kernel debugger is installed here: kernel dumps are `PAGEDU64`;
+scan 8-byte-aligned offsets for a plausible DllBase (0xfffff800_00000000 mask, page-aligned) whose
+SizeOfImage at +0x10 brackets the faulting address, then identify the module by matching that
+SizeOfImage against the PE headers of the drivers named in the dump's string table.
+
+A kernel driver must not fault whatever user mode does, so that is a driver defect rather than ours.
+But the guard above was releasing D3DPOOL_DEFAULT render targets on EVERY failing frame while the
+OK frames recreated them -- thousands of GPU allocation/free cycles for no benefit, since after the
+first release there is nothing left to free. Handing the GPU scheduler that much pointless churn is
+asking to find a bug like this. Now released once per loss transition, with the recovery logged.
+
+**RETRACTED: "the scene-target override must be bounded to one target per world".** The bound was
+added on a theory -- that forcing every mismatched virtual creation to the supersampled buffer was
+allocating 38 MB per auxiliary target and causing the load stalls, the machine-wide lag and the
+dxgmms2 bugcheck. It was never demonstrated, and the later measurement contradicts it outright:
+the failing session logged ZERO forced creations, so the override was not running at all while the
+symptoms were at their worst. The real cause is recorded below (a blocking GetRenderTargetData).
+
+The bound is therefore reverted. What survives is the observation that produced it, which is still
+worth heeding: the creation gate `flags == 0xFC8 && width >= 256 && height >= 256` catches EVERY
+virtual render target the renderer makes, not just the scene's, because it was inherited from a
+read-only reporting probe where catching everything was correct and free. If auxiliary targets ever
+do turn out to be affected, that is where to look -- but measure it first this time.
+
+**WHY THE GAME CRAWLS UNDER META XR SIMULATOR BUT NOT ON HARDWARE.** Measured end to end, with a
+runtime A/B on a live session:
+
+    divisor=1  (38 MB/frame readback) : 14.3 fps
+    divisor=4  (2.4 MB/frame)         : 70.0 fps
+    + UICapture off                   : 119.3 fps
+
+Same build, same runtime, toggled at runtime with nothing else changed. On real hardware the same
+build gives 50-60 fps at divisor=1.
+
+THE MECHANISM. `GetRenderTargetData` blocks until the GPU has drained ALL prior work. The drain is
+short on hardware; under the simulator `synth_env_server` interleaves its own GPU work every frame,
+so each readback waits far longer. The game then sits at 100% OF ONE CORE (spinning inside the D3D9
+driver) while using 8.6% GPU -- CPU-pegged and GPU-idle at the same time, which is the signature of
+a sync stall rather than a workload.
+
+WHAT WAS RULED OUT, EACH BY MEASUREMENT RATHER THAN ARGUMENT -- all of these were plausible and all
+of them were wrong:
+  - OpenXR spec violation / unpaired xrBeginFrame: `xrEndFrame` averages 0.4 ms, zero out-of-order
+    frames. The runtime accepts everything instantly.
+  - Swapchain memory being software-backed: upload is 0.7 ms/frame for 16.3 MB. GPU-resident.
+  - The host being slow: host loop is 15.4 ms/frame, ~65 fps, healthy throughout.
+  - VR pacing quantising the game to a submultiple: toggling `paced=0` moved 14.0 -> 14.3 fps.
+  - GPU contention: `3d` engine at 30%, `copy` at 1%.
+  - Memory pressure: 31 GB free, ZERO page faults/sec.
+  - CPU saturation: 11.4% across 32 cores.
+  - The scene-target size override: zero forced creations in the failing session.
+
+THE HOST HAD NO LOG UNTIL NOW, which is why this took so long: the one process that talks to the
+runtime left no record while the mod's side was fully instrumented. `xr64.exe --log <path>` now
+writes one, and the periodic line splits the frame into wait / content / upload / end so the next
+question of this kind is one run rather than a session.
+
+**REMOVING THE READBACK: D3D9Ex SHARED SURFACES.** The frame currently reaches the host through
+GetRenderTargetData -- 38 MB/frame that blocks until the GPU drains. A shared surface deletes that
+entirely: D3D9Ex creates a render target with a shared handle, the 64-bit host opens the SAME
+surface via ID3D11Device::OpenSharedResource, and the frame never leaves the GPU. It is the only
+option that also helps on real hardware, where 72 fps at native is out of reach while every frame is
+copied through system memory.
+
+MEASURED PREREQUISITE: the engine's device is PLAIN D3D9. QueryInterface for IDirect3DDevice9Ex
+returns E_NOINTERFACE (0x80004002) on the live device, and a device cannot be upgraded after
+creation -- so the seam is the factory. There is exactly ONE Direct3DCreate9 call in the whole exe
+(its result lands in g_D3DAdapterInfo+0x00), and IDirect3D9Ex derives from IDirect3D9, so handing
+back an Ex factory needs no wrapper and yields Ex devices.
+
+THAT PART WORKS -- and the game then dies in renderer startup:
+
+    0xC0000005 read of 0x00000010 at FEAR2.exe+0x218DEA, ECX = 0 (null this)
+    #01 +0x20F370  #02 +0x20F9BA  #03 +0x20FB94  #04 +0x20FC8E
+
+0x618D4E is LTShader_SetConstantByRegister, so the shader-constant path is dereferencing something
+that failed to create. Cause, and it is documented behaviour rather than a mystery: AN Ex DEVICE
+REJECTS D3DPOOL_MANAGED. Every managed allocation the engine makes now fails and the engine does not
+check the results.
+
+SO THE REAL WORK IS THE MANAGED POOL, not the factory: intercept the resource-creation calls,
+translate MANAGED to DEFAULT, and take over the restore-on-reset that the managed pool was doing for
+the engine. Until that exists the upgrade is behind FEAR2VR_D3D9EX=1 rather than shipping a crash.
+
+Second thing that will need handling once it is armed: TestCooperativeLevel NEVER returns
+D3DERR_DEVICELOST on an Ex device -- it returns S_OK / S_PRESENT_OCCLUDED / S_PRESENT_MODE_CHANGED,
+all SUCCESS codes, and reports real loss through Present as DEVICEREMOVED/HUNG. FrameCapture's guard
+is `!= D3D_OK`, which would start firing on a merely occluded window.
+**DXVK GETS THE GAME TO ITS FRAME CAP ON REAL HARDWARE.** Dropping DXVK's d3d9.dll into the game
+folder took VR from 50-60 fps to a full 72 -- same runtime, same build, only the D3D9 implementation
+changed, so this one IS controlled.
+
+Measured in the same session (hardware + DXVK):
+
+    ui: publishes n=159/s  avg=2.30ms  max=2.66ms   (pub_ms 367/s)
+
+CAREFUL WITH THE COMPARISON, because it is easy to overstate: the 61 ms / 14 fps publish figures
+recorded above were taken under the SIMULATOR WITHOUT DXVK. Setting those against 2.3 ms on
+hardware WITH DXVK changes two variables at once and attributes to DXVK a difference that is partly
+the runtime. The honest grid:
+
+    hardware,  no DXVK : 50-60 fps
+    hardware,  DXVK    : 72 fps (cap), publish 2.30 ms
+    simulator, no DXVK : 10-20 fps, publish 61 ms
+    simulator, DXVK    : 71.2 fps, publish avg 2.44 ms; loads normally, no machine-wide lag
+
+MEASURED BOTH SIDES, simulator only, DXVK the only variable:
+
+                              native D3D9        DXVK
+    game frame rate           10-20 fps          71.2 fps
+    mod publish, average      61.16 ms           2.44 ms
+    mod publish, aggregate    856 ms/s           173 ms/s
+    host `content` per 90     568-660 ms         0.0-13.6 ms
+    content-wait expiries     +70 per 90         0
+    host repeats              +70 per 90         +18 per 90
+    host `upload` per 90      63 ms / 1.5 GB     265-291 ms / 6.6 GB
+    host `end` per 90         30-35 ms           42-48 ms
+
+THE `content` COLLAPSE IS THE WHOLE RESULT: the host went from burning its full timeout on 78% of
+frames -- no game frame had arrived -- to never waiting at all. Upload rose to 73 MB/frame (two eyes
+at 4320x2224) costing 2.9 ms, and that is not a regression: it was only cheap before because the
+game was starving it and most frames had nothing to upload.
+
+THE GRID IS COMPLETE AND IT SETTLES THE WHOLE INVESTIGATION. Every symptom that looked
+simulator-specific -- the world taking forever to load, the entire PC stuttering, 10-20 fps, the
+headset stuck on one frame -- disappears when DXVK replaces the D3D9 runtime. The runtime was never
+doing anything wrong; the native D3D9 GetRenderTargetData blocks until the GPU drains, and the
+simulator's compositor made every drain long enough for that to become fatal. DXVK's readback does
+not stall the same way, so the amplifier stops mattering.
+
+**DXVK IS THE SUPPORTED CONFIGURATION.** Drop its d3d9.dll in the game folder. It is not a
+workaround for the simulator, it is the difference between 50-60 and 72 on real hardware too.
+
+STILL TRUE UNDER DXVK: the device is plain D3D9 -- QueryInterface for IDirect3DDevice9Ex still
+returns E_NOINTERFACE, because DXVK honours what the engine asked for. So the factory upgrade is
+still the seam if shared surfaces are wanted; what is unknown, and answerable from DXVK's source
+rather than by experiment, is whether ITS Ex device also rejects D3DPOOL_MANAGED. If it does not,
+the crash that gated FEAR2VR_D3D9EX simply does not occur under DXVK.
+
+Publish still costs 367 ms/s (37% of a second) even at 2.3 ms a frame, because it now runs 159
+times a second. Worth remembering before calling the capture path cheap.
+
+**THE FROZEN SCENE UNDER META XR SIMULATOR -- TWO CONSTRAINTS THAT MUST HOLD TOGETHER.** Five
+attempts failed because each satisfied one and broke the other. Both are measured.
+
+  1. NEVER RECREATE THE SWAPCHAIN. The simulator's inner window visibly resizes at world load --
+     that resize IS our recreation -- and from that moment NOTHING composites again: not the scene,
+     not the UI panel. Its own log reads "Replacing existing color swapchain (viewIndex=0) --
+     cleaning up previous" then "Swapchains changed detected, re-enumerating... Successfully
+     re-enumerated", which looks like recovery and is not one.
+  2. THE IMAGE'S CENTRE MUST CONTAIN WRITTEN PIXELS. Allocating at maxImageRect (8192x8192) honours
+     (1) and breaks this: only the top-left was filled, so the centre at (4096,4096) was untouched
+     memory, and the runtime skipped every blit with "[DIAG-ZEROSKIP] source image center pixel is
+     zero" while our own probe read live pixels from the source buffer.
+
+FIX: allocate ONCE at the full published frame size (an eye is at most the whole frame, since a mono
+frame is not split, so that bounds both the menu and world shapes), CENTRE the picture in it, and let
+XrSwapchainSubImage::imageRect name where it landed -- carrying the centring offset into the crop.
+
+DIAGNOSTIC LESSONS FROM THIS HUNT, each of which cost real time:
+  - THE HOST HAD NO LOG. `xr64 --log <path>` now writes one, and the periodic line splits the frame
+    into wait / content / upload / end with byte counts.
+  - THE FRONTEND WRITES TO THE CONSOLE, NOT TO STDOUT. MetaXRSimulator.exe is a separate process
+    writing directly to the console buffer, so neither freopen(--log) nor `Tee-Object` can capture
+    its lines. Two "ZEROSKIP count = 0" measurements were taken from files that could not contain
+    them; absence there is not evidence. Read the WINDOW.
+  - OUR LINES NOW CARRY WALL CLOCK, so a pasted console dump interleaves with the runtime's own
+    stamps. That is what caught the contradiction: our centre pixel non-zero at 38.373, the runtime
+    reporting zero at 38.535.
+  - ZEROSKIP FIRES ONCE PER SECOND, which is the frontend's CAPTURE cadence, not the compositor's
+    display path -- it belongs to XR_METAX1_simulator_compositor_output_capture, an extension the
+    MCP operator layer enables. Do not read it as the display's verdict.
+  - INDEX AND PRIMING: over fifteen samples the runtime never handed us image 0 of 3 (~0.2% if all
+    three rotated), so unwritten images were a real hazard; every image is now primed opaque black
+    at creation, and indices do rotate once primed.
+  - Blend-mode enumeration had a real bug: the count call answered 1, the fill call demanded 2 and
+    failed with XR_ERROR_SIZE_INSUFFICIENT, so OPAQUE went out unverified and the log printed
+    "UNKNOWN". The two-call idiom now retries when the count grows.
+  - ctx->Flush() before xrReleaseSwapchainImage: this runtime is RenderingD3D11OnVulkan and COPIES
+    our texture rather than consuming it, so unsubmitted commands are invisible to that copy.
+    Correct to do, and it did NOT fix the freeze on its own.
+
+**THE FROZEN SIMULATOR SCENE WAS THE MCP OPERATOR LAYER.** Disabling it fixes the display. The layer
+enables XR_METAX1_simulator_compositor_output_capture and starts the compositor readback, which then
+skips every blit ("[DIAG-ZEROSKIP] source image center pixel is zero", once a second -- a capture
+cadence) and holds the first accepted frame. Its own capture tool also fails outright.
+
+Everything the host submits was verified ordinary before that was found: chains created once, images
+primed, indices rotating, uploads bounded, rect valid cropped AND full, symmetric AND asymmetric FOV,
+268 projection layers accepted, xrEndFrame XR_SUCCESS, transport clean, uploaded centre pixel live.
+The two facts that should have redirected the hunt hours earlier: our centre pixel read non-zero in
+the same second the runtime called it zero (two readers, two images), and starting the host inside an
+already-loaded world froze with no resize and no geometry change.
 
 The next thing to try, for going higher: the interface is laid out ONCE and never told the
 screen grew. RTSource's read of the engine source names `CInterfaceResMgr::ScreenDimsChanged` as the

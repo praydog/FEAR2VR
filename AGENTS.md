@@ -426,6 +426,63 @@ tools/xr64/                   -- the 64-bit OpenXR host: separate x64 build, own
 TESTING.MD                    -- the testing contract (rigor, evidence rules)
 ```
 
+## DXVK is part of the configuration, not an optimisation
+
+Put DXVK's `d3d9.dll` in the game folder. Measured, same build and runtime either side:
+
+|configuration|result|
+|---|---|
+|real hardware, native D3D9|50-60 fps|
+|real hardware, DXVK|**72 fps** (the cap)|
+|Meta XR Simulator, native D3D9|10-20 fps, minutes to load, the whole PC stutters|
+|Meta XR Simulator, DXVK|**71.2 fps**, loads normally, no machine-wide lag|
+
+Simulator only, DXVK the sole variable:
+
+|measurement|native D3D9|DXVK|
+|---|---|---|
+|game frame rate|10-20 fps|**71.2 fps**|
+|mod publish (avg / aggregate)|61.16 ms / 856 ms per s|**2.44 ms / 173 ms per s**|
+|host waiting for a game frame|568-660 ms per 90|**0.0-13.6 ms per 90**|
+|host content-wait expiries|+70 per 90|**0**|
+|host repeats (stale frame re-shown)|+70 per 90|+18 per 90|
+
+**The cause was never the simulator.** Getting a frame to the 64-bit host costs a
+`GetRenderTargetData` readback, and on the native runtime that call BLOCKS until the GPU has drained
+every prior operation. The simulator's compositor interleaves its own GPU work, which makes each
+drain long enough to be fatal -- the game sat at 100% of one core inside the D3D9 driver while using
+8.6% GPU, which is what a sync stall looks like from outside. DXVK's readback does not stall that
+way, so the amplifier stops mattering. Chasing the simulator for this cost three sessions; the grid
+above is what ended it, and no single row of it would have.
+
+A session's worth of plausible causes were eliminated by measurement rather than argument -- an
+OpenXR spec violation, software-backed swapchains, a slow host, VR pacing, GPU contention, memory
+pressure, CPU saturation, our own render-target override. Every one of them was wrong, and each is
+recorded in `reversing/ENGINE_NOTES.md` with the number that killed it.
+
+## The MCP operator layer freezes the simulator's display
+
+**Do not judge what the headset shows while the MCP operator API layer is attached.** It enables
+`XR_METAX1_simulator_compositor_output_capture` and starts the simulator's compositor readback, which
+then logs `[DIAG-ZEROSKIP] Skipping blit: source image center pixel is zero` once a second and holds
+the first frame it accepted. The capture tool cannot produce a frame either (`Failed to capture
+frame`). Disable the layer and the display updates normally.
+
+It cost about six fixes aimed at innocent code to find that, and the evidence was in hand early:
+every value the host submits was verified correct (swapchains created once, images primed, indices
+rotating, `imageRect` valid, `xrEndFrame XR_SUCCESS`, live pixels), our centre pixel read non-zero in
+the same second the runtime called it zero -- two readers looking at different images -- and starting
+the host in an already-loaded world froze with no resize and no geometry change at all.
+
+**When every value a component submits is verified and the symptom persists, the fault is in the
+environment.** The next step is a CONTROL -- run a known-good app, or remove the one thing this setup
+has that a working setup does not -- never a seventh change to code the evidence has already
+cleared. "This mechanism is real" is not evidence that "this mechanism is the cause"; three of those
+six were genuine defects worth fixing, and none of them was the bug.
+
+The layer is still good for DRIVING the runtime: poses, controller input, session and frame queries
+all work. Just not for looking.
+
 ## Iteration loop
 
 ```
