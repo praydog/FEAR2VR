@@ -101,10 +101,69 @@ void FrameCapture::on_present() {
     // Holding these is therefore not merely wasteful, it is destructive, and the fix is to let go
     // the moment the device stops being OK. They are all created lazily, so recovery is automatic.
     if (auto* dev = sdk::Render::device(); dev != nullptr) {
-        if (dev->TestCooperativeLevel() != D3D_OK) {
-            FrameCapture::get().free_device_resources();
+        if (const HRESULT hr = dev->TestCooperativeLevel(); hr != D3D_OK) {
+            // WHICH failure, not just that there was one. D3DERR_DEVICELOST (0x88760868) and
+            // D3DERR_DEVICENOTRESET (0x88760869) mean the device genuinely went away and want the
+            // release below; anything else means we are dropping the capture for a reason that has
+            // nothing to do with device loss, and the headset goes black while the game renders
+            // perfectly. Logged on CHANGE, so a steady state costs one line rather than one a
+            // frame.
+            // ---- FREE ON THE TRANSITION, NOT EVERY FRAME ------------------------------------
+            //
+            // This used to release the surfaces on every failing frame. Measured live:
+            // 6312 device-lost events across 6753 frames, so the intervening OK frames kept
+            // recreating D3DPOOL_DEFAULT render targets and this kept destroying them --
+            // thousands of GPU allocation/free cycles per session for no benefit, since the
+            // resources are already gone after the first one.
+            //
+            // The session that produced that reading ended in a BUGCHECK 0xD1 inside
+            // dxgmms2.sys+0x10d70 (DirectX kernel memory manager, near-null read at IRQL 2).
+            // A kernel driver must not fault whatever user mode does, so that is a driver
+            // defect and not ours -- but handing the GPU scheduler that much pointless churn
+            // is asking to find one, and there is nothing to be gained by it.
+            const auto code = static_cast<uint32_t>(hr);
+            const bool was_lost = FrameCapture::get().m_device_is_lost.exchange(
+                true, std::memory_order_relaxed);
+            if (!was_lost) {
+                LOGX("[capture] TestCooperativeLevel = 0x%08X -- releasing capture surfaces once",
+                     code);
+                FrameCapture::get().free_device_resources();
+            }
             FrameCapture::get().m_device_lost.fetch_add(1, std::memory_order_relaxed);
             return;
+        }
+        if (FrameCapture::get().m_device_is_lost.exchange(false, std::memory_order_relaxed)) {
+            LOGX("[capture] device recovered -- capture surfaces will be rebuilt lazily");
+        }
+        static std::atomic<bool> s_said_ok{false};
+        if (!s_said_ok.exchange(true, std::memory_order_relaxed)) {
+            LOGX("[capture] device cooperative level OK -- capturing");
+
+            // ---- CAN WE SHARE THE SURFACE INSTEAD OF COPYING IT? --------------------------
+            //
+            // The readback is the whole cost: 38 MB/frame through GetRenderTargetData, which
+            // blocks until the GPU drains, measured at 14 fps under the simulator against 70
+            // with a quarter of the bytes. A SHARED surface removes it entirely -- D3D9Ex can
+            // create a render target with a shared handle that the 64-bit host opens directly
+            // with ID3D11Device::OpenSharedResource, so the frame never leaves the GPU.
+            //
+            // That needs D3D9Ex. This engine is from 2009 and almost certainly asks for plain
+            // D3D9, in which case the device has to be upgraded at creation (hook
+            // Direct3DCreate9 -> Direct3DCreate9Ex) -- a bigger and riskier change, because
+            // device-loss semantics differ and this engine has its own reset path.
+            //
+            // Which of those two jobs it is, is one QueryInterface. Asking before building.
+            IDirect3DDevice9Ex* ex = nullptr;
+            const HRESULT qi = dev->QueryInterface(__uuidof(IDirect3DDevice9Ex),
+                                                   reinterpret_cast<void**>(&ex));
+            if (SUCCEEDED(qi) && ex != nullptr) {
+                ex->Release();
+                LOGX("[capture] device IS D3D9Ex -- shared surfaces are available without "
+                     "upgrading the device");
+            } else {
+                LOGX("[capture] device is plain D3D9 (QueryInterface 0x%08X) -- a shared surface "
+                     "needs Direct3DCreate9Ex at creation", static_cast<unsigned>(qi));
+            }
         }
     }
 

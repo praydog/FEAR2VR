@@ -58,7 +58,11 @@ public:
     void on_frame() override {}
     void on_shutdown() override;
 
-    void set_enabled(bool on) { m_enabled.store(on, std::memory_order_release); }
+    void set_enabled(bool on) {
+        // Remembers an explicit OFF so the pass-side auto-enable cannot undo it.
+        m_user_disabled.store(!on, std::memory_order_release);
+        m_enabled.store(on, std::memory_order_release);
+    }
 
     // BISECTION. The swap does three things and each could be the one that breaks the frame, so
     // each is separately disableable rather than reasoned about: 1 = bind and restore only,
@@ -161,6 +165,12 @@ private:
     std::atomic<int32_t> m_width{0};
     std::atomic<int32_t> m_height{0};
     std::atomic<uint64_t> m_pass_calls{0};  // times on_pass() was entered at all
+    // Cost of the publish path, reset every reporting window. Timed rather than assumed --
+    // see the trace emitter for why the window is exactly one second.
+    std::atomic<bool> m_user_disabled{false};
+    std::atomic<uint64_t> m_pub_us{0};
+    std::atomic<uint64_t> m_pub_n{0};
+    std::atomic<uint64_t> m_pub_max_us{0};
     std::atomic<uint32_t> m_target_w{0};        // render-target size, asked for once
     std::atomic<uint32_t> m_target_h{0};
     std::atomic<uint64_t> m_viewport_widened{0};

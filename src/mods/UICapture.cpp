@@ -267,18 +267,53 @@ void UICapture::on_present() {
         static std::atomic<uint64_t> last_report{0};
         const auto now = static_cast<uint64_t>(GetTickCount64() / 1000);
         if (last_report.exchange(now, std::memory_order_relaxed) != now) {
-            LOGX("[trace] ui: seen=%llu swaps=%llu publishes=%llu failures=%llu layer=%dx%d target=%dx%d",
+            // ---- WHAT THE PUBLISH ACTUALLY COSTS, PER SECOND ----------------------------
+            //
+            // "This path is expensive" is a guess until it is timed. publish_layer does a
+            // StretchRect off the back buffer plus a system-memory readback, and with
+            // swaps=0 it does that for a layer nothing ever drew into. The window below is
+            // one second, so `pub_ms` reads directly as PERCENT OF A SECOND spent in the
+            // publish, on the render thread, and `pub_max` catches a stall an average hides.
+            const auto pub_us = m_pub_us.exchange(0, std::memory_order_relaxed);
+            const auto pub_n = m_pub_n.exchange(0, std::memory_order_relaxed);
+            const auto pub_max = m_pub_max_us.exchange(0, std::memory_order_relaxed);
+            LOGX("[trace] ui: seen=%llu swaps=%llu publishes=%llu failures=%llu layer=%dx%d "
+                 "target=%dx%d | pub_ms=%.1f/s n=%llu avg=%.2fms max=%.2fms",
                  static_cast<unsigned long long>(m_pass_calls.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_swaps.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_publishes.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(m_failures.load(std::memory_order_relaxed)),
                  layer_width(), layer_height(),
                  m_width.load(std::memory_order_relaxed),
-                 m_height.load(std::memory_order_relaxed));
+                 m_height.load(std::memory_order_relaxed),
+                 static_cast<double>(pub_us) / 1000.0,
+                 static_cast<unsigned long long>(pub_n),
+                 pub_n != 0 ? static_cast<double>(pub_us) / 1000.0 / static_cast<double>(pub_n) : 0.0,
+                 static_cast<double>(pub_max) / 1000.0);
         }
     }
 
-    publish_layer(dev);
+    {
+        // Timed with QPC around the whole call, including its early-outs: a path that decides
+        // not to publish still costs whatever it spent deciding.
+        LARGE_INTEGER t0{};
+        LARGE_INTEGER t1{};
+        LARGE_INTEGER freq{};
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+        publish_layer(dev);
+        QueryPerformanceCounter(&t1);
+        if (freq.QuadPart > 0) {
+            const auto us = static_cast<uint64_t>(((t1.QuadPart - t0.QuadPart) * 1000000LL) /
+                                                  freq.QuadPart);
+            m_pub_us.fetch_add(us, std::memory_order_relaxed);
+            m_pub_n.fetch_add(1, std::memory_order_relaxed);
+            uint64_t prev = m_pub_max_us.load(std::memory_order_relaxed);
+            while (us > prev &&
+                   !m_pub_max_us.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {
+            }
+        }
+    }
 
     if (!m_shot_pending.load(std::memory_order_acquire)) {
         return;
@@ -438,7 +473,11 @@ void UICapture::on_pass(uint32_t ordinal, uintptr_t caller) {
     // A pass ISSUED BY gameclient.dll proves it exists and is drawing, and the caller recording
     // above runs whether or not we are enabled -- so that can be observed from the off state. The
     // mod becomes self-timing instead of depending on a route nobody calls.
-    if (!m_enabled.load(std::memory_order_relaxed)) {
+    // AN EXPLICIT OFF STAYS OFF. The auto-enable below re-armed on the next gameclient pass, so
+    // /render/ui?on=0 was undone within a frame and the route could not be used to measure what
+    // capture costs -- or to turn it off at all. Auto-enable is a DEFAULT, not an override.
+    if (!m_enabled.load(std::memory_order_relaxed) &&
+        !m_user_disabled.load(std::memory_order_relaxed)) {
         const auto* gc = sdk::Modules::get().game_client();
         if (gc != nullptr && gc->base != 0 && caller >= gc->base && caller < gc->base + gc->size) {
             m_enabled.store(true, std::memory_order_release);

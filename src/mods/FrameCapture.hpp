@@ -320,6 +320,9 @@ private:
     std::atomic<bool> m_release_requested{false};
     std::atomic<bool> m_released{false};
     std::atomic<uint32_t> m_device_lost{0};
+    // Edge-detects device loss so the surfaces are released ONCE per loss rather than once per
+    // frame -- see the release site for the allocation churn that caused, and what it preceded.
+    std::atomic<bool> m_device_is_lost{false};
 
     // Presents since a scene-driven capture last ran, and how often the fallback fired. Public to
     // the mod's own free functions in the .cpp, which is where on_present lives.

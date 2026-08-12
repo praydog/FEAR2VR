@@ -71,10 +71,6 @@ std::atomic<bool> g_trace_pending{false};
 std::atomic<uint32_t> g_last_forced_w{0};
 std::atomic<uint32_t> g_last_forced_h{0};
 
-// The extent the interface was binding before any world existed. The second world adopts that very
-// target, so this is what tells the adopted bind apart from a shadow or AO target.
-std::atomic<uint32_t> g_preworld_bind_w{0};
-std::atomic<uint32_t> g_preworld_bind_h{0};
 std::atomic<uint64_t> g_transition{0};
 char g_trace_why[64]{};
 
@@ -298,16 +294,21 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
             // the window's size, and the scene then occupies 2560x1440 of a 4320x2224 buffer: a
             // square with black down the right and bottom, in the headset and on screen both.
             //
-            // THIS TARGET IS VIRTUAL (0x800): it owns no surface, it draws into the back buffer,
-            // so these dwords describe an extent rather than an allocation -- which is why the
-            // first world can carry 4320x2224 in the very same fields. Correcting the extent here,
-            // before the original binds it, puts the scene back across the whole buffer and leaves
-            // everything downstream (pass viewport, HUD layout) deriving from one consistent size.
-            // WHICH SITE BINDS WHICH TARGET. Rewriting every mismatched virtual bind fixed the
-            // second world's scene and broke the shading with it -- ambient occlusion and shadows
-            // bind virtual targets of their own, and an extent forced to the back buffer's size is
-            // wrong for every one of them. The scene bind has to be told apart from those, and the
-            // call site is the discriminator this project already uses for exactly this.
+            // Corrected at CREATION rather than here: rewriting the bound extent left the depth
+            // and auxiliary buffers at the created size and broke ambient occlusion and shadows,
+            // twice. See create_render_target_detour.
+
+            // ---- WHICH SITE BINDS WHICH TARGET, AND AT WHAT SIZE ------------------------------
+            //
+            // Kept after the investigation it was written for, because it is bounded and answers
+            // the first question any future "the target is the wrong size" bug asks. It already
+            // settled one: every virtual bind across a full menu -> world -> menu -> world cycle
+            // comes from ONE call site (FEAR2.exe+0x20BA33), so the caller cannot be used to tell
+            // the scene target apart from a shadow or AO target.
+            //
+            // Costs nothing to leave in: it logs only when the size CHANGES, and stops after 40
+            // lines. A (size, caller) SET would not do -- the second world can repeat a size the
+            // menu already used, and a set swallows exactly the event in question.
             if ((flags & 0x800u) != 0) {
                 const auto ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
                 const auto* exe_m = sdk::Modules::get().exe();
@@ -321,9 +322,6 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
                     mod = "gameclient.dll";
                     rel = ret - gc_m->base;
                 }
-                // CHRONOLOGY, NOT A SET. A (size, caller) set cannot answer this: the second
-                // world's bind may repeat a size the menu already used, and a set swallows it.
-                // Logging only when the size CHANGES keeps the sequence readable and bounded.
                 static std::atomic<uint32_t> last{0};
                 const uint32_t now = (pw << 16) | (ph & 0xFFFFu);
                 if (last.exchange(now, std::memory_order_relaxed) != now) {
@@ -331,26 +329,6 @@ char __fastcall begin_render_target_detour(void* self, void* /*edx*/, void* hand
                     if (budget.fetch_add(1, std::memory_order_relaxed) < 40) {
                         LOGX("[vbind] %ux%u from %s+0x%IX", pw, ph, mod,
                              static_cast<size_t>(rel));
-                    }
-                }
-            }
-            // NOTE: the bind-time extent rewrite that used to live here is gone. It made the
-            // scene fill the buffer while leaving the depth and auxiliary buffers at the created
-            // size, which broke ambient occlusion and shadows -- observed twice. The size is
-            // corrected at creation now; see create_render_target_detour.
-            if (false) {
-                const uint32_t want_w = g_last_forced_w.load(std::memory_order_relaxed);
-                const uint32_t want_h = g_last_forced_h.load(std::memory_order_relaxed);
-                if (want_w != 0 && want_h != 0 && want_w <= 0xFFFFu && want_h <= 0xFFFFu &&
-                    (pw != want_w || ph != want_h)) {
-                    *reinterpret_cast<uint16_t*>(pooled + kPooledWidth) =
-                        static_cast<uint16_t>(want_w);
-                    *reinterpret_cast<uint16_t*>(pooled + kPooledHeight) =
-                        static_cast<uint16_t>(want_h);
-                    static std::atomic<uint32_t> said{0};
-                    if (said.fetch_add(1, std::memory_order_relaxed) < 4) {
-                        LOGX("[scenetarget] virtual bind %ux%u -> %ux%u (adopted a target sized for "
-                             "something else)", pw, ph, want_w, want_h);
                     }
                 }
             }
