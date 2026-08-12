@@ -13,7 +13,6 @@ cmake_minimum_required(VERSION 3.20)
 project(xr64 CXX)
 
 set(CMAKE_CXX_STANDARD 20)
-set(OPENXR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/openxr")
 
 # ---- RMLUI, FOR THE IN-HEADSET SETTINGS PANEL -----------------------------------------------
 #
@@ -66,14 +65,39 @@ set(RMLUI_SVG_PLUGIN OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(rmlui)
 
+# ---- THE OPENXR LOADER, BUILT FROM SOURCE ----------------------------------------------------
+#
+# Pinned to the tag whose headers this project was developed against (XR_CURRENT_API_VERSION
+# 1.1.61), so moving from the prebuilt SDK drop to a source build changed the MECHANISM without
+# also changing the API version every measurement here was taken against. Bump deliberately.
+#
+# Built rather than vendored because it CAN be: it is an ordinary CMake project that compiles
+# cleanly with MSVC, so a pinned tag buys exact provenance and costs the repo nothing. That is the
+# opposite call from DXVK in staging/, and the difference is real -- DXVK needs meson and a
+# separate toolchain, and its exact bytes are what the frame-rate grid was measured with, whereas
+# a loader built from a tag is reproducible by anyone from the tag alone.
+#
+# STATIC. DYNAMIC_LOADER=OFF links the loader into xr64.exe, which removes openxr_loader.dll from
+# beside the exe and from anything bundling it. The loader still finds the runtime the normal way
+# (the ActiveRuntime registry key); only OUR linkage to it changes.
+FetchContent_Declare(openxr
+	GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+	GIT_TAG release-1.1.61
+	GIT_SHALLOW TRUE)
+set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(openxr)
+
 add_executable(xr64 main.cpp
 	ui/UiSystemInterface.cpp
 	ui/UiRenderInterfaceD3D11.cpp
 	ui/SettingsUi.cpp)
-target_include_directories(xr64 PRIVATE "${OPENXR_ROOT}/include"
+target_include_directories(xr64 PRIVATE
 	"${CMAKE_CURRENT_SOURCE_DIR}/../../shared")  # SharedFrame.hpp is compiled into both bitnesses
 target_link_libraries(xr64 PRIVATE
-	"${OPENXR_ROOT}/native/x64/release/lib/openxr_loader.lib"
+	openxr_loader
 	d3d11
 	dxgi
 	d3dcompiler
@@ -81,12 +105,6 @@ target_link_libraries(xr64 PRIVATE
 )
 target_compile_definitions(xr64 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 
-# The 64-bit loader must sit beside the exe, exactly as the 32-bit one does beside the mod.
-add_custom_command(TARGET xr64 POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-		"${OPENXR_ROOT}/native/x64/release/bin/openxr_loader.dll"
-		"$<TARGET_FILE_DIR:xr64>/openxr_loader.dll"
-	VERBATIM)
 
 # settings.rml/.rcss, loaded at runtime from beside the exe (SettingsUi::init resolves its own
 # module path) -- same "ship it beside the binary" pattern as the loader above, just a directory

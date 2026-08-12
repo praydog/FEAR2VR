@@ -31,3 +31,6 @@ fear2vr.*.dll
 # (this machine has one) would otherwise drop d3d9.dll silently, so the repo says so itself: a repo
 # .gitignore outranks the global one, and a CI runner that has no global ignore behaves identically.
 !staging/*.dll
+
+# the CI bundle, assembled from build outputs -- never a source
+dist/

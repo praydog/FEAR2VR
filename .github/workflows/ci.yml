@@ -1,0 +1,128 @@
+# Builds both halves of fear2vr and bundles them into one artifact.
+#
+# TWO BITNESSES, ON PURPOSE. The mod is Win32 because FEAR2.exe is; the OpenXR host is x64 because
+# the 32-bit Oculus runtime dies inside its own RuntimeIPC init during xrCreateSession. They are
+# separate CMake projects and neither can be built with the other's toolchain settings, so this
+# configures each one on its own and puts the results side by side at the end.
+#
+# WHY IT DOES NOT NEED cmkr. CMakeLists.txt is generated from cmake.toml, but it is COMMITTED --
+# cmkr skips regeneration whenever CI is set in the environment, which Actions always sets, so a
+# runner with no committed CMakeLists.txt would have nothing willing to produce one. The consequence
+# to remember: a cmake.toml change that was not regenerated and committed locally means CI silently
+# builds the previous project definition. build.bat clears CI and regenerates; commit both together.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # staging/ is committed payload that gets shipped to users and placed next to the game by the
+      # injector. Verifying it before anything else means a corrupted or unreviewed payload fails
+      # the run immediately rather than being quietly bundled into a release artifact.
+      - name: Verify the staging payload
+        run: python tools/verify_staging.py
+
+      # Sources for RmlUi/freetype/OpenXR/kananlib/safetyhook. Cached by the files that pin their
+      # versions, so a build with unchanged pins skips the clones. The two builds share this
+      # directory safely because they fetch disjoint projects -- nothing is fetched by both.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: .fc
+          key: fc-${{ runner.os }}-${{ hashFiles('cmake.toml', 'tools/xr64/CMakeLists.txt') }}
+
+      # ---- the 32-bit mod: fear2vr.dll, injector.exe, the test executables --------------------
+      - name: Configure (Win32)
+        run: cmake -B build -A Win32 -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/.fc
+
+      - name: Build (Win32)
+        run: cmake --build build --config RelWithDebInfo
+
+      # ---- the 64-bit OpenXR host: xr64.exe ---------------------------------------------------
+      # The loader is built from source and linked statically (DYNAMIC_LOADER=OFF), so there is no
+      # openxr_loader.dll to carry into the bundle.
+      - name: Configure (x64 host)
+        run: cmake -B build64 -A x64 -S tools/xr64 -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/.fc64
+
+      - name: Build (x64 host)
+        run: cmake --build build64 --config RelWithDebInfo
+
+      # ONLY the tests that do not need the game. command-server-test is headless (Tier-1, must
+      # always pass) and format-strings is a source check (Tier-0); both are meaningful on a runner.
+      #
+      # fixture-test is EXCLUDED rather than left to skip. FEAR2 will never exist here, so it would
+      # report exit 77 every run -- and a permanent skip in the output is worse than an absence: it
+      # reads like coverage that is one environment fix away, when in fact the fixture is a live
+      # game being driven through IPC and is not something a runner can ever provide.
+      - name: Test (headless tiers only)
+        run: ctest --test-dir build -C RelWithDebInfo -E fixture-test --output-on-failure
+      # Everything a user needs, flat and next to each other, exactly as it must sit on disk to
+      # run: the injector stages d3d9.dll beside the game itself, and xr64.exe finds its own UI
+      # files relative to its module path.
+      - name: Assemble the bundle
+        shell: pwsh
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          Copy-Item build/bin/fear2vr.dll,  build/bin/fear2vr.pdb  $dist
+          Copy-Item build/bin/injector.exe, build/bin/injector.pdb $dist
+          Copy-Item build64/RelWithDebInfo/xr64.exe, build64/RelWithDebInfo/xr64.pdb $dist
+
+          # staging/ is copied from the repo rather than from build/bin so the bundle carries the
+          # reviewed payload, not whatever happened to survive in an output directory.
+          Copy-Item staging/d3d9.dll, staging/dxvk-LICENSE.txt $dist
+          Copy-Item -Recurse build64/RelWithDebInfo/ui $dist/ui
+
+          @"
+          fear2vr -- built by CI
+
+          commit    $env:GITHUB_SHA
+          ref       $env:GITHUB_REF
+          run       $env:GITHUB_RUN_ID
+          built     $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC
+
+          CONTENTS
+
+            injector.exe      launches, injects, unloads. Start here:
+                                injector.exe --launch          launch with a 4 GB address space and inject
+                                injector.exe --reload          hot-swap the payload into a running game
+                                injector.exe --status          module/IPC snapshot
+            fear2vr.dll       the mod itself, injected by the above. 32-bit, as the game is.
+            xr64.exe          the 64-bit OpenXR host. Separate process by necessity: the 32-bit
+                              Oculus runtime fails inside its own init during xrCreateSession.
+                              The OpenXR loader is linked statically, so there is no DLL beside it.
+            ui/               xr64's settings panel documents, loaded from beside the exe.
+            d3d9.dll          DXVK. The injector places this next to FEAR2.exe on --launch if and
+                              only if no d3d9.dll is already there; it never overwrites one.
+            dxvk-LICENSE.txt  DXVK is zlib/libpng licensed. Unmodified binary.
+
+          DXVK IS NOT OPTIONAL. It is part of the configuration: without it the frame readback that
+          feeds xr64 blocks until the GPU drains, which costs roughly 20 fps on hardware and makes
+          the Meta XR Simulator unusable (10-20 fps, minutes-long loads). A session judged without
+          it is measuring the wrong thing.
+
+          PDBs are included so a crash address can be resolved.
+          "@ | Set-Content -Path "$dist/BUNDLE.txt" -Encoding utf8
+
+          Get-ChildItem -Recurse $dist | Select-Object Length, FullName
+
+      # upload-artifact zips what it is given, so the download is a single archive.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fear2vr-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
