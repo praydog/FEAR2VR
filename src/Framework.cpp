@@ -11566,6 +11566,7 @@ bool Framework::initialize() {
               .u("vr_stick_turns", static_cast<size_t>(VR::get().stick_turns()))
               .u("vr_jumps", static_cast<size_t>(VR::get().jumps()))
               .u("vr_reloads", static_cast<size_t>(VR::get().reloads()))
+              .u("vr_crouches", static_cast<size_t>(VR::get().crouches()))
               .u("vr_melees", static_cast<size_t>(VR::get().melees()))
               .u("vr_reflex_toggles", static_cast<size_t>(VR::get().reflex_toggles()))
               .u("vr_reflex_vk", static_cast<size_t>(VR::get().reflex_vk()))

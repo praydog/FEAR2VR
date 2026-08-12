@@ -50,6 +50,7 @@ constexpr uint32_t kDefaultStrafeRight = 'D';
 constexpr uint32_t kDefaultJump = 0x20;    // VK_SPACE
 constexpr uint32_t kDefaultReload = 0x52;  // 'R'
 constexpr uint32_t kDefaultUse = 0x45;     // 'E'
+constexpr uint32_t kDefaultCrouch = 0x43;  // 'C' -- only used if the profile has Crouch unbound
 
 // Order matches the bit order in update_locomotion.
 constexpr std::array<sdk::Action, 4> kLocoActions{sdk::Action::Forward, sdk::Action::Backward,
@@ -1104,6 +1105,20 @@ void VR::update_buttons() {
         if ((left_pressed & vr::VRRuntime::kButtonY) != 0u) {
             si.queue_wheel(1);
             m_weapon_cycles.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // CROUCH ON X. A tap, like Jump and Reload above and for the same reason: the engine
+        // consumes a press EDGE, so re-asserting the key every frame would overwrite the very
+        // transition it is watching for.
+        //
+        // Whether that reads as a toggle or a hold is the GAME's business, not ours -- FEAR2 has a
+        // crouch-toggle option, and a single edge does the right thing under either setting, where
+        // holding the key would fight the toggle. The binding comes from the wearer's own profile;
+        // the constant is only a fallback for a profile with Crouch unbound.
+        if ((left_pressed & vr::VRRuntime::kButtonX) != 0u) {
+            if (si.tap(action_input(sdk::Action::Crouch, kDefaultCrouch))) {
+                m_crouches.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
