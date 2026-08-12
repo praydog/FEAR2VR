@@ -58,6 +58,7 @@
 #include "mods/UICapture.hpp"
 #include "mods/SyntheticInput.hpp"
 #include "mods/Watchpoints.hpp"
+#include "mods/D3D9ExUpgrade.hpp"
 #include "mods/ViewHook.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Object.hpp"
@@ -10738,6 +10739,10 @@ bool Framework::initialize() {
     // MODS ARE REGISTERED BEFORE THE FAN-OUT, and after the frame hook so a mod's on_initialize can rely on
     // SDK resolution having happened. ViewHook is the first: it owns CPlayerCamera_ApplyLookDelta, which is the
     // only way to steer the view (writing the rotation fields is reclaimed within a frame -- measured).
+    // FIRST, and it matters: this hooks Direct3DCreate9 so the engine's factory comes back as
+    // IDirect3D9Ex, and the engine calls that exactly once, early. A mod registered after one that
+    // touches the device would be too late to change what kind of device exists.
+    Mods::get().add(&D3D9ExUpgrade::get());
     Mods::get().add(&ViewHook::get());
     // Holds simulation on while the desktop window is not active -- see FocusKeeper.hpp. Registered after
     // ViewHook because its input-leak detector reads ViewHook's look counter.
