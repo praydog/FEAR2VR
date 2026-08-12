@@ -6,11 +6,17 @@ out/
 *.user
 *.suo
 *.log
-CMakeLists.txt
-# ...except the host's, which is HAND-WRITTEN. The rule above exists because cmkr generates the
-# root CMakeLists.txt from cmake.toml; tools/xr64 is a separate 64-bit build that cmkr never sees,
-# and ignoring it meant a fresh clone could not build the OpenXR host at all.
-!tools/xr64/CMakeLists.txt
+# CMakeLists.txt IS COMMITTED, both the generated root one and the hand-written host's.
+#
+# It is generated from cmake.toml by cmkr, which is exactly why it used to be ignored -- but that
+# made a fresh clone unbuildable without cmkr on PATH, and cmkr deliberately SKIPS regeneration
+# when CI is set in the environment (GitHub Actions sets it), so a runner would have found no
+# CMakeLists.txt and nothing willing to produce one. Committing it is what makes clone -> configure
+# -> build work anywhere.
+#
+# The editing rule is unchanged: change cmake.toml, never CMakeLists.txt. Regeneration happens on
+# any local build (build.bat clears CI); commit the regenerated file in the SAME commit as the
+# cmake.toml change, or CI builds the previous project definition and says nothing.
 # reload copies made by the injector sit next to the built DLL
 fear2vr.*.dll
 *.pyc
