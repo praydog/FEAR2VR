@@ -80,7 +80,24 @@ std::optional<std::string> FrameCapture::on_initialize() {
     return std::nullopt;
 }
 
+// ---- THE END OBLIGATION, ON EVERY PATH OUT ------------------------------------------------------
+//
+// on_present has several early returns -- the Present stage services and returns, the menu fallback
+// has its own, and the pipelined AfterSecondEye path is serviced from the scene hook entirely. A
+// call placed in ONE of those branches ends the frame on some frames and strands it on the rest,
+// which is what happened when this sat inside the Present branch: normal in-world frames never
+// ended, and the host quietly timed out and ended them behind the game's back.
+//
+// A destructor cannot be forgotten by a future early return, which is the only property that makes
+// this correct as the function grows.
+struct EndXrFrameOnExit {
+    ~EndXrFrameOnExit() { FrameCapture::end_xr_frame(); }
+};
+
 void FrameCapture::on_present() {
+    // Exactly once per present, whatever path this function takes out.
+    EndXrFrameOnExit end_guard{};
+
     // Teardown runs HERE, on the thread that owns the device, because the device is single-threaded
     // (BehaviorFlags 0x42, measured). See on_shutdown() for what this is preventing.
     if (FrameCapture::get().m_release_requested.load(std::memory_order_acquire)) {
@@ -503,6 +520,29 @@ void FrameCapture::set_continuous(bool enabled) {
     LOGX("[capture] continuous readback %s", enabled ? "ON (pipelined)" : "off");
 }
 
+// ---- END THE XR FRAME, WHETHER OR NOT THERE WERE PIXELS -----------------------------------------
+//
+// UNCONDITIONAL, once per frame, after the capture attempt. This used to sit inside the successful
+// LockRect + publishing branch, which strands a begun frame every time pixels are not ready --
+// startup, a loading or menu transition, a capture failure -- leaving m_frame_begun set and the host
+// timing out and ending the frame behind the game's back.
+//
+// The spec makes Begin/End a strict pair and says nothing about having content: an END is owed with
+// ZERO LAYERS if there is nothing to show. Pixel availability is a latency question; call pairing is
+// a requirement. Tying one to the other is the same category error that deadlocked the first draft
+// of the contract.
+//
+// Discharged whether or not the request succeeded: a timed-out END is reported by FramePublisher's
+// own counter, and retrying it on the next frame would end the wrong frame.
+void FrameCapture::end_xr_frame() {
+    auto& fp = FramePublisher::get();
+    if (!fp.handshake_ready() || !VR::get().frame_begun()) {
+        return;
+    }
+    fp.xr_end();
+    VR::get().discharge_frame();
+}
+
 void FrameCapture::service_continuous() {
     if (!m_continuous.load(std::memory_order_acquire)) {
         return;
@@ -783,44 +823,26 @@ void FrameCapture::service_continuous() {
     // ---- STATE THE POSE, DO NOT JUST NAME IT ---------------------------------------------------
     //
     // The sequence is an INDEX and the host resolves it against its own record of what it SENT. That
-    // says nothing about what the engine finally DREW: the conversion into its basis, the
-    // conjugation into the body's frame, its own outer*inner composition and its pitch clamp all
-    // sit in between, and any of them altering the rotation leaves the compositor warping from a
-    // pose this image was never rendered with.
-    //
-    // `outer` here is read from the engine's own holder, so whatever it did to our write is in it.
-    // Undo the two transforms we applied and the result is the head pose this frame actually
-    // corresponds to, in the runtime's space.
-    //
-    //     outer     = heading * head_eng * heading^-1
-    //     head_eng  = heading^-1 * outer * heading
-    //     head_xr   = phi(head_eng)          -- phi is its own inverse
+    // says nothing about what this image was drawn from, and a compositor warping from a pose the
+    // frame was never rendered with is the jitter that sends you looking for parallax bugs.
     //
     // Travels with the SLOT, like the sequence, because the readback is a frame deep.
-    m_pipe_pose_ok[issue] = false;
-    if (const auto ops = sdk::PlayerMgr::camera_rotation_operands(0)) {
-        if (const auto yaw = sdk::PlayerMgr::aim_yaw(0)) {
-            const float h = *yaw * 0.5f;
-            const std::array<float, 4> hq{0.0f, sinf(h), 0.0f, cosf(h)};
-            const std::array<float, 4> hqi{0.0f, -sinf(h), 0.0f, cosf(h)};
-            auto qm = [](const std::array<float, 4>& a, const std::array<float, 4>& b) {
-                return std::array<float, 4>{a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-                                            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-                                            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-                                            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
-            };
-            const auto head_eng = qm(qm(hqi, ops->outer), hq);
-            const auto head_xr = VR::runtime_to_engine_rotation(head_eng);  // involution
-            const float n = head_xr[0] * head_xr[0] + head_xr[1] * head_xr[1] +
-                            head_xr[2] * head_xr[2] + head_xr[3] * head_xr[3];
-            if (n > 0.9f && n < 1.1f) {  // a quaternion that is not unit length is not a rotation
-                for (size_t k = 0; k < 4; ++k) {
-                    m_pipe_pose[issue][k] = head_xr[k];
-                }
-                m_pipe_pose_ok[issue] = true;
-            }
-        }
-    }
+    //
+    // THE POSE THE HOST SENT US, HANDED STRAIGHT BACK. Not derived from anything.
+    //
+    // This used to rebuild the head pose from camera_rotation_operands and aim_yaw and a
+    // conj(hq) * outer * hq round trip. That had THREE ways to fail -- either getter returning
+    // nullopt, or the result not being unit length -- and each failure published rendered_valid = 0,
+    // which made the host fall back to its sequence lookup and reproject the timewarp against a
+    // stale pose. The host's own log counted it: `absent 1490` of 26328 frames, with
+    // STATED-vs-INDEX peaking at 40 degrees. It showed up in specific places and facings because
+    // those getters depend on what the game's camera is doing there, not on anything about the
+    // frame.
+    //
+    // The pose the pixels were drawn from is not something to be inferred -- the host sent it, we
+    // rendered with it, and it is still sitting in the mod verbatim, in the host's own space. A
+    // round trip has no failure path, no approximation, and no convention to get wrong.
+    m_pipe_pose_ok[issue] = VR::wire_head_pose(m_pipe_pose[issue]);
 
     m_pipe_seq[issue] = stamped;
     back->Release();

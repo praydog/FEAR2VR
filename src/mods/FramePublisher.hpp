@@ -75,6 +75,60 @@ public:
     // tolerate.
     const xr::HostState* host_state() const;
 
+    // ---- THE FRAME HANDSHAKE: WE DRIVE, THE HOST EXECUTES --------------------------------------
+    //
+    // See FRAME_LOOP.md. Each call posts a phase and BLOCKS until the host has performed the
+    // corresponding OpenXR call for THIS request id. `xr_wait` is the important one: the host
+    // performs xrWaitFrame only once we have asked, so the runtime's throttle lands on this thread
+    // -- the one doing the game's work -- instead of being relayed to it as a cadence.
+    //
+    // Returns false on timeout or a failed XR call, and a false from xr_wait or xr_begin means DO
+    // NOT proceed to the next stage: an END without a matching successful begin is an unpaired end.
+    struct FrameLease {
+        bool ok{false};
+        bool should_render{false};
+        int64_t predicted_display_time{0};
+        uint32_t predicted_period_ns{0};
+        float head_orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+        float head_position[3]{};
+    };
+
+    FrameLease xr_wait();   // -> xrWaitFrame. Blocks: this is the throttle.
+    bool xr_begin();        // -> xrBeginFrame. Must precede any rendering for this frame.
+    bool xr_end();          // -> upload + xrEndFrame, after the pixels are published.
+    bool handshake_ready() const;
+
+    // PER STAGE, not one total. A timeout in WAIT means the host is not servicing at all; in BEGIN
+    // it means it served the wait and then stalled; in END it means our pixels went out and the
+    // submission did not. Those are three different faults and a single counter hides which.
+    //
+    // Also the only way to tell an occasional 27.8 ms interval apart from a 100 ms RPC fallback --
+    // without these, "the runtime throttled us" and "a stage timed out and we recovered" look
+    // identical in the trace.
+    uint64_t xr_waits() const { return m_xr_waits.load(std::memory_order_relaxed); }
+    uint64_t xr_wait_timeouts() const { return m_xr_wait_to.load(std::memory_order_relaxed); }
+    uint64_t xr_begin_timeouts() const { return m_xr_begin_to.load(std::memory_order_relaxed); }
+    uint64_t xr_end_timeouts() const { return m_xr_end_to.load(std::memory_order_relaxed); }
+
+    // ---- WHERE THE FRAME'S TIME ACTUALLY GOES --------------------------------------------------
+    //
+    // Microseconds spent blocked in each stage's request->ack, summed, with a count. The 4.16 ms
+    // unaccounted in the host's own trace was called "IPC overhead" without evidence -- it is
+    // uninstrumented time and could equally be host loop work between existing markers. These are
+    // the game-side half of attributing it, and they are sums rather than instantaneous values so a
+    // single sample of /xr yields a mean rather than whatever the last frame happened to do.
+    uint64_t rpc_wait_us() const { return m_rpc_wait_us.load(std::memory_order_relaxed); }
+    uint64_t rpc_begin_us() const { return m_rpc_begin_us.load(std::memory_order_relaxed); }
+    uint64_t rpc_end_us() const { return m_rpc_end_us.load(std::memory_order_relaxed); }
+
+    // ATTEMPTS PER STAGE, because xr_waits cannot serve as the denominator for the other two: BEGIN
+    // is skipped when WAIT fails, END is skipped when BEGIN fails or the render path never ran (the
+    // menu), so dividing every sum by the WAIT count would understate BEGIN and END and misattribute
+    // the frame's unaccounted time -- which is the exact thing this instrumentation exists to settle.
+    uint64_t rpc_wait_n() const { return m_rpc_wait_n.load(std::memory_order_relaxed); }
+    uint64_t rpc_begin_n() const { return m_rpc_begin_n.load(std::memory_order_relaxed); }
+    uint64_t rpc_end_n() const { return m_rpc_end_n.load(std::memory_order_relaxed); }
+
     // The controller block, immediately after the head block in the same mapping. Null before the
     // mapping is open; a caller must still check `sequence` for a torn read, exactly as with the head.
     const xr::HandsState* hands_state() const;
@@ -116,9 +170,26 @@ public:
     // NEVER hangs: the timeout is short, and a run of timeouts stops the waiting entirely until
     // ticks resume, so a host that dies or a session that goes idle costs nothing. A frame clock
     // that can freeze the game is worse than no frame clock.
-    bool wait_for_host_tick(uint32_t timeout_ms);
+    // NO TIMEOUT ARGUMENT. It used to take one and the single caller passed 22 ms -- two compositor
+    // frames at 90 Hz, which is 1.58 periods at the 72 Hz this runtime actually presents at, so a
+    // normal host hitch overran it and that frame published unpaced. A cadence is not something to
+    // hardcode, and it does not have to be inferred either: the host publishes
+    // XrFrameState::predictedDisplayPeriod directly as HostState::predicted_display_period_ns, and
+    // this reads it through the HostState seqlock and waits two periods.
+    bool wait_for_host_tick();
     uint64_t tick_waits() const { return m_tick_waits; }
     uint64_t tick_timeouts() const { return m_tick_timeouts; }
+
+    // WHAT THE LAST COHERENT READ ACTUALLY SAW. Cached here by wait_for_host_tick rather than
+    // re-read from HostState by the caller: diagnostics run on the IPC thread, which must not
+    // borrow a live pointer into the host's mapping, and a second read could land in a different
+    // seqlock window than the one the wait actually used.
+    //
+    // Zero period means the wait is FAILING OPEN -- not pacing at all. Without this exposed, that
+    // state is indistinguishable from healthy pacing in every counter we have, which is exactly how
+    // late_latch sat disabled for a whole session.
+    uint32_t host_period_ns() const { return m_host_period_ns.load(std::memory_order_relaxed); }
+    uint32_t tick_timeout_ms() const { return m_tick_timeout_ms.load(std::memory_order_relaxed); }
     uint64_t gap_count() const { return m_gap_count; }
     double gap_mean_ms() const { return m_gap_count ? m_gap_sum / static_cast<double>(m_gap_count) : 0.0; }
     double gap_stddev_ms() const {
@@ -198,7 +269,27 @@ private:
     static constexpr uint32_t kDivisorWindow = 24;
     static constexpr uint32_t kMaxDivisor = 4;
     uint64_t m_ticks_dropped{0};
-    static constexpr uint32_t kPacingGiveUp = 30;  // ~0.6 s of silence at 90 Hz
+    // Last COHERENT values the pacing wait used, for diagnostics on the IPC thread. Atomic
+    // because they are written on the game thread and read from the command server.
+    std::atomic<uint64_t> m_xr_waits{0};
+    std::atomic<uint64_t> m_rpc_wait_n{0};
+    std::atomic<uint64_t> m_rpc_begin_n{0};
+    std::atomic<uint64_t> m_rpc_end_n{0};
+    std::atomic<uint64_t> m_rpc_wait_us{0};
+    std::atomic<uint64_t> m_rpc_begin_us{0};
+    std::atomic<uint64_t> m_rpc_end_us{0};
+    std::atomic<uint64_t> m_xr_wait_to{0};
+    std::atomic<uint64_t> m_xr_begin_to{0};
+    std::atomic<uint64_t> m_xr_end_to{0};
+    uint32_t m_request_id{0};
+    std::atomic<uint32_t> m_host_period_ns{0};
+    std::atomic<uint32_t> m_tick_timeout_ms{0};
+
+    // Consecutive expired waits before pacing stops trying. Stated in WAITS, not seconds: each
+    // wait is two display periods, so the wall-clock cost is cadence-dependent by construction
+    // (~0.67 s at 90 Hz, ~0.83 s at 72). The old comment claimed a fixed ~0.6 s, which stopped
+    // being true the moment the budget started coming from the runtime instead of a literal.
+    static constexpr uint32_t kPacingGiveUp = 30;
 
     void* m_mapping{nullptr};
     void* m_tick_event{nullptr};

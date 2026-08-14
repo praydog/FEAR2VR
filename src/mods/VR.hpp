@@ -248,6 +248,12 @@ public:
     uint64_t reloads() const { return m_reloads.load(std::memory_order_relaxed); }
     uint64_t crouches() const { return m_crouches.load(std::memory_order_relaxed); }
 
+    // Whether this frame has a successfully begun XR frame still owing an END. FrameCapture asks
+    // before requesting one, because ending a frame that was never begun is an unpaired end, and
+    // DISCHARGES it once the END is acked so a second capture in the same frame cannot end it twice.
+    bool frame_begun() const { return m_frame_begun.load(std::memory_order_relaxed); }
+    void discharge_frame() { m_frame_begun.store(false, std::memory_order_relaxed); }
+
     // B is dual-bound: every press taps reload AND use, so these climb together and neither says
     // which one the game actually acted on -- only that both edges were delivered.
     uint64_t uses() const { return m_uses.load(std::memory_order_relaxed); }
@@ -321,6 +327,8 @@ public:
     // pose it was built with to the pose now. Advances the published sequence, so the frame is
     // stamped with what it was actually drawn from. nullopt when disabled or unavailable.
     std::optional<std::array<float, 4>> late_latch_head();
+    void set_frame_rpc(bool on) { m_frame_rpc.store(on, std::memory_order_relaxed); }
+    bool frame_rpc() const { return m_frame_rpc.load(std::memory_order_relaxed); }
     void set_late_latch(bool on) { m_late_latch.store(on, std::memory_order_relaxed); }
     bool late_latch() const { return m_late_latch.load(std::memory_order_relaxed); }
     uint64_t late_latches() const { return m_late_latches.load(std::memory_order_relaxed); }
@@ -354,6 +362,16 @@ public:
     // it directly, and because any consumer composing its own poses needs the same rule rather
     // than a second, subtly different copy of it.
     static std::array<float, 4> runtime_to_engine_rotation(const std::array<float, 4>& q);
+
+    // THE POSE THE HOST SENT AND WE RENDERED WITH, in the host's own space, byte-for-byte as it
+    // arrived. This is what must be stated back at xrEndFrame: anything derived can be absent or
+    // approximate, and both make the runtime reproject against the wrong pose. False only before
+    // the first coherent pose of the session has been read.
+    // Commits the staged wire pose as "what the current frame is drawn from". Called from the
+    // composition detour, which is the only place that knows the instant.
+    static void commit_wire_head_pose();
+
+    static bool wire_head_pose(float out[4]);
 
     // A runtime-space position in engine units. `units_per_metre` is a measured property of the
     // game, not a constant of VR -- see `kUnitsPerMetre`.
@@ -447,9 +465,49 @@ private:
     std::array<float, 3> m_weapon_rest{};
     std::array<float, 4> m_weapon_rest_rot{0.0f, 0.0f, 0.0f, 1.0f};
     bool m_have_weapon_rest{false};
+    // The frame lease from the host's xrWaitFrame, and whether xrBeginFrame succeeded for it. The
+    // END request is only legitimate when the begin was, so this is state the capture path reads
+    // rather than re-deriving.
+    // ---- THE FRAME RPC IS OFF BY DEFAULT, AND THAT IS THE CONCLUSION OF THE WHOLE EXERCISE ----
+    //
+    // The handshake was built to cure head jitter and it did -- but the CAUSE was the host reading
+    // the rendered pose from the live header at a different instant than it snapshotted the pixels,
+    // so it could pair this frame's image with the next frame's pose. That is fixed properly now, in
+    // Reader::poll, which captures pose, sequence, flat flag and slot together and commits them only
+    // after the seqlock validates. Lock-step never fixed that race; it only closed the window in
+    // which it could happen, by making it impossible for the game to publish mid-frame.
+    //
+    // And it closed that window at a measured price: the game blocks on the host's upload and submit,
+    // which are between End(N) and Begin(N+1) by spec and therefore cannot overlap the game's render
+    // no matter how the requests are batched. Headset off 240 fps, headset on 65-68.
+    //
+    // So the default goes back to free-running, with the two things that make it SAFE now in place:
+    // the coherent snapshot above, and slot_generation, which counts the writer wrapping into a slot
+    // mid-upload instead of leaving torn pixels invisible.
+    //
+    // Still available with /xr/capture?frame_rpc=1 -- it is the reference for what perfect pairing
+    // looks like, and if jitter ever returns it is the first thing to switch on to bisect.
+    std::atomic<bool> m_frame_rpc{false};
+    std::atomic<bool> m_frame_lease_ok{false};
+    std::atomic<bool> m_frame_begun{false};
     std::atomic<bool> m_locomotion{false};
     std::atomic<uint64_t> m_stick_turns{0};
-std::atomic<bool> m_late_latch{false};
+    // ---- ON BY DEFAULT --------------------------------------------------------------------
+    //
+    // Off, this does not merely skip an optimisation: late_latch_head() early-returns before it
+    // reads shared memory, so nothing stages the wire pose, every frame publishes
+    // rendered_valid = 0, and the host falls back to resolving the frame's sequence against its own
+    // record of what it SENT. That index fallback is the stale-pose reprojection this whole path
+    // exists to remove -- so the toggle's default decided whether the feature worked at all, and it
+    // defaulted to "not at all". Measured: late_latches sat at 0 for an entire session while the
+    // wearer chased jitter that the code could not have avoided.
+    //
+    // It is also the freshest pose available, read at the camera pass that builds the frame's
+    // matrices -- which ticks 1:1 with rendered frames (cp_frames_2main 172.1/s against 172.1
+    // frames/s). There is no reason to prefer an older one.
+    //
+    // Still settable, because turning it off is how you A/B the latch itself.
+    std::atomic<bool> m_late_latch{true};
     std::atomic<uint64_t> m_late_latches{0};
     std::atomic<bool> m_head_position{true};
     std::atomic<uint32_t> m_apply_tid{0};

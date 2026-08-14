@@ -277,12 +277,26 @@ public:
     // collapsing into a bool.
     int32_t last_hresult() const { return m_hr.load(std::memory_order_relaxed); }
 
+    // Ends the XR frame if one is begun -- once per present, regardless of whether any
+    // pixels were captured, because Begin/End is a strict pair and an END is owed with zero
+    // layers when there is nothing to show. PUBLIC so on_present's scope guard, which is a
+    // free-standing type, can discharge the obligation on every path out of that function.
+    static void end_xr_frame();
+
 private:
     FrameCapture() = default;
+
+    // Ends the XR frame if one is begun -- once per present, regardless of whether pixels were
+    // captured, because Begin/End is a strict pair and an END is owed with zero layers when there is
+    // nothing to show. Public so on_present's scope guard can discharge it on every path out.
 
     static void on_present();
     void service();
     void service_continuous();
+
+    // Ends the XR frame if one is begun, once per frame, regardless of whether any pixels were
+    // captured. Static because it is a per-frame obligation rather than an operation on a capture.
+
     void service_mirror();
 
     // Free every D3D surface this mod owns. MUST run on the render thread -- see on_shutdown().

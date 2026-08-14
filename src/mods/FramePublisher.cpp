@@ -274,6 +274,11 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     // ODD while the pixels are in flux. A reader that samples mid-copy sees an odd sequence and
     // simply keeps the frame it already had, which is why this needs no lock and cannot stall the
     // render thread.
+    // THIS SLOT'S PIXELS ARE ABOUT TO CHANGE. Odd first, so a host uploading out of that slot can
+    // tell a wrap started underneath it instead of silently submitting a mixture of two frames.
+    header->slot_generation[write_slot % xr::kFrameSlots] |= 1u;
+    MemoryBarrier();
+
     header->sequence |= 1u;
     ::MemoryBarrier();
 
@@ -310,6 +315,11 @@ bool FramePublisher::publish(const void* bits, uint32_t pitch, uint32_t width, u
     ++header->frames_written;
 
     ::MemoryBarrier();
+    // Payload complete: even again, and BEFORE the header's sequence closes, so a reader that accepts
+    // the header can already have seen a settled generation for the slot that header names.
+    header->slot_generation[write_slot % xr::kFrameSlots] =
+        (header->slot_generation[write_slot % xr::kFrameSlots] + 1u) & ~1u;
+    MemoryBarrier();
     header->sequence = (header->sequence + 1u) & ~1u;  // EVEN: a whole frame is present
 
     m_last_ticks = t1 - t0;
@@ -466,7 +476,166 @@ bool FramePublisher::stop_haptic(uint32_t hand) {
     return queue_haptic(hand, 0, 0.0f, 0.0f, true);
 }
 
-bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
+namespace {
+
+// The block lives at a fixed offset inside the control view, like every other block.
+xr::FrameHandshake* handshake_block(void* control_base) {
+    if (control_base == nullptr) {
+        return nullptr;
+    }
+    auto* base = static_cast<uint8_t*>(control_base);
+    const auto* header = reinterpret_cast<const xr::SharedFrameHeader*>(base);
+    if (header->magic != xr::kSharedFrameMagic || header->version != xr::kSharedFrameVersion) {
+        return nullptr;  // a foreign or unstamped layout: never write acks into it
+    }
+    return reinterpret_cast<xr::FrameHandshake*>(base + xr::kHandshakeOffset);
+}
+
+// POST THE PHASE, THEN WAIT FOR THE HOST TO SERVE THAT EXACT REQUEST.
+//
+// The id is checked as well as the phase: an ack left over from the previous frame carries the
+// previous id, and accepting it would let this thread run a frame ahead of the runtime -- which is
+// the desynchronisation the whole tagged design exists to prevent.
+//
+// Bounded, because a game blocked forever on a dead host is worse than an unpaced game. A timeout
+// is a real event, counted and reported, never smoothed over.
+// Microseconds, from the same QPC the rest of this file uses. Cheap enough to call twice per stage:
+// three pairs a frame against a 13.9 ms budget is noise, and guessing at where the time went has
+// already cost more than measuring it.
+int64_t qpc_now() {
+    LARGE_INTEGER v{};
+    ::QueryPerformanceCounter(&v);
+    return v.QuadPart;
+}
+
+int64_t qpc_freq_once() {
+    static const int64_t f = [] {
+        LARGE_INTEGER v{};
+        ::QueryPerformanceFrequency(&v);
+        return v.QuadPart ? v.QuadPart : 1;
+    }();
+    return f;
+}
+
+bool post_and_wait(xr::FrameHandshake* hs, uint32_t id, uint32_t phase, uint32_t timeout_ms,
+                   int32_t* status_out) {
+    hs->request_id = id;
+    hs->phase = phase;
+    MemoryBarrier();
+    hs->req_id[phase] = id;  // LAST: this is what makes the request visible to the host
+
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    for (;;) {
+        const uint32_t s0 = hs->sequence;
+        MemoryBarrier();
+        const uint32_t ap = hs->ack_phase;
+        const uint32_t ai = hs->ack_id;
+        const int32_t st = hs->ack_status;
+        MemoryBarrier();
+        if (hs->ack_slot[phase] == id && (s0 & 1u) == 0u && hs->sequence == s0) {
+            if (status_out != nullptr) {
+                *status_out = st;
+            }
+            return true;
+        }
+        if (GetTickCount64() >= deadline) {
+            return false;
+        }
+        Sleep(0);
+    }
+}
+
+}  // namespace
+
+bool FramePublisher::handshake_ready() const {
+    // BOTH: the block exists AND the host says it is servicing. Mapping presence alone is not
+    // readiness -- xr64 maps this before its session runs and keeps it mapped after the session
+    // stops, and posting a request nobody will answer costs a full timeout per update.
+    const auto* hs = handshake_block(m_control_base);
+    return hs != nullptr && hs->host_servicing != 0u;
+}
+
+FramePublisher::FrameLease FramePublisher::xr_wait() {
+    FrameLease lease{};
+    auto* hs = handshake_block(m_control_base);
+    if (hs == nullptr) {
+        return lease;
+    }
+    ++m_request_id;
+    m_xr_waits.fetch_add(1, std::memory_order_relaxed);
+
+    int32_t status = 0;
+    const int64_t t0 = qpc_now();
+    const bool served = post_and_wait(hs, m_request_id, xr::kPhaseWait, 100u, &status);
+    m_rpc_wait_n.fetch_add(1, std::memory_order_relaxed);
+    m_rpc_wait_us.fetch_add(
+        static_cast<uint64_t>((qpc_now() - t0) * 1000000 / qpc_freq_once()),
+        std::memory_order_relaxed);
+    if (!served) {
+        m_xr_wait_to.fetch_add(1, std::memory_order_relaxed);
+        return lease;
+    }
+    lease.ok = status >= 0;  // XR_SUCCEEDED
+    lease.should_render = hs->should_render != 0u;
+    lease.predicted_display_time = hs->predicted_display_time;
+    lease.predicted_period_ns = hs->predicted_period_ns;
+    for (size_t i = 0; i < 4; ++i) {
+        lease.head_orientation[i] = hs->head_orientation[i];
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        lease.head_position[i] = hs->head_position[i];
+    }
+    return lease;
+}
+
+bool FramePublisher::xr_begin() {
+    auto* hs = handshake_block(m_control_base);
+    if (hs == nullptr) {
+        return false;
+    }
+    int32_t status = 0;
+    const int64_t t0 = qpc_now();
+    const bool served = post_and_wait(hs, m_request_id, xr::kPhaseBegin, 100u, &status);
+    m_rpc_begin_n.fetch_add(1, std::memory_order_relaxed);
+    m_rpc_begin_us.fetch_add(
+        static_cast<uint64_t>((qpc_now() - t0) * 1000000 / qpc_freq_once()),
+        std::memory_order_relaxed);
+    if (!served) {
+        m_xr_begin_to.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    return status >= 0;
+}
+
+// ---- FIRE AND FORGET, AND THAT IS THE WHOLE POINT ----------------------------------------------
+//
+// The pixels are published before this is called, so there is nothing the GAME needs from the host's
+// submission -- it does not read the result, and the frame is already out of its hands. Blocking here
+// cost ~4.8 ms of the game's own frame, measured, which is most of the gap between 68 fps and the
+// compositor's 72 and the bulk of why putting the headset on halved the frame rate.
+//
+// Posting without waiting is only possible because each stage has its own request slot: with a single
+// `phase` field the next frame's WAIT would overwrite this END before the host read it, the request
+// would vanish, and the host would sit out its whole timeout. That is exactly what happened at the
+// menu and it is why this waited in the first place.
+//
+// The host still ends the frame it began, and slot_generation still catches it wrapping into a slot
+// mid-upload -- which is the risk overlap introduces, now measured instead of assumed.
+bool FramePublisher::xr_end() {
+    auto* hs = handshake_block(m_control_base);
+    if (hs == nullptr) {
+        return false;
+    }
+    m_rpc_end_n.fetch_add(1, std::memory_order_relaxed);
+
+    hs->request_id = m_request_id;
+    hs->phase = xr::kPhaseEnd;
+    MemoryBarrier();
+    hs->req_id[xr::kPhaseEnd] = m_request_id;  // LAST: makes the request visible
+    return true;
+}
+
+bool FramePublisher::wait_for_host_tick() {
     if (m_tick_event == nullptr) {
         // Auto-reset: each tick releases exactly one wait, so a game that falls behind does not
         // bank up credits and then sprint through several frames without waiting.
@@ -476,6 +645,41 @@ bool FramePublisher::wait_for_host_tick(uint32_t timeout_ms) {
             return false;
         }
     }
+
+    // ---- THE BUDGET IS DERIVED, NEVER ASSUMED --------------------------------------------------
+    //
+    // Two display periods, from the runtime's OWN XrFrameState::predictedDisplayPeriod, which the
+    // host publishes in HostState. Two periods is the long-standing rule -- long enough for a tick
+    // that is coming, short enough that a tick which is NOT coming costs little before the give-up
+    // counter takes over. The rule was never the bug; hardcoding it as 22 ms was. That is two
+    // periods at 90 Hz and only 1.58 at the 72 Hz this runtime presents at, so one slow host
+    // iteration overran the wait and that frame published unpaced.
+    //
+    // READ THROUGH THE SEQLOCK, not as a bare field. The 32-bit field cannot tear on its own, but
+    // the period and the frame counter this function paces against must come from the SAME host
+    // publish -- otherwise a cadence change is observed half-applied, which is precisely the class
+    // of bug this whole path keeps producing.
+    //
+    // FAIL OPEN AT ZERO. The period is zero until the host's first xrWaitFrame completes, and
+    // pacing against a substituted default is the failure being removed here, so we do not pace at
+    // all until the host has stated its cadence.
+    uint32_t period_ns = 0;
+    if (const auto* hs = host_state()) {
+        const uint32_t s0 = hs->sequence;
+        MemoryBarrier();
+        const uint32_t p = hs->predicted_display_period_ns;
+        MemoryBarrier();
+        if ((s0 & 1u) == 0u && hs->sequence == s0) {
+            period_ns = p;
+        }
+    }
+    m_host_period_ns.store(period_ns, std::memory_order_relaxed);
+    if (period_ns == 0u) {
+        m_tick_timeout_ms.store(0u, std::memory_order_relaxed);
+        return false;
+    }
+    const DWORD timeout_ms = static_cast<DWORD>((2ull * period_ns + 999'999ull) / 1'000'000ull);
+    m_tick_timeout_ms.store(static_cast<uint32_t>(timeout_ms), std::memory_order_relaxed);
 
     // GIVE UP AFTER A RUN OF SILENCE, and keep checking for free. Without this, a host that exits
     // -- or a session that goes idle because the headset came off -- would cost the game a full

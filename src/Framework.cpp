@@ -11115,6 +11115,9 @@ bool Framework::initialize() {
             if (q.find("late_latch") != q.end()) {
                 VR::get().set_late_latch(webapi_query_int(q, "late_latch", 0) != 0);
             }
+            if (q.find("frame_rpc") != q.end()) {
+                VR::get().set_frame_rpc(webapi_query_int(q, "frame_rpc", 0) != 0);
+            }
             if (q.find("head_pos") != q.end()) {
                 VR::get().set_head_position(webapi_query_int(q, "head_pos", 1) != 0);
             }
@@ -11417,6 +11420,18 @@ bool Framework::initialize() {
               .b("vr_pacing_live", FramePublisher::get().pacing_live())
               .u("vr_tick_waits", static_cast<size_t>(FramePublisher::get().tick_waits()))
               .u("vr_tick_timeouts", static_cast<size_t>(FramePublisher::get().tick_timeouts()))
+              .u("xr_waits", static_cast<size_t>(FramePublisher::get().xr_waits()))
+              .u("xr_wait_timeouts", static_cast<size_t>(FramePublisher::get().xr_wait_timeouts()))
+              .u("xr_begin_timeouts", static_cast<size_t>(FramePublisher::get().xr_begin_timeouts()))
+              .u("xr_end_timeouts", static_cast<size_t>(FramePublisher::get().xr_end_timeouts()))
+              .u("rpc_wait_us", static_cast<size_t>(FramePublisher::get().rpc_wait_us()))
+              .u("rpc_begin_us", static_cast<size_t>(FramePublisher::get().rpc_begin_us()))
+              .u("rpc_end_us", static_cast<size_t>(FramePublisher::get().rpc_end_us()))
+              .u("rpc_wait_n", static_cast<size_t>(FramePublisher::get().rpc_wait_n()))
+              .u("rpc_begin_n", static_cast<size_t>(FramePublisher::get().rpc_begin_n()))
+              .u("rpc_end_n", static_cast<size_t>(FramePublisher::get().rpc_end_n()))
+              .u("host_period_ns", static_cast<size_t>(FramePublisher::get().host_period_ns()))
+              .u("tick_timeout_ms", static_cast<size_t>(FramePublisher::get().tick_timeout_ms()))
               .u("vr_host_updates", static_cast<size_t>(VR::get().host_pose_updates()))
               .u("vr_host_stale", static_cast<size_t>(VR::get().host_pose_stale()))
               .u("fp_frames", static_cast<size_t>(FramePublisher::get().frames()))
@@ -11457,6 +11472,7 @@ bool Framework::initialize() {
               .u("apply_tid", static_cast<size_t>(VR::get().apply_tid()))
               .b("head_position", VR::get().head_position())
               .b("late_latch", VR::get().late_latch())
+              .b("frame_rpc", VR::get().frame_rpc())
               .u("late_latches", static_cast<size_t>(VR::get().late_latches()))
               .f("fp_ms", FramePublisher::get().last_publish_ms(), 3)
               .f("fp_worst_ms", FramePublisher::get().worst_publish_ms(), 3)

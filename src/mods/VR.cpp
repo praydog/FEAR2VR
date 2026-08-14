@@ -18,6 +18,7 @@
 #include "Hooks.hpp"
 #include "ViewHook.hpp"
 #include "sdk/CClientMgr.hpp"
+#include "sdk/CClientShell.hpp"
 #include "sdk/Model.hpp"
 #include "sdk/Actions.hpp"
 #include "sdk/WeaponMgr.hpp"
@@ -121,6 +122,28 @@ void issue_fire(bool down) {
 std::atomic<float> g_head_rt[4]{};
 std::atomic<float> g_head_eng[4]{};
 
+// ---- THE POSE THAT CAME OVER THE WIRE, KEPT VERBATIM -------------------------------------------
+//
+// The host must state, in xrEndFrame, the pose the pixels were drawn from. The only value that is
+// certainly that pose is the one the host itself sent and we then rendered with -- so it is latched
+// here exactly as received, in the host's own space, and handed back untouched.
+//
+// It is NOT reconstructed from engine state. FrameCapture used to rebuild it from
+// camera_rotation_operands and aim_yaw, which had three ways to come up empty; each failure
+// published rendered_valid = 0 and made the host fall back to its index lookup, which is the stale
+// pose the timewarp then reprojected against. That is what `absent 1490` counted in the host's own
+// log, and it is positional because those getters depend on what the game's camera is doing.
+//
+// A round trip cannot be absent, cannot be approximate, and cannot disagree about spaces.
+std::atomic<float> g_head_xr_wire[4]{};
+std::atomic<bool> g_head_xr_wire_valid{false};
+
+// STAGED at the shared-memory read, COMMITTED at the composition. Two stages because the value and
+// the instant come from different places: only the read knows the exact bytes, and only the compose
+// knows which frame they belong to.
+std::atomic<float> g_head_xr_pending[4]{};
+std::atomic<bool> g_head_xr_pending_valid{false};
+
 } // namespace
 
 // The three actions that carry a manual override. An explicit value wins so the fixture can pin a
@@ -221,6 +244,21 @@ std::optional<std::array<float, 4>> VR::late_latch_head() {
         return std::nullopt;  // torn
     }
 
+    // PENDING, not committed. Reading a pose is not the same instant as RENDERING with one: the
+    // read happens in the mod's tick, the composition into the camera's additive slot happens later
+    // inside PlayerCamera_UpdateAttachedRotation, and the readback the host consumes is a frame
+    // deep on top of that. Stamping a captured frame with the pose read at the START of that chain
+    // describes an earlier instant than the pixels, which is a frame or two of lag -- visible, and
+    // the one thing the old reconstruction got right, because it read the engine's holder AFTER the
+    // fact and so could not be early.
+    //
+    // So this only stages the value. HeadTracking commits it at the moment it actually composes,
+    // which is what defines what the frame is drawn from.
+    for (size_t i = 0; i < 4; ++i) {
+        g_head_xr_pending[i].store(fresh[i], std::memory_order_relaxed);
+    }
+    g_head_xr_pending_valid.store(true, std::memory_order_release);
+
     const auto now = runtime_to_engine_rotation(fresh);
     const std::array<float, 4> was{g_head_eng[0].load(std::memory_order_relaxed),
                                    g_head_eng[1].load(std::memory_order_relaxed),
@@ -239,6 +277,28 @@ std::optional<std::array<float, 4>> VR::late_latch_head() {
         now[3] * inv[2] + now[0] * inv[1] - now[1] * inv[0] + now[2] * inv[3],
         now[3] * inv[3] - now[0] * inv[0] - now[1] * inv[1] - now[2] * inv[2]};
 
+    // ---- NOTHING IS COMMITTED UNTIL THE WHOLE LATCH CAN SUCCEED --------------------------------
+    //
+    // This lookup used to sit BELOW the state advance, and that ordering was the bug behind "one
+    // area is laggy the whole time while every counter reads clean":
+    //
+    //   - m_late_latches counted the ATTEMPT, so a failed latch still read as a success. Measured
+    //     1.00 latches per frame in the bad area, which was a false assurance rather than evidence.
+    //   - m_last_host_seq_pub advanced, so FrameCapture stamped the NEW sequence onto pixels that
+    //     were drawn with the PREVIOUS pose, and the host reprojected against a pose the frame was
+    //     never rendered from.
+    //   - worst, g_head_eng advanced to `now`. That is the reference the NEXT delta is measured
+    //     from, so the correction silently lost a step and never got it back. Repeated every frame
+    //     the lookup fails, which is why the lag was constant in one place rather than a glitch:
+    //     the camera holder reads zero in scripted and non-standard camera states.
+    //
+    // The delta is applied about the body's yaw, so without a heading there is no correct axis to
+    // apply it about -- bailing is right. Bailing HALFWAY is what was wrong.
+    const auto heading = sdk::PlayerMgr::aim_yaw(0);
+    if (!heading.has_value()) {
+        return std::nullopt;
+    }
+
     for (size_t i = 0; i < 4; ++i) {
         g_head_eng[i].store(now[i], std::memory_order_relaxed);
     }
@@ -246,11 +306,6 @@ std::optional<std::array<float, 4>> VR::late_latch_head() {
     m_last_host_seq_pub.store(seq, std::memory_order_release);
     m_late_latches.fetch_add(1, std::memory_order_relaxed);
 
-    // Into the body's frame, exactly as the on_frame path does it.
-    const auto heading = sdk::PlayerMgr::aim_yaw(0);
-    if (!heading.has_value()) {
-        return std::nullopt;  // without it the correction would be applied about the wrong axes
-    }
     const float hh = *heading * 0.5f;
     const std::array<float, 4> hq{0.0f, std::sin(hh), 0.0f, std::cos(hh)};
     const std::array<float, 4> hqi{0.0f, -std::sin(hh), 0.0f, std::cos(hh)};
@@ -271,6 +326,31 @@ std::array<float, 4> VR::runtime_to_engine_rotation(const std::array<float, 4>& 
 std::array<float, 3> VR::runtime_to_engine_position(const std::array<float, 3>& p) {
     return {p[0] * kUnitsPerMetre, p[1] * kUnitsPerMetre, -p[2] * kUnitsPerMetre};
 }
+
+// Called from the composition detour, at the instant the pose is written into the camera's additive
+// slot. THAT is the moment that defines what the frame renders from -- everything captured after it
+// and before the next composition belongs to this pose.
+void VR::commit_wire_head_pose() {
+    if (!g_head_xr_pending_valid.load(std::memory_order_acquire)) {
+        return;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        g_head_xr_wire[i].store(g_head_xr_pending[i].load(std::memory_order_relaxed),
+                                std::memory_order_relaxed);
+    }
+    g_head_xr_wire_valid.store(true, std::memory_order_release);
+}
+
+bool VR::wire_head_pose(float out[4]) {
+    if (!g_head_xr_wire_valid.load(std::memory_order_acquire)) {
+        return false;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        out[i] = g_head_xr_wire[i].load(std::memory_order_relaxed);
+    }
+    return true;
+}
+
 
 void VR::set_trigger_enabled(bool enabled) {
     g_trigger.store(enabled, std::memory_order_relaxed);
@@ -539,11 +619,82 @@ void VR::on_frame() {
     // cadences and the beat between them is what the wearer sees. Matching the clocks removes it at
     // the source, where compensating downstream could only ever approximate it.
     //
-    // The timeout is deliberately about two compositor frames: long enough to wait for a tick that
-    // is coming, short enough that a tick which is NOT coming costs little before the give-up
-    // counter takes over.
-    if (m_paced.load(std::memory_order_acquire)) {
-        FramePublisher::get().wait_for_host_tick(22);
+    // THE TIMEOUT IS TWO COMPOSITOR FRAMES, AND 22 WAS TWO FRAMES AT 90 Hz (11.1 x 2 = 22.2).
+    //
+    // This runtime presents at 72 Hz, where the period is 13.9 ms and two frames is 27.8 -- so the
+    // old constant was 1.58 periods, not two, and a single slow host iteration overran it. The host
+    // log shows exactly that headroom being eaten: per-frame wait maxes at 11.6 ms with upload
+    // spikes to 10.2 ms on the same iteration.
+    //
+    // A wait that expires does NOT stall the game; the return is discarded and the frame publishes
+    // free-running, so its pose age slips a step relative to its neighbours -- one frame warped by
+    // a different amount than the frames either side of it, which is a single visible jump.
+    //
+    // SCOPE OF THE CLAIM: measured live at 0.5 timeouts/s against 70.7 frames/s, so this population
+    // is 0.7% of frames and can only be about the OCCASIONAL jitter. It is explicitly NOT an
+    // explanation for continuous lag in one location -- that is steady-state and this is sporadic,
+    // and no timestamp correlation between these timeouts and a seen jump has been measured yet.
+    //
+    // 34 ms is ~2.45 periods at 72 Hz: comfortably past two frames, still far short of the give-up
+    // path (30 consecutive timeouts) that exists for a host which is genuinely gone.
+    //
+    // It SHOULD be derived from the runtime's own display period rather than assumed. Until the
+    // host publishes that, this is a constant that has now been wrong once for exactly that reason.
+    // ---- THE XR FRAME PROTOCOL IS NOT OPTIONAL ---------------------------------------------------
+    //
+    // This block used to sit behind m_paced, which DEFAULTS FALSE -- so out of the box the game
+    // issued no WAIT, BEGIN or END at all and the architecture existed only when a legacy toggle
+    // happened to be on. That is the same defect as late_latch defaulting off, which left the pose
+    // path publishing nothing for an entire session while every counter read healthy.
+    //
+    // A v8 host means the protocol is available, and available means used. m_paced now gates only
+    // the LEGACY tick fallback, which is all it was ever really about.
+    {
+        // ---- THE FRAME LOOP, DRIVEN FROM HERE ---------------------------------------------------
+        //
+        // WAIT then BEGIN, both blocking, at the game's own once-per-frame boundary. The runtime
+        // throttles whoever blocks in xrWaitFrame, and that is now THIS thread -- so pacing and ASW
+        // apply to the process doing the work instead of being relayed to it as a cadence. See
+        // FRAME_LOOP.md; the measurement that motivated it is in there too.
+        //
+        // FALLS BACK, deliberately: without the handshake block (an older host, or one not up yet)
+        // the old tick path still paces us. A missing host must degrade to the previous behaviour,
+        // not to no pacing at all.
+        auto& fp = FramePublisher::get();
+        if (m_frame_rpc.load(std::memory_order_relaxed) && fp.handshake_ready()) {
+            // ---- CLOSE THE PREVIOUS FRAME BEFORE OPENING ANOTHER -----------------------------
+            //
+            // FrameCapture::on_present is where END normally goes, and at the MAIN MENU that
+            // function never runs at all -- the menu draws no scene, and the frame counter sat at
+            // 0/s while the UI published at 53/s, which is how this was found. So the begin was
+            // never matched, the host waited its whole 100 ms for an END nobody sent, and the game
+            // then waited on that host iteration: a timeout cascade, measured in the headset as
+            // roughly 1 fps at the menu and a 40-60 fps sag in world.
+            //
+            // A begin that is still outstanding here means the render path did not close it. Close
+            // it now, before asking for another frame, so exactly one END follows every BEGIN
+            // whatever path the game took. Belongs at the TOP of the update rather than the bottom
+            // for the same reason the guard in on_present is a destructor: there is no path out of a
+            // frame that can skip it.
+            if (m_frame_begun.load(std::memory_order_relaxed)) {
+                fp.xr_end();
+                m_frame_begun.store(false, std::memory_order_relaxed);
+            }
+            const auto lease = fp.xr_wait();
+            m_frame_lease_ok.store(lease.ok, std::memory_order_relaxed);
+            if (lease.ok) {
+                // BEGIN before anything is drawn -- the spec's order, and the reason this is not
+                // simply folded into the WAIT reply. A failed begin means we must not ask for END.
+                m_frame_begun.store(fp.xr_begin(), std::memory_order_relaxed);
+            } else {
+                m_frame_begun.store(false, std::memory_order_relaxed);
+            }
+        } else if (m_paced.load(std::memory_order_acquire)) {
+            // No handshake block: an older host, or one not up yet. Fall back to the relayed tick,
+            // which is what m_paced has always meant. It comes out with the rest of the pacing
+            // machinery once the handshake is exercised against the trace baseline.
+            fp.wait_for_host_tick();
+        }
     }
 
     // Advance the runtime every frame regardless of whether we are driving the engine. A frame
@@ -1175,6 +1326,37 @@ void VR::update_hands() {
     drive_hand(vr::VRRuntime::Hand::LEFT, 1, "LeftHand");
 }
 
+// ---- THE FRAME THE HAND BONE ACTUALLY LIVES IN -------------------------------------------------
+//
+// A controller pose is measured in the runtime's ROOM space. The bone it drives hangs off the
+// player object, whose whole chain rotates with the body and the view. Nothing converted between
+// the two, so the offset was reinterpreted in whatever direction the character happened to face:
+// an error of (hand offset) x (rotation since the rest pose was captured). Standing still it looks
+// perfect; turning, the hand swings out and settles, which reads as LAG THAT SCALES WITH HOW MUCH
+// YOU MOVE -- and is the reason every rate in the pipeline measured full speed (143.6 callbacks and
+// writes per second, record consistent on every one) while the hands still looked like they updated
+// a few times a second. Nothing was late; the values were wrong.
+//
+// The SHELL player object, not PlayerMgr's: they are different allocations and only this one's
+// rotation is written (AGENTS.md, "the two player objects"). It is also the object the first-person
+// rig hangs off, so its rotation IS the parent frame of these bones.
+//
+// Read on the game thread, once per hand per frame. Ideally this would be read inside the
+// node-control callback, which is the exact instant the engine evaluates the skeleton -- that costs
+// at most a frame of the body's rotation, against the unbounded error being removed here, and the
+// callback is deliberately kept free of calls outside its own translation unit.
+std::optional<regenny::LTRotation> body_frame_rotation() {
+    const auto p = sdk::CClientShell::local_player(0);
+    if (!p.has_value() || p->object == nullptr) {
+        return std::nullopt;
+    }
+    const auto info = sdk::object_info(reinterpret_cast<const regenny::LTObject*>(p->object));
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+    return info->rotation;
+}
+
 void VR::drive_hand(vr::VRRuntime::Hand which, uint32_t slot, const char* socket) {
     auto& rt = vr::simulated_runtime();
     const auto hand = rt.hand(which);
@@ -1212,11 +1394,23 @@ void VR::drive_hand(vr::VRRuntime::Hand which, uint32_t slot, const char* socket
 
     const auto engine_delta = runtime_to_engine_position(delta);
 
-    for (size_t i = 0; i < 3; ++i) {
-        g_hand_off[slot][i].store(engine_delta[i], std::memory_order_relaxed);
+    // INTO THE CHARACTER'S FRAME. conj(body) takes a room-space vector into the space the bone's
+    // parent chain is expressed in. Without a body rotation we leave the delta as-is rather than
+    // dropping the hand: uncompensated tracking is the old behaviour, and still better than none.
+    const auto body = body_frame_rotation();
+    std::array<float, 3> local_delta = engine_delta;
+    if (body.has_value()) {
+        const regenny::LTRotation inv{-body->x, -body->y, -body->z, body->w};
+        const auto v = sdk::rotate_vector(inv, regenny::LTVector{engine_delta[0], engine_delta[1],
+                                                                 engine_delta[2]});
+        local_delta = {v.x, v.y, v.z};
     }
 
-    bc.set_offset(engine_delta[0], engine_delta[1], engine_delta[2], slot);
+    for (size_t i = 0; i < 3; ++i) {
+        g_hand_off[slot][i].store(local_delta[i], std::memory_order_relaxed);
+    }
+
+    bc.set_offset(local_delta[0], local_delta[1], local_delta[2], slot);
 
     // ---- ORIENTATION, AS A DELTA IN THE ENGINE'S SPACE -------------------------------------
     //
@@ -1234,11 +1428,23 @@ void VR::drive_hand(vr::VRRuntime::Hand which, uint32_t slot, const char* socket
 
     const auto engine_rot = runtime_to_engine_rotation({turned.x, turned.y, turned.z, turned.w});
 
-    for (size_t i = 0; i < 4; ++i) {
-        g_hand_rot[slot][i].store(engine_rot[i], std::memory_order_relaxed);
+    // SAME CONVERSION, for the same reason. The callback applies this as q * current, with current
+    // in the bone's parent space, so q has to be in that space too -- conj(body) * q_room. Leaving
+    // the orientation in room space is what made the hands rotate away from where they were
+    // pointing as the body turned, distinct from and on top of the positional swing above.
+    std::array<float, 4> local_rot = engine_rot;
+    if (body.has_value()) {
+        const regenny::LTRotation inv{-body->x, -body->y, -body->z, body->w};
+        const auto r = sdk::multiply_rotations(
+            inv, regenny::LTRotation{engine_rot[0], engine_rot[1], engine_rot[2], engine_rot[3]});
+        local_rot = {r.x, r.y, r.z, r.w};
     }
 
-    bc.set_rotation(engine_rot[0], engine_rot[1], engine_rot[2], engine_rot[3], slot);
+    for (size_t i = 0; i < 4; ++i) {
+        g_hand_rot[slot][i].store(local_rot[i], std::memory_order_relaxed);
+    }
+
+    bc.set_rotation(local_rot[0], local_rot[1], local_rot[2], local_rot[3], slot);
     g_hand_applied.fetch_add(1, std::memory_order_relaxed);
 }
 

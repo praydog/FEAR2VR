@@ -371,6 +371,18 @@ char __stdcall setup_pass_detour(const regenny::LTNodeTransform* camera, const f
             latched.rotation.z = z;
             latched.rotation.w = w;
             camera = &latched;
+
+            // THE FRAME'S POSE IS DECIDED HERE, so this is where it is committed.
+            //
+            // `camera` now holds the head pose that will build this pass's matrices, and this pass
+            // runs once per rendered frame (cp_frames_2main measured 1:1 with frames). Committing
+            // at HeadTracking's composition instead was wrong: that is a WRITER into the camera
+            // holder, running at its own cadence rather than the renderer's, so frames between two
+            // compositions were all stamped with the older pose -- late by a frame or two and
+            // jittery rather than uniformly behind, which is what it felt like.
+            //
+            // The value stays the exact quaternion the host sent. Only the instant comes from here.
+            VR::commit_wire_head_pose();
         }
     }
 
