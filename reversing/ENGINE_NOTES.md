@@ -4089,6 +4089,39 @@ The two facts that should have redirected the hunt hours earlier: our centre pix
 the same second the runtime called it zero (two readers, two images), and starting the host inside an
 already-loaded world froze with no resize and no geometry change.
 
+## The camera record has TWO writers, and the second one clones it wholesale
+
+Verified in FEAR2_dump.exe (imagebase 0x400000) while auditing why one area of the game reprojects
+badly. The believed chain held exactly -- `SceneRenderer_BuildCameraMatrices` 0x610ba1 is reached
+only via `sub_610DA2`'s tail call at 0x610e16, whose callers are
+`SceneRenderer_SetupCameraShaderParams` 0x610e21 (main pass, gate `*this == 3` at 0x610e47) and
+`sub_610F08` at 0x610f42 -- but "the pass hook is the only writer" is FALSE.
+
+|address|what it is|evidence|
+|---|---|---|
+|**0x610ADC**|**clones an ENTIRE external camera record over g_SceneCamera (0x72e790)**|qmemcpy/LTTransform_Copy of mode + transform + near/far + View + Projection + ViewProjection + WorldToScreen; called from 0x610f19|
+|**0x610F08**|**the external-camera path**|calls 0x610ADC at 0x610f19 to overwrite the record, then `sub_610DA2(this+0x1A0)` at 0x610f47 to build a SECOND camera record from that external transform|
+
+So the record we latch a head pose into can be replaced outright, mid-frame, by a path that does not
+go through `SetupPassPerspective` at all. That is the shape of "one specific area is consistently
+wrong while every counter reads clean".
+
+**Ruled out for the area under investigation, by measurement rather than reading.** A hardware write
+watch on the ViewProjection (`/watch/arm?addr=0x0072e848&size=4&type=write`) collected 3000 hits with
+exactly ONE distinct accessor: 0x00610D41, inside BuildCameraMatrices. 0x610ADC never fired. So
+nothing replaced the record there -- but the path exists and will matter for scripted, monitor,
+mirror or security-camera views.
+
+Consumer asymmetry worth knowing: `DrawScene` 0x611f1d takes a per-frame COPY of the record into the
+scene object via `sub_625799` at 0x611fd8, while `k_mDrawPrimToClip` (`sub_60C91C`) reads 0x72e848
+DIRECTLY at 0x60c92e -- the only direct xref. A mid-frame record swap therefore hits those two
+consumers differently.
+
+**IDB DEBT:** 0x610ADC and 0x610F08 are still `sub_` in FEAR2_dump.exe.i64. The repo rule is to name
+them in the session that learned them; the IDA instance was closed before that could happen (no
+instances reachable), so it is recorded here instead and the rename is still owed. Suggested names:
+`SceneRenderer_CloneCameraRecord` and `SceneRenderer_SetupExternalCamera`.
+
 ## Screen-space effects in stereo (shadows / AO / anything sampling the frame)
 
 REPORTED SYMPTOM, not yet root-caused: shadows, ambient occlusion and some other shaders are
