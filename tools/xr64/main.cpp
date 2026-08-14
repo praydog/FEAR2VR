@@ -281,22 +281,50 @@ struct SharedReader {
 
     // True when a COMPLETE frame newer than the last one is available.
     uint32_t layout() const { return layout_is_ours() ? header->layout : 0u; }
-    uint32_t frame_host_sequence() const {
-        return layout_is_ours() ? header->host_sequence : 0u;
-    }
+    // ---- ONE COHERENT SNAPSHOT PER POLL ---------------------------------------------------------
+    //
+    // poll() used to seqlock-snapshot only the dimensions and the slot pointer, while
+    // frame_host_sequence, frame_flat and frame_rendered_pose re-read the LIVE header afterwards. If
+    // the game published in between, the host uploaded THIS frame's pixels and declared the NEXT
+    // frame's pose -- a mismatch that grows with head speed, which is what was being seen as jitter.
+    //
+    // Adding rendered_orientation to the header fixed the VALUE (the old index -> pose lookup could
+    // pick the wrong one) but not the INSTANT, so the same class of fault survived the fix. These
+    // fields are captured inside the same window as the slot they describe, and the accessors below
+    // return them rather than reading the live header again.
+    uint32_t snap_slot{0};
+    uint32_t snap_slot_generation{0};
+    uint64_t payload_overwritten{0};  // times the writer wrapped into a slot we were uploading
+    uint32_t snap_host_sequence{0};
+    uint32_t snap_flat{0};
+    uint32_t snap_rendered_valid{0};
+    float snap_rendered_orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+
+    uint32_t frame_host_sequence() const { return snap_host_sequence; }
     // The game asking to be shown FLAT -- see xr::SharedFrameHeader::flat. True while a menu is up.
-    bool frame_flat() const { return layout_is_ours() && header->flat != 0u; }
+    bool frame_flat() const { return snap_flat != 0u; }
 
     // THE POSE THE FRAME WAS ACTUALLY DRAWN FROM, stated by the writer rather than looked up here.
     // False when the writer could not recover it, in which case the sequence lookup stands.
+    // The handshake block, or nullptr on a foreign layout. See FRAME_LOOP.md.
+    xr::FrameHandshake* handshake() const {
+        if (!layout_is_ours()) {
+            return nullptr;
+        }
+        // const_cast because the reader owns a const view of the header but the handshake is the one
+        // block the host WRITES through it -- the acks. The mapping itself is mapped writable.
+        auto* base = reinterpret_cast<uint8_t*>(const_cast<xr::SharedFrameHeader*>(header));
+        return reinterpret_cast<xr::FrameHandshake*>(base + xr::kHandshakeOffset);
+    }
+
     bool frame_rendered_pose(XrQuaternionf& out) const {
-        if (!layout_is_ours() || header->rendered_valid == 0u) {
+        if (snap_rendered_valid == 0u) {
             return false;
         }
-        out.x = header->rendered_orientation[0];
-        out.y = header->rendered_orientation[1];
-        out.z = header->rendered_orientation[2];
-        out.w = header->rendered_orientation[3];
+        out.x = snap_rendered_orientation[0];
+        out.y = snap_rendered_orientation[1];
+        out.z = snap_rendered_orientation[2];
+        out.w = snap_rendered_orientation[3];
         return true;
     }
 
@@ -336,6 +364,30 @@ struct SharedReader {
         // the array of views.
         bits = static_cast<const uint8_t*>(frame_base[header->slot % xr::kFrameSlots]);
 
+        // READ INTO LOCALS INSIDE THE WINDOW, COMMITTED ONLY IF IT VALIDATES. These used to be read
+        // from the live header later in the frame, so a publish landing in between paired THIS
+        // frame's pixels with the NEXT frame's pose and sequence -- an error that grows with head
+        // speed, which is the jitter that was being chased.
+        //
+        // Locals rather than the members directly, because the members OUTLIVE a failed poll: the
+        // host repeats the previous frame when poll returns false, and writing them before the
+        // re-read would let a torn poll leave mixed metadata for that repeat to submit. That is the
+        // same mispairing wearing a different hat.
+        // THE PIXELS ARE NOT UNDER THE HEADER'S SEQLOCK -- see slot_generation. Refuse a slot whose
+        // payload is mid-write, and remember the generation so the upload can be validated after.
+        const uint32_t slot_now = header->slot % xr::kFrameSlots;
+        const uint32_t gen = header->slot_generation[slot_now];
+        if ((gen & 1u) != 0u) {
+            return false;
+        }
+        const uint32_t hseq = header->host_sequence;
+        const uint32_t flat = header->flat;
+        const uint32_t rvalid = header->rendered_valid;
+        float rorient[4];
+        for (size_t i = 0; i < 4; ++i) {
+            rorient[i] = header->rendered_orientation[i];
+        }
+
         if (w == 0 || h == 0 || pitch == 0) {
             return false;
         }
@@ -343,6 +395,17 @@ struct SharedReader {
         // Re-read: if the writer moved on while we looked, the fields may not describe the pixels.
         if (header->sequence != seq) {
             return false;
+        }
+
+        // VALIDATED. Commit the whole set together, so pose, sequence, flat flag and slot either
+        // all describe these pixels or none of them are touched.
+        snap_slot = slot_now;
+        snap_slot_generation = gen;
+        snap_host_sequence = hseq;
+        snap_flat = flat;
+        snap_rendered_valid = rvalid;
+        for (size_t i = 0; i < 4; ++i) {
+            snap_rendered_orientation[i] = rorient[i];
         }
 
         last_sequence = seq;
@@ -600,6 +663,152 @@ void build(std::vector<uint8_t>& out, uint32_t w, uint32_t h) {
 
 } // namespace placeholder
 
+// ---- ACK THE GAME'S FRAME REQUEST -------------------------------------------------------------
+//
+// The host does not need to become request-DRIVEN to give the game a real OpenXR frame loop: it
+// already passes through Wait, Begin and End once per iteration, so acking the game's pending
+// request AT each of those points lock-steps the game to those stages. The game blocks on the WAIT
+// ack, so xrWaitFrame -- which throttles whoever blocks on it -- transitively throttles the GAME.
+// That is the whole point: pacing and ASW then apply to the process doing the work.
+//
+// Writes under the block's own seqlock and only ever ADVANCES the ack; a game waiting for
+// (phase, id) either sees it or keeps waiting. Never fabricates an ack for a request that was not
+// made -- `phase == kPhaseIdle` means nobody is asking, and acking anyway would let a game race
+// ahead of a frame the runtime has not begun.
+// ---- WAIT FOR THE GAME TO ASK, THEN CALL ------------------------------------------------------
+//
+// Acking opportunistically is not enough and was wrong in the first cut: if the host merely acks
+// whatever request happens to be posted when it passes a stage, it will usually pass xrBeginFrame
+// BEFORE the game has asked, and then ack that request against a different OpenXR frame. The game's
+// work would be paired with the wrong frame -- the exact class of bug the tagged id exists to make
+// impossible.
+//
+// So each stage blocks for its own (phase, id) first. The host stalling while the game is slow is
+// the POINT: the frame genuinely takes longer, xrEndFrame lands late, and the runtime throttles the
+// next xrWaitFrame -- which the game is blocked in. That is how pacing and ASW start applying to the
+// process doing the work.
+//
+// BOUNDED, and a timeout means "this game is not driving us": returns false and the caller
+// free-runs, so a mod without the handshake (or one mid-reload) cannot hang the compositor.
+// IDENTITY, NOT PHASE. Testing `ack_phase != phase` looks right and is broken from the SECOND frame
+// on: frame 2 asks for WAIT again while ack_phase is still WAIT from frame 1, so the stage would
+// wait out its whole timeout and then serve a request it had already served. Three stages x 100 ms
+// per frame, and an ack landing on the wrong id. The request is (phase, id) and so is the test.
+//
+// Returns the id it matched, so the caller acks THAT rather than re-reading a field the game may
+// already have advanced.
+static bool handshake_await(xr::FrameHandshake* hs, uint32_t phase, uint32_t timeout_ms,
+                            uint32_t* id_out) {
+    if (hs == nullptr) {
+        return false;
+    }
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    for (;;) {
+        // Coherent snapshot: phase and id must come from the same post, or a stage can pair this
+        // frame's phase with the previous frame's id.
+        // PER-STAGE SLOT. A request is outstanding while req_id != ack_slot for THIS stage, which is
+        // what lets END(N) and WAIT(N+1) both be pending without either overwriting the other. The
+        // aligned 32-bit reads cannot tear, and the two fields belong to one stage, so no seqlock is
+        // needed to relate them -- unlike the ack payload, which still travels under the block's own.
+        const uint32_t id = hs->req_id[phase];
+        const bool coherent = true;
+
+        if (coherent && id != hs->ack_slot[phase]) {
+            if (id_out != nullptr) {
+                *id_out = id;
+            }
+            return true;  // asked for, and not already served for THIS id
+        }
+        if (GetTickCount64() >= deadline) {
+            return false;
+        }
+        Sleep(0);  // the game is on another core and about to post; do not burn a whole slice
+    }
+}
+
+static void handshake_ack(xr::FrameHandshake* hs, uint32_t phase, XrResult status,
+                          const XrFrameState* fs, const XrPosef* head, uint32_t begun_id,
+                          uint32_t id) {
+    if (hs == nullptr) {
+        return;
+    }
+
+    hs->sequence |= 1u;
+    MemoryBarrier();
+    if (fs != nullptr) {
+        hs->predicted_display_time = fs->predictedDisplayTime;
+        hs->predicted_period_ns = static_cast<uint32_t>(fs->predictedDisplayPeriod);
+        hs->should_render = fs->shouldRender != XR_FALSE ? 1u : 0u;
+    }
+    if (head != nullptr) {
+        hs->head_orientation[0] = head->orientation.x;
+        hs->head_orientation[1] = head->orientation.y;
+        hs->head_orientation[2] = head->orientation.z;
+        hs->head_orientation[3] = head->orientation.w;
+        hs->head_position[0] = head->position.x;
+        hs->head_position[1] = head->position.y;
+        hs->head_position[2] = head->position.z;
+    }
+    hs->begun_id = begun_id;
+    hs->ack_status = static_cast<int32_t>(status);
+    hs->ack_id = id;
+    hs->ack_phase = phase;
+    MemoryBarrier();
+    hs->ack_slot[phase] = id;  // LAST: this is what releases the waiter for this stage
+    MemoryBarrier();
+    hs->sequence = (hs->sequence + 1u) & ~1u;
+}
+
+// ---- THE FRAME TRACE RING (--trace-frames) ------------------------------------------------------
+//
+// POD, no allocation, no I/O at capture time, and no flush inside the frame loop: the thing being
+// measured is frame TIMING, so the instrument must not cost a frame. Dumped exactly once, after the
+// loop has exited.
+struct TraceSample {
+    double iv, wait_blk, begin_dur, period_ms, content_cost, end_dur, end_req_wait;
+    double aw_wait, aw_begin, aw_end, post_end, eye_upload, actions;
+    uint32_t seq, layers, new_content;
+    int32_t begin_r, end_r;
+};
+constexpr size_t kTraceCap = 8192;  // ~113 s at 72 Hz; a wrapped ring keeps the most recent frames
+static TraceSample g_trace[kTraceCap]{};
+static size_t g_trace_n = 0;
+
+// OLDEST FIRST, even when wrapped, so the rows read as a timeline rather than as two halves spliced
+// at an arbitrary point. A wrapped ring holds the LAST kTraceCap frames and n counts from the
+// oldest retained sample, not from session start -- the absolute frame number is not what a
+// transition is read by.
+static void trace_flush() {
+    if (g_trace_n == 0) {
+        return;
+    }
+    FILE* f = nullptr;
+    if (fopen_s(&f, "xr64_trace.csv", "wb") != 0 || f == nullptr) {
+        std::printf("[trace] could not open xr64_trace.csv -- %zu samples discarded\n", g_trace_n);
+        return;
+    }
+    std::fprintf(f, "n,iv_ms,wait_blocked_ms,begin_ms,period_ms,content_ms,end_req_wait_ms,"
+                    "end_ms,aw_wait_ms,aw_begin_ms,aw_end_ms,post_end_ms,eye_upload_ms,actions_ms,"
+                    "seq,layers,new_content,"
+                    "begin_r,end_r\n");
+    const bool wrapped = g_trace_n > kTraceCap;
+    const size_t count = wrapped ? kTraceCap : g_trace_n;
+    const size_t first = wrapped ? g_trace_n % kTraceCap : 0;
+    for (size_t i = 0; i < count; ++i) {
+        const auto& s = g_trace[(first + i) % kTraceCap];
+        std::fprintf(f,
+                     "%zu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
+                     "%u,%u,%u,%d,%d\n",
+                     i, s.iv, s.wait_blk, s.begin_dur, s.period_ms, s.content_cost, s.end_req_wait,
+                     s.end_dur, s.aw_wait, s.aw_begin, s.aw_end, s.post_end,
+                     s.eye_upload, s.actions, s.seq, s.layers,
+                     s.new_content, s.begin_r, s.end_r);
+    }
+    std::fclose(f);
+    std::printf("[trace] wrote %zu samples to xr64_trace.csv%s\n", count,
+                wrapped ? " (most recent; ring wrapped)" : "");
+}
+
 int main(int argc, char** argv) {
     SetUnhandledExceptionFilter(host_crash_handler);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -614,7 +823,21 @@ int main(int argc, char** argv) {
     // what lets the runtime observe the game's real rate and engage its own reprojection; see the
     // wait itself. Zero restores the old always-submit behaviour for an A/B.
     bool no_crop = false;  // submit the whole rendered picture with its symmetric FOV
+    // Default is the pre-cadence bootstrap only: once the runtime has stated a period the
+    // bound is derived from it (two periods), unless --content-wait said otherwise.
     uint32_t content_wait_ms = 12;
+    bool content_wait_explicit = false;
+    bool content_wait_derive = false;  // --content-wait-derive, see the bound below
+    // ---- ONE LINE PER FRAME, FOR THE 36<->60 TRANSITION --------------------------------------
+    //
+    // The oscillation has two candidate causes that call for opposite fixes -- a variable host loop
+    // period, or feedback through the runtime's ASW -- and six earlier fixes in this subsystem were
+    // judged by feel and were wrong. This is the log that separates them: if
+    // predictedDisplayPeriod never moves while the overlay reports 36, feedback through the runtime
+    // is impossible and the loop period is the whole story.
+    //
+    // Off by default because it is one line per frame at 72 Hz.
+    bool trace_frames = false;  // --trace-frames
     // ---- DELIBERATELY SUBMIT AN OLDER POSE ------------------------------------------------------
     //
     // The diagnostic for "does pose age matter". A projection layer declares the pose its image was
@@ -665,6 +888,11 @@ int main(int argc, char** argv) {
             no_crop = true;
         } else if (std::strcmp(argv[i], "--content-wait") == 0 && i + 1 < argc) {
             content_wait_ms = static_cast<uint32_t>(std::atoi(argv[++i]));
+            content_wait_explicit = true;
+        } else if (std::strcmp(argv[i], "--content-wait-derive") == 0) {
+            content_wait_derive = true;
+        } else if (std::strcmp(argv[i], "--trace-frames") == 0) {
+            trace_frames = true;
         } else if (std::strcmp(argv[i], "--no-ui") == 0) {
             ui_enabled = false;
         } else if (std::strcmp(argv[i], "--ui-distance") == 0 && i + 1 < argc) {
@@ -1818,6 +2046,17 @@ int main(int argc, char** argv) {
         pump_events();
 
         if (!running) {
+            // NOT SERVICING. Readiness has to be cleared on the way INTO idle, not just at
+            // teardown: after one active frame it would otherwise stay set through a session stop or
+            // the headset coming off, and the game -- which gates its whole frame protocol on it --
+            // would post a WAIT nobody answers and eat a 100 ms timeout every single update.
+            //
+            // Set where a request will be served, cleared everywhere it will not. Those are the only
+            // two states this flag has, and both edges matter.
+            if (auto* hsk_idle = reader.handshake()) {
+                hsk_idle->host_servicing = 0u;
+            }
+
             Sleep(20);
 
             if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
@@ -1831,7 +2070,58 @@ int main(int argc, char** argv) {
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         const double t_wait_0 = now_ms();
+        double trace_content_cost = 0.0;
+        double trace_end_req_wait = 0.0;  // time blocked waiting for the game's END request
+        // HOST-SIDE AWAIT SPANS, one per stage. The game-side request->ack timing measures the same
+        // rendezvous from the other end; the DIFFERENCE between the two is the handoff itself, which
+        // is the only honest way to attribute the frame's unaccounted milliseconds instead of calling
+        // them "IPC overhead" and moving on.
+        double trace_aw_wait = 0.0;
+        double trace_aw_begin = 0.0;
+        double trace_aw_end = 0.0;
+        double trace_post_end = 0.0;  // END receipt -> xrEndFrame, EVERYTHING in between
+        // Narrow spans inside it, because post_end covers far more than uploads: frame and UI
+        // polling, swapchain recreation, action sync and hand locating, haptics, the settings UI,
+        // layer construction and logging. Attributing all of it to "upload" was a guess and this is
+        // what replaces it.
+        double trace_eye_upload = 0.0;  // acquire + wait + UpdateSubresource + Flush + release, both eyes
+        double trace_actions = 0.0;     // xrSyncActions + hand locating + haptics
+        // DRIVEN, when the game is driving. A latch rather than a per-frame test: once a request
+        // has been seen, the game owns the loop and a missing request is a stall to be reported, not
+        // a reason to silently go back to free-running and desynchronise.
+        auto* const hsk = reader.handshake();
+        // We are in the loop and about to serve: say so. The game gates its whole frame protocol on
+        // this, so it must be true only where a WAIT will actually be answered.
+        if (hsk != nullptr) {
+            hsk->host_servicing = 1u;
+        }
+        static bool s_game_drives = false;
+        // Which request has an unmatched xrBeginFrame. The contract allows exactly one, and the spec
+        // permits no more -- xrBeginFrame twice without an intervening end returns XR_FRAME_DISCARDED.
+        static uint32_t s_begun_request = xr::kNoRequest;
+        if (hsk != nullptr && hsk->phase != xr::kPhaseIdle) {
+            s_game_drives = true;
+        }
+        uint32_t hsk_id = 0;
+        const double trace_aw_wait_t0 = now_ms();
+        const bool hsk_wait = s_game_drives && handshake_await(hsk, xr::kPhaseWait, 100u, &hsk_id);
+        trace_aw_wait = now_ms() - trace_aw_wait_t0;
+
+        const double trace_wait_begin_ms = now_ms();
         const XrResult wait_r = xrWaitFrame(session, &fwi, &fs);
+        // The INTERVAL BETWEEN RETURNS is the runtime's actual throttle, which is the thing being
+        // argued about. Taken here, before anything else in the iteration can add to it.
+        const double trace_wait_ret_ms = now_ms();
+
+        // WAIT ACK. The game is blocked here, so this is where the runtime's throttle reaches it.
+        if (hsk_wait) {
+            handshake_ack(hsk, xr::kPhaseWait, wait_r, &fs, nullptr, xr::kNoRequest, hsk_id);
+        }
+        const double trace_wait_blocked = trace_wait_ret_ms - trace_wait_begin_ms;
+        static double s_trace_prev_wait_ms = 0.0;
+        const double trace_wait_interval =
+            s_trace_prev_wait_ms > 0.0 ? trace_wait_ret_ms - s_trace_prev_wait_ms : 0.0;
+        s_trace_prev_wait_ms = trace_wait_ret_ms;
         {
             const double d = now_ms() - t_wait_0;
             t_wait_ms += d;
@@ -1903,6 +2193,12 @@ int main(int argc, char** argv) {
         if (fs.shouldRender == XR_FALSE && reader.host != nullptr) {
             ++pose_skip_should;
         }
+        // PER ITERATION, never a lifetime flag: the question is whether THIS frame's pose publish
+        // happened, so the cadence-only update below can fill in for it without ever double-bumping
+        // HostState::sequence on a normal frame. Declared OUTSIDE the shouldRender gate on purpose
+        // -- the case it exists to cover is precisely the one where that gate is false.
+        bool pose_published_this_frame = false;
+
         if (fs.shouldRender != XR_FALSE && reader.host != nullptr) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -1994,11 +2290,28 @@ int main(int argc, char** argv) {
                 // set from the view state's ORIENTATION bit alone while hs->position was published
                 // regardless -- a pose the mod was told to trust with half of it unknown.
                 hs->valid = 1u;
-                hs->write_qpc = 0;
+                // THE RUNTIME'S OWN CADENCE, inside the same seqlock window as the pose, from the
+                // xrWaitFrame that succeeded above.
+                //
+                // GAP, STATED HERE SO IT IS NOT REDISCOVERED: this sits inside the pose-valid
+                // block, so a run of frames where the pose does not publish will not refresh
+                // the cadence. It cannot disable pacing -- the mod keeps the last period and
+                // only zero fails open -- but a runtime REFRESH-RATE CHANGE during such a run
+                // is observed late, on the next valid pose frame. Publishing it in its own
+                // seqlock window would bump HostState::sequence twice per frame, and the
+                // host indexes pose_history at published_sequence/2 % 16, so that trade was
+                // refused deliberately rather than missed.
+                // The mod paces its entire update loop on our
+                // tick and must size its wait in terms of this rather than assuming a rate -- it
+                // assumed 90 Hz for a 72 Hz runtime and lost a frame to it whenever we hitched.
+                hs->predicted_display_period_ns =
+                    static_cast<uint32_t>(fs.predictedDisplayPeriod);
+                hs->reserved_period_hi = 0u;
 
                 MemoryBarrier();
                 hs->sequence = (hs->sequence + 1u) & ~1u;
                 published_sequence = hs->sequence;
+                pose_published_this_frame = true;
 
                 // Keep what we just handed out, so the frame rendered from it can be submitted with
                 // it rather than with whatever is current by the time the pixels arrive.
@@ -2025,6 +2338,36 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- CADENCE STILL PROPAGATES WHEN THE POSE DID NOT --------------------------------------
+        //
+        // The period publishes inside the pose block, which is right for every normal frame. But a
+        // runtime REFRESH-RATE CHANGE during a run of pose-invalid frames -- or while shouldRender
+        // is false -- would otherwise not reach the game until a pose published again, and the game
+        // paces its whole update loop on a wait sized from that period.
+        //
+        // Gated on BOTH conditions so it can never double-bump a normal frame: the pose publish did
+        // not happen this iteration, AND the period actually differs. A normal frame publishes
+        // once, in the pose block, exactly as before -- which matters because the host indexes
+        // pose_history at published_sequence/2 % 16 and a spurious second bump would walk that off.
+        //
+        // The compare happens BEFORE the window is opened, which is safe because this is the only
+        // writer: opening a seqlock on every pose-invalid frame just to find nothing changed would
+        // manufacture torn reads for a reader that is polling. Pose fields are untouched, so a
+        // reader catching this publish sees the previous pose with the new cadence -- the truth.
+        // Neither published_sequence nor pose_history advances, because no pose was published.
+        if (reader.host != nullptr && fs.predictedDisplayPeriod > 0 && !pose_published_this_frame) {
+            auto* hs = reader.host;
+            const auto period = static_cast<uint32_t>(fs.predictedDisplayPeriod);
+            if (hs->predicted_display_period_ns != period) {
+                hs->sequence |= 1u;
+                MemoryBarrier();
+                hs->predicted_display_period_ns = period;
+                hs->reserved_period_hi = 0u;
+                MemoryBarrier();
+                hs->sequence = (hs->sequence + 1u) & ~1u;
+            }
+        }
+
         // ---- ONE PER COMPOSITOR FRAME, AND ONLY HERE -------------------------------------------
         //
         // This is a CLOCK, and the game paces on it: it waits for the counter to advance by its
@@ -2037,18 +2380,29 @@ int main(int argc, char** argv) {
         // running at 72, the game landed on 72/3 = 24 fps while 36 was asked for. Measured in the
         // headset as 23-26.
         //
-        // Incremented BEFORE the tick is signalled, so a game woken by the event always sees the
-        // count the wake corresponds to rather than the previous one.
-        if (reader.host != nullptr) {
-            ++reader.host->frames;
-        }
-
-        if (tick_event != nullptr) {
-            SetEvent(tick_event);
-        }
-
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
+        uint32_t hsk_begin_id = 0;
+        const double trace_aw_begin_t0 = now_ms();
+        const bool hsk_begin =
+            s_game_drives && handshake_await(hsk, xr::kPhaseBegin, 100u, &hsk_begin_id);
+        trace_aw_begin = now_ms() - trace_aw_begin_t0;
+
+        const double trace_begin_ms0 = now_ms();
         const XrResult begin_r = xrBeginFrame(session, &fbi);
+        const double trace_begin_dur = now_ms() - trace_begin_ms0;
+
+        // BEGIN ACK, carrying the begun id so the game -- and a later END -- can see which frame is
+        // outstanding. Acked even on failure: the game must learn it may NOT send END.
+        if (hsk_begin) {
+            handshake_ack(hsk, xr::kPhaseBegin, begin_r, nullptr, nullptr,
+                          XR_SUCCEEDED(begin_r) ? hsk_begin_id : xr::kNoRequest, hsk_begin_id);
+        }
+
+        // THE ONE REQUEST THAT MAY BE ENDED. Tracked locally rather than read back out of the block,
+        // because the game owns those fields and a recovering game may already have advanced them.
+        if (hsk_begin) {
+            s_begun_request = XR_SUCCEEDED(begin_r) ? hsk_begin_id : xr::kNoRequest;
+        }
 
         // XR_FRAME_DISCARDED is a SUCCESS code that still owes an xrEndFrame: the runtime is
         // saying a PREVIOUS frame was thrown away, not refusing this one. A real failure means no
@@ -2067,6 +2421,25 @@ int main(int argc, char** argv) {
             }
 
             continue;
+        }
+
+        // ---- ONLY NOW IS THERE A FRAME FOR THE GAME TO RENDER --------------------------------
+        //
+        // The clock advance and the tick used to fire BEFORE xrBeginFrame, so the game was woken to
+        // render into a frame the runtime had not begun -- and on a discarded or failed begin, into
+        // one that never existed at all. The runtime throttles through xrWaitFrame using what it
+        // sees between Begin and End, so work started ahead of Begin is work it cannot attribute to
+        // the frame; the content wait already sits inside the pair, and this puts the game's render
+        // inside it too.
+        //
+        // Still incremented before the event is signalled, so a game woken by the tick always reads
+        // the count that wake corresponds to rather than the previous one.
+        if (reader.host != nullptr) {
+            ++reader.host->frames;
+        }
+
+        if (tick_event != nullptr) {
+            SetEvent(tick_event);
         }
 
         last_begin_result = begin_r;
@@ -2101,6 +2474,34 @@ int main(int argc, char** argv) {
         // Pull the newest complete frame the game has published, if any.
         uint32_t fw = 0, fh = 0, fpitch = 0;
         const uint8_t* fbits = nullptr;
+        // ---- WAIT FOR THE GAME'S END REQUEST *BEFORE* CHOOSING CONTENT ----------------------
+        //
+        // This has to precede the poll, not sit just above xrEndFrame. The game publishes its pixels
+        // and THEN asks for END, so awaiting it after content was already selected and uploaded
+        // means the frame being ended carries whatever was lying around a moment earlier -- the
+        // variable content wait and the repeats, exactly what the handshake exists to delete.
+        //
+        // Waiting here makes the pixels ready BY CONSTRUCTION: the request is itself the statement
+        // that they are published, so the poll below finds them and no bounded guess is needed.
+        uint32_t hsk_end_id = 0;
+        // TIMED, because moving a wait is not removing it. The bounded content poll is now zero by
+        // CONSTRUCTION -- this await sits before it -- and reporting that as "the wait cost vanished"
+        // would be measuring the instrument's blind spot. The cost is architecturally better here
+        // (it ends when the game says the pixels are published, not when a guess expires) but it is
+        // still cost, and the trace has to show it or the next reader draws the same wrong
+        // conclusion I did.
+        const double t_end_req_0 = now_ms();
+        const double trace_aw_end_t0 = now_ms();
+        const bool hsk_end = s_game_drives && handshake_await(hsk, xr::kPhaseEnd, 100u, &hsk_end_id);
+        trace_aw_end = now_ms() - trace_aw_end_t0;
+        // EVERYTHING BETWEEN THE GAME'S END REQUEST AND THE SUBMIT. The game reports ~4.77 ms blocked
+        // in its END rendezvous while xrEndFrame itself costs 0.15 -- so ~4.6 ms happens in here and
+        // was being lumped together: swapchain acquire and wait, two eye uploads with their Flush and
+        // release, plus whatever else the loop does before submitting. t_upload_ms exists but is a
+        // 90-frame aggregate, which cannot say what any single frame did.
+        const double trace_post_end_t0 = now_ms();
+        trace_end_req_wait = now_ms() - t_end_req_0;
+
         bool have_frame = false;
 
         // Same pull for the UI layer -- a second, independent publish that may or may not be
@@ -2130,9 +2531,44 @@ int main(int argc, char** argv) {
             // BOUNDED, because a game that has stopped -- loading, alt-tabbed, hitching -- must
             // not take the compositor down with it. Past the bound we submit the held frame, which
             // is the old behaviour and still better than nothing on screen.
+            //
+            // THE BOUND IS DERIVED, LIKE THE GAME'S PACING WAIT. It was a hardcoded 12 ms, and a
+            // game capped at 60 has its next frame up to 16.7 ms away -- so the wait expired, the
+            // held image went out ON TIME, and the runtime saw an application meeting cadence
+            // perfectly. That is why ASW never engages here: xr64 launders the game's misses into
+            // repeats, and a runtime cannot compensate for a miss it is never shown.
+            //
+            // Two display periods, the same policy the mod's tick wait uses, from the runtime's own
+            // predictedDisplayPeriod. Zero (before the first xrWaitFrame) keeps the old behaviour of
+            // not waiting at all rather than substituting a number.
+            // An EXPLICIT --content-wait is honoured as the millisecond value it says, because a
+            // flag whose number is silently ignored is worse than no flag. Only the default (the
+            // sentinel below) derives from the runtime's cadence.
+            // DERIVING THIS IS OPT-IN, AND THAT IS A RETREAT FROM A MEASURED REGRESSION.
+            //
+            // Two display periods is the right POLICY -- it is what the mod's tick wait uses -- but
+            // as a content bound it was observed making both the game and xr64 oscillate between 36
+            // and 60 with the game capped to 60. A bound that can span a whole extra compositor
+            // period makes this loop's own period variable, which is a plausible cause of exactly
+            // that hunting and was never separated from the alternative (feedback through the
+            // runtime's ASW). Until the per-frame transition log exists, the default must not be the
+            // behaviour that was seen misbehaving.
+            //
+            // So: default is the old fixed bound, --content-wait N is honoured verbatim, and
+            // --content-wait-derive asks for two periods for anyone measuring it.
+            // ZERO WHEN THE GAME DRIVES. Its END request already means "the pixels are
+            // published", so a bounded guess on top of it is a second mechanism deciding the same
+            // thing -- and two mechanisms deciding when a frame is ready is how the oscillation
+            // this replaces was built.
+            const uint32_t content_bound_ms =
+                hsk_end ? 0u
+                : content_wait_derive && !content_wait_explicit && fs.predictedDisplayPeriod > 0
+                    ? static_cast<uint32_t>((2ll * fs.predictedDisplayPeriod + 999'999ll) /
+                                            1'000'000ll)
+                    : content_wait_ms;
             const double t_content_0 = now_ms();
-            if (!have_frame && content_wait_ms > 0) {
-                const ULONGLONG deadline = GetTickCount64() + content_wait_ms;
+            if (!have_frame && content_bound_ms > 0) {
+                const ULONGLONG deadline = GetTickCount64() + content_bound_ms;
                 while (!have_frame && GetTickCount64() < deadline) {
                     Sleep(1);
                     have_frame = reader.poll(fw, fh, fpitch, fbits);
@@ -2141,6 +2577,7 @@ int main(int argc, char** argv) {
                     ++content_waits_expired;
                 }
             }
+            trace_content_cost = now_ms() - t_content_0;
             {
                 const double d = now_ms() - t_content_0;
                 t_content_ms += d;
@@ -2456,6 +2893,7 @@ int main(int argc, char** argv) {
         // the head above, so a weapon driven by aim_pose and a camera driven by the head pose
         // describe one instant and one origin -- a mismatch here would not error, it would just
         // make the hands lag or sit in the wrong place.
+        const double trace_act_t0 = now_ms();
         if (reader.hands != nullptr) {
             // xrSyncActions is only meaningful once the session is FOCUSED -- XR_SESSION_NOT_FOCUSED
             // is the documented result otherwise (e.g. while the system UI has input), and action
@@ -2669,6 +3107,7 @@ int main(int argc, char** argv) {
 
             hands_bound_log = profile_bound;
         }
+        trace_actions = now_ms() - trace_act_t0;
 
         // ---- THE OTHER DIRECTION: BUZZ THE CONTROLLER ------------------------------------------
         //
@@ -2866,6 +3305,7 @@ int main(int argc, char** argv) {
                 // a promise about a vector we filled somewhere else. Same shape as
                 // ui/SettingsUi.cpp's renderAndBuildQuad().
                 const double t_up_0 = now_ms();
+                const double trace_eye_t0 = now_ms();
                 if (XR_FAILED(xrAcquireSwapchainImage(screen[e], &ai, &index)) ||
                     index >= screen_images[e].size()) {
                     ++upload_failures;
@@ -2938,29 +3378,34 @@ int main(int argc, char** argv) {
                 const D3D11_BOX box{off_x, off_y, 0, off_x + screen_w, off_y + screen_h, 1};
                 ctx->UpdateSubresource(screen_images[e][index], 0, &box, eye_bits, fpitch, 0);
 
-                // ---- SUBMIT THE COPY BEFORE HANDING THE IMAGE BACK ----------------------------
+                        // ---- THE FLUSH IS GONE, AND ITS RATIONALE WAS NEVER PROVEN ------------------
                 //
-                // This runtime is RenderingD3D11OnVulkan: it does not consume our D3D11 texture
-                // directly, it COPIES it into a Vulkan image. That copy happens around
-                // xrReleaseSwapchainImage, on its own timeline -- so an UpdateSubresource still
-                // sitting unsubmitted in our immediate context is invisible to it, and it copies
-                // whatever the texture held before.
+                // It was added during the Meta XR Simulator freeze investigation, on the theory that
+                // RenderingD3D11OnVulkan copies our D3D11 texture into a Vulkan image around
+                // xrReleaseSwapchainImage and would therefore copy stale contents unless our
+                // UpdateSubresource had already been submitted.
                 //
-                // That is the last thing consistent with everything measured: our CPU-side centre
-                // pixel is live (we read our own source buffer), all three images are written and
-                // primed, indices rotate, the rect is right, xrEndFrame succeeds -- and the runtime
-                // still reports the centre as zero, because it is reading GPU contents our commands
-                // had not yet produced.
+                // That theory was never tested. The freeze it was written for turned out to be the
+                // MCP operator API layer holding the simulator's display -- recorded in AGENTS.md --
+                // and this was one of six changes aimed at innocent code during that hunt. Two of the
+                // others were reverted for exactly this reason; this one survived because nothing
+                // measured it.
                 //
-                // A native D3D11 runtime shares this device and its submission order, which is why
-                // real hardware never showed this. Flush costs one submission per eye per frame.
-                ctx->Flush();
+                // It costs a full pipeline flush per eye, measured at 3.14 ms mean across both eyes
+                // for the whole acquire/upload/release span, in a frame that runs 0.3 ms over its
+                // 13.889 ms budget.
+                //
+                // WHAT TO WATCH if this was wrong: the runtime would copy stale or black contents, so
+                // the symptom is a frozen or dark view while our own centre-pixel probe still reads
+                // live values -- the exact signature from that investigation. eye_upload_ms says
+                // whether it was worth it.
 
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 // Result ignored deliberately: a release that fails has still handed the image
                 // back as far as this loop is concerned, there is nothing to retry, and the next
                 // acquire reports the real state. Same choice in ui/SettingsUi.cpp.
                 xrReleaseSwapchainImage(screen[e], &ri);
+                trace_eye_upload += now_ms() - trace_eye_t0;
                 {
                     const double d = now_ms() - t_up_0;
                     t_upload_ms += d;
@@ -3473,7 +3918,77 @@ int main(int argc, char** argv) {
         fei.layerCount = layer_count;
         fei.layers = layer_count != 0 ? layers : nullptr;
         const double t_end_0 = now_ms();
+        // END is where the game's pixels arrive: it publishes, THEN asks. So waiting here replaces
+        // the bounded content wait -- the frame is ready by construction rather than by hoping.
+        // AN END MUST NAME THE FRAME THAT WAS BEGUN. A timeout upstream can leave the game
+        // recovering a frame behind, and ending someone else's frame is worse than ending none --
+        // the compositor would reproject using a pose belonging to a different frame.
+        //
+        // But the begun frame is still ended REGARDLESS. Skipping xrEndFrame here was wrong: it
+        // leaves an outstanding begin, and the next iteration's xrBeginFrame then compounds a
+        // call-order error instead of recovering from one. The mismatched request is refused; the
+        // FRAME is still discharged, which is what the spec's pairing actually demands.
+        const bool hsk_end_valid = hsk_end && hsk_end_id == s_begun_request;
+        if (hsk_end && !hsk_end_valid) {
+            handshake_ack(hsk, xr::kPhaseEnd, XR_ERROR_CALL_ORDER_INVALID, nullptr, nullptr,
+                          s_begun_request, hsk_end_id);
+        }
+
+        // ---- DID THE WRITER WRAP INTO THE SLOT WE JUST UPLOADED? -------------------------------
+        //
+        // Asked here, while the answer still means something. A changed generation says the submitted
+        // pixels are a mixture of two frames -- torn, and until now undetectable. Counted rather than
+        // acted on: the upload has already happened, and reporting it is what turns "three slots is
+        // enough grace" into a measurement instead of an assumption. It is also the gate on restoring
+        // pipelining: if this stays zero with the game running freely, the grace is real.
+        if (reader.header != nullptr && reader.snap_rendered_valid != 0u &&
+            reader.header->slot_generation[reader.snap_slot] != reader.snap_slot_generation) {
+            ++reader.payload_overwritten;
+        }
+
+        trace_post_end = now_ms() - trace_post_end_t0;
+        const double trace_end_begin_ms = now_ms();
         const XrResult end = xrEndFrame(session, &fei);
+
+        // END ACK. The frame just begun is now ended, so nothing is outstanding.
+        // CLEARED UNCONDITIONALLY: xrEndFrame ran, so nothing is outstanding whatever the game did
+        // or failed to do. Clearing it only on a served request left a stale id behind on the
+        // END-timeout path, and the next frame would then refuse a perfectly good END.
+        s_begun_request = xr::kNoRequest;
+
+        if (hsk_end_valid) {
+            handshake_ack(hsk, xr::kPhaseEnd, end, nullptr, nullptr, xr::kNoRequest, hsk_end_id);
+        }
+        if (trace_frames) {
+            // CAPTURE ONLY. A printf per frame at 72 Hz perturbs the very interval it measures --
+            // worse on a console or a captured harness -- so a sample is fixed POD into a ring and
+            // NOTHING is written here. No flush at wrap either: writing thousands of CSV rows on
+            // one frame is the same observer effect wearing a different hat. The ring is dumped
+            // once, after the loop.
+            //
+            // A long session therefore keeps the LAST kTraceCap frames, which is what a transition
+            // hunts for anyway: run it, let it oscillate, stop it, read the tail.
+            auto& s = g_trace[g_trace_n % kTraceCap];
+            s.iv = trace_wait_interval;
+            s.wait_blk = trace_wait_blocked;
+            s.begin_dur = trace_begin_dur;
+            s.period_ms = static_cast<double>(fs.predictedDisplayPeriod) / 1.0e6;
+            s.content_cost = trace_content_cost;
+            s.end_req_wait = trace_end_req_wait;
+            s.aw_wait = trace_aw_wait;
+            s.aw_begin = trace_aw_begin;
+            s.aw_end = trace_aw_end;
+            s.post_end = trace_post_end;
+            s.eye_upload = trace_eye_upload;
+            s.actions = trace_actions;
+            s.end_dur = now_ms() - trace_end_begin_ms;
+            s.seq = static_cast<uint32_t>(reader.frame_host_sequence());
+            s.layers = static_cast<uint32_t>(fei.layerCount);
+            s.new_content = have_frame ? 1u : 0u;
+            s.begin_r = static_cast<int32_t>(begin_r);
+            s.end_r = static_cast<int32_t>(end);
+            ++g_trace_n;
+        }
         {
             const double d = now_ms() - t_end_0;
             t_end_ms += d;
@@ -3556,6 +4071,13 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(haptic_overruns),
                         static_cast<unsigned long long>(haptic_torn),
                         static_cast<unsigned long long>(upload_failures));
+
+            // ITS OWN LINE, same reasoning as the comment above. Nonzero means the writer wrapped
+            // into a slot while it was being uploaded, so those frames went out as a mixture of two
+            // -- torn pixels, which was undetectable before slot_generation existed. It should read 0
+            // under lock-step by construction; it is the gate on letting the game run freely again.
+            std::printf("[host]   payload overwritten mid-upload: %llu\n",
+                        static_cast<unsigned long long>(reader.payload_overwritten));
         }
 
         if (max_seconds > 0 && GetTickCount64() - started > static_cast<ULONGLONG>(max_seconds) * 1000) {
@@ -3655,6 +4177,14 @@ int main(int argc, char** argv) {
             xrDestroySpace(grip_space[h]);
         }
     }
+
+    // NOT SERVICING ANY MORE. Cleared before teardown so a game still running falls back to its
+    // legacy path instead of blocking on a host that has left the loop.
+    if (auto* hsk_exit = reader.handshake()) {
+        hsk_exit->host_servicing = 0u;
+    }
+
+    trace_flush();  // once, outside the loop -- see the ring above
 
     if (action_set != XR_NULL_HANDLE) {
         xrDestroyActionSet(action_set);
