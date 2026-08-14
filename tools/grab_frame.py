@@ -29,7 +29,7 @@ FILE_MAP_READ = 0x0004
 # and the payload read comes from the wrong slot instead of refusing outright.
 MAGIC = 0x32524546  # 'FER2'
 # Must match kSharedFrameVersion, and it is in the object NAME as well as the header -- see NAME.
-VERSION = 6
+VERSION = 9
 HEADER_BYTES = 128
 HOST_STATE_BYTES = 64
 HANDS_STATE_BYTES = 256

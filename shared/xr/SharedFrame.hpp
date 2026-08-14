@@ -44,11 +44,16 @@ constexpr uint32_t kSharedFrameMagic = 0x32524546u;  // 'FER2'
 // built against different versions never touch the same kernel object at all. The host reports no
 // mapping, which is unambiguous and self-explanatory. The field check stays as belt and braces and
 // is now re-validated per poll (tools/xr64/main.cpp), so a same-name mismatch still cannot be read.
-#define FEAR2VR_SHARED_FRAME_VERSION 6
+#define FEAR2VR_SHARED_FRAME_VERSION 9
 #define FEAR2VR_STRINGIFY_(x) #x
 #define FEAR2VR_STRINGIFY(x) FEAR2VR_STRINGIFY_(x)
 
-constexpr uint32_t kSharedFrameVersion = FEAR2VR_SHARED_FRAME_VERSION;  // 4 added the rendered pose
+// 4 added the rendered pose; 7 replaced HostState's dead write_qpc with the runtime's own
+// predicted_display_period_ns. That reused the same eight bytes, so the SIZE is unchanged and only
+// the MEANING moved -- which is exactly the break a version exists for: an old binary would read a
+// display period as a timestamp and pace on garbage. The version is part of the mapping and event
+// NAMES, so mismatched builds cannot meet at all.
+constexpr uint32_t kSharedFrameVersion = FEAR2VR_SHARED_FRAME_VERSION;
 
 // Sized for the game's native per-eye back buffer: 4320x2224 (2160x2224 per eye, side by side),
 // rounded up to a height of 2240 for headroom. Width and height are named rather than folded
@@ -144,6 +149,25 @@ struct alignas(64) SharedFrameHeader {
     // to the sequence lookup rather than trusting zeros.
     uint32_t rendered_valid;
     float rendered_orientation[4];  // x, y, z, w in the host's LOCAL space
+
+    // ---- PER-SLOT PAYLOAD GENERATION, ODD WHILE THAT SLOT'S PIXELS ARE BEING WRITTEN ------------
+    //
+    // The header seqlock protects the HEADER. It does not protect the ~37 MB of pixels the host
+    // uploads straight out of the slot -- that is stated a few lines up and is true. Three slots plus
+    // write-ahead gives the host a couple of frames of grace, which is TIMING-DEPENDENT: under a
+    // hitch, or with the game running freely again, the writer can wrap and overwrite the very slot
+    // being uploaded, and the result is torn pixels with no way to know it happened.
+    //
+    // ODD/EVEN, not a published counter. The writer makes its slot's generation ODD before touching
+    // any of that slot's pixels and EVEN when the payload is complete. The host snapshots an EVEN
+    // generation with the metadata, uploads, then re-reads it: any wrap that STARTED during the
+    // upload is caught, because it had to pass through odd. Stamping only after the write would miss
+    // an overwrite already in progress; stamping only before, with no completion transition, would
+    // let the host read a half-written frame and think it was fine.
+    //
+    // Zero everywhere means a writer that predates this, which reads as "always even" -- i.e. the old
+    // behaviour, unchecked, rather than a false alarm on every frame.
+    uint32_t slot_generation[kFrameSlots];
 };
 
 // 128 now that the slot index is carried: alignas(64) rounds up, and the exact size matters far
@@ -162,7 +186,34 @@ static_assert(sizeof(SharedFrameHeader) == 128,
 // head that statement is false, and the compositor's reprojection turns the lie into a world that
 // swings when the wearer looks around.
 struct alignas(64) HostState {
-    int64_t write_qpc;
+    // ---- THE RUNTIME'S OWN CADENCE, SO THE GAME NEVER HAS TO ASSUME ONE ------------------------
+    //
+    // XrFrameState::predictedDisplayPeriod, in nanoseconds, straight from xrWaitFrame. This is the
+    // authoritative display period; nothing else here should be used to infer it.
+    //
+    // It replaces a dead `write_qpc` that occupied these eight bytes and was assigned 0 at BOTH
+    // publish sites, so no reader could ever have used it. Size and offsets are unchanged, but the
+    // MEANING of these bytes changed, which is a contract break -- hence the version bump, so an
+    // old binary can never share the mapping with a new one and read a period as a timestamp.
+    //
+    // The mod paces its whole update loop on the host tick and needs a wait budget in terms of this
+    // period. It previously hardcoded 22 ms -- two frames at 90 Hz -- which is 1.58 periods at the
+    // 72 Hz this runtime presents at, so a single slow host iteration overran the wait and that
+    // frame published unpaced. A cadence is measurable and published; it must never be guessed.
+    //
+    // ZERO MEANS "NOT YET KNOWN" -- before the host's first xrWaitFrame completes. A reader must
+    // FAIL OPEN and not pace at all, rather than substituting a default: substituting a default is
+    // precisely the bug being removed here.
+    // 32 BITS, NOT 64, AND THAT IS DELIBERATE. The mod is a 32-bit process: an unguarded 64-bit
+    // read there is not atomic and can tear across the host's write. A period in nanoseconds needs
+    // nowhere near 64 bits -- 13.9 ms at 72 Hz is 13,888,889, and a uint32 reaches 4.29 seconds --
+    // so a naturally-aligned 32-bit field is both sufficient and single-instruction on x86, which
+    // means a reader outside the seqlock still cannot observe a half-written value.
+    //
+    // The high half stays reserved rather than being reclaimed, so the struct keeps the eight bytes
+    // the dead write_qpc occupied and every following offset is untouched.
+    uint32_t predicted_display_period_ns;
+    uint32_t reserved_period_hi;
 
     uint32_t sequence;  // odd while writing
     uint32_t valid;     // the runtime reported an ORIENTATION_VALID pose
@@ -408,6 +459,85 @@ static_assert(sizeof(UiFrameHeader) == 64, "UiFrameHeader must be byte-identical
 // MapViewOfFile's offset argument must be a multiple of the system's allocation granularity (64 KiB
 // on every Windows target this runs on, not the 4 KiB page size) -- so every per-slot offset below
 // is rounded up to it, not just the section's total size.
+// ---- THE FRAME HANDSHAKE: THE GAME DRIVES, THE HOST EXECUTES ------------------------------------
+//
+// See FRAME_LOOP.md. The GAME issues the OpenXR frame calls over this block and blocks on each ack;
+// xr64 owns the handles and performs them on its own frame thread. xrWaitFrame throttles whoever
+// blocks on it, so putting the game's loop behind it is what makes pacing and ASW work by
+// construction rather than by relaying a cadence two clocks then have to agree on.
+//
+// Measured, 8192 frames: the host overruns a 13.889 ms budget with up to 11.9 ms (p95) spent INSIDE
+// the frame waiting for game pixels. A game asked for frame N which answers frame N is not
+// something to wait a variable amount of time for.
+//
+// TWO IDS, DELIBERATELY SEPARATE. `request_id` pairs xrBeginFrame to xrEndFrame and lives one
+// iteration -- END always ends the frame just begun, because the spec permits no second outstanding
+// begin. The id that travels with the PIXELS lives in the capture slot and may lag a frame, since
+// the readback is a frame deep; it pairs pixels to the pose they were drawn from. Requiring END to
+// name the pixels' id instead deadlocks: the begun frame would never be matched and the iteration
+// that would ready its pixels could never start.
+struct alignas(64) FrameHandshake {
+    uint32_t sequence;       // odd while the host is writing an ack
+    uint32_t request_id;     // minted by the game, per frame
+    uint32_t phase;          // what the game is asking for -- kPhase* below
+    uint32_t ack_phase;      // the phase the host completed for ack_id
+    uint32_t ack_id;         // the request_id that ack_phase/ack_status describe
+    int32_t ack_status;      // the XrResult of that call, as an int32
+    uint32_t begun_id;       // the request with an outstanding xrBeginFrame, or kNoRequest
+    uint32_t should_render;  // XrFrameState::shouldRender, from the WAIT ack
+
+    // From the WAIT ack, so the game renders with the instant and pose the host was given rather
+    // than anything re-read later. Same rule as the rendered pose: it travels, it is not rebuilt.
+    int64_t predicted_display_time;
+    uint32_t predicted_period_ns;
+
+    // ---- READINESS IS THE HOST'S TO STATE, NOT THE MAPPING'S TO IMPLY -------------------------
+    //
+    // Nonzero only while xr64's frame loop is actually able to SERVICE requests: session running,
+    // inside the loop. Cleared before it leaves, and while the session is idle -- headset off, not
+    // yet ready, stopping.
+    //
+    // The mapping existing says nothing about this. A game that treated mapping presence as
+    // readiness would post a WAIT nobody is listening for and block its whole update loop for the
+    // full timeout, every frame, at the menu or with the headset down -- turning "the host is not
+    // ready" into "the game runs at 10 fps".
+    uint32_t host_servicing;
+    float head_orientation[4];  // x, y, z, w in the host's LOCAL space
+    float head_position[3];     // metres
+
+    // ---- PER-STAGE REQUEST SLOTS, SO MORE THAN ONE CAN BE OUTSTANDING -------------------------
+    //
+    // A single `phase` field can only ever carry ONE request, which forced the game to block on every
+    // stage: posting END(N) and then WAIT(N+1) without waiting would overwrite `phase` before the host
+    // had read the END, the request would vanish, and the host would time out. That is why the game
+    // waited on END, and waiting there costs ~4.8 ms of its own frame -- measured -- which is most of
+    // the difference between 68 fps and the compositor's 72.
+    //
+    // With a slot per stage, a request is OUTSTANDING while req_id != ack_id for that stage, and the
+    // two cannot collide. The game can fire END(N) and immediately ask for WAIT(N+1), so its render
+    // overlaps the host's upload and submit instead of following them.
+    //
+    // The pixel-tearing that overlap risks is no longer invisible: slot_generation catches a writer
+    // wrapping into a slot mid-upload, and it reads 0 under lock-step, so any nonzero after this is
+    // this change and not a mystery.
+    uint32_t req_id[4];   // indexed by kPhase*; kPhaseIdle unused
+    uint32_t ack_slot[4];  // the host writes the id it has served for that stage
+    uint32_t reserved[5];
+};
+
+static_assert(sizeof(FrameHandshake) == 128,
+              "FrameHandshake must be byte-identical in both bitnesses");
+
+// The game sets `phase`, signals the request event, and waits for ack_phase == phase with
+// ack_id == request_id.
+constexpr uint32_t kPhaseIdle = 0u;
+constexpr uint32_t kPhaseWait = 1u;   // xrWaitFrame -- where the runtime throttles the GAME
+constexpr uint32_t kPhaseBegin = 2u;  // xrBeginFrame, before the game draws anything
+constexpr uint32_t kPhaseEnd = 3u;    // upload + xrEndFrame, ending the frame just begun
+
+// No request outstanding. Distinct from id 0, which is a legitimate first request.
+constexpr uint32_t kNoRequest = 0xFFFFFFFFu;
+
 constexpr uint32_t kViewGranularity = 64u * 1024u;
 
 constexpr uint32_t align_up(uint32_t value, uint32_t granularity) {
@@ -434,8 +564,15 @@ constexpr uint32_t kUiStateOffset =
 // Rounded up to the granularity: this is now also a MapViewOfFile offset, since the first frame
 // slot's view starts here. The control block above it (header through UiFrameHeader) is small
 // enough to stay a single view mapped at offset 0, which needs no rounding.
+constexpr uint32_t kHandshakeOffset =
+    kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader));
+
+// Inside the first kViewGranularity, so this does NOT move kPayloadOffset or any pixel slot -- the
+// same reason v6 could add HapticsState without disturbing the payload. The header blocks together
+// are about 1 KB against 64 KB of slack.
 constexpr uint32_t kPayloadOffset =
-    align_up(kUiStateOffset + static_cast<uint32_t>(sizeof(UiFrameHeader)), kViewGranularity);
+    align_up(kHandshakeOffset + static_cast<uint32_t>(sizeof(FrameHandshake)),
+             kViewGranularity);
 
 // The STRIDE between slots -- not kSharedFrameMaxBytes itself, which is the pixel capacity a frame
 // is checked against. Padding it up to the granularity keeps every slot's own view offset
