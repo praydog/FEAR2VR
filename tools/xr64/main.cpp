@@ -19,6 +19,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+#include <atomic>
+#include <cstdarg>
+#include <thread>
 #include <windows.h>
 
 #include <d3d11.h>
@@ -809,7 +812,65 @@ static void trace_flush() {
                 wrapped ? " (most recent; ring wrapped)" : "");
 }
 
+// ---- LOGGING OFF THE FRAME THREAD ---------------------------------------------------------------
+//
+// A console write from the frame loop can block for SECONDS on Windows. Measured: a per-90-frame
+// report frame took 2003 ms while its own work (post_end) was 4.19 ms against 4.18 elsewhere -- so the
+// stall was not the reporting code, it was handing bytes to conhost. Selecting anything in that window
+// with QuickEdit on pauses output entirely, and the frame loop inherits the pause. Report frames also
+// ate a vsync often enough to see: ~28 ms intervals landing on exact multiples of 90.
+//
+// So the frame thread formats into a ring and never touches stdout; one writer thread drains it. A
+// full ring DROPS, and says so afterwards, because blocking a frame to keep a log line is the trade
+// that caused this.
+constexpr size_t kLogSlots = 256;
+constexpr size_t kLogLine = 512;
+static char g_log_ring[kLogSlots][kLogLine];
+static std::atomic<uint64_t> g_log_write{0};
+static std::atomic<uint64_t> g_log_read{0};
+static std::atomic<uint64_t> g_log_dropped{0};
+static std::atomic<bool> g_log_stop{false};
+
+// Formats and queues. Never blocks, never allocates, never writes.
+static void logq(const char* fmt, ...) {
+    const uint64_t w = g_log_write.load(std::memory_order_relaxed);
+    if (w - g_log_read.load(std::memory_order_acquire) >= kLogSlots) {
+        g_log_dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_log_ring[w % kLogSlots], kLogLine, fmt, ap);
+    va_end(ap);
+    g_log_write.store(w + 1, std::memory_order_release);
+}
+
+static void log_drain_thread() {
+    for (;;) {
+        const uint64_t r = g_log_read.load(std::memory_order_relaxed);
+        if (r == g_log_write.load(std::memory_order_acquire)) {
+            if (g_log_stop.load(std::memory_order_acquire)) {
+                break;
+            }
+            Sleep(2);
+            continue;
+        }
+        fputs(g_log_ring[r % kLogSlots], stdout);
+        g_log_read.store(r + 1, std::memory_order_release);
+    }
+    const uint64_t dropped = g_log_dropped.load(std::memory_order_relaxed);
+    if (dropped != 0) {
+        std::printf("[host] %llu log line(s) dropped -- the ring filled, which means the writer was "
+                    "blocked and the frame loop correctly refused to wait for it\n",
+                    static_cast<unsigned long long>(dropped));
+    }
+    fflush(stdout);
+}
+
 int main(int argc, char** argv) {
+    // Started before anything logs, joined after the loop. Owns stdout for the whole run.
+    std::thread g_log_thread(log_drain_thread);
+
     SetUnhandledExceptionFilter(host_crash_handler);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleCtrlHandler(console_handler, TRUE);
@@ -2141,7 +2202,7 @@ int main(int argc, char** argv) {
         // event pump, which is where the session-state change actually arrives.
         if (XR_FAILED(wait_r) || fs.predictedDisplayTime <= 0) {
             if (wait_r != last_wait_result) {
-                std::printf("[host] xrWaitFrame -> %s (predicted display time %lld) -- skipping "
+                logq("[host] xrWaitFrame -> %s (predicted display time %lld) -- skipping "
                             "frames until it recovers\n", rs(wait_r),
                             static_cast<long long>(fs.predictedDisplayTime));
                 last_wait_result = wait_r;
@@ -2162,7 +2223,7 @@ int main(int argc, char** argv) {
             // service restart surfaces here: the frame state is valid and this frame is flown
             // normally, while the session-state event that follows brings the process down.
             if (wait_r == XR_SESSION_LOSS_PENDING) {
-                std::printf("[host] xrWaitFrame -> %s -- the runtime is going away\n", rs(wait_r));
+                logq("[host] xrWaitFrame -> %s -- the runtime is going away\n", rs(wait_r));
             }
 
             last_wait_result = wait_r;
@@ -2409,7 +2470,7 @@ int main(int argc, char** argv) {
         // frame was begun at all, so going on to xrEndFrame would be an unpaired end.
         if (XR_FAILED(begin_r)) {
             if (begin_r != last_begin_result) {
-                std::printf("[host] xrBeginFrame -> %s -- skipping the frame\n", rs(begin_r));
+                logq("[host] xrBeginFrame -> %s -- skipping the frame\n", rs(begin_r));
                 last_begin_result = begin_r;
             }
 
@@ -2465,7 +2526,7 @@ int main(int argc, char** argv) {
             // Loud once rather than counted quietly: overflowing this is a mistake in the
             // composition above, not a runtime condition that can be waited out.
             if (!layer_overflow_logged) {
-                std::printf("[host] composition layer list full at %u -- dropping a layer; raise "
+                logq("[host] composition layer list full at %u -- dropping a layer; raise "
                             "kMaxLayers\n", kMaxLayers);
                 layer_overflow_logged = true;
             }
@@ -2728,7 +2789,7 @@ int main(int argc, char** argv) {
                 sc.mipCount = 1;
 
                 const XrResult screen_r = xrCreateSwapchain(session, &sc, &screen[e]);
-                std::printf("[host] eye %d screen swapchain %ux%u (%s) -> %s\n", e, make_w, make_h,
+                logq("[host] eye %d screen swapchain %ux%u (%s) -> %s\n", e, make_w, make_h,
                             layout == xr::kLayoutSideBySide ? "side-by-side" : "mono", rs(screen_r));
 
                 if (XR_FAILED(screen_r)) {
@@ -2750,7 +2811,7 @@ int main(int argc, char** argv) {
                 // a swapchain nothing may point at. Failing the resize here keeps the previous
                 // (working) size in place instead of leaving a handle with no images behind it.
                 if (XR_FAILED(img_r) || n == 0) {
-                    std::printf("[host] eye %d screen swapchain images -> %s (%u) -- abandoning "
+                    logq("[host] eye %d screen swapchain images -> %s (%u) -- abandoning "
                                 "this resize\n", e, rs(img_r), n);
                     ok = false;
                     break;
@@ -2788,7 +2849,7 @@ int main(int argc, char** argv) {
                         rtv->Release();
                     }
                 }
-                std::printf("[host] primed %u swapchain image(s) for eye %d\n", n, e);
+                logq("[host] primed %u swapchain image(s) for eye %d\n", n, e);
             }
 
             if (ok) {
@@ -2835,7 +2896,7 @@ int main(int argc, char** argv) {
             // Primed below once enumerated: the chain is capacity-sized while the content is
             // smaller, so the surround would otherwise be untouched memory -- the same hazard the
             // eye chains had.
-            std::printf("[host] ui swapchain %ux%u -> %s\n", uw, uh, rs(ui_r));
+            logq("[host] ui swapchain %ux%u -> %s\n", uw, uh, rs(ui_r));
 
             uint32_t ui_n = 0;
             XrResult ui_img_r = XR_SUCCESS;
@@ -2868,7 +2929,7 @@ int main(int argc, char** argv) {
                 // ui_images, so a live handle with an empty vector would fail that check on every
                 // frame from here on rather than once.
                 if (ui_swapchain != XR_NULL_HANDLE) {
-                    std::printf("[host] ui swapchain images -> %s (%u) -- destroying it\n",
+                    logq("[host] ui swapchain images -> %s (%u) -- destroying it\n",
                                 rs(ui_img_r), ui_n);
                     // Result ignored: the failure being reported is the enumeration, and this is
                     // the cleanup for it.
@@ -3202,7 +3263,7 @@ int main(int argc, char** argv) {
                     // Once, not per pulse: a runtime that refuses one refuses all of them, and a
                     // line per shot fired would bury every other message in this log.
                     if (!haptic_failure_logged) {
-                        std::printf("[host] haptic feedback -> %s (not retried, logged once)\n",
+                        logq("[host] haptic feedback -> %s (not retried, logged once)\n",
                                     rs(haptic_r));
                         haptic_failure_logged = true;
                     }
@@ -3361,12 +3422,12 @@ int main(int argc, char** argv) {
                     // same index, the chain's other images are never written and a reader that
                     // samples one of those sees untouched memory forever -- which is a frozen view
                     // over live data, exactly as reported.
-                    std::printf("%s [host] wrote image index %u of %zu\n", stamp(), index,
+                    logq("%s [host] wrote image index %u of %zu\n", stamp(), index,
                                 screen_images[e].size());
                     const size_t cx = static_cast<size_t>(screen_w) / 2u;
                         const size_t cy = static_cast<size_t>(screen_h) / 2u;
                         const uint8_t* px = eye_bits + cy * static_cast<size_t>(fpitch) + cx * 4u;
-                        std::printf("%s [host] centre pixel B=%u G=%u R=%u A=%u (eye %ux%u pitch %u)\n",
+                        logq("%s [host] centre pixel B=%u G=%u R=%u A=%u (eye %ux%u pitch %u)\n",
                                     stamp(), px[0], px[1], px[2], px[3], screen_w, screen_h, fpitch);
                     }
                 }
@@ -3428,10 +3489,10 @@ int main(int argc, char** argv) {
         // transition, not on every frame the layer happens to be shown or hidden.
         if (ui_enabled) {
             if (have_ui_frame && !ui_shown) {
-                std::printf("[host] UI layer appeared, %ux%u\n", uw, uh);
+                logq("[host] UI layer appeared, %ux%u\n", uw, uh);
                 ui_shown = true;
             } else if (!ui_present_now && ui_shown) {
-                std::printf("[host] UI layer disappeared\n");
+                logq("[host] UI layer disappeared\n");
                 ui_shown = false;
             }
         }
@@ -3753,7 +3814,7 @@ int main(int argc, char** argv) {
                     s_last_rect = now_r;
                     const auto& l = proj_views[0].subImage.imageRect;
                     const auto& rr = proj_views[1].subImage.imageRect;
-                    std::printf("%s [host] rect L off(%d,%d) ext(%dx%d) R off(%d,%d) ext(%dx%d) filled %ux%u\n",
+                    logq("%s [host] rect L off(%d,%d) ext(%dx%d) R off(%d,%d) ext(%dx%d) filled %ux%u\n",
                                 stamp(), l.offset.x, l.offset.y, l.extent.width, l.extent.height,
                                 rr.offset.x, rr.offset.y, rr.extent.width, rr.extent.height,
                                 screen_w, screen_h);
@@ -3778,7 +3839,7 @@ int main(int argc, char** argv) {
                     p_lh != L.extent.height || p_rx != R.offset.x || p_ry != R.offset.y ||
                     p_rw != R.extent.width || p_rh != R.extent.height || p_uiw != ui_w ||
                     p_uih != ui_h) {
-                    std::printf("%s [host] GEOMETRY CHANGED alloc %ux%u picture %ux%u layout %u "
+                    logq("%s [host] GEOMETRY CHANGED alloc %ux%u picture %ux%u layout %u "
                                 "L off(%d,%d) ext(%dx%d) R off(%d,%d) ext(%dx%d) ui %ux%u\n",
                                 stamp(), screen_alloc_w, screen_alloc_h, screen_w, screen_h,
                                 static_cast<uint32_t>(screen_layout), L.offset.x, L.offset.y,
@@ -3853,7 +3914,7 @@ int main(int argc, char** argv) {
             static bool s_said = false;
             if (!s_said) {
                 s_said = true;
-                std::printf("[host] no content and no screen swapchains yet -- submitting an empty "
+                logq("[host] no content and no screen swapchains yet -- submitting an empty "
                             "frame rather than creating a second swapchain set\n");
             }
         }
@@ -4008,7 +4069,7 @@ int main(int argc, char** argv) {
             // A count that has to be maintained by hand will drift, and mine did, repeatedly.
             // Several small statements cannot: each is short enough to verify by eye, and a
             // mistake in one cannot corrupt the fields of another.
-            std::printf("[host] %llu frames, %llu submitted, %llu held, projection %llu, "
+            logq("[host] %llu frames, %llu submitted, %llu held, projection %llu, "
                         "missed pose %llu, state %s, last xrEndFrame %s\n",
                         static_cast<unsigned long long>(frames),
                         static_cast<unsigned long long>(submitted),
@@ -4017,7 +4078,7 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(pose_misses),
                         state_name(state), rs(end));
 
-            std::printf("[host]   pose: age %.2f/%llu, hist %llu/%llu/%llu/%llu, stale %.1f/%.1f ms, "
+            logq("[host]   pose: age %.2f/%llu, hist %llu/%llu/%llu/%llu, stale %.1f/%.1f ms, "
                         "STATED-vs-INDEX %.3f/%.3f deg over %llu (absent %llu)\n",
                         age_samples ? static_cast<double>(age_total) / static_cast<double>(age_samples)
                                     : 0.0,
@@ -4033,7 +4094,7 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(stated_samples),
                         static_cast<unsigned long long>(stated_absent));
 
-            std::printf("[host]   frame ms/90: wait %.1f (max %.1f), content %.1f (max %.1f), "
+            logq("[host]   frame ms/90: wait %.1f (max %.1f), content %.1f (max %.1f), "
                         "upload %.1f (max %.1f, %.1f MB), end %.1f (max %.1f)\n",
                         t_wait_ms, t_wait_max, t_content_ms, t_content_max,
                         t_upload_ms, t_upload_max,
@@ -4043,7 +4104,7 @@ int main(int argc, char** argv) {
             t_wait_max = t_content_max = t_end_max = t_upload_max = 0.0;
             upload_bytes = 0;
 
-            std::printf("[host]   transport: OUT-OF-ORDER %llu, repeats %llu, content-wait %llu, "
+            logq("[host]   transport: OUT-OF-ORDER %llu, repeats %llu, content-wait %llu, "
                         "POSE-SKIP %llu/%llu\n",
                         static_cast<unsigned long long>(seq_backwards),
                         static_cast<unsigned long long>(seq_repeats),
@@ -4051,7 +4112,7 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(pose_skip_should),
                         static_cast<unsigned long long>(pose_skip_locate));
 
-            std::printf("[host]   hands bound %s, L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
+            logq("[host]   hands bound %s, L %s/%s (%.2f,%.2f,%.2f) R %s/%s (%.2f,%.2f,%.2f)\n",
                         hands_bound_log ? "yes" : "no",
                         hand_active_log[xr::kHandLeft] ? "active" : "idle",
                         hand_tracked_log[xr::kHandLeft] ? "tracked" : "inferred",
@@ -4065,7 +4126,7 @@ int main(int argc, char** argv) {
             // A LINE OF ITS OWN, for the reason spelled out above: these counters were added
             // after the crash that split this block, and appending them to a neighbouring format
             // string is exactly the edit that caused it.
-            std::printf("[host]   haptics: %llu fired, %llu dropped (ring overrun), %llu torn, "
+            logq("[host]   haptics: %llu fired, %llu dropped (ring overrun), %llu torn, "
                         "swapchain upload failures %llu\n",
                         static_cast<unsigned long long>(haptics_fired),
                         static_cast<unsigned long long>(haptic_overruns),
@@ -4076,7 +4137,7 @@ int main(int argc, char** argv) {
             // into a slot while it was being uploaded, so those frames went out as a mixture of two
             // -- torn pixels, which was undetectable before slot_generation existed. It should read 0
             // under lock-step by construction; it is the gate on letting the game run freely again.
-            std::printf("[host]   payload overwritten mid-upload: %llu\n",
+            logq("[host]   payload overwritten mid-upload: %llu\n",
                         static_cast<unsigned long long>(reader.payload_overwritten));
         }
 
@@ -4085,7 +4146,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("[host] stopping: %llu frames, %llu submitted, final state %s\n",
+    logq("[host] stopping: %llu frames, %llu submitted, final state %s\n",
                 static_cast<unsigned long long>(frames),
                 static_cast<unsigned long long>(submitted), state_name(state));
 
@@ -4110,7 +4171,7 @@ int main(int argc, char** argv) {
     // the bound xrEndSession is skipped -- out of state it would only add an error -- and
     // xrDestroySession below runs either way, which is legal from any state.
     if (running) {
-        std::printf("[host] xrRequestExitSession -> %s\n", rs(xrRequestExitSession(session)));
+        logq("[host] xrRequestExitSession -> %s\n", rs(xrRequestExitSession(session)));
 
         const ULONGLONG exit_deadline = GetTickCount64() + 2000;
 
@@ -4123,7 +4184,7 @@ int main(int argc, char** argv) {
         }
 
         if (running) {
-            std::printf("[host] session never reached STOPPING within 2s (state %s) -- skipping "
+            logq("[host] session never reached STOPPING within 2s (state %s) -- skipping "
                         "xrEndSession and destroying it as-is\n", state_name(state));
         }
     }
@@ -4182,6 +4243,11 @@ int main(int argc, char** argv) {
     // legacy path instead of blocking on a host that has left the loop.
     if (auto* hsk_exit = reader.handshake()) {
         hsk_exit->host_servicing = 0u;
+    }
+
+    g_log_stop.store(true, std::memory_order_release);
+    if (g_log_thread.joinable()) {
+        g_log_thread.join();
     }
 
     trace_flush();  // once, outside the loop -- see the ring above
